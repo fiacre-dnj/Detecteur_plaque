@@ -1,0 +1,27 @@
+# Normalise les fins de ligne : le dépôt stocke du LF, le poste de travail
+# reçoit ce que sa plateforme attend. Sans cela, un aller-retour Windows/Linux
+# réécrit des fichiers entiers et rend chaque diff illisible.
+* text=auto eol=lf
+
+# Scripts Windows qui doivent garder leurs CRLF pour être exécutables.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Binaires : jamais de conversion.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+*.woff2 binary
+*.gz   binary
+*.mp4  binary
+*.pt   binary
+*.onnx binary
+
+# Lockfiles : générés, hors des statistiques de langage et des diffs de revue.
+uv.lock   linguist-generated=true -diff
+bun.lock  linguist-generated=true -diff
+
+# Le dossier prompt/ est la spécification, pas de la documentation annexe.
+prompt/** linguist-documentation=false

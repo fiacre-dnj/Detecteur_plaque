@@ -1,0 +1,50 @@
+# ─── Python ────────────────────────────────────────────────────────────────
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ─── Poids de modèles : JAMAIS dans git (voir docs/adr/0002) ───────────────
+# La version précédente du projet committait ~700 Mo de .onnx : chaque clone
+# les paie pour toujours. Les poids véhicules sont téléchargés à la demande
+# par le registre de modèles, le modèle de plaques par un script vérifié.
+.weights/
+*.pt
+*.onnx
+*.engine
+yolo/
+
+# ─── Données d'exécution ───────────────────────────────────────────────────
+data/
+backend/data/
+*.db
+*.db-wal
+*.db-shm
+
+# ─── Frontend ──────────────────────────────────────────────────────────────
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# ─── Vidéos : lourdes, et une scène de trafic contient des plaques réelles ─
+*.mp4
+*.mov
+*.avi
+*.mkv
+frontend/public/demo/*.mp4
+
+# ─── Environnement ─────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Outillage local ───────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.log

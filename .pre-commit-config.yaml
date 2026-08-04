@@ -1,0 +1,93 @@
+# Hooks de pré-commit — voir CONTRIBUTING.md
+#
+# Installation :  uvx pre-commit install
+# Exécution :     uvx pre-commit run --all-files
+#
+# `--no-verify` est interdit. Un hook contourné une fois le sera toujours ;
+# si un hook bloque, la cause se corrige.
+
+default_language_version:
+  python: python3.12
+
+exclude: |
+  (?x)^(
+    yolo/.*
+    | frontend/node_modules/.*
+    | .*\.lock
+    | LICENSE
+  )$
+
+repos:
+  # ─── Garde-fous génériques ───────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+        exclude: ^frontend/(tsconfig.*\.json|\.oxlintrc\.json)$   # JSON avec commentaires
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      # C'est CE hook qui empêche un poids de modèle d'entrer dans
+      # l'historique, y compris renommé en une extension non ignorée.
+      # Voir docs/adr/0002-pas-de-poids-dans-git.md.
+      - id: check-added-large-files
+        args: [--maxkb=5000]
+
+  # ─── Backend : lint et format ────────────────────────────────────────────
+  # Le miroir officiel installe son propre environnement : il fonctionne
+  # avant même un `uv sync`.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.1
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        files: ^backend/
+      - id: ruff-format
+        files: ^backend/
+
+  # ─── Hooks locaux ────────────────────────────────────────────────────────
+  # `mypy` et `tsc` ont besoin des dépendances réelles du projet : ils passent
+  # donc par l'outillage du projet, et ne se déclenchent que si les fichiers
+  # concernés ont bougé.
+  - repo: local
+    hooks:
+      - id: mypy-backend
+        name: mypy --strict (backend/src)
+        entry: uv run --project backend mypy src
+        language: system
+        types_or: [python, pyi]
+        files: ^backend/(src|pyproject\.toml)
+        pass_filenames: false
+
+      - id: oxlint-frontend
+        name: oxlint (frontend)
+        entry: bun run --cwd frontend lint
+        language: system
+        files: ^frontend/src/.*\.(ts|tsx)$
+        pass_filenames: false
+
+      - id: typecheck-frontend
+        name: tsc -b (frontend)
+        entry: bun run --cwd frontend typecheck
+        language: system
+        files: ^frontend/(src/.*\.(ts|tsx)|tsconfig.*\.json)$
+        pass_filenames: false
+
+      # Le .gitignore ne voit pas un fichier déjà suivi, ni un poids renommé.
+      # Ce filet le dit avec le motif fautif, pas avec un simple refus.
+      - id: no-model-weights
+        name: aucun poids de modèle ni vidéo dans le commit
+        entry: >-
+          python -c "import sys,pathlib;
+          bad=[p for p in sys.argv[1:]
+          if pathlib.Path(p).suffix.lower() in {'.pt','.onnx','.engine','.mp4','.mov','.mkv','.avi'}];
+          sys.exit(bool(bad) and (print('Interdit dans git (voir docs/adr/0002) :',
+          *bad, sep='\n  ') or 1))"
+        language: system
+        always_run: false
