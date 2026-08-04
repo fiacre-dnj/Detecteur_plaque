@@ -59,7 +59,10 @@ repos:
     hooks:
       - id: mypy-backend
         name: mypy --strict (backend/src)
-        entry: uv run --project backend mypy src
+        # `--directory` et pas `--project` : mypy découvre sa configuration
+        # depuis le répertoire courant, donc il faut vraiment y être — sinon il
+        # tourne sans `strict` et le hook ne vérifie plus rien.
+        entry: uv run --directory backend mypy src
         language: system
         types_or: [python, pyi]
         files: ^backend/(src|pyproject\.toml)

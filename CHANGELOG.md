@@ -13,6 +13,15 @@ plus deux fois dans le même sens » si.
 
 - Socle du dépôt : licence AGPL-3.0, hooks de pré-commit, journal, guide de
   contribution, et les cinq premières décisions d'architecture documentées.
+- Le service répond : `GET /api/v1/health/live` (vivacité),
+  `/health/ready` (le répertoire de données est-il inscriptible ?) et
+  `/health` (version et environnement).
+- La documentation interactive de l'API est sur `/api/docs`.
+- Toute erreur est une réponse *Problem Details* en français, avec un code
+  machine stable et un identifiant de requête à citer en cas d'incident. Une
+  erreur interne ne divulgue jamais de détail technique.
+- Les journaux portent l'identifiant de la requête qui les a produits : signaler
+  un problème en citant cet identifiant suffit à retrouver toute la chaîne.
 
 ### Décidé
 
