@@ -13,6 +13,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from traffic_analysis.features.health.api.routes_health import router as health_router
+from traffic_analysis.features.jobs.api.routes_job_data import router as job_data_router
 from traffic_analysis.features.jobs.api.routes_job_events import router as job_events_router
 from traffic_analysis.features.jobs.api.routes_jobs import router as jobs_router
 
@@ -28,3 +29,4 @@ api_router.include_router(jobs_router)
 # protocole n'a rien à voir avec celui des routes JSON, et le mélanger rendrait
 # `routes_jobs.py` illisible.
 api_router.include_router(job_events_router)
+api_router.include_router(job_data_router)

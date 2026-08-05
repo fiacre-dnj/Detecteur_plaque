@@ -15,13 +15,18 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from traffic_analysis.core.clock import Clock, SystemClock
+from traffic_analysis.core.db.engine import create_engine, create_session_factory
 from traffic_analysis.features.counting.application.analysis_service import AnalysisService
 from traffic_analysis.features.jobs.application.job_manager import JobManager
 from traffic_analysis.features.jobs.application.progress_hub import ProgressHub
-from traffic_analysis.features.jobs.infrastructure.memory_repository import InMemoryJobRepository
 from traffic_analysis.features.jobs.infrastructure.result_store import FileResultStore
+from traffic_analysis.features.jobs.infrastructure.sqlalchemy_repository import (
+    SqlAlchemyJobRepository,
+)
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncEngine
+
     from traffic_analysis.core.settings import Settings
     from traffic_analysis.features.counting.application.ports import (
         DetectionTrackingEngine,
@@ -41,6 +46,21 @@ class Container:
     result_store: FileResultStore
     progress_hub: ProgressHub
     job_manager: JobManager
+    # `None` quand la persistance est désactivée (base injoignable, dépôt en
+    # mémoire injecté par un test). Le service reste alors utilisable : seules
+    # les routes d'agrégats répondent une erreur explicite.
+    db_engine: AsyncEngine | None = None
+
+    async def dispose(self) -> None:
+        """Ferme les ressources longues à l'arrêt du service.
+
+        Sans `dispose()`, les connexions SQLite restent ouvertes et le fichier
+        `-wal` n'est pas replié : la base grossit et un test suivant qui ouvre le
+        même fichier temporaire échoue sous Windows, où un fichier ouvert ne peut
+        pas être supprimé.
+        """
+        if self.db_engine is not None:
+            await self.db_engine.dispose()
 
 
 def build_container(
@@ -67,8 +87,17 @@ def build_container(
 
     analysis_service = AnalysisService(resolved_engine, plate_detector)
     result_store = FileResultStore(settings.data_dir)
-    repository = job_repository or InMemoryJobRepository(resolved_clock)
     hub = ProgressHub()
+
+    db_engine: AsyncEngine | None = None
+    if job_repository is not None:
+        repository = job_repository
+    else:
+        # La base est la source de vérité de l'état : un job doit survivre à un
+        # redémarrage. Le dépôt en mémoire ne sert qu'aux tests qui l'injectent
+        # explicitement, où la persistance n'est pas le sujet.
+        db_engine = create_engine(settings)
+        repository = SqlAlchemyJobRepository(create_session_factory(db_engine))
 
     return Container(
         settings=settings,
@@ -77,6 +106,7 @@ def build_container(
         job_repository=repository,
         result_store=result_store,
         progress_hub=hub,
+        db_engine=db_engine,
         job_manager=JobManager(
             repository=repository,
             result_store=result_store,
