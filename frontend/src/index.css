@@ -1,1 +1,146 @@
 @import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Système de design — jetons uniques du projet.
+
+   Source de vérité : DESIGN.md. Les arbitrages entre DESIGN.md et prompt/09
+   sont écrits dans docs/adr/0004-systeme-de-design.md.
+
+   **Aucun composant n'écrit un hexadécimal.** Toute couleur passe par un jeton
+   déclaré ici ou par shared/config/palettes.ts pour ce que le canvas encode.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Manrope variable, auto-hébergée.
+   Les polices de DESIGN.md (SpotifyMixUI / CircularSp) sont propriétaires, et la
+   CSP du service (`default-src 'self'`) interdit de toute façon Google Fonts.
+   Manrope — géométrique semi-arrondie — est le substitut libre le plus proche
+   de Circular. `font-display: swap` : le texte s'affiche immédiatement dans la
+   police de repli plutôt que de laisser une page blanche. */
+@font-face {
+  font-family: "Manrope";
+  src: url("/fonts/manrope-variable.woff2") format("woff2-variations");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@theme {
+  /* ── Surfaces ────────────────────────────────────────────────────────────
+     La profondeur vient de la variation de gris, pas d'un dégradé. */
+  --color-base: #121212;
+  --color-surface: #181818;
+  --color-surface-2: #1f1f1f;
+  --color-elevated: #252525;
+  --color-elevated-2: #272727;
+
+  /* ── Texte ─────────────────────────────────────────────────────────────── */
+  --color-ink: #ffffff;
+  --color-ink-muted: #b3b3b3;
+  --color-ink-dim: #7c7c7c;
+
+  /* ── Bordures ──────────────────────────────────────────────────────────── */
+  --color-line: #4d4d4d;
+  --color-line-muted: #7c7c7c;
+
+  /* ── Accent — FONCTIONNEL UNIQUEMENT ───────────────────────────────────────
+     Action primaire, élément de navigation actif, « serveur prêt », lecture.
+     Jamais décoratif, et **jamais une couleur de classe de véhicule** : sinon
+     « vert = compté » et « vert = camion » se contrediraient sur la même image. */
+  --color-accent: #1ed760;
+  --color-accent-line: #1db954;
+  --color-accent-ink: #000000;
+
+  /* ── Sémantique ────────────────────────────────────────────────────────── */
+  --color-negative: #f3727f;
+  --color-warning: #ffa42b;
+  --color-info: #539df5;
+
+  /* ── Typographie ───────────────────────────────────────────────────────── */
+  --font-sans: "Manrope", "Segoe UI", system-ui, -apple-system, sans-serif;
+
+  /* Échelle de DESIGN.md §3 : 10 → 24 px. Compacte et fonctionnelle — c'est un
+     outil de travail, pas un magazine. */
+  --text-micro: 0.625rem;
+  --text-badge: 0.66rem;
+  --text-small: 0.75rem;
+  --text-caption: 0.875rem;
+  --text-body: 1rem;
+  --text-heading: 1.125rem;
+  --text-title: 1.5rem;
+
+  /* ── Rayons ────────────────────────────────────────────────────────────── */
+  --radius-badge: 2px;
+  --radius-input: 4px;
+  --radius-card: 6px;
+  --radius-section: 8px;
+  --radius-panel: 12px;
+  --radius-pill: 9999px;
+
+  /* ── Ombres ──────────────────────────────────────────────────────────────
+     Volontairement lourdes : sur un fond quasi noir, une ombre subtile est
+     tout simplement invisible. */
+  --shadow-card: 0 8px 8px rgb(0 0 0 / 0.3);
+  --shadow-dialog: 0 8px 24px rgb(0 0 0 / 0.5);
+  --shadow-inset: inset 0 0 0 1px #7c7c7c;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: var(--color-base);
+    color: var(--color-ink-muted);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Chiffres en chasse tabulaire partout où l'on mesure. Sans cela, les colonnes
+     du registre et du benchmark se décalent à chaque rafraîchissement, et un
+     tableau de mesures devient illisible. */
+  .tabular,
+  table,
+  output,
+  time {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Focus visible et cohérent : c'est une exigence d'accessibilité, pas une
+     option. L'anneau utilise l'accent, qui est justement fonctionnel. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+
+  /* Respecte le réglage système : une interface qui bouge malgré une demande de
+     réduction de mouvement est inutilisable pour ceux qui l'ont activée. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  /* Voix systématique des libellés d'action. Répété sur chaque bouton et chaque
+     micro-entête de tableau — les trois usages qui justifient un `@apply`. */
+  .label-caps {
+    font-size: var(--text-caption);
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .label-micro {
+    font-size: var(--text-badge);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-ink-dim);
+  }
+}

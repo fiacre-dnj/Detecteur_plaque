@@ -1,8 +1,27 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
+  "plugins": ["react", "typescript", "oxc", "import"],
+  "categories": { "correctness": "error", "suspicious": "warn" },
+  "overrides": [
+    {
+      "files": ["src/app/router.tsx"],
+      "rules": {
+        "react/only-export-components": "off"
+      }
+    },
+    {
+      "files": ["src/main.tsx"],
+      "rules": {
+        "import/no-unassigned-import": "off"
+      }
+    }
+  ],
   "rules": {
     "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
+    "react/react-in-jsx-scope": "off",
+    "react/only-export-components": ["warn", { "allowConstantExport": true }],
+    "no-console": ["error", { "allow": ["error"] }],
+    "typescript/no-explicit-any": "error",
+    "typescript/consistent-type-imports": "error"
   }
 }

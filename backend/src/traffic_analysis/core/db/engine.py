@@ -40,6 +40,8 @@ def create_engine(settings: Settings) -> AsyncEngine:
     laisserait la moitié des connexions sans clés étrangères.
     """
     is_sqlite = settings.database_url.startswith("sqlite")
+    if is_sqlite:
+        _ensure_parent_directory(settings.database_url)
     connect_args: dict[str, Any] = {"timeout": LOCK_TIMEOUT_S} if is_sqlite else {}
 
     engine = create_async_engine(
@@ -51,6 +53,24 @@ def create_engine(settings: Settings) -> AsyncEngine:
     if is_sqlite:
         _install_sqlite_pragmas(engine)
     return engine
+
+
+def _ensure_parent_directory(database_url: str) -> None:
+    """Crée le répertoire du fichier de base s'il manque.
+
+    Sans cela, un premier démarrage sur une machine neuve échoue sur
+    « unable to open database file » — un message qui ne dit ni quel fichier ni
+    quoi faire. Le répertoire de données est git-ignoré par construction, donc son
+    absence est le cas **normal** au premier lancement, pas une anomalie.
+    """
+    from pathlib import Path
+    from urllib.parse import urlsplit
+
+    # `sqlite+aiosqlite:///./data/traffic.db` → `./data/traffic.db`
+    location = urlsplit(database_url).path.lstrip("/")
+    if not location or location == ":memory:":
+        return
+    Path(location).expanduser().parent.mkdir(parents=True, exist_ok=True)
 
 
 def _install_sqlite_pragmas(engine: AsyncEngine) -> None:
