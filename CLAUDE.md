@@ -2,10 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **État : version du Lot 0.** Ce fichier décrit ce que le projet *doit* être,
-> parce que le code n'existe pas encore. Il est réécrit au **Lot 13** pour
-> documenter ce qui existe réellement. Tant que cet avertissement est là, la
-> vérité est dans [`prompt/`](prompt/).
+> **État : lots 0 à 6 et 9 terminés sur 14.** Ce fichier décrit ce que le projet
+> *doit* être ; il sera réécrit au **Lot 13** pour documenter ce qui existe.
+>
+> **Pour savoir où en est le code et quoi faire ensuite, lire
+> [`docs/ETAT-ET-RESTE-A-FAIRE.md`](docs/ETAT-ET-RESTE-A-FAIRE.md)** — il tient la
+> liste des tâches restantes, les écarts assumés par rapport au plan et les pièges
+> de cette machine.
 
 ## `prompt/` est la spécification, pas de la documentation
 

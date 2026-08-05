@@ -133,6 +133,8 @@ une livraison terminée :
 
 ## Architecture
 
+- [`docs/ETAT-ET-RESTE-A-FAIRE.md`](docs/ETAT-ET-RESTE-A-FAIRE.md) — **où en est le
+  code, ce qui reste à faire, et les pièges de cette machine**
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — schéma, décisions, tailles de bundle
 - [`docs/adr/`](docs/adr/) — les décisions et leurs raisons
 - [`prompt/`](prompt/) — **la spécification normative** du projet
