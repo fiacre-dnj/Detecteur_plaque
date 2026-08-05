@@ -39,6 +39,7 @@ from traffic_analysis.features.models_registry.infrastructure.registry import Mo
 from traffic_analysis.features.models_registry.infrastructure.ultralytics_engine import (
     UltralyticsEngine,
 )
+from traffic_analysis.features.realtime.application.session_service import RealtimeSessionService
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
@@ -69,6 +70,9 @@ class Container:
     # ligne par ligne et rechargé à l'ouverture de la page, donc il n'a aucun sens
     # sans base. La route répond alors 503 avec la raison.
     benchmark_service: BenchmarkService | None = None
+    # Toujours présent : le temps réel ne dépend d'aucune persistance, seulement
+    # d'un moteur de suivi.
+    realtime_service: RealtimeSessionService | None = None
     # `None` quand la persistance est désactivée (base injoignable, dépôt en
     # mémoire injecté par un test). Le service reste alors utilisable : seules
     # les routes d'agrégats répondent une erreur explicite.
@@ -127,6 +131,9 @@ def build_container(
     )
 
     analysis_service = AnalysisService(resolved_engine, resolved_plates)
+    realtime_service = RealtimeSessionService(
+        resolved_engine, max_sessions=settings.max_realtime_sessions
+    )
     result_store = FileResultStore(settings.data_dir)
     hub = ProgressHub()
 
@@ -162,6 +169,7 @@ def build_container(
         model_service=model_service,
         model_registry=registry,
         benchmark_service=benchmark_service,
+        realtime_service=realtime_service,
         db_engine=db_engine,
         job_manager=JobManager(
             repository=repository,

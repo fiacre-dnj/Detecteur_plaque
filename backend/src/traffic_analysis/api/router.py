@@ -23,6 +23,7 @@ from traffic_analysis.features.jobs.api.routes_jobs import router as jobs_router
 from traffic_analysis.features.models_registry.api.routes_models import (
     router as models_router,
 )
+from traffic_analysis.features.realtime.api.routes_realtime import router as realtime_router
 
 API_V1_PREFIX = "/api/v1"
 
@@ -42,3 +43,6 @@ api_router.include_router(benchmark_router)
 # Comme pour les jobs, le SSE est un routeur distinct bien qu'il partage le
 # préfixe `/benchmark` : son protocole n'a rien à voir avec celui des routes JSON.
 api_router.include_router(benchmark_events_router)
+# Le WebSocket temps réel. Monté sur le même préfixe `/api/v1` que le reste :
+# l'origine unique évite tout réglage CORS pour l'usage normal.
+api_router.include_router(realtime_router)
