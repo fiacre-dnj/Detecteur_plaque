@@ -5,45 +5,74 @@
  * largeur dessous. Cette proportion rend l'édition de géométrie confortable : le
  * canvas a besoin de largeur, les curseurs n'en ont pas besoin.
  *
- * **Ce que ce composant fait, et ne fait pas.** Il câble les features entre elles
- * et détient l'état partagé : la source, la géométrie, les dimensions de la scène.
- * Il ne dessine rien lui-même, ne calcule aucune géométrie et ne parle pas au
- * réseau — chacune de ces responsabilités vit dans sa feature.
+ * **Ce que ce composant fait, et ne fait pas.** Il câble les features entre elles et
+ * détient l'état partagé — la source, la géométrie, les dimensions de la scène, la
+ * session d'analyse. Il ne dessine rien lui-même, ne calcule aucune géométrie et ne
+ * parle pas directement au réseau : chacune de ces responsabilités vit dans sa
+ * feature, et c'est ce qui garde ce fichier lisible malgré ce qu'il coordonne.
  *
- * Le lot 10 s'arrête au dépôt et au tracé. Le bouton « Lancer l'analyse » sait déjà
- * dire pourquoi il est désactivé, mais l'envoi lui-même arrive au lot 11.
+ * Les statistiques affichées viennent de `statsAt(result, timeMs)` **et pas** de
+ * `result.stats` : elles suivent la tête de lecture, donc reculer dans la vidéo fait
+ * baisser les chiffres. Sans cela, l'image et les nombres racontent deux histoires
+ * différentes.
  */
 
-import { useCallback, useReducer, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useMemo, useReducer, useRef, useState } from "react";
 
 import { useHealth } from "@/app/layout/useHealth";
 import {
   EMPTY_GEOMETRY,
   geometryReducer,
+  geometrySignature,
   hasGeometry,
   type Selection,
 } from "@/entities/geometry";
+import { JobProgressBar } from "@/features/analysis-job";
 import { GeometryCanvas, GeometryPanel } from "@/features/geometry-editor";
 import { SourcePicker, VideoScene, useMediaSource } from "@/features/media-source";
+import { ResultsDashboard } from "@/features/results-dashboard";
+import { chooseBucketMs, flowBuckets, useReplay, vehiclesAt } from "@/features/timeline-replay";
+import { VehicleRegistry } from "@/features/vehicle-registry";
 import { TransportBar, useVideoTransport } from "@/features/video-transport";
-import type { Point } from "@/shared/api/contracts";
+import type { AnalysisRequest, Point } from "@/shared/api/contracts";
+import { isTerminal } from "@/shared/api/contracts";
 import { Button } from "@/shared/ui/Button";
 import { MetricCard } from "@/shared/ui/MetricCard";
 
-/** Dimensions de la vidéo source. `null` avant `loadedmetadata`. */
+import { useAnalysisSession } from "../model/useAnalysisSession";
+import { PlaybackEndedBanner, StaleResultBanner } from "./StaleResultBanner";
+
+/**
+ * L'histogramme est **chargé paresseusement** : il n'apparaît qu'après une analyse,
+ * et le faire payer au premier chargement taxerait tous ceux qui n'analysent rien.
+ */
+const FlowHistogram = lazy(() =>
+  import("@/features/results-dashboard/ui/FlowHistogram").then((module) => ({
+    default: module.FlowHistogram,
+  })),
+);
+
 interface SceneSize {
   width: number;
   height: number;
 }
 
 /**
- * Valeur de `minHits` utilisée pour l'affichage tant que le panneau « Comptage »
- * n'existe pas (lot 12). La même que le défaut du serveur, pour que les pointillés
- * du canvas correspondent à ce qu'une analyse ferait réellement.
+ * Réglages par défaut, identiques à ceux du serveur.
+ *
+ * Le panneau qui les rend modifiables arrive au lot 12. Les aligner sur les défauts
+ * du backend garantit qu'entre-temps l'affichage du canvas (pointillés sous
+ * `minHits`) correspond à ce qu'une analyse fait réellement.
  */
-const DEFAULT_MIN_HITS = 2;
+const DEFAULTS = {
+  confidenceThreshold: 0.35,
+  iouThreshold: 0.45,
+  minHits: 2,
+  maxLostMs: 2_500,
+  reidMinSimilarity: 0.8,
+  frameStride: 1,
+} as const;
 
-/** Aucune trajectoire hors relecture — la carte est vide au lot 10. */
 const NO_TRAILS: ReadonlyMap<number, readonly Point[]> = new Map();
 
 export function StudioPage() {
@@ -54,23 +83,22 @@ export function StudioPage() {
   const [geometry, dispatch] = useReducer(geometryReducer, EMPTY_GEOMETRY);
   const [scene, setScene] = useState<SceneSize | null>(null);
   const [showTrails, setShowTrails] = useState(true);
+  const [maskOutsideZones, setMaskOutsideZones] = useState(false);
+  const [ended, setEnded] = useState(false);
 
   const video = useRef<HTMLVideoElement>(null);
-  const transport = useVideoTransport(video.current, undefined);
+  const session = useAnalysisSession();
 
-  /**
-   * Les métadonnées sont connues : on ancre la géométrie **et on amorce une
-   * première ligne**.
-   *
-   * L'amorce n'est pas un gadget : un écran sans ligne ne compte rien, et
-   * l'utilisateur qui lance une analyse et obtient zéro ne devine pas que c'est
-   * parce qu'il n'a rien tracé. La ligne pré-tracée transforme un écran muet en
-   * point de départ modifiable.
-   */
+  const handleEnded = useCallback(() => setEnded(true), []);
+  const transport = useVideoTransport(video.current, handleEnded);
+  const replay = useReplay(video.current, session.result);
+
   const handleMetadata = useCallback(
     (size: SceneSize) => {
       if (size.width === 0 || size.height === 0) return;
       setScene(size);
+      // Un écran sans ligne ne compte rien, et l'utilisateur qui obtient zéro ne
+      // devine pas que c'est parce qu'il n'a rien tracé.
       if (!hasGeometry(geometry)) {
         dispatch({ type: "addLine", width: size.width, height: size.height });
       }
@@ -78,17 +106,13 @@ export function StudioPage() {
     [geometry],
   );
 
-  /**
-   * Changer de source **remet tout à zéro**.
-   *
-   * La géométrie est en pixels de la source : la garder d'une vidéo 1920×1080 à
-   * une 640×480 laisserait des lignes hors cadre, invisibles et pourtant
-   * présentes dans la requête.
-   */
+  /** Changer de source remet tout à zéro : la géométrie est en pixels de la source. */
   const resetForNewSource = useCallback(() => {
     dispatch({ type: "clear" });
     setScene(null);
-  }, []);
+    setEnded(false);
+    session.reset();
+  }, [session]);
 
   const handleFile = useCallback(
     (file: File) => {
@@ -113,16 +137,60 @@ export function StudioPage() {
     media.clear();
   }, [media, resetForNewSource]);
 
-  const selectedId =
-    geometry.selection.kind === "none" ? null : geometry.selection.id;
+  const launch = useCallback(() => {
+    const file = media.source?.file;
+    if (file === undefined || !serverReady) return;
+
+    const request: AnalysisRequest = {
+      modelId: health.defaultModelId,
+      ...DEFAULTS,
+      maskOutsideZones,
+      detectPlates: false,
+      plateConfidence: null,
+      pixelsPerMeter: null,
+      lines: [...geometry.lines],
+      zones: [...geometry.zones],
+    };
+    setEnded(false);
+    void session.start(file, request, geometry.lines, geometry.zones);
+  }, [media.source, serverReady, health, maskOutsideZones, geometry, session]);
+
+  /**
+   * Le résultat décrit-il encore la géométrie affichée ?
+   *
+   * Comparaison de signatures, et non des objets : la signature exclut le nom et la
+   * couleur, et arrondit les coordonnées. Avertir pour un renommage ou un
+   * déplacement invisible apprendrait à ignorer l'avertissement.
+   */
+  const stale = useMemo(() => {
+    if (session.launchSignature === null || session.result === null) return false;
+    return geometrySignature(geometry.lines, geometry.zones) !== session.launchSignature;
+  }, [session.launchSignature, session.result, geometry.lines, geometry.zones]);
+
+  const lineNames = useMemo(
+    () => new Map(geometry.lines.map((line) => [line.id, line.name])),
+    [geometry.lines],
+  );
+
+  const buckets = useMemo(
+    () =>
+      session.result === null
+        ? []
+        : flowBuckets(session.result.crossings, session.result.video.durationMs),
+    [session.result],
+  );
+
+  const selectedId = geometry.selection.kind === "none" ? null : geometry.selection.id;
   const isCamera = media.source?.kind === "camera";
-  const canAnalyse = serverReady && media.source?.file !== undefined && hasGeometry(geometry);
+  const analysing = session.job !== null && !isTerminal(session.job.status);
+  const busy = analysing || session.starting;
+  const canAnalyse = serverReady && media.source?.file !== undefined && hasGeometry(geometry) && !busy;
 
   return (
     <div className="space-y-6">
       <SourcePicker
         activeKind={media.source?.kind ?? null}
-        disabled={false}
+        disabled={busy}
         requestingCamera={media.requestingCamera}
         onFile={handleFile}
         onDemo={handleDemo}
@@ -132,6 +200,11 @@ export function StudioPage() {
       {media.error !== null && (
         <p role="alert" className="text-caption text-negative">
           {media.error}
+        </p>
+      )}
+      {session.error !== null && (
+        <p role="alert" className="text-caption text-negative">
+          {session.error}
         </p>
       )}
 
@@ -144,13 +217,13 @@ export function StudioPage() {
                 sourceHeight={scene.height}
                 lines={geometry.lines}
                 zones={geometry.zones}
-                tracks={[]}
-                trails={NO_TRAILS}
+                tracks={replay.tracks}
+                trails={showTrails ? replay.trails : NO_TRAILS}
                 selectedId={selectedId}
                 drawingZone={geometry.drawingZone}
                 showTrails={showTrails}
-                maskOutsideZones={false}
-                minHits={DEFAULT_MIN_HITS}
+                maskOutsideZones={maskOutsideZones}
+                minHits={DEFAULTS.minHits}
                 onSelect={(selection) =>
                   dispatch({
                     type: "select",
@@ -164,18 +237,35 @@ export function StudioPage() {
               />
             )}
 
-            {/* HUD discret : les dimensions réellement reçues. C'est le premier
-                filet contre une géométrie mal ancrée — un chiffre inattendu ici
-                explique immédiatement des compteurs faux. */}
             {scene !== null && (
-              <p className="pointer-events-none absolute end-2 top-2 rounded-badge bg-base/80 px-2 py-1 text-micro text-ink-muted">
-                {scene.width}×{scene.height}
-              </p>
+              <div className="pointer-events-none absolute end-2 top-2 flex flex-col items-end gap-1">
+                {/* Les dimensions **réellement reçues** : premier filet contre une
+                    géométrie mal ancrée. Un chiffre inattendu ici explique
+                    immédiatement des compteurs faux. */}
+                <p className="rounded-badge bg-base/80 px-2 py-1 text-micro text-ink-muted tabular">
+                  {scene.width}×{scene.height}
+                </p>
+                {replay.stats !== null && (
+                  <p className="rounded-badge bg-base/80 px-2 py-1 text-micro text-ink-muted tabular">
+                    Uniques : {replay.stats.uniqueVehicles}
+                  </p>
+                )}
+              </div>
             )}
           </VideoScene>
 
           {media.source !== null && (
-            <TransportBar transport={transport} seekable={!isCamera} />
+            <TransportBar transport={transport} seekable={!isCamera} disabled={busy} />
+          )}
+
+          {busy && (
+            <JobProgressBar upload={session.upload} job={session.job} onCancel={session.cancel} />
+          )}
+
+          {stale && <StaleResultBanner onRelaunch={launch} canRelaunch={canAnalyse} />}
+
+          {ended && session.result !== null && (
+            <PlaybackEndedBanner onReplay={transport.restart} />
           )}
         </div>
 
@@ -185,7 +275,7 @@ export function StudioPage() {
             zones={geometry.zones}
             selection={geometry.selection}
             drawingZone={geometry.drawingZone}
-            disabled={scene === null}
+            disabled={scene === null || busy}
             onAddLine={() =>
               scene !== null &&
               dispatch({ type: "addLine", width: scene.width, height: scene.height })
@@ -202,11 +292,11 @@ export function StudioPage() {
           />
 
           <div className="rounded-section bg-surface p-4 shadow-card">
-            <h3 className="label-micro">Détection</h3>
+            <h3 className="label-micro">Affichage</h3>
             <p className="mt-3 text-small text-ink-dim">
               {serverReady
-                ? `Modèle par défaut : ${health.defaultModelId} · ${health.device === "cpu" ? "CPU" : "CUDA"}`
-                : "Le serveur est injoignable : le sélecteur de modèle sera disponible à sa reconnexion."}
+                ? `Modèle : ${health.defaultModelId} · ${health.device === "cpu" ? "CPU" : "CUDA"}`
+                : "Le serveur est injoignable : l'analyse est indisponible."}
             </p>
             <label className="mt-3 flex items-center gap-2 text-small text-ink-muted">
               <input
@@ -215,7 +305,24 @@ export function StudioPage() {
                 onChange={(event) => setShowTrails(event.target.checked)}
                 className="accent-accent"
               />
-              Afficher les trajectoires
+              Trajectoires
+            </label>
+            <label
+              className="mt-2 flex items-center gap-2 text-small text-ink-muted"
+              title={
+                geometry.zones.length === 0
+                  ? "Tracez d'abord une zone : sans zone, il n'y a rien à masquer."
+                  : "Le détecteur ne reçoit que l'intérieur des zones."
+              }
+            >
+              <input
+                type="checkbox"
+                checked={maskOutsideZones}
+                disabled={geometry.zones.length === 0 || busy}
+                onChange={(event) => setMaskOutsideZones(event.target.checked)}
+                className="accent-accent disabled:opacity-50"
+              />
+              Ignorer hors zone
             </label>
           </div>
 
@@ -223,34 +330,61 @@ export function StudioPage() {
             variant="primary"
             className="w-full"
             disabled={!canAnalyse}
-            title={analyseTooltip(serverReady, media.source?.file !== undefined, geometry)}
+            onClick={launch}
+            title={analyseTooltip(serverReady, media.source?.file !== undefined, geometry, busy)}
           >
             Lancer l'analyse serveur
           </Button>
 
           {media.source !== null && (
-            <Button variant="ghost" className="w-full" onClick={handleClose}>
+            <Button variant="ghost" className="w-full" onClick={handleClose} disabled={busy}>
               Fermer la source
             </Button>
           )}
         </aside>
       </div>
 
-      <section aria-labelledby="results-title">
-        <h2 id="results-title" className="label-micro mb-3">
-          Résultats
-        </h2>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard label="Véhicules uniques" value="—" hint="Tous types confondus" />
-          <MetricCard label="Franchissements" value="—" hint="Somme des deux sens" />
-          <MetricCard label="Ré-identifications" value="—" hint="Retours après occlusion" />
-          <MetricCard
-            label="Débit estimé"
-            value="—"
-            hint="Disponible après 3 s de flux analysé"
+      {replay.stats !== null && session.result !== null ? (
+        <div className="space-y-6">
+          <ResultsDashboard
+            stats={replay.stats}
+            lines={geometry.lines}
+            zones={geometry.zones}
+            processingFps={session.result.processingFps}
+            replaying
+          />
+
+          <Suspense fallback={<div className="h-24 rounded-card bg-surface" />}>
+            <FlowHistogram
+              buckets={buckets}
+              bucketMs={chooseBucketMs(session.result.video.durationMs)}
+            />
+          </Suspense>
+
+          <VehicleRegistry
+            result={session.result}
+            vehicles={vehiclesAt(session.result, replay.timeMs)}
+            lineNames={lineNames}
+            hasScale={false}
           />
         </div>
-      </section>
+      ) : (
+        <section aria-labelledby="results-title">
+          <h2 id="results-title" className="label-micro mb-3">
+            Résultats
+          </h2>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <MetricCard label="Véhicules uniques" value="—" hint="Tous types confondus" />
+            <MetricCard label="Franchissements" value="—" hint="Somme des deux sens" />
+            <MetricCard label="Ré-identifications" value="—" hint="Retours après occlusion" />
+            <MetricCard
+              label="Débit estimé"
+              value="—"
+              hint="Disponible après 3 s de flux analysé"
+            />
+          </div>
+        </section>
+      )}
     </div>
   );
 }
@@ -258,15 +392,16 @@ export function StudioPage() {
 /**
  * Explique **pourquoi** le bouton est désactivé.
  *
- * Trois causes distinctes, trois actions différentes de la part de l'utilisateur.
- * Un bouton grisé sans explication est le défaut d'interface le plus frustrant
- * qui soit : on ne sait pas quoi faire pour l'activer.
+ * Quatre causes, quatre actions différentes. Un bouton grisé sans explication est le
+ * défaut d'interface le plus frustrant : on ne sait pas quoi faire pour l'activer.
  */
 function analyseTooltip(
   serverReady: boolean,
   hasFile: boolean,
   geometry: { lines: unknown[]; zones: unknown[] },
+  busy: boolean,
 ): string {
+  if (busy) return "Une analyse est déjà en cours";
   if (!serverReady) return "Le serveur est injoignable";
   if (!hasFile) return "Déposez un fichier vidéo : la caméra passe par le mode temps réel";
   if (geometry.lines.length === 0 && geometry.zones.length === 0) {
