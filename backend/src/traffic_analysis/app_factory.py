@@ -20,6 +20,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from traffic_analysis import __version__
 from traffic_analysis.api.router import api_router
 from traffic_analysis.container import build_container
+from traffic_analysis.core.db.migrations import run_migrations
 from traffic_analysis.core.error_handlers import register_error_handlers
 from traffic_analysis.core.logging import configure_logging, get_logger
 from traffic_analysis.core.middleware.access_log import AccessLogMiddleware
@@ -226,6 +227,12 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     loop = asyncio.get_running_loop()
     container.job_manager.bind_loop(loop)
 
+    # Migrations au démarrage en développement et en test uniquement. **Jamais
+    # en production** : une commande de déploiement explicite évite que trois
+    # répliques migrent la même base en parallèle (prompt/07 §5).
+    if container.db_engine is not None and not settings.is_production:
+        await run_migrations(container.db_engine)
+
     background: set[asyncio.Task[None]] = set()
     cleanup = asyncio.create_task(_cleanup_loop(app), name="cleanup")
     background.add(cleanup)
@@ -246,6 +253,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Demander l'arrêt plutôt qu'annuler : un `track()` interrompu de force
         # laisserait le bail de son modèle non rendu.
         await container.job_manager.shutdown()
+        await container.dispose()
         logger.info("service arrêté")
 
 

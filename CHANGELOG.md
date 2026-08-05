@@ -41,6 +41,14 @@ plus deux fois dans le même sens » si.
   attend son tour, au lieu d'être refusée.
 - Les vidéos et résultats des analyses terminées sont purgés automatiquement
   après leur durée de rétention.
+- **Les analyses survivent au redémarrage du service** : jobs, statistiques,
+  registre des véhicules et franchissements sont conservés en base.
+- Le registre et les franchissements se consultent page par page, avec des
+  filtres — par type de véhicule, par ligne, par sens, par fenêtre de temps —
+  sans avoir à télécharger le résultat complet.
+- **Export CSV** du registre et des franchissements, directement ouvrable dans
+  un Excel français : accents corrects, colonnes séparées, nombres reconnus
+  comme des nombres. Une vitesse inconnue reste une case vide, jamais un zéro.
 
 ### Décidé
 
