@@ -62,6 +62,13 @@ plus deux fois dans le même sens » si.
 - Deux scripts : `fetch_weights.py` pour pré-télécharger les poids choisis, et
   `fetch_plate_model.py` qui vérifie l'empreinte SHA-256 du modèle de plaques
   avant de l'installer.
+- Le service pose une politique de sécurité complète sur toutes ses réponses et
+  n'annonce plus quel serveur il utilise.
+- Un envoi trop volumineux est refusé dès son annonce, sans être lu.
+- La documentation d'API peut être fermée en production (`TRAFFIC_DOCS_ENABLED`),
+  et chaque route y porte un résumé, un identifiant lisible et un exemple.
+- En production, le service peut servir lui-même l'interface
+  (`TRAFFIC_STATIC_DIR`) : une seule adresse, aucun réglage de CORS.
 
 ### Décidé
 

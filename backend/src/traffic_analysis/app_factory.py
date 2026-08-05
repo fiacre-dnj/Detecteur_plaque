@@ -24,10 +24,15 @@ from traffic_analysis.core.db.migrations import run_migrations
 from traffic_analysis.core.error_handlers import register_error_handlers
 from traffic_analysis.core.logging import configure_logging, get_logger
 from traffic_analysis.core.middleware.access_log import AccessLogMiddleware
+from traffic_analysis.core.middleware.body_size_limit import BodySizeLimitMiddleware
 from traffic_analysis.core.middleware.request_id import HEADER_NAME, RequestIdMiddleware
+from traffic_analysis.core.middleware.security_headers import SecurityHeadersMiddleware
+from traffic_analysis.core.openapi import custom_openapi
 from traffic_analysis.core.settings import Settings, get_settings
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from traffic_analysis.core.clock import Clock
     from traffic_analysis.features.counting.application.ports import (
         DetectionTrackingEngine,
@@ -168,7 +173,33 @@ def create_app(
     register_error_handlers(app)
     app.include_router(api_router)
 
+    if resolved.static_dir is not None:
+        _mount_static(app, resolved.static_dir)
+
+    # `app.openapi` est remplacée plutôt qu'appelée : FastAPI l'invoque
+    # lui-même, et lui rendre un schéma déjà enrichi évite de dupliquer la
+    # personnalisation à chaque point d'entrée de documentation.
+    app.openapi = lambda: custom_openapi(app)  # type: ignore[method-assign]
+
     return app
+
+
+def _mount_static(app: FastAPI, static_dir: Path) -> None:
+    """Sert le build du frontend depuis le backend, en production.
+
+    Un seul origin : aucun CORS à ouvrir pour l'usage normal, et le SSE comme le
+    WebSocket traversent sans réglage.
+
+    `html=True` active le repli sur `index.html`, indispensable pour une SPA à
+    routage côté client — sans lui, rafraîchir `/historique` rendrait un 404.
+    Le montage est **après** le routeur d'API, donc `/api/**` gagne toujours.
+    """
+    from fastapi.staticfiles import StaticFiles
+
+    if not static_dir.is_dir():
+        logger.warning("TRAFFIC_STATIC_DIR introuvable — rien n'est servi", path=str(static_dir))
+        return
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
 
 def _add_middlewares(app: FastAPI, settings: Settings) -> None:
@@ -187,11 +218,13 @@ def _add_middlewares(app: FastAPI, settings: Settings) -> None:
       place de la vraie erreur — des heures perdues garanties (piège 43 de
       prompt/13). En étant interne, il voit aussi les réponses d'erreur.
 
-    Les en-têtes de sécurité, la limite de corps et la limitation de débit
-    s'insèrent ici au lot 6, entre le journal d'accès et GZip.
+    - **La limite de corps est en amont de tout traitement.** Refuser 800 Mo
+      après les avoir lus ne protège de rien.
     """
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(AccessLogMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware, production=settings.is_production)
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_upload_bytes)
     # GZip ne compresse pas les réponses en streaming, donc le SSE lui échappe —
     # ce qui est indispensable : un flux compressé est un flux tamponné, et la
     # barre de progression paraîtrait figée.
