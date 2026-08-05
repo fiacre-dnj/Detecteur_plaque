@@ -44,6 +44,10 @@ if TYPE_CHECKING:
 # besoin d'un nouveau port, pas d'un import direct.
 __all__ = [
     "TIMELINE_WARNING_THRESHOLD",
+    # Réexporté pour le benchmark : il mesure sur **les mêmes classes** qu'une
+    # analyse. Mesurer sur les 80 classes de COCO gonflerait le post-traitement, et
+    # la colonne « détections » ne correspondrait plus à ce que compte une analyse.
+    "VEHICLE_CLASS_IDS",
     "AnalysisCancelled",
     "AnalysisJobConfig",
     "AnalysisResultData",

@@ -4,14 +4,14 @@
 > en premier, puis [`prompt/README.md`](../prompt/README.md).** Ce document dit où
 > en est le code ; `prompt/` dit ce qu'il doit devenir.
 >
-> Dernière mise à jour : 2026-08-05, après le lot 9.
+> Dernière mise à jour : 2026-08-05, après le lot 8.
 
 ---
 
 ## 1. Résumé en dix lignes
 
 Le plan d'exécution est [`prompt/12-PLAN-EXECUTION.md`](../prompt/12-PLAN-EXECUTION.md) :
-**14 lots**. Sept sont terminés et intégrés dans `main` :
+**14 lots**. Huit sont terminés :
 
 | Lot | Sujet | État |
 |---|---|---|
@@ -23,7 +23,7 @@ Le plan d'exécution est [`prompt/12-PLAN-EXECUTION.md`](../prompt/12-PLAN-EXECU
 | 5 | Catalogue de 20 modèles, registre LRU, Ultralytics, ANPR | ✅ |
 | 6 | Sécurité, en-têtes, limite de corps, OpenAPI | ✅ |
 | 7 | WebSocket temps réel | ⬜ |
-| 8 | Benchmark serveur | 🟡 branche ouverte, vide |
+| 8 | **Benchmark serveur** | ✅ |
 | 9 | Socle frontend + **système de design** | ✅ |
 | 10 | Source, lecteur vidéo, éditeur de géométrie | ⬜ |
 | 11 | Analyse, relecture de timeline, résultats, registre | ⬜ |
@@ -31,9 +31,10 @@ Le plan d'exécution est [`prompt/12-PLAN-EXECUTION.md`](../prompt/12-PLAN-EXECU
 | 13 | Docker, CI, docs finales, `CLAUDE.md` réécrit | ⬜ |
 | 14 | Durcissement, les 56 pièges de `prompt/13` | ⬜ |
 
-**Chiffres vérifiés :** 570 tests backend, 7 tests frontend, couverture 97 % sur
-`features/counting/domain`, `ruff` + `mypy --strict` + `oxlint` + `tsc -b` +
-`bun run build` verts, 15 hooks de pré-commit installés et actifs.
+**Chiffres vérifiés :** 681 tests backend (1 ignoré), 7 tests frontend, couverture
+97 % sur `features/counting/domain` et 94 % sur `features/benchmark`, `ruff` +
+`mypy --strict` + `oxlint` + `tsc -b` + `bun run build` verts, 15 hooks de
+pré-commit installés et actifs.
 
 ---
 
@@ -41,16 +42,23 @@ Le plan d'exécution est [`prompt/12-PLAN-EXECUTION.md`](../prompt/12-PLAN-EXECU
 
 ```bash
 git branch --show-current          # → feat/backend-benchmark
-git status --short                 # → un seul dossier non suivi (voir ci-dessous)
+git status --short                 # → propre
 ```
 
-La branche `feat/backend-benchmark` est ouverte et **ne contient que les
-`__init__.py` vides** de `backend/src/traffic_analysis/features/benchmark/`
-(`domain/`, `application/`, `infrastructure/`, `api/`). Rien n'est cassé ; on peut
-soit continuer dessus, soit l'abandonner (`git checkout main && git branch -D
-feat/backend-benchmark`) et repartir d'un autre lot.
+La branche `feat/backend-benchmark` porte le **lot 8 terminé** et est prête à
+fusionner dans `main`. Le lot suivant conseillé est le **lot 7** (WebSocket temps
+réel), puis les lots 10 à 12 (le frontend réel, le plus gros morceau).
 
 `main` est propre et déployable.
+
+### Deux détails que ce document donnait faux avant le lot 8
+
+- Les migrations Alembic vivent dans **`backend/migrations/`**, pas
+  `backend/alembic/`. Les commandes `uv run alembic …` sont justes ; seul le
+  chemin ne l'était pas.
+- La branche `feat/backend-benchmark` existait déjà en local mais **derrière
+  `main`** d'un commit (elle ne portait pas `e682c60`). Elle a été rebasée sur
+  `main` avant de commencer.
 
 ---
 
@@ -66,6 +74,19 @@ Testé de bout en bout, pas supposé :
   seconde application sur la même base) ;
 - le catalogue des 20 modèles avec, pour chacun, s'il est téléchargé et s'il est
   résident ;
+- **mesurer les modèles sur cette machine** (`POST /api/v1/benchmark`), suivre en
+  SSE, relire le dernier run — vérifié de bout en bout sur un **vrai YOLOv8n**, et
+  les chiffres réels de cette machine sont instructifs :
+  - premier run : `loadMs` **28 466** (téléchargement des poids inclus, attribué au
+    chargement et non fondu dans l'inférence), médiane 215 ms, p95 268 ms ;
+  - second run, poids sur le disque : `loadMs` **55**, médiane **94,7 ms** ;
+  - après chaque run, `GET /api/v1/models` rend `loadedIds: []` — la libération
+    fonctionne contre le registre réel, donc vingt modèles ne s'accumulent pas ;
+  - **limite assumée** : l'échantillon embarqué est synthétique, donc
+    `detections` y vaut **0** pour tous les modèles. Les *temps* sont valables ;
+    la colonne « détections » ne devient informative qu'avec `imageSource=job`.
+    Embarquer une photo de trafic réelle mettrait des plaques réelles dans le
+    dépôt, et truquer le compte serait pire que de le laisser à zéro ;
 - `/api/docs` documenté, fermable par `TRAFFIC_DOCS_ENABLED=false` ;
 - la coquille frontend s'affiche, le badge dit « Serveur injoignable » avec une
   action « Réessayer » quand le backend est arrêté, le proxy Vite transmet `/api`.
@@ -78,42 +99,6 @@ ligne, ni voir des compteurs. Tout cela passe par l'API, pas par l'écran.
 ---
 
 ## 4. Tâches restantes, dans l'ordre conseillé
-
-### Lot 8 — Benchmark serveur *(branche déjà ouverte)*
-
-Spécification : [`prompt/04-MODELES-YOLO-ET-BENCHMARK.md`](../prompt/04-MODELES-YOLO-ET-BENCHMARK.md) §6.
-
-- [ ] `features/benchmark/domain/` : `BenchmarkRun`, `BenchmarkEntry`, statuts.
-- [ ] `features/benchmark/application/service.py` — **le protocole de mesure est
-      la partie qui compte** :
-  - [ ] une **image de référence unique** pour tous les modèles (échantillon
-        embarqué, ou frame extraite d'un job existant via `jobId`). Comparer sur
-        des images différentes ne compare rien ;
-  - [ ] `load_ms` à 0 si le modèle est déjà résident — ne pas inventer un
-        chargement rapide ;
-  - [ ] **un run de chauffe écarté**, puis `frames` runs (défaut 5) ;
-  - [ ] rapporter la **médiane** + `p95` + `preprocess_ms`/`postprocess_ms` si
-        `result.speed` les expose + nombre de détections ;
-  - [ ] utiliser les **seuils de la requête**, pas ceux du catalogue : sinon la
-        colonne « détections » contredit ce que l'utilisateur voit à l'écran ;
-  - [ ] **libérer chaque modèle après sa mesure** (sauf celui d'une analyse en
-        cours) et le **dire** dans la réponse (`released: true`). Vingt modèles
-        résidents épuisent la mémoire — c'est la leçon de la version précédente ;
-  - [ ] un échec est capturé **par modèle** : la ligne porte son `error` et le run
-        continue ;
-  - [ ] `asyncio.Semaphore(1)` : un seul benchmark à la fois.
-- [ ] `features/benchmark/infrastructure/` : ORM + repository, avec `device`,
-      `ultralytics_version` et un **hash de l'image de référence** — un résultat
-      sans son contexte matériel est trompeur.
-- [ ] Migration Alembic (`benchmark_runs`, `benchmark_entries`).
-- [ ] Routes : `POST /benchmark` (202 `{runId}`), `GET /benchmark/{runId}`,
-      SSE `GET /benchmark/{runId}/events`, `DELETE /benchmark/{runId}`,
-      **`GET /benchmark/latest`** (pour ne pas ouvrir une page vide).
-- [ ] Tests : run sur 2 modèles factices cohérent ; `loaded_ids()` revient à son
-      état initial après le run ; un modèle en échec n'interrompt pas le run.
-
-Réutiliser : `ProgressHub` et le module SSE de `features/jobs` (même protocole),
-`ModelRegistry.lease()` / `unload()`, `catalogue_access.py`.
 
 ### Lot 7 — WebSocket temps réel
 
@@ -262,6 +247,23 @@ qui reviennent le plus souvent :
 - `UtcDateTime` (`core/db/types.py`) remplace `DateTime(timezone=True)` : sur
   SQLite ce dernier relit des datetimes **naïfs**, ce qui casse silencieusement la
   purge TTL.
+- **L'adaptateur de mesure du benchmark vit dans `models_registry`**, pas dans
+  `benchmark/infrastructure/`. Le port `InferenceProbe` est publié par
+  `benchmark/application/ports.py` et implémenté par
+  `models_registry/infrastructure/inference_probe.py`. Ce n'est pas un caprice :
+  seul `models_registry` peut toucher son propre registre, et
+  `tests/test_architecture.py` a refusé la première version — qui logeait
+  l'adaptateur côté benchmark et fouillait dans l'`infrastructure` voisine. Le
+  test a fait son travail.
+- **Le benchmark exige la persistance**, contrairement aux jobs qui ont un dépôt
+  en mémoire réel. Un run est écrit ligne par ligne et rechargé à l'ouverture de
+  la page : sans base, la route répond 503 avec la raison. Le dépôt en mémoire du
+  benchmark est donc une **doublure de test** et vit dans `tests/support/`.
+- `BenchmarkService.wait_for_idle()` existe pour les tests autant que pour
+  l'arrêt du service. La première version des tests sondait le statut dans une
+  boucle bornée en nombre d'itérations : elle passait à nu et **échouait sous
+  `--cov`**. Un test dont le verdict dépend de la vitesse de la machine ne prouve
+  rien ; attendre la tâche est déterministe.
 
 ---
 

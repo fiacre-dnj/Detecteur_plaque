@@ -12,6 +12,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from traffic_analysis.features.benchmark.api.routes_benchmark import router as benchmark_router
+from traffic_analysis.features.benchmark.api.routes_benchmark_events import (
+    router as benchmark_events_router,
+)
 from traffic_analysis.features.health.api.routes_health import router as health_router
 from traffic_analysis.features.jobs.api.routes_job_data import router as job_data_router
 from traffic_analysis.features.jobs.api.routes_job_events import router as job_events_router
@@ -34,3 +38,7 @@ api_router.include_router(jobs_router)
 api_router.include_router(job_events_router)
 api_router.include_router(job_data_router)
 api_router.include_router(models_router)
+api_router.include_router(benchmark_router)
+# Comme pour les jobs, le SSE est un routeur distinct bien qu'il partage le
+# préfixe `/benchmark` : son protocole n'a rien à voir avec celui des routes JSON.
+api_router.include_router(benchmark_events_router)

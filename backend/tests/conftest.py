@@ -19,6 +19,7 @@ from httpx import AsyncClient
 
 from tests.support.builders import CAR, TRUCK, compose, straight_line, track_path
 from tests.support.engine import FakeEngine, FakePlateDetector
+from tests.support.probe import FakeProbe
 from traffic_analysis.app_factory import create_app
 from traffic_analysis.core.clock import FrozenClock
 from traffic_analysis.core.settings import Settings
@@ -96,17 +97,34 @@ def plate_detector() -> FakePlateDetector:
 
 
 @pytest.fixture
+def benchmark_probe() -> FakeProbe:
+    """Sonde de mesure factice, connaissant **tout le catalogue réel**.
+
+    Le catalogue réel et non une liste factice, contrairement aux tests unitaires :
+    une requête HTTP valide de benchmark ne peut porter que des identifiants connus
+    — le schéma d'entrée refuse les autres. Une sonde qui n'en connaîtrait qu'une
+    partie ferait échouer en 404 un run sur tout le catalogue, ce qui est
+    précisément le geste par défaut de la route.
+    """
+    from traffic_analysis.features.models_registry.domain.catalogue import CATALOGUE
+
+    return FakeProbe(models={model.id: (model.label, model.tier) for model in CATALOGUE})
+
+
+@pytest.fixture
 def app(
     settings: Settings,
     clock: FrozenClock,
     fake_engine: FakeEngine,
     plate_detector: FakePlateDetector,
+    benchmark_probe: FakeProbe,
 ) -> FastAPI:
     return create_app(
         settings,
         clock=clock,
         engine=fake_engine,
         plate_detector=plate_detector,
+        benchmark_probe=benchmark_probe,
     )
 
 
