@@ -16,6 +16,9 @@ from traffic_analysis.features.health.api.routes_health import router as health_
 from traffic_analysis.features.jobs.api.routes_job_data import router as job_data_router
 from traffic_analysis.features.jobs.api.routes_job_events import router as job_events_router
 from traffic_analysis.features.jobs.api.routes_jobs import router as jobs_router
+from traffic_analysis.features.models_registry.api.routes_models import (
+    router as models_router,
+)
 
 API_V1_PREFIX = "/api/v1"
 
@@ -30,3 +33,4 @@ api_router.include_router(jobs_router)
 # `routes_jobs.py` illisible.
 api_router.include_router(job_events_router)
 api_router.include_router(job_data_router)
+api_router.include_router(models_router)

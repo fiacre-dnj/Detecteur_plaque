@@ -23,6 +23,14 @@ from traffic_analysis.features.jobs.infrastructure.result_store import FileResul
 from traffic_analysis.features.jobs.infrastructure.sqlalchemy_repository import (
     SqlAlchemyJobRepository,
 )
+from traffic_analysis.features.models_registry.application.model_service import ModelService
+from traffic_analysis.features.models_registry.infrastructure.plate_detector import (
+    OnnxPlateDetector,
+)
+from traffic_analysis.features.models_registry.infrastructure.registry import ModelRegistry
+from traffic_analysis.features.models_registry.infrastructure.ultralytics_engine import (
+    UltralyticsEngine,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
@@ -46,6 +54,8 @@ class Container:
     result_store: FileResultStore
     progress_hub: ProgressHub
     job_manager: JobManager
+    model_service: ModelService | None = None
+    model_registry: ModelRegistry | None = None
     # `None` quand la persistance est désactivée (base injoignable, dépôt en
     # mémoire injecté par un test). Le service reste alors utilisable : seules
     # les routes d'agrégats répondent une erreur explicite.
@@ -83,9 +93,26 @@ def build_container(
     encore disponible, plutôt que de refuser de booter.
     """
     resolved_clock = clock or SystemClock()
-    resolved_engine = engine or _missing_engine()
 
-    analysis_service = AnalysisService(resolved_engine, plate_detector)
+    # Le registre existe toujours : il sert le catalogue et l'état mémoire, même
+    # quand un test injecte un moteur factice à sa place pour l'inférence.
+    registry = ModelRegistry(
+        settings.weights_dir,
+        max_loaded=settings.max_loaded_models,
+        device=settings.device,
+        half=settings.half,
+    )
+    resolved_engine = engine or UltralyticsEngine(registry)
+    resolved_plates = plate_detector or OnnxPlateDetector(
+        settings.resolved_plate_model_path, settings.plate_confidence
+    )
+    model_service = ModelService(
+        registry,
+        default_model_id=settings.default_model_id,
+        plate_detector=resolved_plates,
+    )
+
+    analysis_service = AnalysisService(resolved_engine, resolved_plates)
     result_store = FileResultStore(settings.data_dir)
     hub = ProgressHub()
 
@@ -106,6 +133,8 @@ def build_container(
         job_repository=repository,
         result_store=result_store,
         progress_hub=hub,
+        model_service=model_service,
+        model_registry=registry,
         db_engine=db_engine,
         job_manager=JobManager(
             repository=repository,
@@ -116,17 +145,3 @@ def build_container(
             max_concurrent_jobs=settings.max_concurrent_jobs,
         ),
     )
-
-
-def _missing_engine() -> DetectionTrackingEngine:
-    """Moteur qui échoue à l'usage, avec un message qui dit quoi faire.
-
-    Préférable à un `None` qui produirait une `AttributeError` opaque au milieu
-    d'une analyse : ici l'erreur arrive au premier usage réel, elle est explicite,
-    et `/health` reste joignable en attendant.
-    """
-    from traffic_analysis.features.counting.infrastructure.unavailable_engine import (
-        UnavailableEngine,
-    )
-
-    return UnavailableEngine()

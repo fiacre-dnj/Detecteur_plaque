@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
     from httpx import AsyncClient
 
+    from traffic_analysis.core.clock import FrozenClock
     from traffic_analysis.core.settings import Settings
 
 
@@ -52,15 +53,63 @@ async def test_readiness_degrade_si_le_repertoire_est_inutilisable(
     assert body["checks"]["dataDir"] is False
 
 
-async def test_health_expose_la_version_et_l_environnement(client: AsyncClient) -> None:
+async def test_health_expose_le_diagnostic_complet(client: AsyncClient) -> None:
+    """Tout ce que le badge d'état du frontend affiche en permanence.
+
+    Chaque champ doit être calculable **sans charger de modèle** : le badge est
+    interrogé sur tous les écrans, et le consulter ne doit pas coûter plus cher
+    que d'utiliser le service.
+    """
     response = await client.get("/api/v1/health")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "status": "ok",
-        "version": __version__,
-        "environment": "test",
-    }
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["version"] == __version__
+    assert body["environment"] == "test"
+    # Aucun GPU sur cette machine : le device est résolu, et half suit.
+    assert body["device"] == "cpu"
+    assert body["half"] is False
+    assert body["ultralyticsVersion"]
+    # Aucun modèle chargé tant qu'aucune analyse n'a tourné.
+    assert body["loadedModels"] == []
+    assert body["maxLoadedModels"] >= 1
+    # La fixture injecte un détecteur de plaques factice disponible.
+    assert body["plateAvailable"] is True
+    assert body["defaultModelId"] == "yolov8n"
+
+
+async def test_l_anpr_absente_est_signalee_sans_empecher_le_service(
+    settings: Settings, clock: FrozenClock
+) -> None:
+    """L'absence du modèle de plaques ne casse pas le démarrage.
+
+    C'est une exigence explicite : le service démarre, `/health` le dit, et
+    l'interface désactive l'option. Refuser de booter pour un modèle optionnel
+    serait disproportionné.
+    """
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport
+    from httpx import AsyncClient as Client
+
+    from tests.support.engine import FakeEngine, FakePlateDetector
+    from traffic_analysis.app_factory import create_app
+
+    app = create_app(
+        settings,
+        clock=clock,
+        engine=FakeEngine([]),
+        plate_detector=FakePlateDetector(available=False),
+    )
+    transport = ASGITransport(app=app)
+    async with (
+        LifespanManager(app),
+        Client(transport=transport, base_url="http://test") as client,
+    ):
+        body = (await client.get("/api/v1/health")).json()
+
+    assert body["status"] == "ok"
+    assert body["plateAvailable"] is False
 
 
 @pytest.mark.parametrize(

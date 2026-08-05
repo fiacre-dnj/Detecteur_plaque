@@ -17,7 +17,7 @@ from __future__ import annotations
 from fastapi import APIRouter, status
 
 from traffic_analysis import __version__
-from traffic_analysis.core.deps import SettingsDep
+from traffic_analysis.core.deps import ContainerDep, SettingsDep
 from traffic_analysis.core.logging import get_logger
 from traffic_analysis.core.schemas import LivenessSchema, ReadinessSchema
 from traffic_analysis.features.health.api.schemas import HealthSchema
@@ -90,17 +90,32 @@ async def readiness(settings: SettingsDep) -> ReadinessSchema:
                         "status": "ok",
                         "version": "0.1.0",
                         "environment": "development",
+                        "device": "cpu",
+                        "half": False,
+                        "ultralyticsVersion": "8.4.115",
+                        "loadedModels": ["yolov8n"],
+                        "maxLoadedModels": 2,
+                        "plateAvailable": False,
+                        "defaultModelId": "yolov8n",
                     }
                 }
             }
         }
     },
 )
-async def health(settings: SettingsDep) -> HealthSchema:
+async def health(settings: SettingsDep, container: ContainerDep) -> HealthSchema:
+    service = container.model_service
     return HealthSchema(
         status="ok",
         version=__version__,
         environment=settings.env,
+        device=service.device() if service else "inconnu",
+        half=service.half() if service else False,
+        ultralytics_version=service.ultralytics_version() if service else "indisponible",
+        loaded_models=service.loaded_ids() if service else [],
+        max_loaded_models=settings.max_loaded_models,
+        plate_available=service.plate_available() if service else False,
+        default_model_id=settings.default_model_id,
     )
 
 

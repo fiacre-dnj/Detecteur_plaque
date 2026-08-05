@@ -16,11 +16,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from traffic_analysis.features.counting.application.ports import EngineSpec
+from traffic_analysis.features.counting.application.ports import EngineFrame, EngineSpec
 from traffic_analysis.features.counting.domain.geometry import Point
 from traffic_analysis.features.counting.domain.models import (
     VEHICLE_CLASS_IDS,
+    BoundingBox,
     CountingLineDef,
+    PlateDetection,
     TrackObservation,
     VideoInfo,
     ZoneDef,
@@ -45,7 +47,11 @@ __all__ = [
     "AnalysisCancelled",
     "AnalysisJobConfig",
     "AnalysisResultData",
+    "BoundingBox",
     "CountingLineDef",
+    "EngineFrame",
+    "EngineSpec",
+    "PlateDetection",
     "Point",
     "Progress",
     "TimelineRow",
