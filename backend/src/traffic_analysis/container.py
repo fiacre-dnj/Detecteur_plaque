@@ -16,6 +16,11 @@ from typing import TYPE_CHECKING
 
 from traffic_analysis.core.clock import Clock, SystemClock
 from traffic_analysis.core.db.engine import create_engine, create_session_factory
+from traffic_analysis.features.benchmark.application.service import BenchmarkService
+from traffic_analysis.features.benchmark.infrastructure.reference_image import VideoFrameProvider
+from traffic_analysis.features.benchmark.infrastructure.sqlalchemy_repository import (
+    SqlAlchemyBenchmarkRepository,
+)
 from traffic_analysis.features.counting.application.analysis_service import AnalysisService
 from traffic_analysis.features.jobs.application.job_manager import JobManager
 from traffic_analysis.features.jobs.application.progress_hub import ProgressHub
@@ -24,6 +29,9 @@ from traffic_analysis.features.jobs.infrastructure.sqlalchemy_repository import 
     SqlAlchemyJobRepository,
 )
 from traffic_analysis.features.models_registry.application.model_service import ModelService
+from traffic_analysis.features.models_registry.infrastructure.inference_probe import (
+    RegistryInferenceProbe,
+)
 from traffic_analysis.features.models_registry.infrastructure.plate_detector import (
     OnnxPlateDetector,
 )
@@ -36,6 +44,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncEngine
 
     from traffic_analysis.core.settings import Settings
+    from traffic_analysis.features.benchmark.application.ports import InferenceProbe
     from traffic_analysis.features.counting.application.ports import (
         DetectionTrackingEngine,
         PlateDetector,
@@ -56,6 +65,10 @@ class Container:
     job_manager: JobManager
     model_service: ModelService | None = None
     model_registry: ModelRegistry | None = None
+    # `None` quand la persistance est désactivée : un run de benchmark est écrit
+    # ligne par ligne et rechargé à l'ouverture de la page, donc il n'a aucun sens
+    # sans base. La route répond alors 503 avec la raison.
+    benchmark_service: BenchmarkService | None = None
     # `None` quand la persistance est désactivée (base injoignable, dépôt en
     # mémoire injecté par un test). Le service reste alors utilisable : seules
     # les routes d'agrégats répondent une erreur explicite.
@@ -80,6 +93,7 @@ def build_container(
     engine: DetectionTrackingEngine | None = None,
     plate_detector: PlateDetector | None = None,
     job_repository: JobRepository | None = None,
+    benchmark_probe: InferenceProbe | None = None,
 ) -> Container:
     """Assemble le conteneur.
 
@@ -117,6 +131,7 @@ def build_container(
     hub = ProgressHub()
 
     db_engine: AsyncEngine | None = None
+    benchmark_service: BenchmarkService | None = None
     if job_repository is not None:
         repository = job_repository
     else:
@@ -124,7 +139,18 @@ def build_container(
         # redémarrage. Le dépôt en mémoire ne sert qu'aux tests qui l'injectent
         # explicitement, où la persistance n'est pas le sujet.
         db_engine = create_engine(settings)
-        repository = SqlAlchemyJobRepository(create_session_factory(db_engine))
+        session_factory = create_session_factory(db_engine)
+        repository = SqlAlchemyJobRepository(session_factory)
+        benchmark_service = BenchmarkService(
+            SqlAlchemyBenchmarkRepository(session_factory),
+            # La sonde passe par le **registre**, pas par le moteur d'analyse : le
+            # benchmark mesure une inférence sur une image fixe, sans suivi. Un
+            # tracker garderait un état entre les appels, et la deuxième mesure ne
+            # serait plus comparable à la première.
+            benchmark_probe or RegistryInferenceProbe(registry),
+            VideoFrameProvider(settings.data_dir),
+            hub,
+        )
 
     return Container(
         settings=settings,
@@ -135,6 +161,7 @@ def build_container(
         progress_hub=hub,
         model_service=model_service,
         model_registry=registry,
+        benchmark_service=benchmark_service,
         db_engine=db_engine,
         job_manager=JobManager(
             repository=repository,

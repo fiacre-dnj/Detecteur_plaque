@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from traffic_analysis.core.clock import Clock
+    from traffic_analysis.features.benchmark.application.ports import InferenceProbe
     from traffic_analysis.features.counting.application.ports import (
         DetectionTrackingEngine,
         PlateDetector,
@@ -116,6 +117,18 @@ OPENAPI_TAGS = [
             "Analyse différée d'un fichier : dépôt, progression (SSE), résultat, historique."
         ),
     },
+    {
+        "name": "models",
+        "description": "Catalogue des détecteurs, état de résidence, préchargement.",
+    },
+    {
+        "name": "benchmark",
+        "description": (
+            "Mesure des modèles **sur cette machine**, sur une image de référence "
+            "unique : chauffe écartée, médiane et p95, seuils de la requête, "
+            "libération après chaque mesure."
+        ),
+    },
 ]
 
 
@@ -126,6 +139,7 @@ def create_app(
     engine: DetectionTrackingEngine | None = None,
     plate_detector: PlateDetector | None = None,
     job_repository: JobRepository | None = None,
+    benchmark_probe: InferenceProbe | None = None,
 ) -> FastAPI:
     """Construit une application prête à servir.
 
@@ -167,6 +181,7 @@ def create_app(
         engine=engine,
         plate_detector=plate_detector,
         job_repository=job_repository,
+        benchmark_probe=benchmark_probe,
     )
 
     _add_middlewares(app, resolved)
@@ -259,6 +274,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     loop = asyncio.get_running_loop()
     container.job_manager.bind_loop(loop)
+    if container.benchmark_service is not None:
+        # Le sémaphore « un seul benchmark à la fois » doit être créé **dans** la
+        # boucle qui l'utilisera : construit ailleurs, il s'attacherait à une autre
+        # boucle et bloquerait pour de bon au premier run.
+        container.benchmark_service.bind_loop(loop)
 
     # Migrations au démarrage en développement et en test uniquement. **Jamais
     # en production** : une commande de déploiement explicite évite que trois
@@ -284,8 +304,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         with suppress(asyncio.CancelledError):
             await cleanup
         # Demander l'arrêt plutôt qu'annuler : un `track()` interrompu de force
-        # laisserait le bail de son modèle non rendu.
+        # laisserait le bail de son modèle non rendu. La même raison vaut pour une
+        # inférence de benchmark en cours.
         await container.job_manager.shutdown()
+        if container.benchmark_service is not None:
+            await container.benchmark_service.shutdown()
         await container.dispose()
         logger.info("service arrêté")
 
