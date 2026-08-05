@@ -17,7 +17,8 @@
  * différentes.
  */
 
-import { Suspense, lazy, useCallback, useMemo, useReducer, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useLocation } from "react-router";
 
 import { useHealth } from "@/app/layout/useHealth";
 import {
@@ -27,14 +28,22 @@ import {
   hasGeometry,
   type Selection,
 } from "@/entities/geometry";
+import { useModels } from "@/entities/model";
 import { JobProgressBar } from "@/features/analysis-job";
+import {
+  SettingsPanels,
+  loadSettings,
+  saveSettings,
+  toRequest,
+  type AnalysisSettings,
+} from "@/features/analysis-settings";
 import { GeometryCanvas, GeometryPanel } from "@/features/geometry-editor";
 import { SourcePicker, VideoScene, useMediaSource } from "@/features/media-source";
 import { ResultsDashboard } from "@/features/results-dashboard";
 import { chooseBucketMs, flowBuckets, useReplay, vehiclesAt } from "@/features/timeline-replay";
 import { VehicleRegistry } from "@/features/vehicle-registry";
 import { TransportBar, useVideoTransport } from "@/features/video-transport";
-import type { AnalysisRequest, Point } from "@/shared/api/contracts";
+import type { Point } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
 import { Button } from "@/shared/ui/Button";
 import { MetricCard } from "@/shared/ui/MetricCard";
@@ -57,34 +66,82 @@ interface SceneSize {
   height: number;
 }
 
-/**
- * Réglages par défaut, identiques à ceux du serveur.
- *
- * Le panneau qui les rend modifiables arrive au lot 12. Les aligner sur les défauts
- * du backend garantit qu'entre-temps l'affichage du canvas (pointillés sous
- * `minHits`) correspond à ce qu'une analyse fait réellement.
- */
-const DEFAULTS = {
-  confidenceThreshold: 0.35,
-  iouThreshold: 0.45,
-  minHits: 2,
-  maxLostMs: 2_500,
-  reidMinSimilarity: 0.8,
-  frameStride: 1,
-} as const;
-
 const NO_TRAILS: ReadonlyMap<number, readonly Point[]> = new Map();
 
 export function StudioPage() {
   const { data: health } = useHealth();
   const serverReady = health != null;
 
+  const { data: catalogue } = useModels();
+  const location = useLocation();
   const media = useMediaSource();
   const [geometry, dispatch] = useReducer(geometryReducer, EMPTY_GEOMETRY);
   const [scene, setScene] = useState<SceneSize | null>(null);
-  const [showTrails, setShowTrails] = useState(true);
-  const [maskOutsideZones, setMaskOutsideZones] = useState(false);
   const [ended, setEnded] = useState(false);
+
+  /**
+   * Les réglages, relus du stockage **une seule fois** à l'initialisation.
+   *
+   * `useState(loadSettings)` et non `useState(loadSettings())` : la seconde forme
+   * lirait le stockage à chaque rendu, pour une valeur que React ignore après le
+   * premier.
+   */
+  const [settings, setSettings] = useState<AnalysisSettings>(loadSettings);
+
+  // Persistés à chaque changement. Un `useEffect` plutôt qu'une écriture dans
+  // `updateSettings` : ainsi un réglage modifié par un autre chemin (chargement
+  // d'un preset, relance depuis l'historique) est persisté lui aussi.
+  useEffect(() => saveSettings(settings), [settings]);
+
+  const updateSettings = useCallback((patch: Partial<AnalysisSettings>) => {
+    setSettings((previous) => ({ ...previous, ...patch }));
+  }, []);
+
+  /**
+   * Configuration reçue de l'historique — « Ouvrir » ou « Relancer ».
+   *
+   * Appliquée **une seule fois** : sans ce garde, chaque rendu réécraserait les
+   * modifications que l'utilisateur vient de faire depuis son arrivée, ce qui rend
+   * l'écran impossible à utiliser sans qu'on comprenne pourquoi.
+   */
+  const applied = useRef(false);
+  useEffect(() => {
+    if (applied.current) return;
+    const incoming = (location.state as { config?: unknown } | null)?.config;
+    if (incoming === undefined) return;
+    applied.current = true;
+
+    const loaded = incoming as {
+      lines?: typeof geometry.lines;
+      zones?: typeof geometry.zones;
+    } & Partial<AnalysisSettings>;
+
+    dispatch({
+      type: "replace",
+      lines: [...(loaded.lines ?? [])],
+      zones: [...(loaded.zones ?? [])],
+    });
+    // La géométrie **et** les réglages : relancer avec les mêmes lignes mais
+    // d'autres seuils ne serait pas « la même configuration ».
+    setSettings((previous) => ({ ...previous, ...stripGeometry(loaded) }));
+  }, [location.state]);
+
+  /**
+   * Aligne le modèle sur le défaut du **serveur** si celui retenu n'existe plus.
+   *
+   * Le cas concret : un réglage persisté cite `yolo11m`, puis le catalogue change
+   * (nouvelle version, modèle retiré). Sans ce recalage, le sélecteur n'aurait
+   * aucune option cochée et l'analyse partirait avec un identifiant que le serveur
+   * refuserait en 404 — après le clic sur « Lancer ».
+   */
+  useEffect(() => {
+    if (catalogue === null || catalogue === undefined) return;
+    const known = catalogue.models.some((model) => model.id === settings.modelId);
+    if (!known) {
+      const fallback = catalogue.models.find((model) => model.isDefault) ?? catalogue.models[0];
+      if (fallback !== undefined) updateSettings({ modelId: fallback.id });
+    }
+  }, [catalogue, settings.modelId, updateSettings]);
 
   const video = useRef<HTMLVideoElement>(null);
   const session = useAnalysisSession();
@@ -141,19 +198,17 @@ export function StudioPage() {
     const file = media.source?.file;
     if (file === undefined || !serverReady) return;
 
-    const request: AnalysisRequest = {
-      modelId: health.defaultModelId,
-      ...DEFAULTS,
-      maskOutsideZones,
-      detectPlates: false,
-      plateConfidence: null,
-      pixelsPerMeter: null,
-      lines: [...geometry.lines],
-      zones: [...geometry.zones],
-    };
     setEnded(false);
-    void session.start(file, request, geometry.lines, geometry.zones);
-  }, [media.source, serverReady, health, maskOutsideZones, geometry, session]);
+    void session.start(
+      file,
+      // `toRequest` est le seul endroit qui traduit les réglages en requête : il
+      // résout `confidenceThreshold: null` en défaut, met l'échelle nulle à `null`,
+      // et désactive le masque quand aucune zone n'existe.
+      toRequest(settings, geometry.lines, geometry.zones),
+      geometry.lines,
+      geometry.zones,
+    );
+  }, [media.source, serverReady, settings, geometry, session]);
 
   /**
    * Le résultat décrit-il encore la géométrie affichée ?
@@ -218,12 +273,17 @@ export function StudioPage() {
                 lines={geometry.lines}
                 zones={geometry.zones}
                 tracks={replay.tracks}
-                trails={showTrails ? replay.trails : NO_TRAILS}
+                trails={settings.showTrails ? replay.trails : NO_TRAILS}
                 selectedId={selectedId}
                 drawingZone={geometry.drawingZone}
-                showTrails={showTrails}
-                maskOutsideZones={maskOutsideZones}
-                minHits={DEFAULTS.minHits}
+                showTrails={settings.showTrails}
+                // Le masque n'est dessiné que s'il sera **réellement appliqué** :
+                // `toRequest` le désactive sans zone, et montrer un voile que le
+                // serveur ignorerait serait un mensonge visuel.
+                maskOutsideZones={settings.maskOutsideZones && geometry.zones.length > 0}
+                // Les pointillés « pas encore confirmée » suivent le réglage réel,
+                // donc ce que le canvas montre correspond à ce que l'analyse fera.
+                minHits={settings.minHits}
                 onSelect={(selection) =>
                   dispatch({
                     type: "select",
@@ -291,40 +351,27 @@ export function StudioPage() {
             onRemoveZone={(id) => dispatch({ type: "removeZone", id })}
           />
 
-          <div className="rounded-section bg-surface p-4 shadow-card">
-            <h3 className="label-micro">Affichage</h3>
-            <p className="mt-3 text-small text-ink-dim">
-              {serverReady
-                ? `Modèle : ${health.defaultModelId} · ${health.device === "cpu" ? "CPU" : "CUDA"}`
-                : "Le serveur est injoignable : l'analyse est indisponible."}
+          <SettingsPanels
+            settings={settings}
+            models={catalogue?.models ?? []}
+            // Faux si le serveur n'a pas le modèle de plaques : l'option est alors
+            // désactivée **avec sa raison**, plutôt que de produire une analyse
+            // sans plaques que rien n'expliquerait.
+            plateAvailable={catalogue?.plateAvailable ?? false}
+            hasZones={geometry.zones.length > 0}
+            // Le diagnostic de la dernière analyse. `null` avant : le panneau ne
+            // montre alors rien plutôt que six zéros, qui se liraient comme un
+            // résultat.
+            diagnostics={session.result?.stats.diagnostics ?? null}
+            disabled={busy}
+            onChange={updateSettings}
+          />
+
+          {!serverReady && (
+            <p className="text-small text-ink-dim">
+              Le serveur est injoignable : l'analyse est indisponible.
             </p>
-            <label className="mt-3 flex items-center gap-2 text-small text-ink-muted">
-              <input
-                type="checkbox"
-                checked={showTrails}
-                onChange={(event) => setShowTrails(event.target.checked)}
-                className="accent-accent"
-              />
-              Trajectoires
-            </label>
-            <label
-              className="mt-2 flex items-center gap-2 text-small text-ink-muted"
-              title={
-                geometry.zones.length === 0
-                  ? "Tracez d'abord une zone : sans zone, il n'y a rien à masquer."
-                  : "Le détecteur ne reçoit que l'intérieur des zones."
-              }
-            >
-              <input
-                type="checkbox"
-                checked={maskOutsideZones}
-                disabled={geometry.zones.length === 0 || busy}
-                onChange={(event) => setMaskOutsideZones(event.target.checked)}
-                className="accent-accent disabled:opacity-50"
-              />
-              Ignorer hors zone
-            </label>
-          </div>
+          )}
 
           <Button
             variant="primary"
@@ -365,7 +412,9 @@ export function StudioPage() {
             result={session.result}
             vehicles={vehiclesAt(session.result, replay.timeMs)}
             lineNames={lineNames}
-            hasScale={false}
+            // Suit le réglage réel : la note de bas de tableau expliquant les px/s
+            // ne doit apparaître que quand l'échelle manque **effectivement**.
+            hasScale={settings.pixelsPerMeter !== null && settings.pixelsPerMeter > 0}
           />
         </div>
       ) : (
@@ -387,6 +436,20 @@ export function StudioPage() {
       )}
     </div>
   );
+}
+
+/**
+ * Retire de la configuration reçue ce qui n'est pas un réglage.
+ *
+ * `lines` et `zones` vont au reducer de géométrie, pas dans les réglages : les y
+ * laisser polluerait l'objet persisté en `localStorage` avec une géométrie qui
+ * n'appartient pas à la vidéo courante.
+ */
+function stripGeometry(
+  config: Record<string, unknown>,
+): Partial<AnalysisSettings> {
+  const { lines: _lines, zones: _zones, ...settings } = config;
+  return settings as Partial<AnalysisSettings>;
 }
 
 /**

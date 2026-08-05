@@ -23,6 +23,7 @@ from traffic_analysis.features.jobs.api.deps import JobManagerDep, ResultStoreDe
 from traffic_analysis.features.jobs.api.schemas import (
     AnalysisRequestSchema,
     JobCreatedSchema,
+    JobDetailSchema,
     JobSchema,
 )
 from traffic_analysis.features.jobs.application.job_manager import JobManager
@@ -147,6 +148,30 @@ async def list_jobs(
 )
 async def get_job(manager: JobManagerDep, job_id: str) -> JobSchema:
     return JobSchema.model_validate(manager.describe(await manager.get(job_id)))
+
+
+@router.get(
+    "/{job_id}/config",
+    response_model=JobDetailSchema,
+    operation_id="getAnalysisJobConfig",
+    summary="Job et configuration qui l'a produit",
+    description=(
+        "Rend le job **avec** `configJson`, la requête telle qu'elle a été reçue.\n\n"
+        "Route distincte de `GET /jobs/{id}` **volontairement** : cette dernière est "
+        "sondée toutes les 3 secondes pendant l'analyse, et y joindre la géométrie "
+        "complète la ferait voyager des centaines de fois pour une valeur qui ne "
+        "change jamais.\n\n"
+        "Sert deux gestes de l'interface : **ouvrir** une analyse de l'historique en "
+        "rechargeant son tracé dans le studio, et **relancer** avec les mêmes "
+        "réglages — ce qui crée un nouveau job et ne mute jamais l'ancien."
+    ),
+    responses={404: {"model": ProblemDetails, "description": "Job inconnu"}},
+)
+async def get_job_config(manager: JobManagerDep, job_id: str) -> JobDetailSchema:
+    record = await manager.get(job_id)
+    return JobDetailSchema.model_validate(
+        {**manager.describe(record), "configJson": record.config_json}
+    )
 
 
 @router.get(

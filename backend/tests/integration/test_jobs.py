@@ -344,3 +344,74 @@ class TestAnnulationEtHistorique:
         response = await client.get("/api/v1/jobs", params={"status": "en-cours-peut-etre"})
 
         assert response.status_code == 422
+
+
+class TestConfigurationDUnJob:
+    """`GET /jobs/{id}/config` — ce qui rend « ouvrir » et « relancer » possibles.
+
+    Sans cette route, l'historique ne pourrait ni recharger la géométrie d'une
+    analyse dans le studio, ni préremplir une relance : l'utilisateur devrait
+    retracer ses lignes de mémoire, et les chiffres du résultat ne correspondraient
+    à aucun tracé visible.
+    """
+
+    async def test_la_configuration_est_rendue_telle_qu_elle_a_ete_recue(
+        self, client: AsyncClient
+    ) -> None:
+        created = await _post_job(client, confidenceThreshold=0.6, minHits=4)
+        job_id = created["body"]["jobId"]
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/config")
+        config = response.json()["configJson"]
+
+        assert response.status_code == 200
+        assert config["modelId"] == "yolov8n"
+        assert config["confidenceThreshold"] == 0.6
+        assert config["minHits"] == 4
+
+    async def test_la_geometrie_est_relisible_pour_recharger_le_studio(
+        self, client: AsyncClient
+    ) -> None:
+        """La géométrie **exacte**, sinon les chiffres relus décriraient un autre tracé."""
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+
+        lines = (await client.get(f"/api/v1/jobs/{job_id}/config")).json()["configJson"]["lines"]
+
+        assert len(lines) == 1
+        assert lines[0]["id"] == "l1"
+        assert lines[0]["a"] == {"x": 0.0, "y": 500.0}
+        assert lines[0]["b"] == {"x": 1920.0, "y": 500.0}
+
+    async def test_la_route_porte_aussi_l_etat_du_job(self, client: AsyncClient) -> None:
+        """Elle étend `JobSchema` : un seul appel suffit à l'historique."""
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+
+        body = (await client.get(f"/api/v1/jobs/{job_id}/config")).json()
+
+        assert body["jobId"] == job_id
+        assert body["modelId"] == "yolov8n"
+        assert body["fileName"] == "carrefour.mp4"
+
+    async def test_la_route_de_sondage_ne_porte_PAS_la_configuration(
+        self, client: AsyncClient
+    ) -> None:
+        """`GET /jobs/{id}` est sondée toutes les 3 s pendant l'analyse.
+
+        Y joindre la géométrie complète la ferait voyager des centaines de fois
+        pour une valeur qui ne change jamais. C'est la raison d'être de la route
+        séparée, et ce test empêche de « simplifier » en fusionnant les deux.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+
+        body = (await client.get(f"/api/v1/jobs/{job_id}")).json()
+
+        assert "configJson" not in body
+
+    async def test_un_job_inconnu_rend_un_404(self, client: AsyncClient) -> None:
+        response = await client.get("/api/v1/jobs/inexistant/config")
+
+        assert response.status_code == 404
+        assert response.json()["code"] == "job_not_found"

@@ -6,7 +6,7 @@ Le miroir TypeScript de `frontend/src/shared/api/contracts.ts` reprend ces noms
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
@@ -172,7 +172,13 @@ class JobCreatedSchema(CamelModel):
 
 
 class JobSchema(CamelModel):
-    """État courant d'un job. Même forme que les événements SSE."""
+    """État courant d'un job. Même forme que les événements SSE.
+
+    **Volontairement sans `configJson`.** Ce schéma est celui de chaque trame de
+    progression SSE : y ajouter la configuration complète — géométrie comprise —
+    la ferait voyager plusieurs fois par seconde pendant toute l'analyse, pour une
+    valeur qui ne change jamais. La configuration vit dans `JobDetailSchema`.
+    """
 
     job_id: str
     status: Literal["queued", "running", "done", "error", "cancelled"]
@@ -185,3 +191,23 @@ class JobSchema(CamelModel):
     file_name: str
     created_at: str
     finished_at: str | None
+
+
+class JobDetailSchema(JobSchema):
+    """Un job **et la configuration qui l'a produit**.
+
+    `configJson` est la requête telle qu'elle a été reçue. Elle existe pour deux
+    gestes de l'interface, et sans elle aucun des deux n'est possible :
+
+    - **ouvrir** une analyse de l'historique en rechargeant sa géométrie dans le
+      studio — sinon les lignes tracées seraient perdues et les chiffres du
+      résultat ne correspondraient à aucun tracé visible ;
+    - **relancer** avec les mêmes réglages, ce qui crée un **nouveau** job et ne
+      mute jamais l'ancien : un job muté perdrait ses chiffres d'origine, et on ne
+      pourrait plus comparer « avant » et « après » un changement de réglage.
+    """
+
+    config_json: dict[str, Any] = Field(
+        default_factory=dict,
+        description="La requête d'analyse telle qu'elle a été reçue.",
+    )
