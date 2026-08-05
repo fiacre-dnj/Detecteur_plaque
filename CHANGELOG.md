@@ -22,6 +22,16 @@ plus deux fois dans le même sens » si.
   erreur interne ne divulgue jamais de détail technique.
 - Les journaux portent l'identifiant de la requête qui les a produits : signaler
   un problème en citant cet identifiant suffit à retrouver toute la chaîne.
+- **Le comptage existe** : franchissements de lignes par sens, entrées et
+  occupation de zones, ré-identification des véhicules qui disparaissent puis
+  reviennent, vote de classe majoritaire et estimation de vitesse.
+- Un aller-retour compte une fois dans chaque sens ; une boîte qui tremble sur
+  une ligne ne compte qu'une fois ; un véhicule occulté puis revenu reste le même
+  véhicule.
+- Sans échelle px/m fournie, les vitesses restent en px/s plutôt que d'être
+  converties à tort en km/h.
+- En dessous de trois secondes de flux analysé, le débit estimé est annoncé
+  comme indisponible au lieu d'afficher un chiffre qui oscille.
 
 ### Décidé
 
