@@ -49,6 +49,7 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "types-pyyaml>=6",
+    "asgi-lifespan>=2.1.0",
 ]
 
 # ─── Résolution de torch ─────────────────────────────────────────────────────
@@ -104,7 +105,11 @@ ignore = [
 # S101 : `assert` est le vocabulaire de pytest.
 # ANN201 : le type de retour d'un test n'apporte rien.
 # ARG001 : une fixture injectée pour son effet de bord n'est pas utilisée.
-"tests/**" = ["S101", "ANN201", "ARG001", "PLR2004"]
+# ASYNC110 : la règle conseille `asyncio.Event` plutôt qu'une boucle de sondage.
+#   Elle a raison en production — et tort ici : plusieurs tests *simulent* le
+#   client réel, qui double le flux SSE d'un sondage lent. Remplacer la boucle par
+#   un événement testerait un chemin que le navigateur n'emprunte jamais.
+"tests/**" = ["S101", "ANN201", "ARG001", "ASYNC110"]
 "migrations/**" = ["ANN", "INP001"]
 
 [tool.ruff.lint.flake8-annotations]

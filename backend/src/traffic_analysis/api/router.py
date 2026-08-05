@@ -13,6 +13,8 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from traffic_analysis.features.health.api.routes_health import router as health_router
+from traffic_analysis.features.jobs.api.routes_job_events import router as job_events_router
+from traffic_analysis.features.jobs.api.routes_jobs import router as jobs_router
 
 API_V1_PREFIX = "/api/v1"
 
@@ -21,3 +23,8 @@ api_router = APIRouter(prefix=API_V1_PREFIX)
 # Chaque feature monte son routeur ici, et nulle part ailleurs : la liste des
 # capacités exposées se lit d'un seul coup d'œil.
 api_router.include_router(health_router)
+api_router.include_router(jobs_router)
+# Le SSE est un routeur distinct bien qu'il partage le préfixe `/jobs` : son
+# protocole n'a rien à voir avec celui des routes JSON, et le mélanger rendrait
+# `routes_jobs.py` illisible.
+api_router.include_router(job_events_router)

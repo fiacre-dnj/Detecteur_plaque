@@ -123,28 +123,46 @@ def test_l_application_parle_a_des_ports_et_non_a_des_bibliotheques(path: Path) 
     )
 
 
-@pytest.mark.parametrize("path", _python_files("features"), ids=_relative)
-def test_une_feature_n_importe_pas_le_coeur_d_une_autre_feature(path: Path) -> None:
-    """Deux features ne se parlent que par un port explicite.
+# Seule couche d'une feature qu'une **autre** feature peut importer : son contrat
+# publié (ports, DTO, services d'application, sérialiseurs).
+PUBLISHED_LAYER = "application"
 
-    Sans cette règle, `jobs` finit par importer un détail interne de `counting`, et
-    supprimer ou remplacer une feature devient impossible. Ce qui est réellement
-    commun doit descendre dans `core`.
+
+@pytest.mark.parametrize("path", _python_files("features"), ids=_relative)
+def test_une_feature_n_importe_qu_une_autre_par_son_contrat_publie(path: Path) -> None:
+    """Deux features ne se parlent que par la couche `application` de l'autre.
+
+    Certaines dépendances entre features sont légitimes et voulues : `jobs`
+    orchestre une analyse, donc il a besoin de `counting`. Ce qui doit rester
+    interdit, c'est de **fouiller dans les internes** — importer un `domain`, une
+    `infrastructure` ou une route d'une autre feature.
+
+    La couche `application` est le contrat : ses ports, ses DTO et ses
+    sérialiseurs sont ce que la feature s'engage à maintenir. Le reste peut
+    changer sans prévenir. C'est aussi pour cela que
+    `counting/application/dto.py` réexporte le vocabulaire minimal dont un
+    appelant a besoin — sans quoi la frontière ne tiendrait pas en pratique.
     """
     own_feature = _feature_of(path)
     if own_feature is None:
         pytest.skip("fichier hors d'une feature")
 
     prefix = f"{PACKAGE}.features."
-    offenders = [
-        imported
-        for imported in _imports_of(path)
-        if imported.module.startswith(prefix)
-        and imported.module[len(prefix) :].split(".")[0] != own_feature
-    ]
+    offenders: list[Import] = []
+    for imported in _imports_of(path):
+        if not imported.module.startswith(prefix):
+            continue
+        parts = imported.module[len(prefix) :].split(".")
+        target_feature = parts[0]
+        if target_feature == own_feature:
+            continue
+        target_layer = parts[1] if len(parts) > 1 else ""
+        if target_layer != PUBLISHED_LAYER:
+            offenders.append(imported)
 
     assert not offenders, (
-        f"{_relative(path)} (feature « {own_feature} ») importe une autre feature : "
+        f"{_relative(path)} (feature « {own_feature} ») fouille dans les internes "
+        f"d'une autre feature — n'importer que sa couche « {PUBLISHED_LAYER} » : "
         + ", ".join(f"{item.module} (ligne {item.line})" for item in offenders)
     )
 
