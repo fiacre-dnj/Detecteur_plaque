@@ -49,6 +49,19 @@ plus deux fois dans le même sens » si.
 - **Export CSV** du registre et des franchissements, directement ouvrable dans
   un Excel français : accents corrects, colonnes séparées, nombres reconnus
   comme des nombres. Une vitesse inconnue reste une case vide, jamais un zéro.
+- **Vingt détecteurs au catalogue** : quatre familles (YOLOv8, YOLO11, YOLO12,
+  YOLO26) dans les cinq paliers, du nano à l'extra large. Chaque modèle indique
+  s'il est déjà téléchargé et s'il est chargé en mémoire, pour qu'une première
+  analyse n'attende jamais sans explication.
+- Un modèle peut être préchargé à l'avance, ou déchargé pour libérer la mémoire.
+  Le service n'en garde que deux en mémoire par défaut et évince le plus ancien.
+- `/api/v1/health` annonce le device utilisé, la version d'Ultralytics, les
+  modèles résidents et la disponibilité de la lecture de plaques.
+- Un modèle inconnu est refusé au dépôt, avec la liste des identifiants valides,
+  au lieu de faire échouer l'analyse une minute plus tard.
+- Deux scripts : `fetch_weights.py` pour pré-télécharger les poids choisis, et
+  `fetch_plate_model.py` qui vérifie l'empreinte SHA-256 du modèle de plaques
+  avant de l'installer.
 
 ### Décidé
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from traffic_analysis.core.schemas import CamelModel
 from traffic_analysis.features.counting.application.dto import (
@@ -16,6 +16,10 @@ from traffic_analysis.features.counting.application.dto import (
     CountingLineDef,
     Point,
     ZoneDef,
+)
+from traffic_analysis.features.models_registry.application.catalogue_access import (
+    is_known_model,
+    known_model_ids,
 )
 
 
@@ -83,6 +87,23 @@ class AnalysisRequestSchema(CamelModel):
     )
     lines: list[LineSchema] = Field(default_factory=list)
     zones: list[ZoneSchema] = Field(default_factory=list)
+
+    @field_validator("model_id")
+    @classmethod
+    def _known_model(cls, value: str) -> str:
+        """Refuser ici plutôt qu'au chargement.
+
+        Un identifiant inconnu accepté produirait un job qui échoue trente
+        secondes plus tard, sans que l'utilisateur sache lequel de ses réglages
+        est en cause. Le message liste les identifiants valides.
+        """
+        if not is_known_model(value):
+            msg = (
+                f"Le modèle « {value} » n'existe pas au catalogue. "
+                f"Modèles valides : {', '.join(known_model_ids())}."
+            )
+            raise ValueError(msg)
+        return value
 
     @model_validator(mode="after")
     def _check_geometry(self) -> AnalysisRequestSchema:

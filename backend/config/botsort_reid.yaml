@@ -1,0 +1,33 @@
+# Tracker BoT-SORT avec ré-identification d'apparence.
+#
+# `track_buffer: 75` ≈ 2,5 s à 30 images/s : c'est le **miroir exact** de
+# `SessionConfig.max_lost_ms = 2500.0` du domaine. Si l'une des deux valeurs
+# change, l'autre doit suivre — sinon le moteur et le domaine ne sont plus
+# d'accord sur ce qu'est « une piste perdue », et la ré-identification travaille
+# sur des identités que le tracker a déjà recyclées.
+
+tracker_type: botsort
+
+# Seuils d'association. Volontairement laissés aux valeurs éprouvées
+# d'Ultralytics : les seuils *métier* de l'utilisateur (confiance, IoU) sont
+# passés à `track()` par la requête, et les mélanger rendrait les deux illisibles.
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.25
+match_thresh: 0.8
+fuse_score: true
+
+track_buffer: 75
+
+# ReID d'apparence : gratuite ici puisque le modèle produit déjà les
+# caractéristiques nécessaires. Elle maintient l'identité à travers les
+# occlusions **courtes** ; au-delà, c'est la galerie du domaine qui prend le
+# relais avec ses propres descripteurs.
+with_reid: true
+model: auto
+proximity_thresh: 0.5
+appearance_thresh: 0.25
+
+# Compensation de mouvement de caméra. `sparseOptFlow` est le meilleur compromis
+# coût/qualité sur une caméra fixe légèrement soumise au vent.
+gmc_method: sparseOptFlow
