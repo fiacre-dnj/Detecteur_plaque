@@ -91,6 +91,19 @@ dans `entities/` ou `shared/`. Chaque feature expose un seul `index.ts`.
 
 ## Tailles de bundle
 
-À venir — Lot 9. Budget : chunk d'entrée **< 200 ko gzip**, mesuré après chaque
-lot frontend et consigné ici. Un dépassement est un sujet de revue, pas un
-avertissement à museler.
+Budget : chunk d'entrée **< 200 ko gzip**. Un dépassement est un sujet de revue,
+pas un avertissement à museler.
+
+Mesuré au lot 9 (`bun run build`) :
+
+| Chunk | Brut | gzip |
+|---|---|---|
+| `vendor` (react, react-dom, react-router, react-query) | 304,1 ko | **96,6 ko** |
+| `index` (coquille, client HTTP, routeur) | 22,3 ko | **7,8 ko** |
+| `index.css` (Tailwind + jetons) | 17,9 ko | 4,3 ko |
+| `counting-studio` (route paresseuse) | 5,4 ko | 2,3 ko |
+| `job-history` / `benchmark` (routes paresseuses) | < 1 ko | < 0,5 ko |
+
+**Entrée = vendor + index = 104,4 ko gzip**, soit environ la moitié du budget.
+Les trois écrans sont des chunks séparés : un visiteur qui n'ouvre que le Studio
+ne télécharge ni l'historique ni le benchmark.
