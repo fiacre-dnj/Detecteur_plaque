@@ -1,0 +1,209 @@
+"""Domaine → dictionnaires camelCase du fil.
+
+Le résultat d'analyse est le **seul** objet servi sans validation pydantic : le
+revalider doublerait la mémoire d'une timeline de plusieurs centaines de
+mégaoctets pour rien. Son schéma est décrit à la main dans OpenAPI, et c'est ici
+qu'il est produit.
+
+Deux décisions de format, et toutes les deux se mesurent :
+
+- **arrondir à la sérialisation** (4 décimales pour les scores, 1 pour les pixels
+  et les millisecondes) divise la taille du JSON par près de deux sans rien
+  perdre d'utile ;
+- **`null` explicite plutôt qu'absent** pour une vitesse inconnue : `0` voudrait
+  dire « à l'arrêt », et un champ absent obligerait le client à une branche
+  conditionnelle par champ.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from traffic_analysis.features.counting.application.dto import (
+        AnalysisResultData,
+        TimelineRow,
+    )
+    from traffic_analysis.features.counting.domain.models import (
+        AnalysisStats,
+        BoundingBox,
+        CrossingEvent,
+        SessionTrack,
+        VehicleRecord,
+        VideoInfo,
+        ZoneEntryEvent,
+    )
+
+SCORE_DECIMALS = 4
+PIXEL_DECIMALS = 1
+
+
+def _score(value: float) -> float:
+    return round(value, SCORE_DECIMALS)
+
+
+def _pixel(value: float) -> float:
+    return round(value, PIXEL_DECIMALS)
+
+
+def _optional_pixel(value: float | None) -> float | None:
+    return None if value is None else _pixel(value)
+
+
+def serialise_box(box: BoundingBox) -> dict[str, float]:
+    return {
+        "x": _pixel(box.x),
+        "y": _pixel(box.y),
+        "width": _pixel(box.width),
+        "height": _pixel(box.height),
+    }
+
+
+def serialise_track(track: SessionTrack) -> dict[str, Any]:
+    return {
+        "trackId": track.track_id,
+        "globalId": track.global_id,
+        "classId": track.class_id,
+        "label": track.label,
+        # Le libellé voté est envoyé **en plus** de la lecture de la frame : le
+        # canvas colore les boîtes par classe votée pour qu'une lecture qui
+        # vacille ne fasse pas clignoter la couleur.
+        "identityLabel": track.identity_label,
+        "score": _score(track.score),
+        "box": serialise_box(track.box),
+        "hits": track.hits,
+        "counted": track.counted,
+        "reidCount": track.reid_count,
+        "speedPxS": _optional_pixel(track.speed_px_s),
+        "plates": [
+            {"box": serialise_box(plate.box), "score": _score(plate.score)}
+            for plate in track.plates
+        ],
+    }
+
+
+def serialise_timeline_row(row: TimelineRow) -> dict[str, Any]:
+    return {
+        "frameIndex": row.frame_index,
+        "timestampMs": _pixel(row.timestamp_ms),
+        "tracks": [serialise_track(track) for track in row.tracks],
+    }
+
+
+def serialise_crossing(event: CrossingEvent) -> dict[str, Any]:
+    return {
+        "lineId": event.line_id,
+        "globalId": event.global_id,
+        "trackId": event.track_id,
+        "label": event.label,
+        "direction": event.direction,
+        "timestampMs": _pixel(event.timestamp_ms),
+        "frameIndex": event.frame_index,
+    }
+
+
+def serialise_zone_event(event: ZoneEntryEvent) -> dict[str, Any]:
+    return {
+        "zoneId": event.zone_id,
+        "globalId": event.global_id,
+        "label": event.label,
+        "timestampMs": _pixel(event.timestamp_ms),
+        "frameIndex": event.frame_index,
+    }
+
+
+def serialise_vehicle(record: VehicleRecord) -> dict[str, Any]:
+    return {
+        "globalId": record.global_id,
+        "label": record.label,
+        "firstSeenMs": _pixel(record.first_seen_ms),
+        "lastSeenMs": _pixel(record.last_seen_ms),
+        "crossedLines": [
+            {
+                "lineId": crossing.line_id,
+                "direction": crossing.direction,
+                "timestampMs": _pixel(crossing.timestamp_ms),
+            }
+            for crossing in record.crossed_lines
+        ],
+        "zonesVisited": list(record.zones_visited),
+        "reidCount": record.reid_count,
+        "avgSpeedPxS": _optional_pixel(record.avg_speed_px_s),
+        "avgSpeedKmh": None if record.avg_speed_kmh is None else round(record.avg_speed_kmh, 1),
+        "bestPlateScore": None
+        if record.best_plate_score is None
+        else _score(record.best_plate_score),
+    }
+
+
+def serialise_video(info: VideoInfo) -> dict[str, Any]:
+    return {
+        "width": info.width,
+        "height": info.height,
+        "fps": round(info.fps, 3),
+        "frameCount": info.frame_count,
+        "durationMs": _pixel(info.duration_ms),
+    }
+
+
+def serialise_stats(stats: AnalysisStats) -> dict[str, Any]:
+    """Le bloc que les cartes du frontend affichent, dans leur forme exacte.
+
+    L'adaptateur absorbe la différence de vocabulaire, jamais la vue : un
+    composant qui doit renommer un champ pour l'afficher est un composant qui
+    connaît le serveur.
+    """
+    return {
+        "uniqueVehicles": stats.unique_vehicles,
+        "uniqueByClass": dict(stats.unique_by_class),
+        "crossings": stats.crossings,
+        "byClass": dict(stats.by_class),
+        "byLine": {
+            line_id: {
+                "total": tally.total,
+                "byClass": dict(tally.by_class),
+                "byDirection": {"positive": tally.positive, "negative": tally.negative},
+            }
+            for line_id, tally in stats.by_line.items()
+        },
+        "byZone": {
+            zone_id: {
+                "entries": tally.entries,
+                "inside": tally.inside,
+                "byClass": dict(tally.by_class),
+            }
+            for zone_id, tally in stats.by_zone.items()
+        },
+        "reidHits": stats.reid_hits,
+        "vehiclesPerMinute": round(stats.vehicles_per_minute, 2),
+        "activeTracks": stats.active_tracks,
+        "elapsedMs": _pixel(stats.elapsed_ms),
+        "analysedSceneMs": _pixel(stats.analysed_scene_ms),
+        "diagnostics": {
+            "highDetections": stats.diagnostics.high_detections,
+            "lowDetections": stats.diagnostics.low_detections,
+            "maskedOut": stats.diagnostics.masked_out,
+            "confirmedTracks": stats.diagnostics.confirmed_tracks,
+            "tentativeTracks": stats.diagnostics.tentative_tracks,
+            "rescuedByLowScore": stats.diagnostics.rescued_by_low_score,
+        },
+    }
+
+
+def serialise_result(result: AnalysisResultData) -> dict[str, Any]:
+    """Le résultat complet, prêt à être écrit en `json.gz`."""
+    if result.stats is None:
+        message = "Un résultat sans statistiques ne peut pas être sérialisé."
+        raise ValueError(message)
+
+    return {
+        "jobId": result.job_id,
+        "modelId": result.model_id,
+        "processingFps": round(result.processing_fps, 2),
+        "video": serialise_video(result.video),
+        "timeline": [serialise_timeline_row(row) for row in result.timeline],
+        "crossings": [serialise_crossing(event) for event in result.crossings],
+        "zoneEvents": [serialise_zone_event(event) for event in result.zone_events],
+        "vehicles": [serialise_vehicle(record) for record in result.vehicles],
+        "stats": serialise_stats(result.stats),
+    }

@@ -8,8 +8,9 @@ plusieurs tests de coexister dans le même processus.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
@@ -27,8 +28,17 @@ from traffic_analysis.core.settings import Settings, get_settings
 
 if TYPE_CHECKING:
     from traffic_analysis.core.clock import Clock
+    from traffic_analysis.features.counting.application.ports import (
+        DetectionTrackingEngine,
+        PlateDetector,
+    )
+    from traffic_analysis.features.jobs.application.ports import JobRepository
 
 logger = get_logger("traffic_analysis.app")
+
+# Réveil de la purge. Assez court pour qu'un TTL de quelques minutes soit
+# respecté, assez long pour ne pas réveiller le processus sans arrêt.
+CLEANUP_INTERVAL_S = 60.0
 
 SUMMARY = "Comptage de véhicules par vision : détection, suivi, ré-identification, ANPR."
 
@@ -94,6 +104,12 @@ propage à tout service qui l'expose sur un réseau.
 
 OPENAPI_TAGS = [
     {"name": "health", "description": "Vivacité, préparation, diagnostic du service."},
+    {
+        "name": "jobs",
+        "description": (
+            "Analyse différée d'un fichier : dépôt, progression (SSE), résultat, historique."
+        ),
+    },
 ]
 
 
@@ -101,6 +117,9 @@ def create_app(
     settings: Settings | None = None,
     *,
     clock: Clock | None = None,
+    engine: DetectionTrackingEngine | None = None,
+    plate_detector: PlateDetector | None = None,
+    job_repository: JobRepository | None = None,
 ) -> FastAPI:
     """Construit une application prête à servir.
 
@@ -136,7 +155,13 @@ def create_app(
         lifespan=_lifespan,
     )
 
-    app.state.container = build_container(resolved, clock=clock)
+    app.state.container = build_container(
+        resolved,
+        clock=clock,
+        engine=engine,
+        plate_detector=plate_detector,
+        job_repository=job_repository,
+    )
 
     _add_middlewares(app, resolved)
     register_error_handlers(app)
@@ -191,12 +216,21 @@ def _add_middlewares(app: FastAPI, settings: Settings) -> None:
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Démarrage et arrêt du service.
 
-    Les tâches de fond (préchauffage de modèle, purge TTL) sont créées ici et
-    **gardées dans un ensemble** : une tâche asyncio sans référence forte peut
-    être ramassée par le ramasse-miettes en pleine exécution.
+    Les tâches de fond sont créées ici et **gardées dans un ensemble** : une tâche
+    asyncio sans référence forte peut être ramassée par le ramasse-miettes en
+    pleine exécution, et la purge s'arrêterait alors sans le moindre message.
     """
     container = app.state.container
     settings = container.settings
+
+    loop = asyncio.get_running_loop()
+    container.job_manager.bind_loop(loop)
+
+    background: set[asyncio.Task[None]] = set()
+    cleanup = asyncio.create_task(_cleanup_loop(app), name="cleanup")
+    background.add(cleanup)
+    cleanup.add_done_callback(background.discard)
+
     logger.info(
         "service démarré",
         version=__version__,
@@ -206,4 +240,29 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        cleanup.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup
+        # Demander l'arrêt plutôt qu'annuler : un `track()` interrompu de force
+        # laisserait le bail de son modèle non rendu.
+        await container.job_manager.shutdown()
         logger.info("service arrêté")
+
+
+async def _cleanup_loop(app: FastAPI) -> None:
+    """Purge périodique des jobs terminaux périmés.
+
+    Réveil toutes les 60 s plutôt qu'un déclenchement à chaque requête : la purge
+    doit avoir lieu même sur un service inactif, où les artefacts s'accumulent
+    justement le plus longtemps.
+    """
+    container = app.state.container
+    settings = container.settings
+    while True:
+        await asyncio.sleep(CLEANUP_INTERVAL_S)
+        try:
+            await container.job_manager.purge_expired(settings.job_ttl_minutes)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("purge en échec", error=str(exc))

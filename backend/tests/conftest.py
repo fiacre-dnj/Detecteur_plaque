@@ -14,8 +14,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from asgi_lifespan import LifespanManager
+from httpx import AsyncClient
 
+from tests.support.builders import CAR, TRUCK, compose, straight_line, track_path
+from tests.support.engine import FakeEngine, FakePlateDetector
 from traffic_analysis.app_factory import create_app
 from traffic_analysis.core.clock import FrozenClock
 from traffic_analysis.core.settings import Settings
@@ -26,6 +29,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from fastapi import FastAPI
+
+    from traffic_analysis.features.counting.application.dto import TrackObservation
 
 # Instant de référence des tests. Fixe, pour qu'un test qui compare des dates
 # soit reproductible en janvier comme en juillet.
@@ -68,8 +73,58 @@ def settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
-def app(settings: Settings, clock: FrozenClock) -> FastAPI:
-    return create_app(settings, clock=clock)
+def traversing_frames() -> list[list[TrackObservation]]:
+    """Scénario par défaut du moteur factice : deux véhicules qui traversent.
+
+    Il y a un franchissement dans chaque sens, donc les tests d'intégration
+    exercent un résultat non trivial sans avoir à décrire une scène eux-mêmes.
+    """
+    return compose(
+        track_path(1, CAR, straight_line((700.0, 250.0), (700.0, 800.0), steps=16)),
+        track_path(2, TRUCK, straight_line((1200.0, 800.0), (1200.0, 250.0), steps=16)),
+    )
+
+
+@pytest.fixture
+def fake_engine(traversing_frames: list[list[TrackObservation]]) -> FakeEngine:
+    return FakeEngine(traversing_frames)
+
+
+@pytest.fixture
+def plate_detector() -> FakePlateDetector:
+    return FakePlateDetector()
+
+
+@pytest.fixture
+def app(
+    settings: Settings,
+    clock: FrozenClock,
+    fake_engine: FakeEngine,
+    plate_detector: FakePlateDetector,
+) -> FastAPI:
+    return create_app(
+        settings,
+        clock=clock,
+        engine=fake_engine,
+        plate_detector=plate_detector,
+    )
+
+
+async def _client(app: FastAPI, *, raise_app_exceptions: bool) -> AsyncIterator[AsyncClient]:
+    """Client HTTP avec **le `lifespan` réellement exécuté**.
+
+    `ASGITransport` ne déclenche pas le `lifespan` de lui-même. Sans lui, le
+    `JobManager` n'a ni sémaphore ni boucle attachée, et tout test de job échoue
+    sur une erreur qui ne dit rien de la cause.
+    """
+    from httpx import ASGITransport as Transport
+
+    transport = Transport(app=app, raise_app_exceptions=raise_app_exceptions)
+    async with (
+        LifespanManager(app),
+        AsyncClient(transport=transport, base_url="http://test") as http_client,
+    ):
+        yield http_client
 
 
 @pytest.fixture
@@ -79,13 +134,12 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     `ASGITransport` court-circuite le réseau : pas de port à réserver, donc pas
     de test qui échoue parce qu'un autre test tourne en parallèle.
 
-    Les exceptions non gérées **remontent** au test (comportement par défaut de
-    `ASGITransport`). C'est volontaire : un bug imprévu doit apparaître sous forme
-    de trace exploitable, pas d'un 500 opaque à déboguer à l'aveugle. Le test qui
-    vérifie *la réponse* 500 utilise `client_like_production`.
+    Les exceptions non gérées **remontent** au test. C'est volontaire : un bug
+    imprévu doit apparaître sous forme de trace exploitable, pas d'un 500 opaque à
+    déboguer à l'aveugle. Le test qui vérifie *la réponse* 500 utilise
+    `client_like_production`.
     """
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async for http_client in _client(app, raise_app_exceptions=True):
         yield http_client
 
 
@@ -97,6 +151,5 @@ async def client_like_production(app: FastAPI) -> AsyncIterator[AsyncClient]:
     produire un 500. C'est le seul moyen de vérifier ce que le client **reçoit**
     réellement — et donc qu'aucun détail interne n'y fuit.
     """
-    transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+    async for http_client in _client(app, raise_app_exceptions=False):
         yield http_client

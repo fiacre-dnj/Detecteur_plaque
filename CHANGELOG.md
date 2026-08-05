@@ -32,6 +32,15 @@ plus deux fois dans le même sens » si.
   converties à tort en km/h.
 - En dessous de trois secondes de flux analysé, le débit estimé est annoncé
   comme indisponible au lieu d'afficher un chiffre qui oscille.
+- **On peut déposer une vidéo et suivre son analyse** : `POST /api/v1/jobs`,
+  progression en direct par flux SSE, résultat complet téléchargeable, et
+  historique paginé des analyses.
+- Une analyse s'annule en cours de route, proprement : le traitement s'arrête
+  entre deux images plutôt que d'être interrompu de force.
+- Une seconde analyse déposée pendant qu'une autre tourne est **acceptée** et
+  attend son tour, au lieu d'être refusée.
+- Les vidéos et résultats des analyses terminées sont purgés automatiquement
+  après leur durée de rétention.
 
 ### Décidé
 
