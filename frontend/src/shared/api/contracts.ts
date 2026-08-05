@@ -320,6 +320,72 @@ export interface AnalysisResult {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   Temps réel — miroir de `realtime/api/protocol.py`.
+
+   Le protocole est **séquencé** : `init` → `ready` → (`frame` + JPEG binaire) →
+   `frameResult`. Le client n'a pas le droit d'anticiper : envoyer une frame avant
+   d'avoir reçu `ready` fait échouer la session côté serveur, qui n'a pas encore
+   de session de comptage.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** Premier message envoyé. `request` est **exactement** celle de `POST /jobs`. */
+export interface InitMessage {
+  type: "init";
+  request: AnalysisRequest;
+}
+
+/** Annonce d'une frame, suivie **immédiatement** du JPEG en binaire. */
+export interface FrameMessage {
+  type: "frame";
+  /** Temps de scène décidé par le client (invariant 1), jamais `Date.now()`. */
+  timestampMs: number;
+}
+
+/**
+ * Réponse à l'`init` — **le filet contre une géométrie mal mise à l'échelle**.
+ *
+ * `frameWidth`/`frameHeight` sont `null` jusqu'à la première frame : le serveur ne
+ * peut pas les connaître avant d'avoir décodé une image, et les inventer serait
+ * précisément le mensonge que ce message existe pour empêcher.
+ */
+export interface ReadyMessage {
+  type: "ready";
+  frameWidth: number | null;
+  frameHeight: number | null;
+  /** Peut différer du modèle demandé si le serveur a dû se replier. */
+  modelId: string;
+  device: string;
+}
+
+/**
+ * Résultat d'une frame.
+ *
+ * `tracks`, `crossings`, `zoneEvents` et `stats` sortent des **mêmes**
+ * sérialiseurs que le mode différé : l'affichage est réutilisé sans branche.
+ */
+export interface FrameResultMessage {
+  type: "frameResult";
+  timestampMs: number;
+  frameIndex: number;
+  /** Répétées à chaque frame : une webcam peut renégocier sa résolution. */
+  frameWidth: number;
+  frameHeight: number;
+  tracks: TrackSnapshot[];
+  crossings: CrossingEvent[];
+  zoneEvents: ZoneEntryEvent[];
+  stats: AnalysisStats;
+}
+
+/** Erreur **non fatale** : la session continue. Distincte d'une fermeture. */
+export interface RealtimeErrorMessage {
+  type: "error";
+  detail: string;
+  code: string;
+}
+
+export type ServerMessage = ReadyMessage | FrameResultMessage | RealtimeErrorMessage;
+
+/* ═══════════════════════════════════════════════════════════════════════════
    Benchmark — miroir de `benchmark/api/schemas.py`.
    ═══════════════════════════════════════════════════════════════════════════ */
 

@@ -39,6 +39,12 @@ import {
 } from "@/features/analysis-settings";
 import { GeometryCanvas, GeometryPanel } from "@/features/geometry-editor";
 import { SourcePicker, VideoScene, useMediaSource } from "@/features/media-source";
+import {
+  RealtimePanel,
+  scaledSize,
+  unscaleTracks,
+  useRealtimeSession,
+} from "@/features/realtime-counting";
 import { ResultsDashboard } from "@/features/results-dashboard";
 import { chooseBucketMs, flowBuckets, useReplay, vehiclesAt } from "@/features/timeline-replay";
 import { VehicleRegistry } from "@/features/vehicle-registry";
@@ -149,6 +155,7 @@ export function StudioPage() {
   const handleEnded = useCallback(() => setEnded(true), []);
   const transport = useVideoTransport(video.current, handleEnded);
   const replay = useReplay(video.current, session.result);
+  const live = useRealtimeSession(video.current);
 
   const handleMetadata = useCallback(
     (size: SceneSize) => {
@@ -163,13 +170,23 @@ export function StudioPage() {
     [geometry],
   );
 
-  /** Changer de source remet tout à zéro : la géométrie est en pixels de la source. */
+  /**
+   * Changer de source remet tout à zéro : la géométrie est en pixels de la source.
+   *
+   * **Le direct est coupé ici**, et c'est obligatoire : les dimensions d'envoi sont
+   * figées au démarrage de la session. Continuer à capturer après un changement de
+   * caméra enverrait des images d'une résolution que la géométrie ne décrit plus —
+   * exactement le désaccord que `dimensionsAgree` détecte, mais autant ne pas
+   * l'atteindre. C'est aussi ce qui rend la place de session côté serveur, sans quoi
+   * la suivante serait refusée en 1013 sans explication.
+   */
   const resetForNewSource = useCallback(() => {
+    live.stop();
     dispatch({ type: "clear" });
     setScene(null);
     setEnded(false);
     session.reset();
-  }, [session]);
+  }, [session, live]);
 
   const handleFile = useCallback(
     (file: File) => {
@@ -238,8 +255,56 @@ export function StudioPage() {
   const selectedId = geometry.selection.kind === "none" ? null : geometry.selection.id;
   const isCamera = media.source?.kind === "camera";
   const analysing = session.job !== null && !isTerminal(session.job.status);
-  const busy = analysing || session.starting;
+  const busy = analysing || session.starting || live.active;
   const canAnalyse = serverReady && media.source?.file !== undefined && hasGeometry(geometry) && !busy;
+
+  /** Démarre le direct sur la géométrie **courante**, mise à l'échelle par le hook. */
+  const startLive = useCallback(() => {
+    live.start(toRequest(settings, geometry.lines, geometry.zones));
+  }, [live, settings, geometry.lines, geometry.zones]);
+
+  /**
+   * Dimensions d'envoi, affichées dans le panneau.
+   *
+   * Recalculées ici depuis la scène plutôt que lues du hook : elles doivent être
+   * visibles **avant** le démarrage, pour que l'utilisateur sache ce qui sera envoyé.
+   */
+  const sendSize = useMemo(
+    () => (scene === null ? { width: 0, height: 0 } : scaledSize(scene.width, scene.height, live.factor)),
+    [scene, live.factor],
+  );
+
+  /**
+   * Les pistes à dessiner : celles du direct s'il tourne, sinon celles de la relecture.
+   *
+   * **Remises à l'échelle source** avant d'atteindre le canvas, qui ne connaît qu'un
+   * seul repère. Faire la conversion ici et non dans le canvas évite une branche
+   * « si direct » dans le code de dessin, qui finirait par diverger.
+   */
+  const canvasTracks = useMemo(
+    () => (live.active ? unscaleTracks(live.tracks, live.factor) : replay.tracks),
+    [live.active, live.tracks, live.factor, replay.tracks],
+  );
+
+  /**
+   * Les statistiques à afficher : celles du direct pendant une session, sinon celles
+   * de la tête de lecture.
+   *
+   * Une seule source pour tout l'écran — badge du canvas, tableau de bord, registre.
+   * Deux chemins de statistiques finiraient par se contredire à l'écran, et
+   * l'utilisateur n'aurait aucun moyen de savoir lequel croire.
+   */
+  const liveStats = live.active ? live.stats : replay.stats;
+
+  /** Pourquoi le direct est indisponible — quatre causes, quatre actions. */
+  const liveBlockedReason = useMemo(() => {
+    if (!isCamera) return "Le direct nécessite la caméra comme source.";
+    if (!serverReady) return "Le serveur est injoignable.";
+    if (scene === null) return "En attente du premier aperçu de la caméra.";
+    if (!hasGeometry(geometry)) return "Ajoutez d'abord une ligne de comptage.";
+    if (analysing || session.starting) return "Une analyse de fichier est en cours.";
+    return null;
+  }, [isCamera, serverReady, scene, geometry, analysing, session.starting]);
 
   return (
     <div className="space-y-6">
@@ -272,8 +337,12 @@ export function StudioPage() {
                 sourceHeight={scene.height}
                 lines={geometry.lines}
                 zones={geometry.zones}
-                tracks={replay.tracks}
-                trails={settings.showTrails ? replay.trails : NO_TRAILS}
+                tracks={canvasTracks}
+                // Pas de trajectoires en direct : elles se construisent en accumulant
+                // les positions d'une timeline, et le direct n'en garde aucune — les
+                // fabriquer côté client dupliquerait un calcul du serveur, avec les
+                // frames abandonnées comme trous.
+                trails={settings.showTrails && !live.active ? replay.trails : NO_TRAILS}
                 selectedId={selectedId}
                 drawingZone={geometry.drawingZone}
                 showTrails={settings.showTrails}
@@ -305,9 +374,17 @@ export function StudioPage() {
                 <p className="rounded-badge bg-base/80 px-2 py-1 text-micro text-ink-muted tabular">
                   {scene.width}×{scene.height}
                 </p>
-                {replay.stats !== null && (
+                {/* En direct, les dimensions **d'envoi** en plus de celles de la
+                    scène : c'est le repère dans lequel le serveur compte, et le voir
+                    à côté de la source rend la réduction évidente. */}
+                {live.active && sendSize.width > 0 && (
                   <p className="rounded-badge bg-base/80 px-2 py-1 text-micro text-ink-muted tabular">
-                    Uniques : {replay.stats.uniqueVehicles}
+                    → {sendSize.width}×{sendSize.height}
+                  </p>
+                )}
+                {liveStats !== null && (
+                  <p className="rounded-badge bg-base/80 px-2 py-1 text-micro text-ink-muted tabular">
+                    Uniques : {liveStats.uniqueVehicles}
                   </p>
                 )}
               </div>
@@ -351,6 +428,28 @@ export function StudioPage() {
             onRemoveZone={(id) => dispatch({ type: "removeZone", id })}
           />
 
+          {/* Le direct **avant** les réglages quand la caméra est la source : c'est
+              l'action qu'on vient chercher, et la placer sous vingt curseurs
+              obligerait à défiler pour la trouver. */}
+          {isCamera && (
+            <RealtimePanel
+              status={live.status}
+              message={live.message}
+              retryable={live.retryable}
+              pacing={live.pacing}
+              stats={live.stats}
+              modelId={live.ready?.modelId ?? null}
+              device={live.ready?.device ?? null}
+              factor={live.factor}
+              sendWidth={sendSize.width}
+              sendHeight={sendSize.height}
+              canStart={liveBlockedReason === null}
+              blockedReason={liveBlockedReason}
+              onStart={startLive}
+              onStop={live.stop}
+            />
+          )}
+
           <SettingsPanels
             settings={settings}
             models={catalogue?.models ?? []}
@@ -391,7 +490,20 @@ export function StudioPage() {
         </aside>
       </div>
 
-      {replay.stats !== null && session.result !== null ? (
+      {/* Le direct affiche le tableau de bord **sans** histogramme ni registre : ces
+          deux-là dérivent de la timeline complète, qui n'existe qu'en différé. Montrer
+          un histogramme vide se lirait comme « aucun véhicule ». */}
+      {live.active && live.stats !== null ? (
+        <ResultsDashboard
+          stats={live.stats}
+          lines={geometry.lines}
+          zones={geometry.zones}
+          // Le débit d'analyse en direct est celui du serveur, déduit de la latence
+          // aller-retour : la seule mesure de performance honnête dont on dispose ici.
+          processingFps={live.pacing.latencyMs === null ? 0 : 1000 / live.pacing.latencyMs}
+          replaying={false}
+        />
+      ) : replay.stats !== null && session.result !== null ? (
         <div className="space-y-6">
           <ResultsDashboard
             stats={replay.stats}
