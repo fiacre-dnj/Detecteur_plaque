@@ -21,6 +21,9 @@ résultat.
 
 ## Démarrage — deux chemins
 
+> Pressé ? [`RUN.md`](RUN.md) ne contient que les commandes, dans l'ordre, avec le
+> dépannage des erreurs que cette machine produit.
+
 ### Pour utiliser l'application : une commande
 
 ```bash
