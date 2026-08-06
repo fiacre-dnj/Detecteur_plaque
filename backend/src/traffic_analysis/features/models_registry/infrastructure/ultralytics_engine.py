@@ -37,7 +37,13 @@ logger = get_logger("traffic_analysis.engine")
 # faux : sur- ou sous-estimer décale tous les horodatages métier.
 DEFAULT_FPS = 30.0
 
-CONFIG_DIR = Path(__file__).resolve().parents[4] / "config"
+# `parents[5]` mène à `backend/` : infrastructure → models_registry → features →
+# traffic_analysis → src → backend. Compté à la main, ce décalage a été **faux**
+# (`parents[4]`, donc `backend/src/config/`) et l'erreur ne se voyait qu'à
+# l'exécution d'une vraie analyse : les tests injectent un `FakeEngine` et ne
+# passent jamais ici. D'où le test d'existence ci-dessous, qui échoue au
+# chargement du module plutôt qu'au milieu d'un job.
+CONFIG_DIR = Path(__file__).resolve().parents[5] / "config"
 TRACKER_CONFIG = CONFIG_DIR / "botsort_reid.yaml"
 
 

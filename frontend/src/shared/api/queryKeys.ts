@@ -9,8 +9,12 @@
 export const queryKeys = {
   health: ["health"] as const,
   models: ["models"] as const,
-  jobs: (filters?: { status?: string; modelId?: string }) => ["jobs", filters ?? {}] as const,
+  // `offset` fait partie de la clé : sans lui, changer de page rendrait la page
+  // précédente depuis le cache, et l'utilisateur croirait à un bug d'affichage.
+  jobs: (filters?: { status?: string; modelId?: string; offset?: string }) =>
+    ["jobs", filters ?? {}] as const,
   job: (jobId: string) => ["jobs", jobId] as const,
   jobVehicles: (jobId: string) => ["jobs", jobId, "vehicles"] as const,
   jobCrossings: (jobId: string) => ["jobs", jobId, "crossings"] as const,
+  presets: ["presets"] as const,
 } as const;

@@ -1,0 +1,151 @@
+/**
+ * Exports CSV et JSON, produits **côté client** depuis le résultat déjà chargé.
+ *
+ * Le serveur sait aussi exporter (`/jobs/{id}/vehicles.csv`), et c'est ce qu'il faut
+ * utiliser pour un job de l'historique. Mais pendant une session de travail, le
+ * résultat est déjà en mémoire : un aller-retour réseau pour reformater des données
+ * qu'on possède serait du gaspillage, et il échouerait sur un job purgé alors que
+ * l'utilisateur a le résultat sous les yeux.
+ *
+ * **Le point délicat du CSV, et il n'est pas cosmétique : le séparateur.** Excel en
+ * configuration française attend le point-virgule et interprète les virgules comme
+ * des décimales. Un CSV séparé par virgules s'ouvre donc **en une seule colonne**,
+ * et l'utilisateur conclut que l'export est cassé. On écrit donc `sep=;` en première
+ * ligne — une directive qu'Excel comprend et que les autres outils ignorent.
+ */
+
+import type { AnalysisResult, VehicleRecord } from "@/shared/api/contracts";
+
+import { directionLabel, formatSceneTime } from "@/features/results-dashboard";
+
+/** Séparateur attendu par Excel en configuration française. */
+const SEPARATOR = ";";
+
+/**
+ * Directive de séparateur, comprise par Excel et ignorée ailleurs.
+ *
+ * Sans elle, un CSV français s'ouvre en une colonne unique dans Excel.
+ */
+const SEP_DIRECTIVE = `sep=${SEPARATOR}\n`;
+
+/**
+ * BOM UTF-8.
+ *
+ * Sans lui, Excel lit le fichier en ANSI et affiche « VÃ©hicule » au lieu de
+ * « Véhicule ». Tous les accents de l'en-tête sont concernés, donc chaque colonne.
+ */
+const BOM = "﻿";
+
+/**
+ * Échappe une valeur de cellule.
+ *
+ * Les guillemets sont doublés et la cellule entourée dès qu'elle contient un
+ * séparateur, un guillemet ou un retour à la ligne — la règle du RFC 4180. Sans
+ * cela, un nom de ligne contenant un point-virgule décalerait toutes les colonnes
+ * suivantes.
+ */
+function cell(value: string | number | null): string {
+  if (value === null) return "";
+  const text = String(value);
+  if (text.includes(SEPARATOR) || text.includes('"') || text.includes("\n")) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function toCsv(headers: readonly string[], rows: readonly (string | number | null)[][]): string {
+  const lines = [headers.map(cell).join(SEPARATOR)];
+  for (const row of rows) lines.push(row.map(cell).join(SEPARATOR));
+  return BOM + SEP_DIRECTIVE + lines.join("\r\n") + "\r\n";
+}
+
+/** Le registre des véhicules en CSV. */
+export function vehiclesCsv(result: AnalysisResult): string {
+  return toCsv(
+    [
+      "Identité",
+      "Type",
+      "Vu de",
+      "Vu à",
+      "Lignes franchies",
+      "Zones visitées",
+      "Ré-identifications",
+      "Vitesse (px/s)",
+      "Vitesse (km/h)",
+      "Score plaque",
+    ],
+    result.vehicles.map((vehicle: VehicleRecord) => [
+      vehicle.globalId,
+      vehicle.label,
+      formatSceneTime(vehicle.firstSeenMs),
+      formatSceneTime(vehicle.lastSeenMs),
+      vehicle.crossedLines
+        .map((crossing) => `${crossing.lineId} ${directionLabel(crossing.direction)}`)
+        .join(" | "),
+      vehicle.zonesVisited.join(" | "),
+      vehicle.reidCount,
+      vehicle.avgSpeedPxS,
+      vehicle.avgSpeedKmh,
+      vehicle.bestPlateScore,
+    ]),
+  );
+}
+
+/** Les franchissements en CSV, un par ligne. */
+export function crossingsCsv(result: AnalysisResult): string {
+  return toCsv(
+    ["Ligne", "Identité", "Piste", "Type", "Sens", "Horodatage", "Image"],
+    result.crossings.map((event) => [
+      event.lineId,
+      event.globalId,
+      event.trackId,
+      event.label,
+      directionLabel(event.direction),
+      formatSceneTime(event.timestampMs),
+      event.frameIndex,
+    ]),
+  );
+}
+
+/**
+ * Le résultat en JSON, **sans la timeline**.
+ *
+ * La timeline pèse l'essentiel du résultat (54 000 lignes sur une analyse de 30
+ * minutes) et n'a de sens que pour rejouer la vidéo, ce qu'un fichier exporté ne
+ * permet pas. L'omettre rend l'export utilisable dans un tableur ou un script ;
+ * l'inclure produirait un fichier de plusieurs centaines de mégaoctets que rien
+ * n'ouvrirait.
+ */
+export function resultJson(result: AnalysisResult): string {
+  const { timeline: _timeline, ...rest } = result;
+  return JSON.stringify(rest, null, 2);
+}
+
+/**
+ * Déclenche le téléchargement d'un contenu texte.
+ *
+ * L'URL `blob:` est **révoquée** après le clic : chaque `createObjectURL` retient
+ * son contenu en mémoire jusqu'à la révocation, et un utilisateur qui exporte dix
+ * fois retiendrait dix copies.
+ */
+export function downloadText(filename: string, content: string, mime: string): void {
+  const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Nom de fichier d'export.
+ *
+ * Le nom du job est repris mais **assaini** : un nom de fichier vidéo peut contenir
+ * des caractères que le système de fichiers refuse, et le téléchargement échouerait
+ * alors silencieusement sur certains navigateurs.
+ */
+export function exportFilename(jobId: string, kind: string, extension: string): string {
+  const safeJob = jobId.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 16);
+  return `comptage-${safeJob}-${kind}.${extension}`;
+}

@@ -129,6 +129,22 @@ OPENAPI_TAGS = [
             "libération après chaque mesure."
         ),
     },
+    {
+        "name": "presets",
+        "description": (
+            "Géométries de comptage enregistrées. Chaque preset porte **la résolution "
+            "pour laquelle il a été tracé** : sans elle, le recharger sur une autre "
+            "vidéo placerait les lignes au mauvais endroit sans aucune erreur."
+        ),
+    },
+    {
+        "name": "realtime",
+        "description": (
+            "Comptage en direct sur un flux de frames JPEG (WebSocket). Le message "
+            "`ready` renvoie les dimensions **réellement reçues** : c'est le filet "
+            "contre une géométrie mal mise à l'échelle."
+        ),
+    },
 ]
 
 

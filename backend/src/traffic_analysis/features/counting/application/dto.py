@@ -28,7 +28,10 @@ from traffic_analysis.features.counting.domain.models import (
     ZoneDef,
 )
 from traffic_analysis.features.counting.domain.reid import ReidOptions
-from traffic_analysis.features.counting.domain.tracking_session import SessionConfig
+from traffic_analysis.features.counting.domain.tracking_session import (
+    AnalysisSession,
+    SessionConfig,
+)
 
 if TYPE_CHECKING:
     from traffic_analysis.features.counting.domain.models import (
@@ -51,6 +54,11 @@ __all__ = [
     "AnalysisCancelled",
     "AnalysisJobConfig",
     "AnalysisResultData",
+    # Réexportée pour le **temps réel**, qui doit utiliser la *même* session que le
+    # mode différé — c'est ce qui garantit qu'un même tracé donne les mêmes chiffres
+    # dans les deux modes. Deux implémentations du comptage divergeraient, et on ne
+    # saurait pas laquelle croire.
+    "AnalysisSession",
     "BoundingBox",
     "CountingLineDef",
     "EngineFrame",
