@@ -8,6 +8,8 @@
  * confondent, et l'utilisateur tire une conclusion fausse sans jamais s'en douter.
  */
 
+import type { ReactNode } from "react";
+
 import type { AnalysisStats, CountingLine, Zone } from "@/shared/api/contracts";
 import { MetricCard } from "@/shared/ui/MetricCard";
 
@@ -21,6 +23,16 @@ interface ResultsDashboardProps {
   processingFps: number;
   /** Vrai en relecture : l'occupation de zone n'est alors pas calculable. */
   replaying: boolean;
+  /**
+   * Contenu inséré **entre la répartition par type et le détail par ligne**.
+   *
+   * Un emplacement et non une place libre en bas : ce qui vient s'y loger — le
+   * journal des franchissements pendant une analyse — se lit juste après les
+   * totaux qu'il détaille, et juste avant le détail par ligne qui les répartit.
+   * Le tableau de bord ignore ce qu'on lui passe ; c'est le Studio qui décide,
+   * comme pour tout le reste du câblage entre features.
+   */
+  children?: ReactNode;
 }
 
 export function ResultsDashboard({
@@ -29,6 +41,7 @@ export function ResultsDashboard({
   zones,
   processingFps,
   replaying,
+  children,
 }: ResultsDashboardProps) {
   const rateAvailable = stats.elapsedMs >= 3_000;
 
@@ -101,6 +114,8 @@ export function ResultsDashboard({
           plus souvent, pas celui de la dernière image.
         </p>
       </section>
+
+      {children}
 
       {lines.length > 0 && (
         <section aria-labelledby="lines-title">

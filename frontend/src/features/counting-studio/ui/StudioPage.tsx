@@ -512,9 +512,6 @@ export function StudioPage() {
             </label>
           )}
 
-          {/* Le journal pendant l'analyse : c'est lui qui rend le total vérifiable
-              événement par événement, au moment où il est compté. */}
-          {analysing && <CrossingLog events={session.events} lineNames={lineNames} />}
 
           {stale && <StaleResultBanner onRelaunch={launch} canRelaunch={canAnalyse} />}
 
@@ -637,7 +634,13 @@ export function StudioPage() {
           // La cadence du serveur, telle que la progression la rapporte.
           processingFps={session.job?.processingFps ?? 0}
           replaying={false}
-        />
+        >
+          {/* Le journal juste après la répartition : c'est lui qui rend le total
+              vérifiable événement par événement, au moment où il est compté. Il
+              se lit donc à côté des chiffres qu'il détaille, et non sous la
+              vidéo, où il éloignait la scène de ses résultats. */}
+          <CrossingLog events={session.events} lineNames={lineNames} />
+        </ResultsDashboard>
       ) : replay.stats !== null && session.result !== null ? (
         <div className="space-y-6">
           <ResultsDashboard
