@@ -20,9 +20,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { Job, JobStatus } from "@/shared/api/contracts";
+import type { CrossingEvent, Job, JobPreview, JobStatus } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
 import { request } from "@/shared/api/httpClient";
+
+import { appendCrossings } from "./previewLog";
 
 /** Intervalle du sondage de secours, imposé par la spécification. */
 export const POLL_INTERVAL_MS = 3_000;
@@ -49,6 +51,16 @@ export interface JobProgressState {
   job: Job | null;
   /** Erreur de suivi — distincte de `job.error`, qui est l'échec de l'analyse. */
   error: string | null;
+  /**
+   * Dernier aperçu reçu, `null` hors analyse en cours.
+   *
+   * Remis à `null` au statut terminal : passé ce point, la relecture du résultat
+   * complet prend le relais, et laisser un aperçu vivant donnerait deux sources
+   * de vérité à l'écran — dont une figée sur l'avant-dernière image.
+   */
+  preview: JobPreview | null;
+  /** Franchissements observés depuis le début de l'analyse, le plus récent en tête. */
+  events: readonly CrossingEvent[];
 }
 
 /**
@@ -61,7 +73,20 @@ export function useJobProgress(
   jobId: string | null,
   onDone?: (job: Job) => void,
 ): JobProgressState {
-  const [state, setState] = useState<JobProgressState>({ job: null, error: null });
+  const [state, setState] = useState<Pick<JobProgressState, "job" | "error">>({
+    job: null,
+    error: null,
+  });
+
+  /**
+   * L'aperçu vit dans son **propre** état.
+   *
+   * Le mélanger à celui de la progression ferait passer chaque image reçue par
+   * `mergeProgress`, qui n'a rien à en dire, et rendrait sa monotonie — la
+   * propriété qui empêche la barre de reculer — beaucoup plus difficile à tenir.
+   */
+  const [preview, setPreview] = useState<JobPreview | null>(null);
+  const [events, setEvents] = useState<readonly CrossingEvent[]>([]);
 
   /** `onDone` dans un `ref` : sinon changer la callback relance tout le suivi. */
   const doneCallback = useRef(onDone);
@@ -76,16 +101,22 @@ export function useJobProgress(
       if (isTerminal(merged.status) && notified.current !== merged.jobId) {
         notified.current = merged.jobId;
         doneCallback.current?.(merged);
+        // Fin de l'analyse : l'aperçu s'efface au profit de la relecture du
+        // résultat complet, qui dit la même chose en mieux.
+        setPreview(null);
       }
       return { job: merged, error: null };
     });
   }, []);
 
   // Nouveau job : on repart d'un état vide, sinon la barre afficherait la
-  // progression du job précédent pendant la première seconde.
+  // progression du job précédent pendant la première seconde — et le canvas
+  // dessinerait les boîtes de l'analyse précédente sur la nouvelle vidéo.
   useEffect(() => {
     notified.current = null;
     setState({ job: null, error: null });
+    setPreview(null);
+    setEvents([]);
   }, [jobId]);
 
   /* ── Le sondage : la vérité ────────────────────────────────────────────── */
@@ -148,7 +179,24 @@ export function useJobProgress(
       }
     };
 
+    /**
+     * L'aperçu : ce que le serveur voit, pendant qu'il le voit.
+     *
+     * Ignoré silencieusement s'il est illisible, comme la progression : un octet
+     * malformé ne doit pas fermer le flux ni interrompre l'analyse à l'écran.
+     */
+    const handlePreview = (event: MessageEvent<string>): void => {
+      try {
+        const incoming = JSON.parse(event.data) as JobPreview;
+        setPreview(incoming);
+        setEvents((log) => appendCrossings(log, incoming.crossings));
+      } catch {
+        // Rien à rattraper : le prochain aperçu arrive dans 200 ms.
+      }
+    };
+
     source.addEventListener("progress", handle);
+    source.addEventListener("preview", handlePreview as EventListener);
     source.addEventListener("end", (event) => {
       handle(event as MessageEvent<string>);
       // Fermé explicitement : sans cela, `EventSource` retenterait de se
@@ -162,7 +210,7 @@ export function useJobProgress(
     return () => source.close();
   }, [jobId, apply]);
 
-  return state;
+  return { ...state, preview, events };
 }
 
 /** Libellé français d'un statut, pour l'affichage. */

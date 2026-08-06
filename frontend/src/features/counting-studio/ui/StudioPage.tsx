@@ -29,7 +29,7 @@ import {
   type Selection,
 } from "@/entities/geometry";
 import { useModels } from "@/entities/model";
-import { JobProgressBar } from "@/features/analysis-job";
+import { CrossingLog, JobProgressBar, useFollowAnalysis } from "@/features/analysis-job";
 import {
   SettingsPanels,
   loadSettings,
@@ -37,7 +37,7 @@ import {
   toRequest,
   type AnalysisSettings,
 } from "@/features/analysis-settings";
-import { GeometryCanvas, GeometryPanel } from "@/features/geometry-editor";
+import { GeometryCanvas, GeometryPanel, useLineFlashes } from "@/features/geometry-editor";
 import { SourcePicker, VideoScene, useMediaSource } from "@/features/media-source";
 import {
   RealtimePanel,
@@ -49,7 +49,7 @@ import { ResultsDashboard } from "@/features/results-dashboard";
 import { chooseBucketMs, flowBuckets, useReplay, vehiclesAt } from "@/features/timeline-replay";
 import { VehicleRegistry } from "@/features/vehicle-registry";
 import { TransportBar, useVideoTransport } from "@/features/video-transport";
-import type { Point, Preset } from "@/shared/api/contracts";
+import type { CrossingEvent, Point, Preset } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
 import { Button } from "@/shared/ui/Button";
 import { MetricCard } from "@/shared/ui/MetricCard";
@@ -84,6 +84,8 @@ interface SceneSize {
 }
 
 const NO_TRAILS: ReadonlyMap<number, readonly Point[]> = new Map();
+/** Référence figée : un tableau vide recréé à chaque rendu relancerait les flashs. */
+const NO_CROSSINGS: readonly CrossingEvent[] = [];
 
 export function StudioPage() {
   const { data: health } = useHealth();
@@ -96,6 +98,14 @@ export function StudioPage() {
   const [scene, setScene] = useState<SceneSize | null>(null);
   const [ended, setEnded] = useState(false);
   const [presetsOpen, setPresetsOpen] = useState(false);
+  /**
+   * La vidéo suit-elle l'analyse ?
+   *
+   * Activé par défaut : c'est la raison d'être de l'aperçu — voir le modèle
+   * travailler sur l'image qu'il analyse. Désactivable parce qu'on veut parfois
+   * s'arrêter sur une image pour la regarder pendant que l'analyse continue.
+   */
+  const [follow, setFollow] = useState(true);
 
   /**
    * Les réglages, relus du stockage **une seule fois** à l'initialisation.
@@ -287,26 +297,65 @@ export function StudioPage() {
   );
 
   /**
-   * Les pistes à dessiner : celles du direct s'il tourne, sinon celles de la relecture.
+   * L'aperçu de l'analyse en cours — **s'il décrit bien la vidéo affichée**.
    *
-   * **Remises à l'échelle source** avant d'atteindre le canvas, qui ne connaît qu'un
-   * seul repère. Faire la conversion ici et non dans le canvas évite une branche
-   * « si direct » dans le code de dessin, qui finirait par diverger.
+   * La comparaison de dimensions est le filet de la panne silencieuse : la balise
+   * `<video>` et le décodeur du serveur peuvent ne pas être d'accord sur la taille
+   * d'une source exotique (SAR non carré, rotation portée par les métadonnées).
+   * Dessiner quand même produirait des boîtes décalées que rien n'expliquerait, et
+   * on conclurait à un défaut de détection. Mieux vaut ne rien dessiner et le dire.
    */
-  const canvasTracks = useMemo(
-    () => (live.active ? unscaleTracks(live.tracks, live.factor) : replay.tracks),
-    [live.active, live.tracks, live.factor, replay.tracks],
+  const previewMismatch =
+    session.preview !== null &&
+    scene !== null &&
+    (session.preview.frameWidth !== scene.width || session.preview.frameHeight !== scene.height);
+
+  const preview = previewMismatch || live.active ? null : session.preview;
+
+  /**
+   * La vidéo se cale sur l'image que le serveur analyse.
+   *
+   * Uniquement sur une source **fichier** : la vidéo locale est alors le même
+   * fichier que celui envoyé, donc le temps de scène désigne exactement la même
+   * image des deux côtés. Une caméra n'a pas de temps de scène commun.
+   */
+  useFollowAnalysis(
+    video.current,
+    preview?.timestampMs ?? null,
+    follow && media.source?.file !== undefined,
   );
 
   /**
-   * Les statistiques à afficher : celles du direct pendant une session, sinon celles
-   * de la tête de lecture.
+   * Les pistes à dessiner : le direct s'il tourne, sinon l'aperçu de l'analyse en
+   * cours, sinon la relecture.
+   *
+   * **Remises à l'échelle source** avant d'atteindre le canvas, qui ne connaît qu'un
+   * seul repère. Faire la conversion ici et non dans le canvas évite une branche
+   * « si direct » dans le code de dessin, qui finirait par diverger. L'aperçu, lui,
+   * est déjà en pixels source : le serveur analyse la vidéo telle qu'elle est.
+   */
+  const canvasTracks = useMemo(() => {
+    if (live.active) return unscaleTracks(live.tracks, live.factor);
+    if (preview !== null) return preview.tracks;
+    return replay.tracks;
+  }, [live.active, live.tracks, live.factor, preview, replay.tracks]);
+
+  /**
+   * Les statistiques à afficher : direct, puis aperçu, puis tête de lecture.
    *
    * Une seule source pour tout l'écran — badge du canvas, tableau de bord, registre.
    * Deux chemins de statistiques finiraient par se contredire à l'écran, et
    * l'utilisateur n'aurait aucun moyen de savoir lequel croire.
    */
-  const liveStats = live.active ? live.stats : replay.stats;
+  const liveStats = live.active ? live.stats : (preview?.stats ?? replay.stats);
+
+  /**
+   * Les franchissements qui viennent d'être comptés — ceux qui font clignoter leur
+   * ligne. La **dernière salve**, jamais le cumul : rallumer toutes les lignes à
+   * chaque image ferait d'un signal un bruit de fond.
+   */
+  const flashCrossings = live.active ? live.lastCrossings : (preview?.crossings ?? NO_CROSSINGS);
+  const lineFlashes = useLineFlashes(flashCrossings);
 
   /**
    * Charge un preset **déjà mis à l'échelle par le serveur**.
@@ -369,7 +418,12 @@ export function StudioPage() {
                 // les positions d'une timeline, et le direct n'en garde aucune — les
                 // fabriquer côté client dupliquerait un calcul du serveur, avec les
                 // frames abandonnées comme trous.
-                trails={settings.showTrails && !live.active ? replay.trails : NO_TRAILS}
+                trails={
+                  settings.showTrails && !live.active && preview === null
+                    ? replay.trails
+                    : NO_TRAILS
+                }
+                lineFlashes={lineFlashes}
                 selectedId={selectedId}
                 drawingZone={geometry.drawingZone}
                 showTrails={settings.showTrails}
@@ -409,6 +463,14 @@ export function StudioPage() {
                     → {sendSize.width}×{sendSize.height}
                   </p>
                 )}
+                {/* L'image analysée, pendant l'analyse. Un décalage entre la vidéo
+                    et l'overlay s'explique alors d'un coup d'œil, au lieu de se
+                    lire comme un défaut de détection. */}
+                {preview !== null && (
+                  <p className="rounded-badge bg-base/80 px-2 py-1 text-micro text-ink-muted tabular">
+                    Image {preview.frameIndex}
+                  </p>
+                )}
                 {liveStats !== null && (
                   <p className="rounded-badge bg-base/80 px-2 py-1 text-micro text-ink-muted tabular">
                     Uniques : {liveStats.uniqueVehicles}
@@ -425,6 +487,34 @@ export function StudioPage() {
           {busy && (
             <JobProgressBar upload={session.upload} job={session.job} onCancel={session.cancel} />
           )}
+
+          {/* Le désaccord de dimensions : dit, jamais tu. Sans ce message, l'écran
+              montrerait une analyse qui progresse et un canvas vide, ce qui se lit
+              comme « le modèle ne détecte rien ». */}
+          {previewMismatch && (
+            <p role="alert" className="text-caption text-negative">
+              L'aperçu est suspendu : le serveur analyse des images de{" "}
+              {session.preview?.frameWidth}×{session.preview?.frameHeight} pixels, alors
+              que le lecteur affiche du {scene?.width}×{scene?.height}. Les compteurs,
+              eux, restent justes — seul le dessin est suspendu.
+            </p>
+          )}
+
+          {analysing && media.source?.file !== undefined && (
+            <label className="flex items-center gap-2 text-small text-ink-muted">
+              <input
+                type="checkbox"
+                checked={follow}
+                onChange={(event) => setFollow(event.target.checked)}
+                className="size-4 accent-accent"
+              />
+              Suivre l'analyse — la vidéo se cale sur l'image analysée
+            </label>
+          )}
+
+          {/* Le journal pendant l'analyse : c'est lui qui rend le total vérifiable
+              événement par événement, au moment où il est compté. */}
+          {analysing && <CrossingLog events={session.events} lineNames={lineNames} />}
 
           {stale && <StaleResultBanner onRelaunch={launch} canRelaunch={canAnalyse} />}
 
@@ -486,10 +576,15 @@ export function StudioPage() {
             // sans plaques que rien n'expliquerait.
             plateAvailable={catalogue?.plateAvailable ?? false}
             hasZones={geometry.zones.length > 0}
-            // Le diagnostic de la dernière analyse. `null` avant : le panneau ne
-            // montre alors rien plutôt que six zéros, qui se liraient comme un
-            // résultat.
-            diagnostics={session.result?.stats.diagnostics ?? null}
+            // Le diagnostic **vivant** pendant l'analyse, celui de la dernière
+            // sinon. C'est ce qui permet de comprendre pendant que ça tourne
+            // pourquoi un véhicule n'est pas compté — masqué, pas confirmé,
+            // écarté comme doublon — au lieu de l'apprendre à la fin.
+            // `null` avant toute analyse : le panneau ne montre alors rien plutôt
+            // que six zéros, qui se liraient comme un résultat.
+            diagnostics={
+              liveStats?.diagnostics ?? session.result?.stats.diagnostics ?? null
+            }
             disabled={busy}
             onChange={updateSettings}
           />
@@ -529,6 +624,18 @@ export function StudioPage() {
           // Le débit d'analyse en direct est celui du serveur, déduit de la latence
           // aller-retour : la seule mesure de performance honnête dont on dispose ici.
           processingFps={live.pacing.latencyMs === null ? 0 : 1000 / live.pacing.latencyMs}
+          replaying={false}
+        />
+      ) : preview !== null ? (
+        // Pendant l'analyse : les compteurs montent en direct, sans histogramme ni
+        // registre — les deux dérivent de la timeline complète, qui n'existe qu'à
+        // la fin. Un histogramme vide se lirait comme « aucun véhicule ».
+        <ResultsDashboard
+          stats={preview.stats}
+          lines={geometry.lines}
+          zones={geometry.zones}
+          // La cadence du serveur, telle que la progression la rapporte.
+          processingFps={session.job?.processingFps ?? 0}
           replaying={false}
         />
       ) : replay.stats !== null && session.result !== null ? (

@@ -157,6 +157,24 @@ class TestCeQueLApercuPorte:
         derniere = next(track for track in samples[-1].tracks if track.track_id == 1)
         assert premiere.box.y != derniere.box.y
 
+    def test_les_compteurs_d_un_apercu_sont_figes_a_l_instant_de_sa_publication(
+        self, video: Path
+    ) -> None:
+        """Un bloc de statistiques est une **photographie**, pas une vue.
+
+        `stats()` recopiait le dictionnaire `by_line` mais pas ses tallies : ceux-ci
+        continuaient de grossir dans l'objet déjà rendu, tandis que le scalaire
+        `crossings`, lui, restait figé. Un aperçu conservé quelques millisecondes
+        avant sérialisation violait donc son propre invariant —
+        `crossings == Σ by_line[*].total` — sur des données pourtant justes.
+        C'est la fixture du contrat frontend qui l'a révélé.
+        """
+        samples, _ = _run(video)
+
+        for sample in samples:
+            derived = sum(tally.total for tally in sample.stats.by_line.values())
+            assert sample.stats.crossings == derived
+
     def test_l_horodatage_est_du_temps_de_scene(self, video: Path) -> None:
         """`frame_index / fps`, jamais l'horloge murale (invariant 1).
 

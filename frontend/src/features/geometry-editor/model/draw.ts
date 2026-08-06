@@ -20,6 +20,8 @@ import type { Box, CountingLine, Point, TrackSnapshot, Zone } from "@/shared/api
 import { CANVAS, TRAJECTORY_ALPHA, classColor } from "@/shared/config/palettes";
 import { midpoint, positiveNormal } from "@/shared/lib/geometry";
 
+import type { LineFlash } from "./lineFlashes";
+
 /** Conversion pixels source → pixels de dessin du canvas. */
 export interface Viewport {
   /** Facteur d'échelle, `devicePixelRatio` inclus. */
@@ -46,6 +48,15 @@ export interface DrawOptions {
   maskOutsideZones: boolean;
   /** Images minimales avant qu'une piste puisse compter — pointillés en dessous. */
   minHits: number;
+  /**
+   * Lignes qui viennent de compter, par identifiant.
+   *
+   * Vide en dehors d'un franchissement. C'est ce qui relie à l'œil le tracé et le
+   * compteur : un total qui monte ne dit pas **quelle** ligne a compté ni dans
+   * quel sens, et sur trois lignes proches c'est précisément ce qui manque pour
+   * valider une géométrie.
+   */
+  lineFlashes: ReadonlyMap<string, LineFlash>;
 }
 
 /** Dessine la scène complète, dans l'ordre imposé. */
@@ -71,7 +82,13 @@ export function drawScene(
     drawTrack(ctx, view, track, options.minHits);
   }
   for (const line of options.lines) {
-    drawLine(ctx, view, line, line.id === options.selectedId);
+    drawLine(
+      ctx,
+      view,
+      line,
+      line.id === options.selectedId,
+      options.lineFlashes.get(line.id) ?? null,
+    );
   }
   if (options.draft.length > 0) {
     drawDraft(ctx, view, options.draft, options.cursor);
@@ -137,17 +154,35 @@ function drawZone(
  * contre `sideOfLine` : c'est elle qui dit à l'utilisateur quel sens le serveur
  * appellera `+1`. Une flèche inversée ferait lire des sens faux sous des totaux
  * justes — le pire mode de défaillance, parce qu'il est silencieux.
+ *
+ * `flash` marque le moment où **cette** ligne compte : un halo dans sa propre
+ * couleur, et le sens écrit à côté. Pas de teinte nouvelle — la couleur d'une
+ * ligne dit déjà de quelle ligne il s'agit, lui faire dire aussi un sens
+ * rendrait les deux illisibles.
  */
 function drawLine(
   ctx: CanvasRenderingContext2D,
   view: Viewport,
   line: CountingLine,
   selected: boolean,
+  flash: LineFlash | null,
 ): void {
   const a = toCanvas(view, line.a);
   const b = toCanvas(view, line.b);
 
   ctx.save();
+  if (flash !== null) {
+    // Le halo d'abord, sous le trait : dessiné par-dessus, il l'effacerait.
+    ctx.save();
+    ctx.globalAlpha = flash.intensity;
+    ctx.strokeStyle = line.color;
+    ctx.lineWidth = 3 + 14 * flash.intensity;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    ctx.restore();
+  }
   ctx.strokeStyle = line.color;
   ctx.lineWidth = selected ? 4 : 3;
   ctx.beginPath();
@@ -181,6 +216,22 @@ function drawLine(
   drawHandle(ctx, view, line.a, line.color, selected);
   drawHandle(ctx, view, line.b, line.color, selected);
   drawLabelAt(ctx, midpoint(a, b), line.name, line.color, { dy: -16 });
+
+  if (flash !== null) {
+    // Le sens en toutes lettres, sous l'étiquette : c'est ce qui distingue
+    // « la ligne a compté » de « la ligne a compté dans ce sens-là », et c'est
+    // la seconde information qui permet de valider une géométrie.
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, 0.35 + flash.intensity);
+    drawLabelAt(
+      ctx,
+      midpoint(a, b),
+      flash.direction >= 0 ? "+1" : "−1",
+      line.color,
+      { dy: 18 },
+    );
+    ctx.restore();
+  }
 }
 
 /** Trajectoires, reconstituées côté client depuis les frames précédentes. */

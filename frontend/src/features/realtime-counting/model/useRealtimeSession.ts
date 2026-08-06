@@ -58,6 +58,14 @@ export interface RealtimeSessionState {
   tracks: readonly TrackSnapshot[];
   /** Franchissements cumulés depuis le début de la session. */
   crossings: readonly CrossingEvent[];
+  /**
+   * Franchissements de la **dernière image seulement**.
+   *
+   * Distinct du cumul, et pas par commodité : ce qui vient de se produire est ce
+   * qui doit clignoter à l'écran. Faire clignoter le cumul rallumerait toutes les
+   * lignes à chaque image, et le signal ne voudrait plus rien dire.
+   */
+  lastCrossings: readonly CrossingEvent[];
   stats: AnalysisStats | null;
   pacing: PacingStats;
   /** Modèle et device **réellement** utilisés, tels que `ready` les a annoncés. */
@@ -70,6 +78,7 @@ const IDLE: RealtimeSessionState = {
   retryable: false,
   tracks: [],
   crossings: [],
+  lastCrossings: [],
   stats: null,
   pacing: EMPTY_PACING,
   ready: null,
@@ -253,6 +262,7 @@ export function useRealtimeSession(
         // trajectoires, et un oubli passerait inaperçu.
         tracks: message.tracks,
         crossings: crossings.current,
+        lastCrossings: message.crossings,
         stats: message.stats,
         pacing: pacer.current.snapshot(),
       }));

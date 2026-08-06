@@ -28,6 +28,10 @@ import { clampToSource } from "@/shared/lib/geometry";
 
 import { drawScene, type Viewport } from "../model/draw";
 import { closesPolygon, hitTest, repeatsLastVertex, selectionOf, type Hit } from "../model/hitTest";
+import type { LineFlash } from "../model/lineFlashes";
+
+/** Aucun flash — table figée, pour ne pas rerendre le canvas à chaque image. */
+const NO_FLASHES: ReadonlyMap<string, LineFlash> = new Map();
 
 export interface GeometryCanvasProps {
   /** Dimensions de la **vidéo source** — le repère de toute la géométrie. */
@@ -42,6 +46,8 @@ export interface GeometryCanvasProps {
   showTrails: boolean;
   maskOutsideZones: boolean;
   minHits: number;
+  /** Lignes qui viennent de compter. Omis hors comptage. */
+  lineFlashes?: ReadonlyMap<string, LineFlash>;
   onSelect: (selection: { kind: "line" | "zone"; id: string } | null) => void;
   onMoveLine: (id: string, a: Point, b: Point) => void;
   onMoveZone: (id: string, points: Point[]) => void;
@@ -137,6 +143,7 @@ export function GeometryCanvas(props: GeometryCanvasProps) {
       showTrails: props.showTrails,
       maskOutsideZones: props.maskOutsideZones,
       minHits: props.minHits,
+      lineFlashes: props.lineFlashes ?? NO_FLASHES,
     });
   }, [
     sourceWidth,
@@ -149,6 +156,10 @@ export function GeometryCanvas(props: GeometryCanvasProps) {
     props.showTrails,
     props.maskOutsideZones,
     props.minHits,
+    // Sans cette dépendance, le halo apparaîtrait à la première image et ne
+    // s'éteindrait jamais : la boucle d'animation change la table, pas les
+    // lignes, et le canvas ne redessinerait donc pas.
+    props.lineFlashes,
   ]);
 
   // Redessine à chaque changement de données **et** de brouillon.

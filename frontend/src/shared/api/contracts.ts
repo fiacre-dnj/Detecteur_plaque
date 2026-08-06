@@ -325,6 +325,35 @@ export interface AnalysisResult {
   stats: AnalysisStats;
 }
 
+/**
+ * Un aperçu de l'analyse **en cours**, reçu sur l'événement SSE `preview`.
+ *
+ * Même forme que le `frameResult` du temps réel, et pour la même raison : les
+ * deux sortent des mêmes sérialiseurs côté serveur, donc l'overlay les dessine
+ * sans branche. Deux chemins de rendu finiraient par diverger, et l'écran
+ * montrerait deux vérités selon le mode.
+ *
+ * `crossings` et `zoneEvents` sont **cumulés depuis l'aperçu précédent**, pas
+ * ceux de la seule image publiée : le serveur n'en échantillonne qu'une sur N,
+ * et un journal amputé contredirait ses propres compteurs.
+ *
+ * `frameWidth` / `frameHeight` sont les dimensions **décodées par le serveur**.
+ * Elles ne servent pas au dessin — tout est déjà en pixels source — mais à
+ * refuser de dessiner si la balise `<video>` locale n'est pas d'accord.
+ */
+export interface JobPreview {
+  jobId: string;
+  frameIndex: number;
+  /** Temps de **scène**, celui sur lequel caler la vidéo locale. */
+  timestampMs: number;
+  frameWidth: number;
+  frameHeight: number;
+  tracks: TrackSnapshot[];
+  crossings: CrossingEvent[];
+  zoneEvents: ZoneEntryEvent[];
+  stats: AnalysisStats;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Presets de géométrie — miroir de `presets/api/schemas.py`.
    ═══════════════════════════════════════════════════════════════════════════ */

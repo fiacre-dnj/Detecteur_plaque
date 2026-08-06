@@ -18,7 +18,8 @@
 import { describe, expect, it } from "bun:test";
 
 import fixture from "./__fixtures__/analysis-result.json";
-import type { AnalysisResult, TrackSnapshot } from "./contracts";
+import previewFixture from "./__fixtures__/job-preview.json";
+import type { AnalysisResult, JobPreview, TrackSnapshot } from "./contracts";
 
 /**
  * L'assignation **est** le test.
@@ -193,6 +194,80 @@ describe("contrat du diagnostic", () => {
       "rescuedByLowScore",
       "tentativeTracks",
     ]);
+  });
+});
+
+describe("contrat de l'aperçu d'une analyse en cours", () => {
+  /**
+   * Produite par `JobManager._preview_payload` sur une analyse factice — donc
+   * par le code réellement servi, pas par une main humaine qui recopierait des
+   * noms de champs.
+   */
+  const preview: JobPreview = previewFixture as JobPreview;
+
+  it("porte les blocs de premier niveau attendus", () => {
+    expect(Object.keys(preview).sort()).toEqual([
+      "crossings",
+      "frameHeight",
+      "frameIndex",
+      "frameWidth",
+      "jobId",
+      "stats",
+      "timestampMs",
+      "tracks",
+      "zoneEvents",
+    ]);
+  });
+
+  it("décrit une piste exactement comme la timeline", () => {
+    // C'est cette égalité de forme qui permet à `drawScene` de dessiner
+    // l'aperçu, la relecture et le direct sans une seule branche.
+    const [track] = preview.tracks;
+    expect(track).toBeDefined();
+    if (track === undefined) return;
+
+    const fromTimeline = result.timeline
+      .flatMap((row) => row.tracks)
+      .find((candidate) => candidate.plates.length > 0);
+    expect(fromTimeline).toBeDefined();
+    if (fromTimeline === undefined) return;
+
+    expect(Object.keys(track).sort()).toEqual(Object.keys(fromTimeline).sort());
+  });
+
+  it("annonce les dimensions décodées par le serveur", () => {
+    // Le client les compare à celles de sa balise `<video>` et refuse de
+    // dessiner en cas de désaccord : sans ce filet, une géométrie mal ancrée
+    // produirait des boîtes décalées que rien n'expliquerait.
+    expect(preview.frameWidth).toBe(result.video.width);
+    expect(preview.frameHeight).toBe(result.video.height);
+  });
+
+  it("horodate en temps de scène, cohérent avec son index d'image", () => {
+    expect(preview.timestampMs).toBeCloseTo(
+      (preview.frameIndex / result.video.fps) * 1000,
+      3,
+    );
+  });
+
+  it("porte les compteurs courants, pas seulement des boîtes", () => {
+    // Sans eux, l'aperçu montrerait des véhicules détectés sans jamais dire
+    // s'ils sont comptés — c'est-à-dire la moitié de ce qu'on cherche à valider.
+    expect(preview.stats.uniqueVehicles).toBeGreaterThan(0);
+    expect(preview.stats.crossings).toBe(
+      Object.values(preview.stats.byLine).reduce((sum, tally) => sum + tally.total, 0),
+    );
+  });
+
+  it("marque ✓ une piste comptée, et elle seule", () => {
+    // Le badge dérive du tally serveur (invariant 5) : un franchissement
+    // supprimé par le garde d'identité ne doit pas peindre ✓.
+    const counted = preview.tracks.filter((track) => track.counted).map((t) => t.globalId);
+    const crossed = new Set(preview.crossings.map((crossing) => crossing.globalId));
+
+    for (const globalId of crossed) {
+      expect(counted).toContain(globalId);
+    }
   });
 });
 

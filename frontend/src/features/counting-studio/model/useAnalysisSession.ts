@@ -17,13 +17,30 @@ import { useCallback, useRef, useState } from "react";
 import { cancelJob, fetchResult, uploadJob, type UploadProgress } from "@/features/analysis-job";
 import { useJobProgress } from "@/features/analysis-job";
 import { geometrySignature } from "@/entities/geometry";
-import type { AnalysisRequest, AnalysisResult, CountingLine, Job, Zone } from "@/shared/api/contracts";
+import type {
+  AnalysisRequest,
+  AnalysisResult,
+  CountingLine,
+  CrossingEvent,
+  Job,
+  JobPreview,
+  Zone,
+} from "@/shared/api/contracts";
 
 export interface AnalysisSession {
   /** Job en cours ou terminé, `null` si aucune analyse n'a été lancée. */
   job: Job | null;
   upload: UploadProgress | null;
   result: AnalysisResult | null;
+  /**
+   * Aperçu de l'analyse **en cours**, `null` avant et après.
+   *
+   * Remonté tel quel : c'est le Studio qui décide de le dessiner, parce que lui
+   * seul sait si une session temps réel occupe déjà le canvas.
+   */
+  preview: JobPreview | null;
+  /** Franchissements observés pendant l'analyse, le plus récent en tête. */
+  events: readonly CrossingEvent[];
   /** Message d'erreur destiné à l'utilisateur. */
   error: string | null;
   /** Vrai entre le clic et le premier octet envoyé. */
@@ -60,7 +77,7 @@ export function useAnalysisSession(): AnalysisSession {
       .catch((cause: unknown) => setError(messageOf(cause)));
   }, []);
 
-  const { job } = useJobProgress(jobId, handleDone);
+  const { job, preview, events } = useJobProgress(jobId, handleDone);
 
   const start = useCallback(
     async (
@@ -119,7 +136,19 @@ export function useAnalysisSession(): AnalysisSession {
     setLaunchSignature(null);
   }, []);
 
-  return { job, upload, result, error, starting, launchSignature, start, cancel, reset };
+  return {
+    job,
+    upload,
+    result,
+    preview,
+    events,
+    error,
+    starting,
+    launchSignature,
+    start,
+    cancel,
+    reset,
+  };
 }
 
 function messageOf(cause: unknown): string {

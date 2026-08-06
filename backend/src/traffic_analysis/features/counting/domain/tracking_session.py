@@ -26,11 +26,13 @@ from traffic_analysis.features.counting.domain.models import (
     Diagnostics,
     FrameOutcome,
     LineCrossing,
+    LineTally,
     PlateDetection,
     SessionTrack,
     TrackObservation,
     VehicleRecord,
     ZoneDef,
+    ZoneTally,
 )
 from traffic_analysis.features.counting.domain.reid import (
     IdentityGallery,
@@ -81,6 +83,20 @@ class SessionConfig:
     max_lost_ms: float = 2500.0
     pixels_per_meter: float | None = None
     reid: ReidOptions = field(default_factory=ReidOptions)
+
+
+def _copy_line_tally(tally: LineTally) -> LineTally:
+    """Copie profonde d'un tally de ligne — le `by_class` compris."""
+    return LineTally(
+        total=tally.total,
+        by_class=dict(tally.by_class),
+        positive=tally.positive,
+        negative=tally.negative,
+    )
+
+
+def _copy_zone_tally(tally: ZoneTally) -> ZoneTally:
+    return ZoneTally(entries=tally.entries, inside=tally.inside, by_class=dict(tally.by_class))
 
 
 @dataclass(slots=True)
@@ -466,6 +482,14 @@ class AnalysisSession:
 
         `crossings` et `by_class` sont **dérivés** de `by_line` : les accumuler en
         parallèle produirait tôt ou tard deux compteurs qui se contredisent.
+
+        **C'est une photographie, pas une vue.** Les tallies sont recopiés, et pas
+        seulement leur dictionnaire : `dict(by_line)` ne copie que les clés, et les
+        `LineTally` continueraient de grossir dans l'objet qu'on vient de rendre.
+        Un appelant qui garde ce bloc quelques millisecondes — le temps de le
+        publier — verrait alors `total` avancer pendant que `crossings`, lui, reste
+        figé. Le résultat est un bloc qui **viole son propre invariant** :
+        `crossings != Σ by_line[*].total`, sur des données pourtant justes.
         """
         by_line = self._counter.by_line
         crossings = sum(tally.total for tally in by_line.values())
@@ -496,8 +520,10 @@ class AnalysisSession:
             unique_by_class=self._gallery.count_by_class(),
             crossings=crossings,
             by_class=by_class,
-            by_line=dict(by_line),
-            by_zone=dict(self._zones.by_zone),
+            by_line={line_id: _copy_line_tally(tally) for line_id, tally in by_line.items()},
+            by_zone={
+                zone_id: _copy_zone_tally(tally) for zone_id, tally in self._zones.by_zone.items()
+            },
             reid_hits=self._gallery.hits,
             vehicles_per_minute=vehicles_per_minute,
             active_tracks=len(self._tracks),
