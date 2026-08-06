@@ -215,6 +215,11 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
    `DESIGN.md` remplacent le `bg-slate-950` de `prompt/09`, et l'accent vert est
    **strictement fonctionnel** — la couleur du canvas encode une donnée, donc le
    vert n'est jamais une couleur de classe.
+7. **Thème sombre par défaut, clair au choix** (bascule dans l'entête). Le clair
+   ne fait que redéfinir les jetons sous `:root[data-theme="light"]` : aucune
+   variante `dark:` dans les composants, et **les couleurs du canvas ne changent
+   pas** — elles sont posées sur de la vidéo, pas sur le fond de page. Amendement
+   d'[ADR 0004](docs/adr/0004-systeme-de-design.md).
 
 ## Pièges d'environnement de cette machine
 

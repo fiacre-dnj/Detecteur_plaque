@@ -84,8 +84,86 @@
   --shadow-inset: inset 0 0 0 1px #7c7c7c;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   Thème clair — les mêmes jetons, d'autres valeurs.
+
+   **Aucun composant ne change.** Les utilitaires Tailwind compilent en
+   `var(--color-…)` ; redéfinir ces variables sous `[data-theme="light"]` suffit,
+   et c'est ce qui évite d'écrire `dark:` sur trois cents éléments — une variante
+   par élément est une variante qu'on oublie quelque part.
+
+   Les couleurs **sémantiques et l'accent sont plus foncés qu'en sombre**, et ce
+   n'est pas cosmétique : `#1ed760` sur blanc tombe sous 2:1, illisible. La règle
+   d'ADR 0004 tient toujours — l'accent reste strictement fonctionnel, il change
+   seulement de valeur pour rester lisible sur un fond clair.
+
+   Ce qui ne change **pas** : les couleurs du canvas (`shared/config/palettes.ts`).
+   Elles sont posées sur des images de vidéo, pas sur le fond de la page — une
+   boîte bleue sur du bitume reste une boîte bleue sur du bitume, quel que soit le
+   thème de l'interface autour.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root[data-theme="light"] {
+  /* ── Surfaces ─────────────────────────────────────────────────────────────
+     La hiérarchie s'inverse : en sombre, « élevé » veut dire plus clair ; en
+     clair, plus contrasté que le fond. L'ordre des jetons, lui, est conservé,
+     donc aucun composant n'a besoin de le savoir. */
+  --color-base: #f4f6f8;
+  --color-surface: #ffffff;
+  --color-surface-2: #eef1f5;
+  --color-elevated: #e4e8ee;
+  --color-elevated-2: #dde2e9;
+
+  /* ── Texte ─────────────────────────────────────────────────────────────── */
+  --color-ink: #10131a;
+  --color-ink-muted: #454b56;
+  /* Mesuré, pas estimé : `#667081` tombait à 4,19:1 sur les surfaces claires,
+     sous le seuil AA de 4,5 — et ce jeton porte justement les aides et les
+     libellés de 10 à 12 px, ceux qui en ont le plus besoin. */
+  --color-ink-dim: #5b6472;
+
+  /* ── Bordures ──────────────────────────────────────────────────────────── */
+  --color-line: #cfd5de;
+  --color-line-muted: #98a1af;
+
+  /* ── Accent — fonctionnel, assombri pour rester lisible ─────────────────── */
+  --color-accent: #0e7a3c;
+  --color-accent-line: #0b6531;
+  /* L'encre sur l'accent passe au blanc : noir sur ce vert foncé tomberait à
+     2,4:1, blanc y est à 4,9:1. */
+  --color-accent-ink: #ffffff;
+
+  /* ── Sémantique ────────────────────────────────────────────────────────── */
+  --color-negative: #c02637;
+  /* L'orange est la couleur la plus difficile à rendre lisible sur du clair :
+     mesuré à 3,08:1 sur le fond teinté du badge d'état, il descend encore. */
+  --color-warning: #7a4200;
+  --color-info: #1a5fbf;
+
+  /* ── Ombres ──────────────────────────────────────────────────────────────
+     Légères : l'ombre lourde du thème sombre existait parce qu'une ombre
+     subtile est invisible sur du quasi-noir. Sur du clair, la même ombre
+     salirait la page. */
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.06), 0 6px 16px rgb(16 24 40 / 0.06);
+  --shadow-dialog: 0 12px 32px rgb(16 24 40 / 0.18);
+  --shadow-inset: inset 0 0 0 1px #cfd5de;
+}
+
+/* Pendant la bascule de thème : aucune transition.
+   Sans cela, les éléments qui animent leurs couleurs restent bloqués sur
+   l'ancienne teinte — voir `shared/lib/theme.ts`. Et visuellement, un thème
+   change d'un coup : il ne se fond pas. */
+:root[data-theme-switching] *,
+:root[data-theme-switching] *::before,
+:root[data-theme-switching] *::after {
+  transition: none !important;
+}
+
 @layer base {
   html {
+    /* Valeur de départ, avant que `applyTheme` ne pose la préférence relue.
+       Le thème par défaut du projet est le sombre : le CSS le dit lui aussi,
+       pour qu'une page servie avant l'exécution du JS ne soit jamais blanche. */
     color-scheme: dark;
   }
 

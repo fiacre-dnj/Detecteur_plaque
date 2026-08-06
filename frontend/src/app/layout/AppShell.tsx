@@ -9,6 +9,7 @@ import { Suspense } from "react";
 import { NavLink, Outlet } from "react-router";
 
 import { BackendStatusBadge } from "./BackendStatusBadge";
+import { ThemeToggle } from "./ThemeToggle";
 
 const LINKS = [
   { to: "/", label: "Studio" },
@@ -52,8 +53,12 @@ export function AppShell() {
             ))}
           </nav>
 
-          <div className="ms-auto">
+          {/* Le coin haut-droit de l'entête : l'état du serveur, puis la bascule
+              de thème. Dans cet ordre — l'état du serveur est une information
+              qu'on surveille, le thème un réglage qu'on pose une fois. */}
+          <div className="ms-auto flex items-center gap-2">
             <BackendStatusBadge />
+            <ThemeToggle />
           </div>
         </div>
       </header>
