@@ -19,7 +19,11 @@ mêmes schémas de requête, les mêmes sérialiseurs — et c'est ce qui garant
 même tracé donne les mêmes chiffres dans les deux :
 
 - **différé** : dépôt d'un fichier, analyse asynchrone suivie en SSE, résultat
-  complet relu et rejoué sur la vidéo locale ;
+  complet relu et rejoué sur la vidéo locale. Le flux SSE porte aussi un
+  **aperçu** échantillonné (`event: preview`, ~5 Hz) : la vidéo locale se cale
+  sur l'image analysée et le navigateur y dessine les boîtes, les compteurs et
+  les franchissements du serveur **pendant** l'analyse
+  ([ADR 0006](docs/adr/0006-apercu-live-des-analyses.md)) ;
 - **direct** : frames JPEG sur WebSocket, une image en vol à la fois.
 
 ## `prompt/` est la spécification, pas de la documentation
@@ -46,7 +50,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 801 tests
+uv run pytest                                                            # 860 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -58,7 +62,7 @@ uv run python scripts/fetch_plate_model.py
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 343 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 372 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -180,7 +184,13 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     reçues, et le client compare et **refuse de compter** en cas d'écart.
     `pixelsPerMeter` est mis à l'échelle lui aussi : c'est un rapport pixels/mètre.
     Voir `frontend/src/features/realtime-counting/model/scale.ts`.
-14. **Un preset porte la résolution pour laquelle il a été tracé.** Le serveur le
+14. **L'aperçu d'un job porte les dimensions décodées par le serveur.** Le client
+    les compare à celles de sa balise `<video>` et **suspend le dessin** en cas de
+    désaccord — SAR non carré, rotation portée par les métadonnées. Le serveur ne
+    peut pas détecter cet écart : il ne sait pas ce que le navigateur affiche. Des
+    boîtes décalées se lisent comme un défaut de détection, jamais comme un défaut
+    de repère.
+15. **Un preset porte la résolution pour laquelle il a été tracé.** Le serveur le
     convertit à la lecture et **l'annonce** par `scaled`. Une conversion
     silencieuse serait pire que pas de conversion : une géométrie qui bouge sans
     prévenir se lit comme un bug.
@@ -238,7 +248,7 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 801 (1 skip) | 343 |
+| Nombre | 859 (1 skip) | 372 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 
