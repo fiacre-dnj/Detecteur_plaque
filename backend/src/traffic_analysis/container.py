@@ -39,6 +39,10 @@ from traffic_analysis.features.models_registry.infrastructure.registry import Mo
 from traffic_analysis.features.models_registry.infrastructure.ultralytics_engine import (
     UltralyticsEngine,
 )
+from traffic_analysis.features.presets.application.service import PresetService
+from traffic_analysis.features.presets.infrastructure.sqlalchemy_repository import (
+    SqlAlchemyPresetRepository,
+)
 from traffic_analysis.features.realtime.application.session_service import RealtimeSessionService
 
 if TYPE_CHECKING:
@@ -70,6 +74,10 @@ class Container:
     # ligne par ligne et rechargé à l'ouverture de la page, donc il n'a aucun sens
     # sans base. La route répond alors 503 avec la raison.
     benchmark_service: BenchmarkService | None = None
+    # `None` quand la persistance est désactivée. Un preset stocké en mémoire
+    # disparaîtrait au redémarrage, ce qui est le contraire de ce qu'un
+    # enregistrement promet : mieux vaut un 503 explicite.
+    preset_service: PresetService | None = None
     # Toujours présent : le temps réel ne dépend d'aucune persistance, seulement
     # d'un moteur de suivi.
     realtime_service: RealtimeSessionService | None = None
@@ -139,6 +147,7 @@ def build_container(
 
     db_engine: AsyncEngine | None = None
     benchmark_service: BenchmarkService | None = None
+    preset_service: PresetService | None = None
     if job_repository is not None:
         repository = job_repository
     else:
@@ -158,6 +167,7 @@ def build_container(
             VideoFrameProvider(settings.data_dir),
             hub,
         )
+        preset_service = PresetService(SqlAlchemyPresetRepository(session_factory))
 
     return Container(
         settings=settings,
@@ -169,6 +179,7 @@ def build_container(
         model_service=model_service,
         model_registry=registry,
         benchmark_service=benchmark_service,
+        preset_service=preset_service,
         realtime_service=realtime_service,
         db_engine=db_engine,
         job_manager=JobManager(

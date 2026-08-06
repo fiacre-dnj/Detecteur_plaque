@@ -24,6 +24,7 @@ from traffic_analysis.core.settings import Settings
 # l'autogénération croirait le schéma vide et produirait un `drop` de tout.
 from traffic_analysis.features.benchmark.infrastructure import orm as benchmark_orm  # noqa: F401
 from traffic_analysis.features.jobs.infrastructure import orm  # noqa: F401
+from traffic_analysis.features.presets.infrastructure import orm as presets_orm  # noqa: F401
 
 config = context.config
 
