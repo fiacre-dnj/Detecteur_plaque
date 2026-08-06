@@ -189,5 +189,6 @@ def build_container(
             hub=hub,
             clock=resolved_clock,
             max_concurrent_jobs=settings.max_concurrent_jobs,
+            preview_interval_ms=settings.preview_interval_ms,
         ),
     )

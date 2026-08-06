@@ -39,11 +39,17 @@ class ProgressEvent:
 
     `terminal` marque le dernier événement d'un job : c'est lui qui permet au
     flux SSE de se fermer proprement au lieu de rester ouvert pour rien.
+
+    `kind` est le **nom de l'événement SSE** — `progress` par défaut, `preview`
+    pour un aperçu de l'analyse en cours. Un champ plutôt que deux hubs : les
+    deux flux décrivent le même job, les servir séparément obligerait le client à
+    ouvrir deux connexions dont l'une pourrait tomber sans l'autre.
     """
 
     job_id: str
     payload: dict[str, Any]
     terminal: bool = False
+    kind: str = "progress"
 
 
 class ProgressHub:
@@ -68,8 +74,15 @@ class ProgressHub:
         return self._last.get(job_id)
 
     def publish(self, event: ProgressEvent) -> None:
-        """Publie depuis la boucle asyncio."""
-        self._last[event.job_id] = event
+        """Publie depuis la boucle asyncio.
+
+        Seuls les événements de progression sont mémorisés comme « dernier état
+        connu ». Un aperçu n'est pas un état de job : le servir à un client qui
+        se reconnecte lui donnerait une image en guise de statut, alors qu'il
+        attend de savoir où en est l'analyse.
+        """
+        if event.kind == "progress":
+            self._last[event.job_id] = event
         for queue in tuple(self._subscribers.get(event.job_id, ())):
             self._offer(queue, event)
 

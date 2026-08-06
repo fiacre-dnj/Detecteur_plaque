@@ -301,6 +301,57 @@ class TestSse:
         assert response.status_code == 404
 
 
+class TestApercuSse:
+    """L'aperçu tel qu'il arrive réellement au navigateur.
+
+    Le moteur est ralenti à dessein : avec le moteur factice nominal, l'analyse
+    se termine avant même que le client ait ouvert le flux, et le test ne
+    vérifierait plus que le chemin « job déjà terminé ».
+    """
+
+    @pytest.fixture
+    def fake_engine(self, traversing_frames: list[list[Any]]) -> Any:  # noqa: ANN401
+        import time
+
+        from tests.support.engine import FakeEngine
+
+        class SlowEngine(FakeEngine):
+            def iter_video(self, video_path: Any, spec: Any) -> Any:  # noqa: ANN401
+                for frame in super().iter_video(video_path, spec):
+                    time.sleep(0.02)
+                    yield frame
+
+        return SlowEngine(traversing_frames)
+
+    async def test_le_flux_porte_des_apercus_dessinables(self, client: AsyncClient) -> None:
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+
+        received = ""
+        async with (
+            asyncio.timeout(10.0),
+            client.stream("GET", f"/api/v1/jobs/{job_id}/events") as response,
+        ):
+            async for chunk in response.aiter_text():
+                received += chunk
+                if "event: end" in received:
+                    break
+
+        assert "event: preview" in received
+        apercu = json.loads(received.split("event: preview\ndata: ")[1].split("\n\n")[0])
+        assert apercu["jobId"] == job_id
+        # Les dimensions sondées voyagent avec l'aperçu : c'est ce qui permet au
+        # client de refuser de dessiner une géométrie mal ancrée plutôt que
+        # d'afficher des boîtes décalées que rien n'expliquerait.
+        assert (apercu["frameWidth"], apercu["frameHeight"]) == (1920, 1080)
+        # La forme d'une piste est **exactement** celle du temps réel et de la
+        # timeline : un seul chemin de rendu côté navigateur.
+        assert {"trackId", "globalId", "box", "counted", "identityLabel"} <= set(
+            apercu["tracks"][0]
+        )
+        assert "uniqueVehicles" in apercu["stats"]
+
+
 class TestAnnulationEtHistorique:
     async def test_supprimer_un_job_termine_purge_ses_artefacts(
         self, client: AsyncClient, settings: Settings

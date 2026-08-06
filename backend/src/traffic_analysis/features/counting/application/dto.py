@@ -65,6 +65,7 @@ __all__ = [
     "EngineSpec",
     "PlateDetection",
     "Point",
+    "PreviewSample",
     "Progress",
     "TimelineRow",
     "TrackObservation",
@@ -147,6 +148,42 @@ class Progress:
         if self.total_frames <= 0:
             return 0.0
         return min(1.0, self.processed_frames / self.total_frames)
+
+
+@dataclass(frozen=True, slots=True)
+class PreviewSample:
+    """Un aperçu de l'analyse en cours, publié pendant qu'elle tourne.
+
+    **C'est un échantillon, pas une frame de la timeline.** Une analyse produit
+    des dizaines d'images par seconde ; les publier toutes noierait le flux SSE
+    sans rien apporter à l'œil. Une sur N est publiée, et cet objet porte alors
+    *tout* ce qui s'est passé depuis le précédent.
+
+    D'où le point qui compte : `crossings` et `zone_events` sont **cumulés depuis
+    l'aperçu précédent**, pas ceux de la seule frame publiée. Ne renvoyer que les
+    événements de la frame échantillonnée en perdrait la grande majorité, et le
+    journal affiché à l'utilisateur mentirait — alors même que les compteurs de
+    `stats`, eux, seraient justes. Un journal en désaccord avec un total est pire
+    qu'un journal absent.
+
+    Les pistes sont des **snapshots**, comme dans la timeline et pour la même
+    raison : la référence vivante convergerait vers l'état final.
+
+    `frame_width` / `frame_height` sont les dimensions sondées par le serveur.
+    Elles ne servent pas au dessin — la géométrie est déjà en pixels source — mais
+    elles permettent au client de comparer avec ce que sa balise `<video>` lui
+    rapporte et de **refuser de dessiner** en cas de désaccord, plutôt que
+    d'afficher des boîtes décalées que rien n'expliquerait (invariant 13).
+    """
+
+    frame_index: int
+    timestamp_ms: float
+    frame_width: int
+    frame_height: int
+    tracks: tuple[SessionTrack, ...]
+    crossings: tuple[CrossingEvent, ...]
+    zone_events: tuple[ZoneEntryEvent, ...]
+    stats: AnalysisStats
 
 
 @dataclass(frozen=True, slots=True)

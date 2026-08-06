@@ -51,13 +51,24 @@ SSE_HEADERS = {
     operation_id="streamAnalysisJobEvents",
     summary="Progression d'un job en Server-Sent Events",
     description=(
-        "Flux `text/event-stream`. Deux types d'événements :\n\n"
+        "Flux `text/event-stream`. Trois types d'événements :\n\n"
         "```\n"
         "event: progress\n"
         'data: {"jobId":"…","status":"running","progress":0.12,…}\n\n'
+        "event: preview\n"
+        'data: {"jobId":"…","frameIndex":120,"timestampMs":4000.0,'
+        '"frameWidth":1280,"frameHeight":720,"tracks":[…],"crossings":[…],'
+        '"zoneEvents":[…],"stats":{…}}\n\n'
         "event: end\n"
         'data: {"jobId":"…","status":"done","progress":1.0,…}\n'
         "```\n\n"
+        "L'événement `preview` est un **aperçu échantillonné** de l'analyse en "
+        "cours — les pistes de l'image analysée, les événements survenus depuis "
+        "l'aperçu précédent, et les compteurs courants. Sa forme est celle du "
+        "`frameResult` du temps réel. Il est publié au plus toutes les "
+        "`TRAFFIC_PREVIEW_INTERVAL_MS` millisecondes (0 = désactivé), n'est "
+        "jamais persisté, et **un client peut l'ignorer entièrement** : la "
+        "vérité de l'avancement reste `progress` et le sondage.\n\n"
         "L'**état courant est toujours envoyé en premier**, y compris si le job "
         "est déjà terminé — auquel cas le flux envoie `progress` puis `end` et se "
         "ferme immédiatement.\n\n"
@@ -112,7 +123,7 @@ async def _events(manager: JobManager, hub: ProgressHub, job_id: str) -> AsyncIt
             except StopAsyncIteration:
                 return
 
-            yield _encode("end" if event.terminal else "progress", event.payload)
+            yield _encode("end" if event.terminal else event.kind, event.payload)
             if event.terminal:
                 return
     finally:

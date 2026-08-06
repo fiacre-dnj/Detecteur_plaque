@@ -30,8 +30,11 @@ from traffic_analysis.features.counting.application.dto import (
     VideoInfo,
 )
 from traffic_analysis.features.counting.application.serializers import (
+    serialise_crossing,
     serialise_result,
     serialise_stats,
+    serialise_track,
+    serialise_zone_event,
 )
 from traffic_analysis.features.jobs.application.progress_hub import ProgressEvent, ProgressHub
 from traffic_analysis.features.jobs.domain.records import JobRecord, VideoMetadata
@@ -43,7 +46,10 @@ if TYPE_CHECKING:
     from traffic_analysis.core.clock import Clock
     from traffic_analysis.core.pagination import Page, PageParams
     from traffic_analysis.features.counting.application.analysis_service import AnalysisService
-    from traffic_analysis.features.counting.application.dto import AnalysisJobConfig
+    from traffic_analysis.features.counting.application.dto import (
+        AnalysisJobConfig,
+        PreviewSample,
+    )
     from traffic_analysis.features.jobs.application.ports import (
         JobFilters,
         JobRepository,
@@ -67,6 +73,7 @@ class JobManager:
         "_clock",
         "_hub",
         "_max_concurrent",
+        "_preview_interval_s",
         "_repository",
         "_result_store",
         "_semaphore",
@@ -82,6 +89,7 @@ class JobManager:
         clock: Clock,
         *,
         max_concurrent_jobs: int = 1,
+        preview_interval_ms: int = 200,
     ) -> None:
         self._repository = repository
         self._result_store = result_store
@@ -89,6 +97,9 @@ class JobManager:
         self._hub = hub
         self._clock = clock
         self._max_concurrent = max_concurrent_jobs
+        # En millisecondes dans la configuration, en secondes ici : `0` désactive
+        # l'aperçu, et la conversion est faite une fois plutôt qu'à chaque job.
+        self._preview_interval_s = preview_interval_ms / 1000.0 if preview_interval_ms > 0 else None
         self._semaphore: asyncio.Semaphore | None = None
         self._cancellations: dict[str, threading.Event] = {}
         # Les tâches de fond sont gardées dans un ensemble : une tâche asyncio
@@ -312,12 +323,26 @@ class JobManager:
                     self._repository.update_progress(job_id, progress), loop
                 )
 
+        def on_preview(sample: PreviewSample) -> None:
+            """Appelé **depuis le thread worker**, comme `on_progress`.
+
+            Rien n'est persisté : un aperçu est une image de passage, et l'écrire
+            ferait des dizaines d'écritures par seconde dans une base qui n'a
+            qu'un écrivain.
+            """
+            self._hub.publish_threadsafe(
+                ProgressEvent(job_id, self._preview_payload(job_id, sample), kind="preview")
+            )
+
+        interval = self._preview_interval_s
         result = await anyio.to_thread.run_sync(
             lambda: self._analysis.run_video(
                 job_id,
                 video_path,
                 config,
                 on_progress=on_progress,
+                on_preview=None if interval is None else on_preview,
+                preview_interval_s=interval or 0.0,
                 is_cancelled=cancellation.is_set,
             )
         )
@@ -377,6 +402,27 @@ class JobManager:
             "totalFrames": progress.total_frames,
             "processingFps": round(progress.processing_fps, 2),
             "error": None,
+        }
+
+    @staticmethod
+    def _preview_payload(job_id: str, sample: PreviewSample) -> dict[str, Any]:
+        """Un aperçu tel que le client le reçoit.
+
+        **Même forme que le `frameResult` du temps réel**, et par les mêmes
+        sérialiseurs. Ce n'est pas une coïncidence entretenue à la main : c'est ce
+        qui permet au navigateur de dessiner les deux modes avec un seul chemin de
+        rendu, donc de ne pas avoir deux overlays qui divergent.
+        """
+        return {
+            "jobId": job_id,
+            "frameIndex": sample.frame_index,
+            "timestampMs": sample.timestamp_ms,
+            "frameWidth": sample.frame_width,
+            "frameHeight": sample.frame_height,
+            "tracks": [serialise_track(track) for track in sample.tracks],
+            "crossings": [serialise_crossing(event) for event in sample.crossings],
+            "zoneEvents": [serialise_zone_event(event) for event in sample.zone_events],
+            "stats": serialise_stats(sample.stats),
         }
 
     @staticmethod

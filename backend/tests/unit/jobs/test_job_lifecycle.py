@@ -70,16 +70,22 @@ async def _manager(
     clock: FrozenClock,
     *,
     engine: FakeEngine | None = None,
+    hub: ProgressHub | None = None,
+    preview_interval_ms: int = 0,
 ) -> tuple[JobManager, InMemoryJobRepository, FileResultStore]:
+    """Gestionnaire de test. **Aperçu désactivé par défaut** : les scénarios de
+    cycle de vie n'en veulent pas, et publier des images à chaque frame y
+    ajouterait du bruit sans rien vérifier de plus."""
     repository = InMemoryJobRepository(clock)
     store = FileResultStore(tmp_path / "data")
     manager = JobManager(
         repository=repository,
         result_store=store,
         analysis=AnalysisService(engine or FakeEngine(_frames())),
-        hub=ProgressHub(),
+        hub=hub or ProgressHub(),
         clock=clock,
         max_concurrent_jobs=1,
+        preview_interval_ms=preview_interval_ms,
     )
     manager.bind_loop(asyncio.get_running_loop())
     return manager, repository, store
@@ -178,6 +184,84 @@ class TestExecution:
         assert record.error is not None
         assert "/srv/prive" not in record.error
         assert "RuntimeError" not in record.error
+
+
+class TestApercu:
+    """L'aperçu publié pendant l'analyse — et ce qu'il ne doit pas perturber."""
+
+    async def test_l_analyse_publie_des_apercus_a_cote_de_la_progression(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        hub = ProgressHub()
+        manager, _, _ = await _manager(tmp_path, clock, hub=hub, preview_interval_ms=1)
+        received: list[Any] = []
+
+        async def collect() -> None:
+            async for event in hub.subscribe("job-1"):
+                received.append(event)
+
+        collector = asyncio.create_task(collect())
+        await _submit(manager, tmp_path)
+        await _await_status(manager, "job-1")
+        # La tâche s'arrête d'elle-même sur l'événement terminal ; on lui laisse
+        # le tour de boucle qu'il lui faut pour le consommer.
+        async with asyncio.timeout(2.0):
+            await collector
+
+        kinds = [event.kind for event in received]
+        assert "preview" in kinds
+        assert "progress" in kinds
+        payload = next(event.payload for event in received if event.kind == "preview")
+        assert set(payload) == {
+            "jobId",
+            "frameIndex",
+            "timestampMs",
+            "frameWidth",
+            "frameHeight",
+            "tracks",
+            "crossings",
+            "zoneEvents",
+            "stats",
+        }
+
+    async def test_un_apercu_n_est_jamais_le_dernier_etat_connu_du_job(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """Sinon un client qui se reconnecte recevrait une image en guise de statut.
+
+        Le hub sert son dernier événement aux nouveaux abonnés : y laisser entrer
+        un aperçu ferait lire « progression inconnue » à une interface qui demande
+        où en est l'analyse.
+        """
+        hub = ProgressHub()
+        manager, _, _ = await _manager(tmp_path, clock, hub=hub, preview_interval_ms=1)
+        await _submit(manager, tmp_path)
+        await _await_status(manager, "job-1")
+
+        last = hub.last_event("job-1")
+        assert last is not None
+        assert last.kind == "progress"
+        assert last.payload["status"] == "done"
+
+    async def test_un_intervalle_nul_desactive_l_apercu(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """Le flux redevient exactement ce qu'il était avant que l'aperçu existe."""
+        hub = ProgressHub()
+        manager, _, _ = await _manager(tmp_path, clock, hub=hub, preview_interval_ms=0)
+        received: list[Any] = []
+
+        async def collect() -> None:
+            async for event in hub.subscribe("job-1"):
+                received.append(event)
+
+        collector = asyncio.create_task(collect())
+        await _submit(manager, tmp_path)
+        await _await_status(manager, "job-1")
+        async with asyncio.timeout(2.0):
+            await collector
+
+        assert all(event.kind == "progress" for event in received)
 
 
 class TestAnnulation:

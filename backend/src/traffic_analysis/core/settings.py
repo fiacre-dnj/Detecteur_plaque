@@ -86,6 +86,14 @@ class Settings(BaseSettings):
     max_concurrent_jobs: int = Field(1, ge=1, le=8)
     max_realtime_sessions: int = Field(1, ge=1, le=4)
     max_upload_mb: int = Field(800, ge=1, le=8192)
+    #: Intervalle minimal entre deux aperçus d'une analyse en cours, en
+    #: millisecondes. `0` désactive l'aperçu : le flux SSE ne transporte alors que
+    #: la progression, comme avant qu'il existe.
+    #:
+    #: Échantillonné en temps et non en images : la cadence d'analyse varie d'un
+    #: facteur dix entre un CPU et un GPU, alors que ce qu'on borne — le débit du
+    #: flux et le travail du navigateur — se mesure en secondes.
+    preview_interval_ms: int = Field(200, ge=0, le=5000)
     job_ttl_minutes: int = Field(1440, ge=1)
     # La vidéo d'entrée est la donnée la plus lourde et la plus sensible, et elle
     # n'est plus nécessaire une fois le résultat produit : elle part plus tôt.

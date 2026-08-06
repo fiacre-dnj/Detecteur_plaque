@@ -18,6 +18,7 @@ from traffic_analysis.features.counting.application.dto import (
     TIMELINE_WARNING_THRESHOLD,
     AnalysisCancelled,
     AnalysisResultData,
+    PreviewSample,
     Progress,
     TimelineRow,
 )
@@ -33,6 +34,7 @@ if TYPE_CHECKING:
         DetectionTrackingEngine,
         PlateDetector,
     )
+    from traffic_analysis.features.counting.domain.models import CrossingEvent, ZoneEntryEvent
 
 logger = get_logger("traffic_analysis.analysis")
 
@@ -40,7 +42,18 @@ logger = get_logger("traffic_analysis.analysis")
 # le flux SSE ; moins souvent, la barre paraît figée.
 PROGRESS_EVERY_FRAMES = 10
 
+#: Intervalle minimal entre deux aperçus, en secondes.
+#:
+#: Échantillonné en **temps**, et non en nombre d'images, contrairement à la
+#: progression. La raison est que la cadence d'analyse varie d'un facteur dix
+#: entre un CPU et un GPU : « une image sur dix » donnerait un aperçu toutes les
+#: cinq secondes sur cette machine et cinquante par seconde sur une autre. Ce
+#: qu'on veut borner est le débit du flux et le travail du navigateur, qui se
+#: mesurent en secondes.
+PREVIEW_MIN_INTERVAL_S = 0.2
+
 type ProgressCallback = Callable[[Progress], None]
+type PreviewCallback = Callable[[PreviewSample], None]
 type CancellationCheck = Callable[[], bool]
 
 
@@ -68,6 +81,8 @@ class AnalysisService:
         config: AnalysisJobConfig,
         *,
         on_progress: ProgressCallback | None = None,
+        on_preview: PreviewCallback | None = None,
+        preview_interval_s: float = PREVIEW_MIN_INTERVAL_S,
         is_cancelled: CancellationCheck | None = None,
     ) -> AnalysisResultData:
         """Analyse une vidéo de bout en bout. **Bloquante** : à appeler en thread.
@@ -75,6 +90,12 @@ class AnalysisService:
         L'annulation est vérifiée à chaque frame plutôt que par `task.cancel()` :
         on n'interrompt pas un `track()` en cours, on lui demande de s'arrêter
         proprement entre deux images.
+
+        `on_preview` reçoit un échantillon de l'état courant — pistes, événements
+        cumulés, statistiques — au plus une fois toutes les `preview_interval_s`.
+        C'est ce qui permet de **valider** une analyse pendant qu'elle tourne :
+        sans lui, rien de visuel ne quitte le serveur avant la fin. Un intervalle
+        nul publie chaque frame, ce dont seuls les tests ont l'usage.
         """
         info = self._engine.probe(video_path)
         session = AnalysisSession(config.session_config(), info.width, info.height)
@@ -91,6 +112,12 @@ class AnalysisService:
 
         started = perf_counter()
         processed = 0
+        last_preview = started
+        # Événements accumulés depuis le dernier aperçu publié : l'aperçu en
+        # transporte l'intégralité, sinon le journal affiché perdrait la plupart
+        # des franchissements que ses propres compteurs annoncent.
+        pending_crossings: list[CrossingEvent] = []
+        pending_zone_events: list[ZoneEntryEvent] = []
 
         for frame in self._engine.iter_video(video_path, config.engine_spec()):
             if is_cancelled is not None and is_cancelled():
@@ -104,11 +131,12 @@ class AnalysisService:
 
             # Le snapshot est pris **après** la passe ANPR, sinon les plaques
             # manquent de la timeline et la relecture n'en affiche aucune.
+            snapshots = tuple(track.snapshot() for track in outcome.tracks)
             result.timeline.append(
                 TimelineRow(
                     frame_index=frame.frame_index,
                     timestamp_ms=frame.timestamp_ms,
-                    tracks=tuple(track.snapshot() for track in outcome.tracks),
+                    tracks=snapshots,
                 )
             )
             result.crossings.extend(outcome.crossings)
@@ -117,6 +145,34 @@ class AnalysisService:
 
             if on_progress is not None and processed % PROGRESS_EVERY_FRAMES == 0:
                 on_progress(Progress(processed, total, self._fps(processed, started)))
+
+            if on_preview is not None:
+                pending_crossings.extend(outcome.crossings)
+                pending_zone_events.extend(outcome.zone_events)
+                # `perf_counter` est ici une **cadence de publication**, pas un
+                # horodatage métier : même statut que la mesure de `_fps`
+                # (invariant 1). Les temps portés par l'aperçu, eux, restent du
+                # temps de scène.
+                now = perf_counter()
+                if now - last_preview >= preview_interval_s:
+                    last_preview = now
+                    # `session.stats()` n'est calculé **que** lorsqu'on publie :
+                    # l'appeler à chaque frame pour le jeter aussitôt taxerait
+                    # l'analyse au profit de personne.
+                    on_preview(
+                        PreviewSample(
+                            frame_index=frame.frame_index,
+                            timestamp_ms=frame.timestamp_ms,
+                            frame_width=info.width,
+                            frame_height=info.height,
+                            tracks=snapshots,
+                            crossings=tuple(pending_crossings),
+                            zone_events=tuple(pending_zone_events),
+                            stats=session.stats(),
+                        )
+                    )
+                    pending_crossings.clear()
+                    pending_zone_events.clear()
 
         elapsed = perf_counter() - started
         result.processing_fps = self._fps(processed, started)
@@ -127,6 +183,25 @@ class AnalysisService:
             # Publication finale obligatoire : sans elle, la barre s'arrête au
             # dernier multiple de dix et l'utilisateur croit l'analyse bloquée.
             on_progress(Progress(processed, max(total, processed), result.processing_fps))
+
+        if on_preview is not None and result.timeline:
+            # Aperçu final, obligatoire pour la même raison que la progression
+            # finale : sans lui, la dernière image affichée est celle d'un
+            # échantillon quelconque, et ses compteurs ne correspondent pas à
+            # ceux du résultat — l'écart se lit comme un bug de comptage.
+            last = result.timeline[-1]
+            on_preview(
+                PreviewSample(
+                    frame_index=last.frame_index,
+                    timestamp_ms=last.timestamp_ms,
+                    frame_width=info.width,
+                    frame_height=info.height,
+                    tracks=last.tracks,
+                    crossings=tuple(pending_crossings),
+                    zone_events=tuple(pending_zone_events),
+                    stats=result.stats,
+                )
+            )
 
         logger.info(
             "analyse terminée",
