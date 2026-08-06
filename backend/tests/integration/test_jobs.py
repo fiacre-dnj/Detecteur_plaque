@@ -343,7 +343,11 @@ class TestSuspensionHttp:
         assert resumed.status_code == 200
         assert resumed.json()["status"] == "running"
 
-        assert (await _wait_until_done(client, job_id))["status"] == "done"
+        # Échéance large : ce scénario ajoute deux allers-retours HTTP et un pas de
+        # sondage de la barrière à une analyse déjà ralentie. Cinq secondes
+        # suffisent sur une machine au repos et échouent sur une machine chargée —
+        # un verdict qui dépend de la charge ne prouve rien.
+        assert (await _wait_until_done(client, job_id, timeout_s=30.0))["status"] == "done"
 
     async def test_reprendre_une_analyse_qui_tourne_est_refuse(self, client: AsyncClient) -> None:
         created = await _post_job(client)
@@ -357,7 +361,7 @@ class TestSuspensionHttp:
         assert response.status_code == 409
         assert response.json()["code"] == "job_not_paused"
         await client.delete(f"/api/v1/jobs/{job_id}")
-        await _wait_until_done(client, job_id)
+        await _wait_until_done(client, job_id, timeout_s=30.0)
 
     async def test_suspendre_un_job_inconnu_rend_404(self, client: AsyncClient) -> None:
         response = await client.post("/api/v1/jobs/inexistant/pause")

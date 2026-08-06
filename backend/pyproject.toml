@@ -31,6 +31,12 @@ dependencies = [
     "opencv-python-headless>=4.9",
     "numpy>=1.26",
     "onnxruntime>=1.18",
+    # `onnx` en plus d'`onnxruntime` : Ultralytics l'exige pour **lire** un
+    # `.onnx` (le modèle de plaques), et va jusqu'à l'installer lui-même au
+    # premier appel s'il manque. Deux minutes de téléchargement au milieu de la
+    # première analyse ANPR, et un échec pur et simple dans un conteneur sans
+    # réseau — deux raisons de le déclarer ici plutôt que de le subir.
+    "onnx>=1.16",
     # ── Persistance ──────────────────────────────────────────────────────────
     "sqlalchemy>=2.0",
     "aiosqlite>=0.20",

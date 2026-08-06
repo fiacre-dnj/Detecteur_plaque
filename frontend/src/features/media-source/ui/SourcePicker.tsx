@@ -20,6 +20,23 @@ import {
   type SourceKind,
 } from "../model/useMediaSource";
 
+/**
+ * Sources désactivées pour l'instant : le clip de démonstration et la caméra.
+ *
+ * Un drapeau explicite plutôt qu'une suppression des cartes. Les retirer
+ * laisserait croire que l'application ne sait pas faire, alors qu'elle sait :
+ * tout le chemin caméra — WebSocket, cadence, mise à l'échelle d'envoi, garde de
+ * résolution — existe et est testé. Grisées **avec leur raison**, elles disent la
+ * vérité : « pas maintenant », et non « pas possible ».
+ *
+ * Remettre l'une des deux en service est un `false` à passer à `true`.
+ */
+const DEMO_ENABLED = false;
+const CAMERA_ENABLED = false;
+
+/** Ce qu'on affiche à la place de l'aide, quand la source est mise de côté. */
+const UNAVAILABLE_HINT = "Indisponible pour l'instant";
+
 interface SourcePickerProps {
   /** Source active, pour marquer la carte correspondante. */
   activeKind: SourceKind | null;
@@ -134,9 +151,9 @@ export function SourcePicker({
         <SourceCard
           icon={MonitorPlay}
           label="Vidéo de démonstration"
-          hint="Un clip fourni pour essayer"
+          hint={DEMO_ENABLED ? "Un clip fourni pour essayer" : UNAVAILABLE_HINT}
           active={activeKind === "demo"}
-          disabled={disabled}
+          disabled={disabled || !DEMO_ENABLED}
           onClick={onDemo}
         />
 
@@ -144,9 +161,15 @@ export function SourcePicker({
         <SourceCard
           icon={Camera}
           label="Caméra"
-          hint={requestingCamera ? "Autorisation en attente…" : "Comptage en direct"}
+          hint={
+            !CAMERA_ENABLED
+              ? UNAVAILABLE_HINT
+              : requestingCamera
+                ? "Autorisation en attente…"
+                : "Comptage en direct"
+          }
           active={activeKind === "camera"}
-          disabled={disabled || requestingCamera}
+          disabled={disabled || requestingCamera || !CAMERA_ENABLED}
           onClick={onCamera}
         />
       </div>

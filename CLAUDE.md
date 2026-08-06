@@ -225,6 +225,17 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
   `PATH` avant de committer.
 - Le Python du système est un **3.14** : il ne peut pas faire tourner ce backend.
   Toujours passer par `uv run`.
+- **Jamais de commentaire en fin de ligne après une valeur vide dans un `.env`.**
+  `TRAFFIC_PLATE_MODEL_PATH=  # vide = …` donne au réglage la valeur
+  `« # vide = … »` : le service cherche alors son modèle de plaques à ce chemin,
+  ne le trouve pas, et l'ANPR reste indisponible **sans qu'aucun message ne
+  mentionne la cause**. Ce piège a tenu l'ANPR hors service pendant tout le
+  projet, avec le bon fichier au bon endroit. Le commentaire va au-dessus de la
+  clé ; `Settings._blank_means_unset` neutralise en plus les `.env` déjà écrits.
+- Le modèle de plaques vit dans `backend/.weights/license-plate.onnx` (copié
+  depuis `yolo/`, git-ignoré des deux côtés). Contrairement aux `.onnx` de
+  véhicules du dossier `yolo/`, **celui-là est utilisable** : la passe ANPR est
+  une simple détection, elle ne demande ni tracker ni ReID.
 - **Aucun GPU.** `TRAFFIC_HALF=false`, et les mesures de benchmark sont des mesures
   CPU — à interpréter comme telles.
 - Le frontend est passé de pnpm à **bun** ; `bun.lock` est le lockfile committé.

@@ -57,6 +57,46 @@ def test_une_regex_vide_devient_none() -> None:
     assert _settings(cors_origin_regex="").cors_origin_regex is None
 
 
+class TestValeursVidesEtCommentaires:
+    """Le piège qui a tenu l'ANPR hors service pendant tout le projet.
+
+    `.env.example` portait `TRAFFIC_PLATE_MODEL_PATH=  # vide = <weights>/…`. Le
+    commentaire en fin de ligne **devient la valeur** : le service cherchait son
+    modèle de plaques à un chemin nommé « # vide = … », ne le trouvait jamais, et
+    signalait l'ANPR indisponible — avec le bon fichier au bon endroit, et sans
+    qu'aucun message ne mentionne la cause.
+
+    Le fichier d'exemple est corrigé ; ces tests protègent les `.env` déjà écrits
+    d'après lui, qui vivent sur les machines et que personne ne relira.
+    """
+
+    def test_un_chemin_vide_retombe_sur_le_defaut(self) -> None:
+        settings = _settings(plate_model_path="")
+
+        assert settings.plate_model_path is None
+        # Le repli documenté fonctionne : sans cela, `Path("")` vaut `Path(".")`,
+        # qui est **vrai**, et le repli ne se déclencherait jamais.
+        assert settings.resolved_plate_model_path == settings.weights_dir / "license-plate.onnx"
+
+    def test_un_commentaire_en_fin_de_ligne_ne_devient_pas_un_chemin(self, tmp_path: Path) -> None:
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "TRAFFIC_PLATE_MODEL_PATH=              # vide = <weights>/license-plate.onnx\n",
+            encoding="utf-8",
+        )
+
+        settings = Settings(_env_file=env_file)  # type: ignore[call-arg]
+
+        assert settings.plate_model_path is None
+        assert settings.resolved_plate_model_path.name == "license-plate.onnx"
+
+    def test_un_repertoire_statique_vide_ne_sert_pas_le_repertoire_courant(self) -> None:
+        # `Path("")` vaut `Path(".")` : sans garde, un `TRAFFIC_STATIC_DIR=` vide
+        # ferait servir le répertoire de travail du serveur — c'est-à-dire le code
+        # source, `.env` compris.
+        assert _settings(static_dir="").static_dir is None
+
+
 def test_une_liste_separee_par_des_virgules_est_acceptee() -> None:
     """`docker run -e TRAFFIC_CORS_ORIGINS=a,b` est la forme la plus courante
     posée à la main ; refuser cette syntaxe ne protège de rien."""

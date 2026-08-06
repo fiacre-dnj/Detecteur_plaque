@@ -147,6 +147,44 @@ class Settings(BaseSettings):
 
     # ── Validation ───────────────────────────────────────────────────────────
 
+    @field_validator(
+        "plate_model_path",
+        "static_dir",
+        "cors_origin_regex",
+        "plate_model_url",
+        "plate_model_sha256",
+        mode="before",
+    )
+    @classmethod
+    def _blank_means_unset(cls, value: object) -> object:
+        """« Rien » veut dire « pas de valeur », pas « une valeur bizarre ».
+
+        Deux formes de « rien » arrivent réellement dans un `.env` :
+
+        - `TRAFFIC_STATIC_DIR=` — vide. Sans ce validateur, pydantic en fait
+          `Path("")`, c'est-à-dire `Path(".")`, qui est **vrai** : le repli
+          « vide ⇒ défaut » ne se déclenche jamais et le service sert le
+          répertoire courant au lieu de rien ;
+        - `TRAFFIC_PLATE_MODEL_PATH=  # vide = <weights>/license-plate.onnx` —
+          un commentaire en fin de ligne après une valeur vide. Il **devient** la
+          valeur, et le service cherche alors son modèle de plaques à un chemin
+          nommé « # vide = … ». C'est exactement ce qui est arrivé ici : l'ANPR
+          est restée indisponible pendant tout le projet, avec le bon fichier
+          présent au bon endroit, et aucun message ne mentionnant la cause.
+
+        Le second cas est traité parce qu'une valeur qui commence par `#` ne peut
+        être ni un chemin, ni une URL, ni une empreinte : c'est un commentaire mal
+        placé, et l'interpréter littéralement ne peut produire qu'une panne
+        silencieuse. La ligne fautive est corrigée dans `.env.example` ; ce
+        validateur protège les `.env` déjà écrits d'après lui.
+        """
+        if not isinstance(value, str):
+            return value
+        trimmed = value.strip()
+        if not trimmed or trimmed.startswith("#"):
+            return None
+        return trimmed
+
     @field_validator("cors_origins", "trusted_hosts", mode="before")
     @classmethod
     def _split_comma_separated(cls, value: object) -> object:
