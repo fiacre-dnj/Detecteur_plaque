@@ -164,6 +164,30 @@ class TestLimiteDeCorps:
         assert response.status_code == 413
         assert response.json()["code"] == "payload_too_large"
 
+    async def test_le_refus_porte_les_en_tetes_de_securite(
+        self, client: AsyncClient, settings: Settings
+    ) -> None:
+        """Une réponse qui court-circuite la pile sort quand même habillée.
+
+        `SecurityHeadersMiddleware` hérite de `BaseHTTPMiddleware` et ne décore que
+        ce qui passe par son `call_next` : un middleware ASGI brut qui envoie
+        directement à `send` produirait une réponse nue. Ce trou serait
+        particulièrement fâcheux ici, puisqu'un 413 est trivial à provoquer depuis
+        l'extérieur.
+        """
+        response = await client.post(
+            "/api/v1/jobs",
+            content=b"x" * 32,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(settings.max_upload_bytes + 1),
+            },
+        )
+
+        assert response.headers["x-content-type-options"] == "nosniff"
+        assert response.headers["x-frame-options"] == "DENY"
+        assert response.headers["content-security-policy"]
+
 
 class TestOpenApi:
     async def test_le_schema_est_valide_et_documente(self, client: AsyncClient) -> None:

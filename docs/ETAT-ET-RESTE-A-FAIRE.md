@@ -4,14 +4,14 @@
 > en premier, puis [`prompt/README.md`](../prompt/README.md).** Ce document dit où
 > en est le code ; `prompt/` dit ce qu'il doit devenir.
 >
-> Dernière mise à jour : 2026-08-05, après le lot 8.
+> Dernière mise à jour : 2026-08-06, après le lot 13.
 
 ---
 
-## 1. Résumé en dix lignes
+## 1. Résumé
 
 Le plan d'exécution est [`prompt/12-PLAN-EXECUTION.md`](../prompt/12-PLAN-EXECUTION.md) :
-**14 lots**. Huit sont terminés :
+**14 lots**. Treize sont terminés.
 
 | Lot | Sujet | État |
 |---|---|---|
@@ -22,189 +22,110 @@ Le plan d'exécution est [`prompt/12-PLAN-EXECUTION.md`](../prompt/12-PLAN-EXECU
 | 4 | Persistance SQLite + Alembic, registre, exports CSV | ✅ |
 | 5 | Catalogue de 20 modèles, registre LRU, Ultralytics, ANPR | ✅ |
 | 6 | Sécurité, en-têtes, limite de corps, OpenAPI | ✅ |
-| 7 | WebSocket temps réel | ⬜ |
+| 7 | WebSocket temps réel | ✅ |
 | 8 | **Benchmark serveur** | ✅ |
 | 9 | Socle frontend + **système de design** | ✅ |
-| 10 | Source, lecteur vidéo, éditeur de géométrie | ⬜ |
-| 11 | Analyse, relecture de timeline, résultats, registre | ⬜ |
-| 12 | Modèles, réglages, temps réel, benchmark, historique, presets | ⬜ |
-| 13 | Docker, CI, docs finales, `CLAUDE.md` réécrit | ⬜ |
+| 10 | Source, lecteur vidéo, éditeur de géométrie | ✅ |
+| 11 | Analyse, relecture de timeline, résultats, registre | ✅ |
+| 12 | Modèles, réglages, temps réel, benchmark, historique, presets | ✅ |
+| 13 | Docker, CI, docs finales, `CLAUDE.md` réécrit | ✅ |
 | 14 | Durcissement, les 56 pièges de `prompt/13` | ⬜ |
 
-**Chiffres vérifiés :** 681 tests backend (1 ignoré), 7 tests frontend, couverture
-97 % sur `features/counting/domain` et 94 % sur `features/benchmark`, `ruff` +
+**Chiffres vérifiés :** 801 tests backend (1 ignoré), 343 tests frontend, `ruff` +
 `mypy --strict` + `oxlint` + `tsc -b` + `bun run build` verts, 15 hooks de
-pré-commit installés et actifs.
+pré-commit actifs.
+
+**L'application est fonctionnelle de bout en bout** : dépôt d'un fichier, édition
+de géométrie au canvas, analyse serveur suivie en SSE, relecture synchronisée,
+comptage en direct sur le flux caméra, benchmark, historique, presets.
 
 ---
 
 ## 2. Où reprendre exactement
 
 ```bash
-git branch --show-current          # → feat/backend-benchmark
-git status --short                 # → propre
+git branch --show-current          # → chore/livraison
+git status --short
 ```
 
-La branche `feat/backend-benchmark` porte le **lot 8 terminé** et est prête à
-fusionner dans `main`. Le lot suivant conseillé est le **lot 7** (WebSocket temps
-réel), puis les lots 10 à 12 (le frontend réel, le plus gros morceau).
-
-`main` est propre et déployable.
-
-### Deux détails que ce document donnait faux avant le lot 8
-
-- Les migrations Alembic vivent dans **`backend/migrations/`**, pas
-  `backend/alembic/`. Les commandes `uv run alembic …` sont justes ; seul le
-  chemin ne l'était pas.
-- La branche `feat/backend-benchmark` existait déjà en local mais **derrière
-  `main`** d'un commit (elle ne portait pas `e682c60`). Elle a été rebasée sur
-  `main` avant de commencer.
+La branche `chore/livraison` porte le **lot 13** et est prête à fusionner dans
+`main`. Il ne reste que le **lot 14** : durcissement et relecture des 56 pièges.
 
 ---
 
 ## 3. Ce qui marche réellement aujourd'hui
 
-Testé de bout en bout, pas supposé :
+Vérifié contre le vrai serveur, pas supposé.
+
+### Différé
 
 - déposer une vidéo (`POST /api/v1/jobs`), suivre la progression en SSE, obtenir
-  le résultat complet en `json.gz`, consulter le registre paginé, exporter en CSV ;
-- annuler une analyse en cours (arrêt **entre deux images**, donc le bail du
-  modèle est rendu) ;
-- un job **survit au redémarrage** du service (vérifié en reconstruisant une
-  seconde application sur la même base) ;
-- le catalogue des 20 modèles avec, pour chacun, s'il est téléchargé et s'il est
-  résident ;
-- **mesurer les modèles sur cette machine** (`POST /api/v1/benchmark`), suivre en
-  SSE, relire le dernier run — vérifié de bout en bout sur un **vrai YOLOv8n**, et
-  les chiffres réels de cette machine sont instructifs :
-  - premier run : `loadMs` **28 466** (téléchargement des poids inclus, attribué au
-    chargement et non fondu dans l'inférence), médiane 215 ms, p95 268 ms ;
-  - second run, poids sur le disque : `loadMs` **55**, médiane **94,7 ms** ;
-  - après chaque run, `GET /api/v1/models` rend `loadedIds: []` — la libération
-    fonctionne contre le registre réel, donc vingt modèles ne s'accumulent pas ;
-  - **limite assumée** : l'échantillon embarqué est synthétique, donc
-    `detections` y vaut **0** pour tous les modèles. Les *temps* sont valables ;
-    la colonne « détections » ne devient informative qu'avec `imageSource=job`.
-    Embarquer une photo de trafic réelle mettrait des plaques réelles dans le
-    dépôt, et truquer le compte serait pire que de le laisser à zéro ;
-- `/api/docs` documenté, fermable par `TRAFFIC_DOCS_ENABLED=false` ;
-- la coquille frontend s'affiche, le badge dit « Serveur injoignable » avec une
-  action « Réessayer » quand le backend est arrêté, le proxy Vite transmet `/api`.
+  le résultat en `json.gz`, consulter le registre paginé, exporter en CSV ;
+- annuler une analyse en cours (arrêt **entre deux images**, bail rendu) ;
+- un job **survit au redémarrage** du service ;
+- rouvrir une analyse de l'historique **avec sa géométrie** (`/jobs/{id}/config`),
+  ou la relancer — ce qui crée un **nouveau** job et ne mute jamais l'ancien.
 
-**Ce qui ne marche pas encore** : les trois écrans du frontend sont des **états
-vides explicites**. Ils affichent le vrai état du serveur et disent quoi faire,
-mais on ne peut pas encore déposer de vidéo *depuis l'interface*, ni tracer une
-ligne, ni voir des compteurs. Tout cela passe par l'API, pas par l'écran.
+### Direct
+
+Vérifié avec un vrai YOLOv8n sur le WebSocket réel :
+
+- `ready` renvoie `frameWidth: null` avant la première image, puis les dimensions
+  réellement décodées dans chaque `frameResult` ;
+- une session de six frames rend `frameIndex: 5` — le serveur dérive ses propres
+  index ;
+- la place de session est rendue à la fermeture : une seconde session s'ouvre ;
+- un `init` sans ligne ferme en **1008** avec la raison, tronquée à 123 octets
+  comme la RFC 6455 l'exige ;
+- l'origine `http://localhost:5173.evil.com` est refusée au handshake.
+
+**La panne silencieuse a été reproduite volontairement** : une ligne dont le `x`
+va jusqu'à 1180 dans une image de 960 de large est acceptée sans un mot. Le
+serveur ne peut pas la détecter puisqu'il ne connaît pas la résolution que le
+client croit envoyer. C'est ce qui justifie `scaleRequestGeometry`, son test, et
+le refus de compter en cas d'écart de dimensions.
+
+### Presets
+
+Vérifié contre le vrai serveur : création `201`, homonyme `409`, lecture en
+`640×360` rendant `x=50 y=200` avec `scaled: true`, suppression `204` puis `404`.
+La migration Alembic s'applique au démarrage.
+
+### Benchmark
+
+Mesuré sur un vrai YOLOv8n, chiffres de cette machine :
+
+- premier run : `loadMs` **28 466** (téléchargement inclus, attribué au chargement
+  et non fondu dans l'inférence), médiane 215 ms, p95 268 ms ;
+- second run, poids sur disque : `loadMs` **55**, médiane **94,7 ms** ;
+- après chaque run, `GET /api/v1/models` rend `loadedIds: []` — la libération
+  fonctionne contre le registre réel ;
+- **limite assumée** : l'échantillon embarqué est synthétique, donc `detections`
+  vaut **0** pour tous les modèles. Les *temps* sont valables ; la colonne
+  « détections » ne devient informative qu'avec `imageSource=job`. Embarquer une
+  photo de trafic réelle mettrait des plaques réelles dans le dépôt, et truquer le
+  compte serait pire que de le laisser à zéro.
+
+### Ce qui n'a **pas** pu être vérifié
+
+- **L'image Docker n'a jamais été construite avec succès sur cette machine.** Le
+  disque `C:` est plein (0 octet libre au moment du lot 13) et BuildKit échoue sur
+  une erreur d'entrée/sortie qui ne mentionne jamais l'espace disque. Le
+  `Dockerfile` et le `docker-compose.yml` sont écrits et leur YAML est validé,
+  mais **le `docker compose up` du critère d'acceptation du lot 13 reste à
+  prouver**. Le job `image` de la CI le fera au premier passage — il construit,
+  démarre, attend le healthcheck et vérifie que `/` et `/historique` rendent bien
+  l'interface.
+- **La boucle direct avec une vraie webcam** dans un navigateur. Le protocole a
+  été exercé de bout en bout par un client Python qui parle exactement la même
+  séquence, mais la capture `canvas.toBlob` et le `getUserMedia` réels ne l'ont
+  pas été.
+- **La CI n'a jamais tourné** : `.github/workflows/ci.yml` est écrit mais aucun
+  push n'a encore déclenché GitHub Actions.
 
 ---
 
-## 4. Tâches restantes, dans l'ordre conseillé
-
-### Lot 7 — WebSocket temps réel
-
-Spécification : [`prompt/05-API-ET-CONTRAT.md`](../prompt/05-API-ET-CONTRAT.md) §7.
-
-- [ ] `features/realtime/api/protocol.py` : `init` → `ready` → (`frame` texte +
-      JPEG binaire) → `frameResult`.
-- [ ] **Vérification de l'`Origin` du handshake** contre `cors_origins` : un
-      WebSocket n'est pas protégé par la politique de même origine.
-- [ ] Fermeture `1008` sur init invalide, `1011` sur erreur interne, `1013` si une
-      session est déjà active (**avant** `accept()`).
-- [ ] Sémaphore de session (`max_realtime_sessions`).
-- [ ] Décodage JPEG et `track()` dans un **thread worker**.
-- [ ] Le message `ready` renvoie les **dimensions réellement reçues** : c'est le
-      filet contre une géométrie non mise à l'échelle, qui compterait 25 % à côté
-      sans aucune erreur visible.
-- [ ] `finally` qui ferme le stream et **rend le bail** du modèle.
-- [ ] Tests : init invalide, une frame → un `frameResult`, seconde session
-      refusée, origine refusée.
-
-Réutiliser : `AnalysisSession` (la **même** session que le mode différé),
-`UltralyticsStream`, `FakeStream` de `tests/support/engine.py`.
-
-### Lot 10 — Source, lecteur vidéo, éditeur de géométrie
-
-Spécification : [`prompt/09-FRONTEND-UX-FONCTIONNALITES.md`](../prompt/09-FRONTEND-UX-FONCTIONNALITES.md) §2.
-
-- [ ] `features/media-source` : dépôt de fichier (glisser-déposer + clic), vidéo
-      de démonstration, caméra. **`video.srcObject = null` à l'arrêt du flux**,
-      sinon le fichier suivant ne se charge jamais, sans même un événement
-      `error` (piège 36).
-- [ ] `features/video-transport` : lecteur maison — **pas la barre `controls`
-      native**, qui recouvre exactement la zone où l'on trace les lignes.
-      Réappliquer `playbackRate` sur `loadedmetadata` (le navigateur le remet à 1),
-      écouter `ended` (ce n'est pas `pause`), **jamais `loop`**, masquer la
-      timeline quand `duration` n'est pas fini.
-- [ ] `shared/lib/geometry.ts` : `sideOfLine`, `pointInPolygon`,
-      `distanceToSegment`. Copie **minimale** du backend, pour le dessin et le
-      test de sélection à la souris — **elle ne compte rien**, et un test doit
-      vérifier que `sideOfLine` donne le **même signe** que la convention backend,
-      sinon les flèches de sens affichées mentent.
-- [ ] `entities/geometry` : types + reducer d'édition + **signature de géométrie**
-      (`ax,ay,bx,by,zoneId` par ligne, sommets par zone) pour le bandeau
-      « résultat obsolète ».
-- [ ] `features/geometry-editor` : canvas en superposition. Ordre de dessin de
-      `prompt/09` §2.4 (le masque even-odd d'abord, les lignes après les boîtes).
-      Tout est stocké en **pixels source**, converti au dessin.
-- [ ] Tracé de zone : clic par sommet, fermeture par **double-clic *et* clic sur
-      le premier sommet**, `Échap` annule. Le brouillon vit dans un **`ref`**, pas
-      dans un `state` : un double-clic livre deux `pointerdown` et le `dblclick`
-      dans un seul rendu, donc lire le state lirait une liste périmée (piège 42).
-- [ ] Glisser sans saut (décalage de préhension conservé), `touch-none`,
-      `setPointerCapture`.
-
-### Lot 11 — Analyse, relecture, résultats
-
-Spécification : `prompt/09` §2.8 et §3.
-
-- [ ] `features/analysis-job` : dépôt avec **progression d'envoi** (l'unique
-      `XMLHttpRequest` du projet, `fetch` n'expose pas la progression d'envoi),
-      SSE **+ sondage de secours toutes les 3 s**, annulation.
-- [ ] `features/timeline-replay` : `frameIndexAt` en **recherche binaire** (54 000
-      lignes, appelé à chaque rafraîchissement), `statsAt`, `toTrackedVehicles`,
-      `flowBuckets`. Suivi par **`requestAnimationFrame`**, pas par `timeupdate`
-      (qui ne se déclenche que ~4 fois par seconde et fait traîner les boîtes).
-- [ ] **Reculer dans la vidéo doit faire *baisser* les compteurs** : `statsAt`
-      rejoue les événements jusqu'à `timeMs`, et l'occupation de zone est remise à
-      zéro (c'est une lecture instantanée, pas un cumul).
-- [ ] `features/results-dashboard` : cartes, répartition par type, détail par
-      ligne (`↑ p · ↓ n`) et par zone, histogramme SVG maison à tranches
-      adaptatives (chargé paresseusement).
-- [ ] `features/vehicle-registry` : tableau virtualisé maison au-delà de 200
-      lignes, 12 lignes puis « Afficher les N restants », exports.
-- [ ] Bandeau « résultat obsolète » quand la signature de géométrie a changé.
-
-### Lot 12 — Modèles, réglages, pages secondaires
-
-- [ ] `features/model-picker` : groupes par palier à entêtes **collantes**,
-      navigation clavier **à plat** (les groupes sont purement visuels), trois
-      états *au catalogue* / *téléchargé* / *résident*, mention « premier usage :
-      téléchargement ~N Mo ».
-- [ ] Panneaux Détection / Comptage / Affichage, avec le **diagnostic live** —
-      « le compte est faux » n'est diagnosticable que si l'on voit si un véhicule
-      manquant n'a jamais été détecté, l'a été faiblement, n'était pas confirmé,
-      ou a été masqué par une zone.
-- [ ] `features/realtime-counting` : capture `toBlob("image/jpeg", 0.8)` réduite à
-      **960 px**, **une frame en vol à la fois** (les autres sont abandonnées, pas
-      mises en file), et **`scaleRequestGeometry` avec son test unitaire** — une
-      ligne non mise à l'échelle compterait 25 % à côté sans aucune erreur visible.
-- [ ] `features/benchmark` : tableau triable, dernier run rechargé à l'ouverture.
-- [ ] `features/job-history` : ouvrir (recharge aussi la géométrie depuis
-      `config_json`), relancer (**nouveau** job, jamais une mutation), supprimer.
-- [ ] `features/geometry-presets` + routes backend `/presets` (pas encore écrites).
-
-### Lot 13 — Livraison
-
-- [ ] `backend/Dockerfile` multi-étapes, non-root, `HEALTHCHECK` sur
-      `/api/v1/health/live`.
-- [ ] `frontend/Dockerfile` → build servi **par le backend**
-      (`TRAFFIC_STATIC_DIR`, déjà implémenté côté serveur).
-- [ ] `docker-compose.yml` (volumes `./data`, `./.weights`).
-- [ ] `.github/workflows/ci.yml` : 3 jobs, `fail-fast: false`, `--frozen`,
-      **aucun téléchargement de poids en CI**.
-- [ ] `docs/API.md`, README final, **`CLAUDE.md` réécrit** — il porte encore un
-      avertissement disant qu'il décrit ce que le projet *doit* être ; au lot 13 il
-      doit décrire ce qu'il *est*.
+## 4. Tâches restantes
 
 ### Lot 14 — Durcissement
 
@@ -213,7 +134,10 @@ Spécification : `prompt/09` §2.8 et §3.
       dont **comparer un comptage réel à un comptage humain sur 30 s** et écrire
       le résultat de la comparaison.
 - [ ] Relire les **56 pièges** de [`prompt/13`](../prompt/13-PIEGES-CONNUS.md) un
-      par un, en ajoutant un test là où c'est possible.
+      par un, en ajoutant un test partout où c'est possible.
+- [ ] Construire l'image Docker et faire tourner `docker compose up` une fois que
+      la machine a de l'espace disque — c'est le critère d'acceptation du lot 13
+      qui n'a pas pu être honoré.
 
 ---
 
@@ -250,20 +174,43 @@ qui reviennent le plus souvent :
 - **L'adaptateur de mesure du benchmark vit dans `models_registry`**, pas dans
   `benchmark/infrastructure/`. Le port `InferenceProbe` est publié par
   `benchmark/application/ports.py` et implémenté par
-  `models_registry/infrastructure/inference_probe.py`. Ce n'est pas un caprice :
-  seul `models_registry` peut toucher son propre registre, et
-  `tests/test_architecture.py` a refusé la première version — qui logeait
-  l'adaptateur côté benchmark et fouillait dans l'`infrastructure` voisine. Le
-  test a fait son travail.
-- **Le benchmark exige la persistance**, contrairement aux jobs qui ont un dépôt
-  en mémoire réel. Un run est écrit ligne par ligne et rechargé à l'ouverture de
-  la page : sans base, la route répond 503 avec la raison. Le dépôt en mémoire du
-  benchmark est donc une **doublure de test** et vit dans `tests/support/`.
+  `models_registry/infrastructure/inference_probe.py`. Seul `models_registry` peut
+  toucher son propre registre, et `tests/test_architecture.py` a refusé la
+  première version.
+- **Les schémas de requête d'analyse vivent dans `counting/application/`**, pas
+  dans `jobs/api/`. Le mode différé et le mode direct valident tous les deux la
+  même configuration ; le test d'architecture a refusé que `realtime` fouille dans
+  l'`api` de `jobs`, et il avait raison — c'est ce partage qui garantit qu'un même
+  tracé donne les mêmes chiffres dans les deux modes.
+- **Le benchmark et les presets exigent la persistance**, contrairement aux jobs
+  qui ont un dépôt en mémoire réel. Sans base, la route répond 503 avec la raison.
 - `BenchmarkService.wait_for_idle()` existe pour les tests autant que pour
   l'arrêt du service. La première version des tests sondait le statut dans une
   boucle bornée en nombre d'itérations : elle passait à nu et **échouait sous
   `--cov`**. Un test dont le verdict dépend de la vitesse de la machine ne prouve
   rien ; attendre la tâche est déterministe.
+- **La géométrie d'un preset est stockée en JSON**, pas dans des tables filles.
+  C'est le seul endroit du projet où ce choix est fait, et il tient à l'usage : on
+  requête les franchissements d'un job, on ne requête jamais les sommets d'un
+  preset — ils sont écrits et relus en bloc.
+- **Une seule image Docker** sert le backend et le frontend, plutôt que deux
+  services derrière un reverse proxy. Ce n'est pas la disposition la plus
+  orthodoxe ; elle supprime le CORS à ouvrir, le tamponnage SSE du proxy et le
+  relais WebSocket — les trois pannes de déploiement habituelles.
+
+### Deux bugs que seule l'exécution réelle a trouvés
+
+Ils méritent d'être connus, parce qu'ils disent quelque chose sur les limites de
+cette architecture :
+
+- **`CONFIG_DIR` cherchait le YAML du tracker dans `backend/src/config/`** au lieu
+  de `backend/config/`. **Toutes** les analyses réelles échouaient. Rien ne l'a vu :
+  les 500 tests de comptage injectent un `FakeEngine` et n'atteignent jamais
+  `UltralyticsEngine`. C'est le bénéfice de l'architecture et son prix.
+- **Le champ `request` du multipart était envoyé en `Blob`** avec un type
+  `application/json`, donc traité par FastAPI comme un second *fichier*, refusé en
+  422. Trouvé en postant au vrai serveur ; le commentaire de code qui affirmait le
+  contraire était faux.
 
 ---
 
@@ -274,19 +221,27 @@ qui reviennent le plus souvent :
   ```bash
   export PATH="$PATH:/c/Users/$USER/AppData/Local/Microsoft/WinGet/Packages/astral-sh.uv_Microsoft.Winget.Source_8wekyb3d8bbwe"
   ```
+  Sans cela, le hook pre-commit `mypy-backend` échoue sur « Executable `uv` not
+  found » alors que mypy passe parfaitement quand on l'appelle à la main.
 - Le Python du système est un **3.14.6** : il ne peut pas faire tourner ce
   backend. Toujours `uv run`.
 - **Aucun GPU** : `device = cpu`, `half = false`, et les mesures de benchmark sont
   des mesures CPU — à interpréter comme telles.
+- **Le disque `C:` est régulièrement plein.** Au lot 13 il ne restait aucun octet
+  libre, ce qui a fait échouer le build Docker sur une erreur BuildKit
+  (`input/output error`) qui ne mentionne jamais l'espace disque, puis a tué le
+  démon. Vérifier `df -h /c` **avant** de conclure à un défaut du `Dockerfile`.
 - Un **ancien service** occupait le port 8000 (reconnaissable à son en-tête
   `cross-origin-embedder-policy: require-corp`, signature de la version à
-  inférence navigateur). Il a été arrêté le 2026-08-05 ; s'il revient, il fait
-  échouer `uvicorn --port 8000` et le proxy Vite parle à la mauvaise application.
+  inférence navigateur). Arrêté le 2026-08-05 ; s'il revient, il fait échouer
+  `uvicorn --port 8000` et le proxy Vite parle à la mauvaise application.
 - Les fichiers écrits sous Windows arrivent en CRLF ; le hook
   `mixed-line-ending --fix=lf` les normalise et **fait échouer le premier
   `git commit`**. Réindexer et recommiter suffit.
 - Sous Windows, `rm -rf backend/data` échoue si le service tourne (fichier SQLite
   verrouillé). Arrêter uvicorn d'abord.
+- `git commit -F` attend un **fichier**, pas un here-string PowerShell : passer un
+  `@'…'@` produit un « No such file or directory » qui affiche tout le message.
 
 ---
 
@@ -302,13 +257,13 @@ uv run alembic upgrade head && uv run alembic downgrade base && uv run alembic u
 
 # Frontend
 cd ../frontend
-bun run lint && bun run typecheck && bun run test && bun run build
+bun run lint && bun run typecheck && bun test && bun run build
 
 # Dépôt entier
 uvx pre-commit run --all-files
 ```
 
-Bout en bout :
+Bout en bout, en développement :
 
 ```bash
 cd backend && uv run uvicorn traffic_analysis.main:app --reload --port 8000
@@ -317,4 +272,10 @@ cd frontend && bun run dev        # http://localhost:5173
 
 Attendre que le backend annonce « Application startup complete » **avant** de
 tester le proxy : sinon Vite reçoit un refus de connexion et le diagnostic part
-dans la mauvaise direction (cela m'a coûté trois essais).
+dans la mauvaise direction.
+
+Ou tout d'un coup :
+
+```bash
+docker compose up                 # http://localhost:8000
+```

@@ -1,0 +1,185 @@
+# Intégration continue — trois jobs indépendants.
+#
+# **`fail-fast: false` en esprit, et c'est le point qui compte.** Les trois jobs
+# sont déclarés séparément plutôt qu'en matrice précisément pour qu'aucun n'annule
+# les autres : un échec de lint frontend ne doit pas masquer un échec de test
+# backend. Corriger deux problèmes en un cycle vaut mieux que de les découvrir l'un
+# après l'autre.
+#
+# **La CI ne télécharge aucun poids de modèle.** Elle en est capable — les scripts
+# existent — mais elle ne le fait jamais : les 500 tests injectent un `FakeEngine`
+# et n'atteignent ni ultralytics, ni le disque, ni le réseau. C'est la décision
+# d'architecture qui rend cette CI possible en trois minutes sur une machine sans
+# GPU (voir `backend/tests/test_architecture.py`, qui la fait respecter).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Permet de relancer à la main après une panne d'infrastructure, sans avoir à
+  # pousser un commit vide.
+  workflow_dispatch:
+
+# Annule les exécutions obsolètes d'une même branche : pousser trois fois de suite
+# ne doit pas occuper trois exécutions complètes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Sans cela, uv résout la variante GPU de torch et le job télécharge deux
+  # gigaoctets de CUDA pour des tests qui n'exécutent aucune inférence.
+  UV_TORCH_BACKEND: cpu
+
+jobs:
+  backend:
+    name: Backend — lint, types, tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          # Le cache porte sur le lock : il est invalidé quand une dépendance
+          # change, et jamais autrement.
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Installer les dépendances
+        # `--frozen` : la CI **échoue** si le lock est périmé plutôt que de le
+        # régénérer en silence. Un lock régénéré côté CI ferait passer des tests
+        # sur des versions que personne n'a sur sa machine.
+        run: uv sync --frozen
+
+      - name: Ruff — lint
+        run: uv run ruff check --output-format=github .
+
+      - name: Ruff — format
+        run: uv run ruff format --check .
+
+      - name: Mypy (strict)
+        run: uv run mypy src
+
+      - name: Tests
+        # La couverture est mesurée mais **pas** transformée en seuil bloquant :
+        # un seuil chiffré pousse à écrire des tests qui couvrent des lignes sans
+        # rien vérifier. Le nombre est publié, la décision reste humaine.
+        run: uv run pytest --cov=src --cov-report=term-missing
+
+      - name: Audit des dépendances
+        # **En avertissement**, comme le demande `prompt/10`. Un audit bloquant
+        # arrête toute l'équipe sur une CVE publiée dans une dépendance transitive
+        # qu'on n'exécute peut-être même pas — et la réaction devient « désactiver
+        # l'audit », ce qui est pire que pas d'audit. Non bloquant, il est lu.
+        #
+        # L'audit porte sur l'environnement **réellement installé** par `uv sync`,
+        # pas sur le manifeste : c'est ce qui est déployé qui compte, et une
+        # dépendance transitive n'apparaît nulle part dans `pyproject.toml`.
+        continue-on-error: true
+        run: |
+          uv export --frozen --no-dev --no-emit-project --format requirements.txt > /tmp/req.txt
+          uvx pip-audit --requirement /tmp/req.txt --progress-spinner off
+
+  frontend:
+    name: Frontend — lint, types, tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Installer bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          # Épinglée, et alignée sur le `packageManager` du `package.json` et sur
+          # l'image du Dockerfile. Trois endroits qui doivent rester d'accord —
+          # comme l'alias `@/*`, et pour la même raison : une divergence ne se voit
+          # qu'au moment où l'un des trois se comporte autrement.
+          bun-version: 1.3.14
+
+      - name: Installer les dépendances
+        run: bun install --frozen-lockfile
+
+      - name: Oxlint
+        run: bun run lint
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Tests
+        run: bun test
+
+      - name: Build
+        # Après les tests : un build qui passe alors que les tests échouent
+        # n'apprend rien, et il coûte le plus long des quatre.
+        run: bun run build
+
+  image:
+    name: Image — build et démarrage réel
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Construire l'image
+        # `docker compose build` et non `docker build` : c'est le compose qui décrit
+        # le contexte et le chemin du Dockerfile, et le tester lui plutôt que la
+        # commande sous-jacente vérifie ce que l'utilisateur exécutera réellement.
+        run: docker compose build app
+
+      - name: Démarrer et attendre la disponibilité
+        run: |
+          docker compose up -d app
+          # Le healthcheck de l'image est l'autorité : on l'interroge plutôt que
+          # de sonder soi-même. Une boucle bornée en **temps** et non en nombre
+          # d'itérations — un runner chargé n'est pas un échec.
+          deadline=$((SECONDS + 180))
+          until [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q app)")" = "healthy" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "Le conteneur n'est pas devenu sain en 180 s."
+              docker compose logs app
+              exit 1
+            fi
+            sleep 3
+          done
+
+      - name: Vérifier que l'API répond
+        run: |
+          curl --fail --silent --show-error http://localhost:8000/api/v1/health | tee /dev/stderr
+
+      - name: Vérifier que le frontend est servi sur le même origin
+        # Le point du lot 13 : un seul origin. Si cette étape échoue, c'est que
+        # `TRAFFIC_STATIC_DIR` ou la copie du build a été cassée — et l'application
+        # n'aurait plus d'interface, tout en répondant parfaitement sur `/api`.
+        run: |
+          curl --fail --silent --show-error http://localhost:8000/ | grep -q '<div id="root"'
+
+      - name: Vérifier le repli SPA sur une route cliente
+        # `html=True` du montage statique. Sans lui, rafraîchir `/historique`
+        # rendrait un 404 — un défaut qu'on ne découvre qu'en production, parce
+        # qu'en développement c'est Vite qui sert la page.
+        run: |
+          curl --fail --silent --show-error http://localhost:8000/historique | grep -q '<div id="root"'
+
+      - name: Journaux en cas d'échec
+        if: failure()
+        run: docker compose logs app
+
+      - name: Arrêter
+        if: always()
+        run: docker compose down --volumes

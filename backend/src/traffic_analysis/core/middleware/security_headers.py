@@ -66,6 +66,26 @@ BASE_HEADERS: dict[str, str] = {
 HSTS_HEADER = ("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 
 
+def headers_for_short_circuit() -> dict[str, str]:
+    """Les en-têtes de sécurité, pour une réponse qui **court-circuite** la pile.
+
+    `SecurityHeadersMiddleware` hérite de `BaseHTTPMiddleware`, qui ne décore que
+    les réponses passées par son `call_next`. Un middleware ASGI brut placé en
+    dessous — la limite de corps, la limite de débit — envoie directement à `send`
+    et sort donc sans le moindre en-tête de sécurité.
+
+    Ces deux réponses-là sont justement les plus faciles à provoquer depuis
+    l'extérieur : il suffit d'un corps trop gros ou d'une rafale. Les laisser nues
+    serait un trou dans la politique, et un trou à la portée de n'importe qui.
+
+    Une fonction plutôt qu'une constante recopiée : un en-tête ajouté à
+    `BASE_HEADERS` arrive ici sans que personne ait à y penser. `Cache-Control` est
+    joint parce qu'une réponse d'erreur mise en cache serait rejouée à la requête
+    suivante, qui n'a peut-être plus rien de fautif.
+    """
+    return {**BASE_HEADERS, "Cache-Control": "no-store"}
+
+
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """Pose les en-têtes de sécurité et retire la signature du serveur."""
 

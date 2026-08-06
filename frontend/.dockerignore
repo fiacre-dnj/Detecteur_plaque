@@ -1,0 +1,12 @@
+# Contexte de build du service de développement `frontend`, qui a pour racine ce
+# répertoire — le `.dockerignore` de la racine du dépôt ne s'y applique pas.
+#
+# `node_modules` d'abord et surtout : le copier depuis l'hôte écraserait
+# l'installation faite dans l'image, avec des binaires compilés pour un autre
+# système. La panne qui en résulte parle d'un module natif introuvable et ne
+# désigne jamais la vraie cause.
+node_modules
+dist
+.vite
+*.log
+.DS_Store

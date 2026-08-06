@@ -19,7 +19,33 @@ résultat.
 > ([ADR 0003](docs/adr/0003-analyse-100-pourcent-backend.md)) et l'interface le dit
 > à l'endroit où l'on choisit une source.
 
-## Démarrage en 5 commandes
+## Démarrage — deux chemins
+
+### Pour utiliser l'application : une commande
+
+```bash
+docker compose up
+# puis http://localhost:8000
+```
+
+Une seule image sert le backend **et** l'interface, sur un seul origin. C'est ce
+qui supprime d'un coup les trois pannes de déploiement habituelles de ce genre
+d'application : le CORS à ouvrir, le tamponnage du proxy qui retient les
+événements SSE, et le relais WebSocket qu'il faut activer explicitement.
+
+Le premier démarrage construit l'image, ce qui prend plusieurs minutes — la roue
+CPU de PyTorch pèse à elle seule ~250 Mo. Les analyses, la base et les poids
+téléchargés vivent dans deux volumes nommés et survivent à un `docker compose
+down`.
+
+Aucun poids n'est embarqué dans l'image ; le premier usage d'un modèle le
+télécharge. Pour les récupérer d'avance :
+
+```bash
+docker compose exec app python scripts/fetch_weights.py --tiers nano
+```
+
+### Pour développer : cinq commandes
 
 Prérequis : [`uv`](https://docs.astral.sh/uv/) et [`bun`](https://bun.sh) sur le
 `PATH`. `uv` provisionne Python 3.12 lui-même — le Python du système n'est jamais
@@ -87,11 +113,23 @@ l'assignation linéaire. Sans elle, `model.track()` échoue **à l'exécution** 
 ### GPU
 
 `TRAFFIC_DEVICE=auto` résout `cuda` si `torch.cuda.is_available()`, sinon `cpu`.
-L'installation par défaut est la roue **CPU** (~250 Mo au lieu de ~2,5 Go) ; sur
-une machine NVIDIA, `uv sync --extra gpu`
-([ADR 0005](docs/adr/0005-torch-cpu-par-defaut.md)). Sur CPU, les paliers `large`
-et `xlarge` demandent plusieurs centaines de millisecondes par image, et l'ANPR
-ajoute une inférence par piste et par frame.
+
+**Il n'y a pas d'extra `gpu` à installer.** `pyproject.toml` déclare
+`[tool.uv] torch-backend = "auto"` : un simple `uv sync` prend la roue CPU
+(~250 Mo) sur une machine sans GPU et la roue CUDA correspondant au pilote détecté
+sur une machine NVIDIA. Le lockfile porte les deux univers
+([ADR 0005](docs/adr/0005-torch-cpu-par-defaut.md)). Pour forcer une variante —
+build reproductible, ou machine dont le pilote n'est pas celui de la cible :
+
+```bash
+UV_TORCH_BACKEND=cpu uv sync      # ou cu124, cu126…
+```
+
+C'est ce que fait l'image Docker, qui force `cpu` pour ne pas embarquer deux
+gigaoctets de CUDA inutilisé.
+
+Sur CPU, les paliers `large` et `xlarge` demandent plusieurs centaines de
+millisecondes par image, et l'ANPR ajoute une inférence par piste et par frame.
 
 ### Vidéo de démonstration
 
@@ -119,6 +157,15 @@ injecté.
 | Construire | — | `bun run build` |
 | Migrer | `uv run alembic upgrade head` | — |
 
+Et pour le dépôt entier :
+
+| Intention | Commande |
+|---|---|
+| Tous les hooks | `uvx pre-commit run --all-files` |
+| Servir l'application | `docker compose up` |
+| Reconstruire l'image | `docker compose build app` |
+| Interface en rechargement à chaud, en conteneur | `docker compose --profile dev up` |
+
 ## Vérifications manuelles
 
 Certaines choses ne se testent pas automatiquement. À faire avant de considérer
@@ -136,6 +183,8 @@ une livraison terminée :
 - [`docs/ETAT-ET-RESTE-A-FAIRE.md`](docs/ETAT-ET-RESTE-A-FAIRE.md) — **où en est le
   code, ce qui reste à faire, et les pièges de cette machine**
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — schéma, décisions, tailles de bundle
+- [`docs/API.md`](docs/API.md) — **ce que les routes veulent dire** ; la forme
+  exacte est dans OpenAPI, généré depuis le code
 - [`docs/adr/`](docs/adr/) — les décisions et leurs raisons
 - [`prompt/`](prompt/) — **la spécification normative** du projet
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — branches, commits, revue

@@ -18,13 +18,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
 from traffic_analysis import __version__
-from traffic_analysis.api.router import api_router
+from traffic_analysis.api.router import API_V1_PREFIX, api_router
 from traffic_analysis.container import build_container
 from traffic_analysis.core.db.migrations import run_migrations
 from traffic_analysis.core.error_handlers import register_error_handlers
 from traffic_analysis.core.logging import configure_logging, get_logger
 from traffic_analysis.core.middleware.access_log import AccessLogMiddleware
 from traffic_analysis.core.middleware.body_size_limit import BodySizeLimitMiddleware
+from traffic_analysis.core.middleware.rate_limit import RateLimitMiddleware, Rule
 from traffic_analysis.core.middleware.request_id import HEADER_NAME, RequestIdMiddleware
 from traffic_analysis.core.middleware.security_headers import SecurityHeadersMiddleware
 from traffic_analysis.core.openapi import custom_openapi
@@ -251,10 +252,16 @@ def _add_middlewares(app: FastAPI, settings: Settings) -> None:
 
     - **La limite de corps est en amont de tout traitement.** Refuser 800 Mo
       après les avoir lus ne protège de rien.
+    - **La limite de débit est juste au-dessus** — donc plus externe. Un client
+      qui dépasse son quota est refusé avant même que le corps ne soit examiné :
+      c'est tout l'intérêt, puisque le coût d'un dépôt est dans son écriture. Elle
+      reste sous les en-têtes de sécurité et le journal d'accès, pour qu'un 429
+      porte les mêmes en-têtes que le reste et apparaisse dans les journaux.
     """
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(AccessLogMiddleware)
     app.add_middleware(SecurityHeadersMiddleware, production=settings.is_production)
+    app.add_middleware(RateLimitMiddleware, rules=_rate_limit_rules(settings))
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_upload_bytes)
     # GZip ne compresse pas les réponses en streaming, donc le SSE lui échappe —
     # ce qui est indispensable : un flux compressé est un flux tamponné, et la
@@ -275,6 +282,59 @@ def _add_middlewares(app: FastAPI, settings: Settings) -> None:
         # politique resterait en cache une journée entière.
         max_age=600,
     )
+
+
+def _rate_limit_rules(settings: Settings) -> list[Rule]:
+    """Les limites de débit, de la plus large à la plus stricte.
+
+    Trois routes ont leur propre limite parce que leur coût n'a rien à voir avec
+    celui d'un `GET /health` :
+
+    - **`POST /jobs`** écrit plusieurs centaines de mégaoctets sur le disque
+      *avant* que la borne de concurrence n'entre en jeu. Le sémaphore protège le
+      GPU ; il ne protège pas le volume, et un client qui dépose cent vidéos en
+      rafale le remplit sans jamais lancer deux analyses simultanées.
+    - **`POST /benchmark`** mesure jusqu'à vingt modèles et les télécharge au
+      besoin : c'est l'opération la plus coûteuse du service.
+    - **le handshake WebSocket** n'est vu par aucun autre garde-fou — le
+      middleware CORS ne voit jamais passer un handshake.
+
+    Une limite à `0` est **omise** plutôt que posée à zéro : une règle à zéro
+    refuserait tout, ce qui est l'inverse de « désactivée ».
+    """
+    rules: list[Rule] = []
+    if settings.rate_limit_per_minute > 0:
+        rules.append(Rule(settings.rate_limit_per_minute, 60.0))
+    if settings.rate_limit_jobs_per_minute > 0:
+        rules.append(
+            Rule(
+                settings.rate_limit_jobs_per_minute,
+                60.0,
+                prefixes=(f"{API_V1_PREFIX}/jobs",),
+                # `POST` seul : lister l'historique ou sonder la progression sont
+                # des lectures bon marché, et les brider à dix par minute
+                # casserait le sondage de l'interface (toutes les 3 s).
+                methods=("POST",),
+            )
+        )
+    if settings.rate_limit_benchmark_per_hour > 0:
+        rules.append(
+            Rule(
+                settings.rate_limit_benchmark_per_hour,
+                3600.0,
+                prefixes=(f"{API_V1_PREFIX}/benchmark",),
+                methods=("POST",),
+            )
+        )
+    if settings.rate_limit_realtime_per_minute > 0:
+        rules.append(
+            Rule(
+                settings.rate_limit_realtime_per_minute,
+                60.0,
+                prefixes=(f"{API_V1_PREFIX}/realtime",),
+            )
+        )
+    return rules
 
 
 @asynccontextmanager
@@ -330,17 +390,27 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 async def _cleanup_loop(app: FastAPI) -> None:
-    """Purge périodique des jobs terminaux périmés.
+    """Purge périodique — **deux échéances distinctes**, et c'est délibéré.
 
     Réveil toutes les 60 s plutôt qu'un déclenchement à chaque requête : la purge
     doit avoir lieu même sur un service inactif, où les artefacts s'accumulent
     justement le plus longtemps.
+
+    Les vidéos déposées partent **avant** les jobs, à `input_ttl_minutes` contre
+    `job_ttl_minutes` (une heure contre vingt-quatre par défaut). La raison n'est pas
+    la place disque : une scène de trafic contient des plaques réelles et des
+    visages, alors qu'un résultat ne contient que des boîtes et des compteurs. La
+    donnée sensible doit avoir la durée de vie la plus courte que l'usage permet —
+    et l'usage n'en a plus besoin dès que le résultat existe.
     """
     container = app.state.container
     settings = container.settings
     while True:
         await asyncio.sleep(CLEANUP_INTERVAL_S)
         try:
+            # Les vidéos d'abord : si la purge des jobs échoue, les images
+            # sensibles auront quand même disparu.
+            await container.job_manager.purge_expired_inputs(settings.input_ttl_minutes)
             await container.job_manager.purge_expired(settings.job_ttl_minutes)
         except asyncio.CancelledError:
             raise
