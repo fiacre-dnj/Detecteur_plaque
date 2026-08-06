@@ -320,6 +320,48 @@ export interface AnalysisResult {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   Presets de géométrie — miroir de `presets/api/schemas.py`.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/** Ce qu'on envoie pour enregistrer ou remplacer une géométrie. */
+export interface PresetDraft {
+  name: string;
+  description: string;
+  /** Dimensions de la vidéo sur laquelle la géométrie a été tracée. Obligatoires. */
+  sourceWidth: number;
+  sourceHeight: number;
+  maskOutsideZones: boolean;
+  lines: CountingLine[];
+  zones: Zone[];
+}
+
+/**
+ * Un preset tel que l'API le rend.
+ *
+ * `scaled` est le champ qui fait la différence entre une fonctionnalité utile et un
+ * piège : vrai, il dit que les coordonnées **ne sont pas** celles qui ont été
+ * enregistrées, mais une conversion vers la résolution demandée. L'interface le dit
+ * à l'utilisateur — une géométrie qui bouge sans prévenir se lit comme un bug.
+ */
+export interface Preset {
+  id: string;
+  name: string;
+  description: string;
+  /** Résolution dans laquelle les coordonnées rendues sont exprimées. */
+  sourceWidth: number;
+  sourceHeight: number;
+  /** Résolution pour laquelle le preset a été **enregistré**, toujours. */
+  originalWidth: number;
+  originalHeight: number;
+  scaled: boolean;
+  maskOutsideZones: boolean;
+  lines: CountingLine[];
+  zones: Zone[];
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    Temps réel — miroir de `realtime/api/protocol.py`.
 
    Le protocole est **séquencé** : `init` → `ready` → (`frame` + JPEG binaire) →

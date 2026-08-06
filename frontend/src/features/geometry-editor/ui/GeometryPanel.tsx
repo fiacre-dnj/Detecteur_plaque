@@ -10,7 +10,7 @@
  * relation entre deux objets, pas une propriété spatiale.
  */
 
-import { Plus, Square, Trash2 } from "lucide-react";
+import { Bookmark, Plus, Square, Trash2 } from "lucide-react";
 
 import type { CountingLine, Zone } from "@/shared/api/contracts";
 import type { Selection } from "@/entities/geometry";
@@ -23,6 +23,14 @@ interface GeometryPanelProps {
   disabled: boolean;
   onAddLine: () => void;
   onToggleDrawZone: () => void;
+  /**
+   * Ouvre la modale des presets.
+   *
+   * Un rappel plutôt que la modale elle-même : la feature `geometry-editor` ne doit
+   * pas connaître `geometry-presets` — deux features ne s'importent jamais. Le
+   * studio, qui les câble toutes les deux, tient le lien.
+   */
+  onOpenPresets?: (() => void) | undefined;
   onSelect: (selection: Selection) => void;
   onRenameLine: (id: string, name: string) => void;
   onRenameZone: (id: string, name: string) => void;
@@ -71,6 +79,18 @@ export function GeometryPanel(props: GeometryPanelProps) {
             <Square aria-hidden="true" className="size-3.5" />
             Zone
           </button>
+          {props.onOpenPresets !== undefined && (
+            <button
+              type="button"
+              onClick={props.onOpenPresets}
+              disabled={disabled}
+              title="Enregistrer cette géométrie, ou en charger une"
+              className="flex items-center gap-1 rounded-input px-2 py-1 text-small text-ink-muted transition-colors hover:bg-elevated hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Bookmark aria-hidden="true" className="size-3.5" />
+              Presets
+            </button>
+          )}
         </div>
       </div>
 

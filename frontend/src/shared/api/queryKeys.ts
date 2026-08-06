@@ -16,4 +16,5 @@ export const queryKeys = {
   job: (jobId: string) => ["jobs", jobId] as const,
   jobVehicles: (jobId: string) => ["jobs", jobId, "vehicles"] as const,
   jobCrossings: (jobId: string) => ["jobs", jobId, "crossings"] as const,
+  presets: ["presets"] as const,
 } as const;

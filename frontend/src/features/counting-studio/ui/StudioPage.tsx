@@ -49,7 +49,7 @@ import { ResultsDashboard } from "@/features/results-dashboard";
 import { chooseBucketMs, flowBuckets, useReplay, vehiclesAt } from "@/features/timeline-replay";
 import { VehicleRegistry } from "@/features/vehicle-registry";
 import { TransportBar, useVideoTransport } from "@/features/video-transport";
-import type { Point } from "@/shared/api/contracts";
+import type { Point, Preset } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
 import { Button } from "@/shared/ui/Button";
 import { MetricCard } from "@/shared/ui/MetricCard";
@@ -65,6 +65,17 @@ const FlowHistogram = lazy(() =>
   import("@/features/results-dashboard/ui/FlowHistogram").then((module) => ({
     default: module.FlowHistogram,
   })),
+);
+
+/**
+ * La modale des presets, **chargée paresseusement** elle aussi.
+ *
+ * Elle embarque son propre accès réseau et sa liste ; la faire payer au premier
+ * rendu taxerait tous ceux qui n'enregistrent jamais de géométrie — c'est-à-dire la
+ * majorité, puisqu'un preset ne sert qu'à partir de la deuxième vidéo.
+ */
+const PresetDialog = lazy(() =>
+  import("@/features/geometry-presets").then((module) => ({ default: module.PresetDialog })),
 );
 
 interface SceneSize {
@@ -84,6 +95,7 @@ export function StudioPage() {
   const [geometry, dispatch] = useReducer(geometryReducer, EMPTY_GEOMETRY);
   const [scene, setScene] = useState<SceneSize | null>(null);
   const [ended, setEnded] = useState(false);
+  const [presetsOpen, setPresetsOpen] = useState(false);
 
   /**
    * Les réglages, relus du stockage **une seule fois** à l'initialisation.
@@ -296,6 +308,21 @@ export function StudioPage() {
    */
   const liveStats = live.active ? live.stats : replay.stats;
 
+  /**
+   * Charge un preset **déjà mis à l'échelle par le serveur**.
+   *
+   * La géométrie arrive dans le repère de la vidéo courante : elle remplace donc le
+   * tracé sans conversion supplémentaire. Reconvertir ici appliquerait le facteur
+   * deux fois, et les lignes se retrouveraient au quart de leur distance du bord.
+   *
+   * Le réglage de masque suit la géométrie parce qu'il n'a de sens qu'avec les zones
+   * qui l'accompagnent — recharger un masque sans ses zones ne masquerait rien.
+   */
+  const loadPreset = useCallback((preset: Preset) => {
+    dispatch({ type: "replace", lines: [...preset.lines], zones: [...preset.zones] });
+    setSettings((previous) => ({ ...previous, maskOutsideZones: preset.maskOutsideZones }));
+  }, []);
+
   /** Pourquoi le direct est indisponible — quatre causes, quatre actions. */
   const liveBlockedReason = useMemo(() => {
     if (!isCamera) return "Le direct nécessite la caméra comme source.";
@@ -426,6 +453,7 @@ export function StudioPage() {
             onSetLineZone={(id, zoneId) => dispatch({ type: "setLineZone", id, zoneId })}
             onRemoveLine={(id) => dispatch({ type: "removeLine", id })}
             onRemoveZone={(id) => dispatch({ type: "removeZone", id })}
+            onOpenPresets={() => setPresetsOpen(true)}
           />
 
           {/* Le direct **avant** les réglages quand la caméra est la source : c'est
@@ -545,6 +573,24 @@ export function StudioPage() {
             />
           </div>
         </section>
+      )}
+
+      {/* Monté seulement une fois ouvert : le `<dialog>` est un composant lourd
+          — liste réseau comprise — dont personne n'a besoin avant le clic.
+          Aucun `fallback` visible : un squelette derrière une modale fermée
+          n'aurait rien à montrer. */}
+      {presetsOpen && (
+        <Suspense fallback={null}>
+          <PresetDialog
+            open={presetsOpen}
+            scene={scene}
+            lines={geometry.lines}
+            zones={geometry.zones}
+            maskOutsideZones={settings.maskOutsideZones}
+            onClose={() => setPresetsOpen(false)}
+            onLoad={loadPreset}
+          />
+        </Suspense>
       )}
     </div>
   );
