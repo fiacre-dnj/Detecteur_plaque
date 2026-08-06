@@ -94,6 +94,19 @@ class ResultStore(Protocol):
         """
         ...
 
+    def delete_input(self, job_id: str) -> bool:
+        """Supprime **la vidéo déposée** en gardant le résultat. Idempotent.
+
+        Une opération distincte de `delete` parce que les deux données n'ont pas la
+        même durée de vie légitime : une scène de trafic contient des plaques
+        réelles et des visages, un résultat ne contient que des boîtes et des
+        compteurs. La donnée sensible a donc son propre TTL, plus court.
+
+        Rend `True` si un fichier a réellement été supprimé — ce qui permet à la
+        boucle de purge de ne journaliser que ce qui a changé.
+        """
+        ...
+
     def delete(self, job_id: str) -> None:
         """Supprime les artefacts d'un job. **Idempotent** : un fichier déjà
         absent n'est pas une erreur."""

@@ -290,3 +290,92 @@ class TestPurgeTtl:
 
         assert await manager.purge_expired(60) == 1
         assert await manager.purge_expired(60) == 0
+
+    async def test_la_purge_efface_reellement_le_repertoire_du_job(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """Sur le **disque**, pas seulement en base.
+
+        Les tests précédents comptaient les jobs purgés. Aucun ne regardait le
+        système de fichiers — et c'est exactement l'angle mort qui a laissé
+        `input_ttl_minutes` inerte pendant tout le projet.
+        """
+        manager, _, store = await _manager(tmp_path, clock)
+        await _submit(manager, tmp_path)
+        await _await_status(manager, "job-1")
+        directory = store.directory_for("job-1")
+        assert directory.is_dir()
+
+        clock.advance(2 * 3600)
+        await manager.purge_expired(60)
+
+        assert not directory.exists()
+
+
+class TestPurgeDesVideosDeposees:
+    """Le TTL propre aux vidéos — plus court que celui des jobs.
+
+    Ce n'est pas une question de place disque : une scène de trafic contient des
+    plaques réelles et des visages, alors qu'un résultat ne contient que des boîtes
+    et des compteurs. La donnée sensible doit avoir la durée de vie la plus courte
+    que l'usage permet.
+    """
+
+    async def test_la_video_est_supprimee_et_le_resultat_conserve(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        manager, _, store = await _manager(tmp_path, clock)
+        await _submit(manager, tmp_path)
+        await _await_status(manager, "job-1")
+        video = store.input_path("job-1", ".mp4")
+        video.write_bytes(b"\x00" * 32)
+        assert store.path_for("job-1") is not None
+
+        clock.advance(2 * 3600)
+        assert await manager.purge_expired_inputs(60) == 1
+
+        assert not video.exists()
+        # Le résultat survit : c'est tout l'intérêt d'un TTL séparé.
+        assert store.path_for("job-1") is not None
+
+    async def test_le_job_reste_consultable_apres_la_purge_de_sa_video(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        # L'utilisateur doit pouvoir relire ses chiffres longtemps après que les
+        # images ont disparu — sinon la purge détruirait le travail avec la donnée.
+        manager, _, store = await _manager(tmp_path, clock)
+        await _submit(manager, tmp_path)
+        await _await_status(manager, "job-1")
+        store.input_path("job-1", ".mp4").write_bytes(b"\x00")
+        clock.advance(2 * 3600)
+
+        await manager.purge_expired_inputs(60)
+
+        assert (await manager.get("job-1")).status == "done"
+
+    async def test_une_video_encore_fraiche_n_est_pas_touchee(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        manager, _, store = await _manager(tmp_path, clock)
+        await _submit(manager, tmp_path)
+        await _await_status(manager, "job-1")
+        video = store.input_path("job-1", ".mp4")
+        video.write_bytes(b"\x00")
+
+        assert await manager.purge_expired_inputs(60) == 0
+        assert video.exists()
+
+    async def test_la_purge_des_videos_est_idempotente(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        # Le second passage rend 0 : sans cela la boucle de nettoyage annoncerait
+        # « 40 vidéos purgées » toutes les minutes sur les mêmes 40 jobs déjà
+        # nettoyés, et le journal deviendrait inutilisable.
+        manager, _, store = await _manager(tmp_path, clock)
+        await _submit(manager, tmp_path)
+        await _await_status(manager, "job-1")
+        store.input_path("job-1", ".mp4").write_bytes(b"\x00")
+        clock.advance(2 * 3600)
+
+        assert await manager.purge_expired_inputs(60) == 1
+        assert await manager.purge_expired_inputs(60) == 0

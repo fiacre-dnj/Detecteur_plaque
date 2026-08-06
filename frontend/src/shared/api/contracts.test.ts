@@ -179,12 +179,14 @@ describe("invariants que l'affichage ne doit jamais contredire", () => {
 });
 
 describe("contrat du diagnostic", () => {
-  it("expose les six compteurs qui rendent un comptage explicable", () => {
+  it("expose les sept compteurs qui rendent un comptage explicable", () => {
     // Ce bloc n'est pas décoratif : « le compte est faux » n'est diagnosticable
     // que si l'on voit si un véhicule manquant n'a jamais été détecté, l'a été
-    // faiblement, n'était pas confirmé, ou a été masqué par une zone.
+    // faiblement, n'était pas confirmé, ou a été masqué par une zone — et, dans
+    // l'autre sens, si un véhicule compté en trop était un doublon inclus.
     expect(Object.keys(result.stats.diagnostics).sort()).toEqual([
       "confirmedTracks",
+      "containedOut",
       "highDetections",
       "lowDetections",
       "maskedOut",

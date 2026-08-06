@@ -85,18 +85,27 @@ class FileResultStore:
         path = self._root / job_id / RESULT_FILENAME
         return path if path.is_file() else None
 
-    def delete_input(self, job_id: str) -> None:
-        """Supprime la vidéo déposée mais garde le résultat.
+    def delete_input(self, job_id: str) -> bool:
+        """Supprime la vidéo déposée mais garde le résultat. **Idempotent**.
 
         La vidéo est la donnée la plus lourde **et la plus sensible** — une scène
-        de trafic contient des plaques réelles — et elle n'est plus nécessaire une
-        fois le résultat produit. Elle a donc son propre TTL, plus court.
+        de trafic contient des plaques réelles et des visages — et elle n'est plus
+        nécessaire une fois le résultat produit. Elle a donc son propre TTL, plus
+        court, appliqué par `JobManager.purge_expired_inputs`.
+
+        Rend `True` si au moins un fichier a été supprimé. Le booléen sert à ne
+        journaliser que les purges qui ont réellement effacé quelque chose : une
+        boucle qui annonce « 40 vidéos purgées » toutes les minutes sur les mêmes
+        40 jobs déjà nettoyés rend le journal inutilisable.
         """
         directory = self._root / job_id
         if not directory.is_dir():
-            return
+            return False
+        removed = False
         for candidate in directory.glob(f"{INPUT_STEM}.*"):
             candidate.unlink(missing_ok=True)
+            removed = True
+        return removed
 
     def delete(self, job_id: str) -> None:
         """Supprime tous les artefacts du job. **Idempotent**.

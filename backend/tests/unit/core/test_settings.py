@@ -121,7 +121,41 @@ def test_la_production_exige_des_journaux_json() -> None:
     """Les journaux de production partent vers un collecteur, pas un terminal :
     le rendu console y perdrait toute la structure."""
     with pytest.raises(ValidationError, match="json"):
-        _settings(env="production", log_format="console")
+        _settings(env="production", log_format="console", docs_enabled=False)
+
+
+def test_l_exigence_de_journaux_json_ne_depend_pas_des_docs() -> None:
+    """Le bug corrigé au lot 14, en un test.
+
+    Les deux règles vivaient dans un seul validateur dont la condition était
+    `is_production and docs_enabled and log_format != "json"` : fermer les docs
+    faisait **disparaître** l'exigence sur les journaux. Deux règles sans rapport
+    conflées en une, et celle qui sautait était silencieuse.
+    """
+    with pytest.raises(ValidationError, match="json"):
+        _settings(env="production", log_format="console", docs_enabled=True, docs_public=True)
+
+
+def test_la_production_refuse_une_documentation_ouverte_par_defaut() -> None:
+    """Un `openapi.json` public est une carte du service offerte à qui cherche
+    par où entrer. Le défaut `docs_enabled=True` sert le développement ; l'hériter
+    en production publierait chaque route et chaque borne de validation."""
+    with pytest.raises(ValidationError, match="TRAFFIC_DOCS_ENABLED"):
+        _settings(env="production", log_format="json")
+
+
+def test_la_documentation_publique_reste_possible_si_elle_est_explicite() -> None:
+    """Exposer sa documentation est un choix légitime pour une API publique — il
+    doit seulement être écrit, et non hérité d'un `.env` de développement."""
+    settings = _settings(env="production", log_format="json", docs_public=True)
+
+    assert settings.docs_enabled is True
+
+
+def test_fermer_les_docs_suffit_a_demarrer_en_production() -> None:
+    settings = _settings(env="production", log_format="json", docs_enabled=False)
+
+    assert settings.is_production
 
 
 def test_la_configuration_est_immuable() -> None:

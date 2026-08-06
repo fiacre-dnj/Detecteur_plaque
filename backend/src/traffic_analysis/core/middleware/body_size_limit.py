@@ -18,6 +18,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from traffic_analysis.core.errors import PayloadTooLargeError, title_for
+from traffic_analysis.core.middleware.security_headers import headers_for_short_circuit
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -82,9 +83,17 @@ class BodySizeLimitMiddleware:
         return wrapped
 
     async def _refuse(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Rend un Problem Details, de la même forme que toutes les erreurs."""
+        """Rend un Problem Details, de la même forme que toutes les erreurs.
+
+        **Les en-têtes de sécurité sont posés ici**, comme pour le 429 de la limite
+        de débit et pour la même raison : `SecurityHeadersMiddleware` hérite de
+        `BaseHTTPMiddleware`, qui ne décore que ce qui passe par son `call_next`.
+        Une réponse envoyée directement à `send` depuis un middleware ASGI brut
+        sortirait nue — et un 413 est trivial à provoquer de l'extérieur.
+        """
         response = JSONResponse(
             status_code=STATUS,
+            headers=headers_for_short_circuit(),
             content={
                 "type": "about:blank",
                 "title": title_for(STATUS),

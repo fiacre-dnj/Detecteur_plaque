@@ -281,6 +281,12 @@ export interface Diagnostics {
   highDetections: number;
   lowDetections: number;
   maskedOut: number;
+  /**
+   * Boîtes écartées parce qu'incluses dans une autre — la cabine d'un
+   * semi-remorque dans la boîte du véhicule entier. Sans cette suppression, elles
+   * compteraient deux fois ; sans ce chiffre, la suppression serait invisible.
+   */
+  containedOut: number;
   confirmedTracks: number;
   tentativeTracks: number;
   rescuedByLowScore: number;

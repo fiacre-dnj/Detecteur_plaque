@@ -69,6 +69,55 @@ plus deux fois dans le même sens » si.
   et chaque route y porte un résumé, un identifiant lisible et un exemple.
 - En production, le service peut servir lui-même l'interface
   (`TRAFFIC_STATIC_DIR`) : une seule adresse, aucun réglage de CORS.
+- **L'interface existe.** On choisit une source — fichier, clip de démonstration
+  ou caméra —, on trace ses lignes et ses zones directement sur l'image, on lance
+  l'analyse et on suit sa progression.
+- Les lignes et les zones se dessinent, se déplacent, se renomment et se
+  suppriment sur l'image. Une ligne peut être restreinte à une zone.
+- Après une analyse, la vidéo se rejoue **avec** ses boîtes, ses trajectoires et
+  ses compteurs. Reculer dans la vidéo fait **baisser** les compteurs : ce qui est
+  affiché correspond toujours à ce qui a été vu jusqu'à l'instant montré.
+- Le registre des véhicules se consulte, se trie et s'exporte en CSV — un CSV qui
+  s'ouvre correctement dans Excel en français, accents compris.
+- Déplacer une ligne après une analyse affiche un bandeau « résultat obsolète »
+  plutôt que de laisser croire que les chiffres décrivent le nouveau tracé.
+- **Comptage en direct sur la caméra**, avec les mêmes règles que l'analyse d'un
+  fichier. La latence et le nombre d'images abandonnées sont affichés : un
+  abandon élevé est normal et signifie que le serveur est le facteur limitant.
+- Si le serveur ne reçoit pas des images de la taille que l'interface croit
+  envoyer, le direct **s'arrête et le dit**. Compter dans ces conditions
+  produirait des chiffres faux mais plausibles.
+- L'historique des analyses : rouvrir un résultat **avec sa géométrie**, relancer
+  la même configuration — ce qui crée une nouvelle analyse sans toucher à
+  l'ancienne — ou supprimer.
+- **Presets de géométrie** : enregistrer un tracé sous un nom et le recharger sur
+  une autre vidéo. Un preset enregistré pour une autre résolution est adapté
+  automatiquement, et l'interface **le dit avant** de le charger, avec les deux
+  résolutions.
+- Le sélecteur de modèles se parcourt au clavier et annonce, pour chaque modèle,
+  sa taille et s'il faudra le télécharger.
+- Le tableau de benchmark se trie par colonne et recharge le dernier résultat à
+  l'ouverture.
+- **`docker compose up` sert l'application complète** sur une seule adresse. Les
+  analyses, la base et les poids téléchargés survivent à un redémarrage.
+
+### Corrigé
+
+- **La vidéo déposée est réellement supprimée au bout d'une heure.** Le réglage
+  l'annonçait depuis le début, mais rien ne l'appliquait : les images restaient
+  vingt-quatre heures, comme le reste de l'analyse. Le résultat, lui, se consulte
+  toujours aussi longtemps — il ne contient que des boîtes et des chiffres.
+- **Une camionnette n'est plus comptée deux fois.** Le détecteur pouvait la
+  reconnaître à la fois comme voiture et comme camion, et les deux survivaient.
+- **Un semi-remorque non plus.** Le détecteur émet parfois une boîte sur la cabine
+  et une sur le véhicule entier ; la plus petite est désormais écartée, et le
+  panneau de diagnostic dit combien.
+- **Une analyse et un comptage en direct lancés en même temps ne se mélangent
+  plus.** Ils partageaient le même modèle et donc le même suivi : les deux
+  produisaient des chiffres plausibles et faux.
+- Le service refuse de démarrer en production avec sa documentation ouverte, sauf
+  choix explicite.
+- Le nombre de requêtes par minute est limité, avec un délai d'attente annoncé.
 
 ### Décidé
 
@@ -77,7 +126,8 @@ plus deux fois dans le même sens » si.
 - Aucun poids de modèle n'entre dans l'historique git : ils sont téléchargés à la
   demande, et l'interface distingue *au catalogue* / *téléchargé* / *résident*.
 - Python est épinglé en 3.12 : `torch` ne publie pas de roue pour 3.14.
-- `torch` s'installe en variante CPU par défaut ; `uv sync --extra gpu` sur une
-  machine NVIDIA.
+- `torch` s'installe dans la variante qui correspond à la machine — roue CPU ici,
+  roue CUDA sur une machine NVIDIA — sans extra à choisir. `UV_TORCH_BACKEND`
+  force la variante quand on veut un résultat reproductible.
 - L'interface suit `DESIGN.md` : thème sombre, accent vert strictement
   fonctionnel, couleur réservée au canvas pour ce qu'elle encode.

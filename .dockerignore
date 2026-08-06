@@ -1,0 +1,39 @@
+# Ce que le contexte de build ne doit **jamais** emporter.
+#
+# Un `.dockerignore` absent ou trop permissif est un défaut qui ne se voit pas :
+# l'image se construit, elle fonctionne, et elle pèse deux gigaoctets parce que le
+# dossier `.weights` et la base de données de développement ont été copiés dedans.
+# Pire, `data/` contient les vidéos analysées : les embarquer publierait les images
+# de quelqu'un dans une image qu'on distribue.
+
+# ── Ce qui est lourd et jamais utile ─────────────────────────────────────────
+.git
+.github
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.mypy_cache
+**/.ruff_cache
+**/.pytest_cache
+
+# ── Ce qui ne doit pas quitter la machine ────────────────────────────────────
+# Les vidéos déposées et les résultats des analyses.
+backend/data
+# Les poids téléchargés : ils sont récupérés dans le conteneur à la demande, et ils
+# pèsent jusqu'à 137 Mo pièce (ADR 0002).
+backend/.weights
+# Les exports ONNX d'une version antérieure, inutilisables et ignorés par le code.
+yolo
+**/.env
+**/*.db
+**/*.db-wal
+**/*.db-shm
+
+# ── Le reste ─────────────────────────────────────────────────────────────────
+prompt
+docs
+.claude
+**/.DS_Store
+**/*.log

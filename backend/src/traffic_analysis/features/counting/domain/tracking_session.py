@@ -53,6 +53,15 @@ if TYPE_CHECKING:
 MIN_SCENE_MS_FOR_FLOW = 3000.0
 _MS_PER_MINUTE = 60_000.0
 
+#: Seuil de containment au-delà duquel la plus petite boîte est écartée.
+#:
+#: Sévère à dessein. Le cas cible — cabine incluse dans le véhicule entier —
+#: atteint 1,0, tandis qu'une voiture roulant devant un camion peut être à 0,8
+#: dans la boîte du camion : la supprimer effacerait un vrai véhicule. Sous-compter
+#: est l'erreur la plus difficile à remarquer, donc en cas de doute on garde
+#: (piège 6 de prompt/13).
+CONTAINMENT_THRESHOLD = 0.9
+
 
 @dataclass(frozen=True, slots=True)
 class SessionConfig:
@@ -94,6 +103,7 @@ class AnalysisSession:
     __slots__ = (
         "_aggregates",
         "_config",
+        "_contained_out",
         "_counter",
         "_first_timestamp_ms",
         "_frame_diagonal",
@@ -128,6 +138,10 @@ class AnalysisSession:
         self._last_timestamp_ms: float = 0.0
         self._frame_index = 0
         self._masked_out = 0
+        # Boîtes écartées parce qu'incluses dans une autre. Compté et publié : une
+        # suppression silencieuse serait aussi opaque que le doublon qu'elle évite,
+        # et c'est ce chiffre qui permettra de savoir si le seuil est bien réglé.
+        self._contained_out = 0
 
     def feed(
         self,
@@ -137,7 +151,11 @@ class AnalysisSession:
         observations: Sequence[TrackObservation],
     ) -> FrameOutcome:
         """Fait avancer la session d'une frame. **L'ordre des étapes est le contrat.**"""
-        kept = self._mask(observations)
+        # Le doublon cabine/véhicule est écarté **avant** le masque et avant le
+        # suivi : une boîte incluse ne doit jamais devenir une piste, sinon elle
+        # porte une identité et un franchissement qu'aucune suppression ultérieure
+        # ne pourrait défaire.
+        kept = self._mask(self._drop_contained(observations))
         active = self._advance_tracks(kept, timestamp_ms)
 
         # Relâcher AVANT d'admettre. Le moteur détruit une piste morte et crée sa
@@ -196,6 +214,53 @@ class AnalysisSession:
             else:
                 self._masked_out += 1
         return tuple(kept)
+
+    def _drop_contained(
+        self, observations: Sequence[TrackObservation]
+    ) -> tuple[TrackObservation, ...]:
+        """Supprime une boîte **entièrement incluse** dans une autre.
+
+        Le cas cible est le bus ou le semi-remorque : le détecteur émet une boîte
+        sur la cabine **et** une sur le véhicule entier. Leur IoU vaut environ 0,3,
+        donc le NMS les garde toutes les deux — même inter-classes. Résultat : deux
+        pistes, deux identités, deux franchissements. Le total est trop haut, et
+        rien ne l'explique (piège 6 de prompt/13).
+
+        **Le seuil est sévère — 0,9 — et c'est délibéré.** Le cas cible atteint 1,0,
+        tandis qu'une voiture roulant devant un camion peut être à 0,8 dans la boîte
+        du camion : la supprimer effacerait un vrai véhicule. Sous-compter est
+        l'erreur la plus difficile à remarquer, donc en cas de doute on garde.
+
+        **La plus petite part**, jamais la plus grande : la cabine est un morceau du
+        véhicule, et c'est la boîte du véhicule entier qui décrit l'objet physique.
+
+        Complexité quadratique, assumée : une frame de trafic dense compte quelques
+        dizaines de détections après le filtrage par classe, et le coût est sans
+        commune mesure avec celui de l'inférence qui les a produites.
+        """
+        if len(observations) < 2:
+            return tuple(observations)
+
+        dropped: set[int] = set()
+        for i, first in enumerate(observations):
+            if i in dropped:
+                continue
+            for j, second in enumerate(observations[i + 1 :], start=i + 1):
+                if j in dropped:
+                    continue
+                if first.box.containment(second.box) < CONTAINMENT_THRESHOLD:
+                    continue
+                smaller = j if second.box.area <= first.box.area else i
+                dropped.add(smaller)
+                if smaller == i:
+                    # La boîte courante vient d'être écartée : inutile de la
+                    # comparer aux suivantes.
+                    break
+
+        if not dropped:
+            return tuple(observations)
+        self._contained_out += len(dropped)
+        return tuple(obs for index, obs in enumerate(observations) if index not in dropped)
 
     def _advance_tracks(
         self, observations: Sequence[TrackObservation], timestamp_ms: float
@@ -447,6 +512,7 @@ class AnalysisSession:
                 # serait pire que rendre zéro. L'adaptateur les renseignera s'il
                 # peut les observer.
                 masked_out=self._masked_out,
+                contained_out=self._contained_out,
                 confirmed_tracks=confirmed,
                 tentative_tracks=len(self._tracks) - confirmed,
             ),

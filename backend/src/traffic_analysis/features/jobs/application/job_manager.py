@@ -220,6 +220,35 @@ class JobManager:
             logger.info("purge TTL", removed=len(expired), ttl_minutes=older_than_minutes)
         return len(expired)
 
+    async def purge_expired_inputs(self, older_than_minutes: int) -> int:
+        """Supprime **les vidéos déposées** des jobs terminés, en gardant les résultats.
+
+        La vidéo a son propre TTL, plus court que celui du job, et pour une raison
+        qui n'est pas de la place disque : une scène de trafic contient des plaques
+        réelles et des visages. Le résultat, lui, ne contient que des boîtes et des
+        compteurs — il peut rester bien plus longtemps sans que cela pose la moindre
+        question.
+
+        Sans cette méthode, `input_ttl_minutes` était un réglage inerte : la
+        configuration promettait une suppression au bout d'une heure, et la vidéo
+        survivait jusqu'au TTL du job — vingt-quatre fois plus longtemps par défaut.
+        Un écart entre une promesse de confidentialité et le comportement réel est
+        plus grave qu'une promesse absente.
+
+        Jobs **terminaux** seulement : supprimer l'entrée d'une analyse en cours la
+        ferait échouer au milieu.
+        """
+        expired = await self._repository.list_expired(older_than_minutes)
+        removed = 0
+        for record in expired:
+            if self._result_store.delete_input(record.id):
+                removed += 1
+        if removed:
+            logger.info(
+                "purge des vidéos déposées", removed=removed, ttl_minutes=older_than_minutes
+            )
+        return removed
+
     async def _purge(self, job_id: str) -> None:
         self._result_store.delete(job_id)
         await self._repository.delete(job_id)

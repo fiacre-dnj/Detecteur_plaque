@@ -1,0 +1,87 @@
+# `docker compose up` sert l'application complète sur http://localhost:8000.
+#
+# **Un seul service dans le profil par défaut**, et c'est le point de conception de
+# ce fichier. Le backend sert le build du frontend : il n'y a donc ni reverse proxy,
+# ni second conteneur, ni réseau à configurer. Ce qu'on supprime en faisant ainsi :
+# le CORS à ouvrir, le tamponnage du proxy qui retient les événements SSE jusqu'à ce
+# que le tampon soit plein, et le relais du WebSocket qu'il faut activer
+# explicitement sur la plupart des proxys. Ces trois-là sont les pannes de
+# déploiement habituelles d'une application de ce genre.
+#
+# Le service `frontend-dev` existe pour l'autre usage — travailler sur l'interface
+# avec le rechargement à chaud — et n'est démarré que sur demande explicite :
+#     docker compose --profile dev up
+
+services:
+  app:
+    build:
+      # Le contexte est la **racine du dépôt** et non `backend/` : l'image contient
+      # les deux moitiés, et son étape de build du frontend a besoin de
+      # `frontend/`. C'est aussi pourquoi `dockerfile` est un chemin.
+      context: .
+      dockerfile: backend/Dockerfile
+    image: traffic-analysis:latest
+    ports:
+      - "8000:8000"
+    environment:
+      # `staging` et non `production` : en production, les migrations Alembic ne
+      # sont **pas** jouées au démarrage (c'est délibéré — une migration doit être
+      # une décision de déploiement, pas un effet de bord d'un redémarrage). Pour
+      # un `docker compose up` qui doit marcher du premier coup, on veut qu'elles
+      # le soient. Passer en `production` impose alors :
+      #     docker compose exec app alembic upgrade head
+      TRAFFIC_ENV: staging
+      TRAFFIC_LOG_FORMAT: json
+      # Origin unique : le navigateur ne fait aucune requête cross-origin, donc
+      # cette liste ne sert qu'à un client externe éventuel. Le WebSocket, lui,
+      # **vérifie l'origine à la main** (`realtime/api/origin_check.py`) parce
+      # qu'un handshake WebSocket ne passe jamais par le middleware CORS.
+      TRAFFIC_CORS_ORIGINS: http://localhost:8000,http://127.0.0.1:8000
+      # Un seul modèle résident. Chacun pèse plusieurs centaines de mégaoctets une
+      # fois chargé, et un conteneur sans limite mémoire explicite se fait tuer par
+      # l'OOM killer sans laisser de trace lisible dans les journaux.
+      TRAFFIC_MAX_LOADED_MODELS: "1"
+      TRAFFIC_MAX_CONCURRENT_JOBS: "1"
+    volumes:
+      # La base, les vidéos déposées et les résultats compressés. Sans ce volume,
+      # tout disparaît au premier `docker compose down` — y compris l'historique
+      # des analyses, qui est précisément ce que la persistance promet.
+      - traffic-data:/app/data
+      # Les poids téléchargés. Volume séparé parce que sa durée de vie est
+      # différente : on efface volontiers les données d'essai sans vouloir
+      # retélécharger 137 Mo de modèles.
+      - traffic-weights:/app/.weights
+    restart: unless-stopped
+    # Le healthcheck est défini dans l'image. Il est répété ici pour la seule
+    # valeur qu'il apporte au fichier : `start_period` doit couvrir le temps des
+    # migrations au premier démarrage, sur une base vide.
+    healthcheck:
+      start_period: 40s
+
+  # ── Développement de l'interface ───────────────────────────────────────────
+  frontend-dev:
+    profiles: ["dev"]
+    build:
+      context: ./frontend
+    ports:
+      - "5173:5173"
+    environment:
+      # Lu par `vite.config.ts` pour le proxy `/api`, WebSocket compris.
+      BACKEND_URL: http://app:8000
+    volumes:
+      # Le code en montage direct, pour le rechargement à chaud.
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
+      # Volume anonyme sur `node_modules` : il **masque** le répertoire de l'hôte
+      # et préserve l'installation faite dans l'image. Sans lui, un `node_modules`
+      # présent sur la machine — compilé pour un autre système — écraserait celui
+      # du conteneur, et l'erreur parlerait d'un module natif introuvable sans
+      # jamais désigner la cause.
+      - /app/node_modules
+    depends_on:
+      - app
+
+volumes:
+  traffic-data:
+  traffic-weights:

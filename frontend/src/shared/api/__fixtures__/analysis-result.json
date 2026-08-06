@@ -878,6 +878,7 @@
       "highDetections": 0,
       "lowDetections": 0,
       "maskedOut": 0,
+      "containedOut": 0,
       "confirmedTracks": 2,
       "tentativeTracks": 0,
       "rescuedByLowScore": 0

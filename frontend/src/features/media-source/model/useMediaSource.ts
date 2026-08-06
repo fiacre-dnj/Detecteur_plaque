@@ -1,17 +1,26 @@
 /**
  * La source à analyser : fichier, clip de démonstration, ou caméra.
  *
- * **Le piège que ce module existe pour éviter (piège 36 de `prompt/13`).** La
- * spécification HTML impose que, tant que `video.srcObject` est posé, `video.src`
- * soit **ignoré**. Concrètement : après une session caméra, charger un fichier ne
- * fait rien du tout — pas d'image, et **aucun événement `error`** pour le
- * signaler. On cherche le bug dans le décodage du fichier pendant une heure. La
- * seule prévention est de remettre `srcObject = null` à l'arrêt du flux, ce que
- * `stop()` fait systématiquement, y compris quand aucun flux n'était actif.
+ * Ce module gère la **source** : quel flux ou quel fichier est sélectionné, et la
+ * libération de ce qui doit l'être. Il ne touche jamais à l'élément `<video>`,
+ * qu'il ne connaît pas.
  *
- * Deuxième obligation : **libérer l'URL `blob:`** du fichier précédent. Chaque
- * `createObjectURL` retient le fichier entier en mémoire jusqu'à sa révocation ;
- * quelques vidéos de 500 Mo enchaînées suffisent à faire tomber l'onglet.
+ * **Où vit la prévention du piège 36.** La spécification HTML impose que, tant que
+ * `video.srcObject` est posé, `video.src` soit **ignoré** : après une session
+ * caméra, charger un fichier ne fait rien du tout — pas d'image, et aucun événement
+ * `error` pour le signaler. La remise à `null` de `srcObject` doit donc avoir lieu
+ * sur l'élément lui-même, et c'est **`VideoScene`** qui le fait, pas `stop()`
+ * ci-dessous : ce hook n'a aucune référence vers le `<video>`. Chercher la
+ * protection ici serait perdre son temps — elle est dans
+ * `features/media-source/ui/VideoScene.tsx`.
+ *
+ * Ce que `stop()` fait, et qui lui appartient réellement :
+ *
+ * - **couper les pistes de la caméra.** Sans cela le voyant reste allumé, ce que
+ *   l'utilisateur interprète — à raison — comme une caméra qui espionne ;
+ * - **libérer l'URL `blob:`** du fichier précédent. Chaque `createObjectURL`
+ *   retient le fichier entier en mémoire jusqu'à sa révocation ; quelques vidéos
+ *   de 500 Mo enchaînées suffisent à faire tomber l'onglet.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
