@@ -4,7 +4,7 @@
 > en premier, puis [`prompt/README.md`](../prompt/README.md).** Ce document dit où
 > en est le code ; `prompt/` dit ce qu'il doit devenir.
 >
-> Dernière mise à jour : 2026-08-06, après le lot 13.
+> Dernière mise à jour : 2026-08-06, après le lot 14 — le dernier.
 
 ---
 
@@ -29,11 +29,30 @@ Le plan d'exécution est [`prompt/12-PLAN-EXECUTION.md`](../prompt/12-PLAN-EXECU
 | 11 | Analyse, relecture de timeline, résultats, registre | ✅ |
 | 12 | Modèles, réglages, temps réel, benchmark, historique, presets | ✅ |
 | 13 | Docker, CI, docs finales, `CLAUDE.md` réécrit | ✅ |
-| 14 | Durcissement, les 56 pièges de `prompt/13` | ⬜ |
+| 14 | Durcissement, les 56 pièges de `prompt/13` | ✅ |
 
-**Chiffres vérifiés :** 801 tests backend (1 ignoré), 343 tests frontend, `ruff` +
+**Chiffres vérifiés :** 846 tests backend (1 ignoré), 343 tests frontend, `ruff` +
 `mypy --strict` + `oxlint` + `tsc -b` + `bun run build` verts, 15 hooks de
 pré-commit actifs.
+
+### Ce que le lot 14 a trouvé
+
+La liste de sécurité de `prompt/06` §6 a rendu trois écarts, la relecture des 56
+pièges en a rendu six. Les trois qui comptent :
+
+- **`input_ttl_minutes` n'était jamais appliqué.** La configuration promettait que
+  la vidéo déposée partait au bout d'une heure ; elle survivait vingt-quatre fois
+  plus longtemps. `delete_input()` existait, était correct, et n'avait aucun
+  appelant. Les tests de purge comptaient des jobs sans jamais regarder le disque.
+- **Le bail de modèle n'excluait rien** (invariant 9). `leases` comptait les usages
+  concurrents sans les empêcher : une analyse différée et une session temps réel
+  sur le même modèle partageaient l'instance et mélangeaient leurs états de suivi.
+- **Le NMS ne dédupliquait pas entre classes** (piège 5). Le commentaire affirmait
+  le contraire ; `agnostic_nms` n'était passé nulle part.
+
+Les trois avaient en commun d'être **silencieux** : aucune erreur, aucun journal,
+des chiffres plausibles. Et deux d'entre eux étaient documentés comme résolus par
+un commentaire qui décrivait un mécanisme inexistant.
 
 **L'application est fonctionnelle de bout en bout** : dépôt d'un fichier, édition
 de géométrie au canvas, analyse serveur suivie en SSE, relecture synchronisée,
@@ -44,12 +63,12 @@ comptage en direct sur le flux caméra, benchmark, historique, presets.
 ## 2. Où reprendre exactement
 
 ```bash
-git branch --show-current          # → chore/livraison
+git branch --show-current
 git status --short
 ```
 
-La branche `chore/livraison` porte le **lot 13** et est prête à fusionner dans
-`main`. Il ne reste que le **lot 14** : durcissement et relecture des 56 pièges.
+Les 14 lots sont écrits. Il ne reste que des vérifications qui demandent une
+machine en état et un humain devant l'écran — voir §4.
 
 ---
 
@@ -127,17 +146,21 @@ Mesuré sur un vrai YOLOv8n, chiffres de cette machine :
 
 ## 4. Tâches restantes
 
-### Lot 14 — Durcissement
+Les 14 lots sont écrits. Ce qui reste ne demande pas d'écrire du code, mais une
+machine en état et un humain devant l'écran.
 
-- [ ] Liste de contrôle de sécurité [`prompt/06`](../prompt/06-SECURITE-CORS-SWAGGER.md) §6.
-- [ ] Vérifications manuelles [`prompt/10`](../prompt/10-TESTS-QUALITE-CI.md) §4,
-      dont **comparer un comptage réel à un comptage humain sur 30 s** et écrire
-      le résultat de la comparaison.
-- [ ] Relire les **56 pièges** de [`prompt/13`](../prompt/13-PIEGES-CONNUS.md) un
-      par un, en ajoutant un test partout où c'est possible.
-- [ ] Construire l'image Docker et faire tourner `docker compose up` une fois que
-      la machine a de l'espace disque — c'est le critère d'acceptation du lot 13
-      qui n'a pas pu être honoré.
+- [ ] **Construire l'image et faire tourner `docker compose up`.** C'est le critère
+      d'acceptation du lot 13, et il n'a pas pu être honoré : voir §3. Le job
+      `image` de la CI le fera au premier passage.
+- [ ] **Comparer un comptage réel à un comptage humain sur 30 s**
+      ([`prompt/10`](../prompt/10-TESTS-QUALITE-CI.md) §4) et écrire le résultat.
+      C'est la seule vérification qui dise si l'application compte *juste*, et
+      aucun test automatique ne peut la remplacer.
+- [ ] Les autres vérifications manuelles de `prompt/10` §4 : déplacer une ligne
+      après une analyse, reculer dans la vidéo, couper le backend en pleine
+      analyse, enchaîner caméra → fichier → caméra.
+- [ ] Faire tourner la CI une première fois (aucun push n'a encore déclenché
+      GitHub Actions).
 
 ---
 

@@ -101,6 +101,24 @@ plus deux fois dans le même sens » si.
 - **`docker compose up` sert l'application complète** sur une seule adresse. Les
   analyses, la base et les poids téléchargés survivent à un redémarrage.
 
+### Corrigé
+
+- **La vidéo déposée est réellement supprimée au bout d'une heure.** Le réglage
+  l'annonçait depuis le début, mais rien ne l'appliquait : les images restaient
+  vingt-quatre heures, comme le reste de l'analyse. Le résultat, lui, se consulte
+  toujours aussi longtemps — il ne contient que des boîtes et des chiffres.
+- **Une camionnette n'est plus comptée deux fois.** Le détecteur pouvait la
+  reconnaître à la fois comme voiture et comme camion, et les deux survivaient.
+- **Un semi-remorque non plus.** Le détecteur émet parfois une boîte sur la cabine
+  et une sur le véhicule entier ; la plus petite est désormais écartée, et le
+  panneau de diagnostic dit combien.
+- **Une analyse et un comptage en direct lancés en même temps ne se mélangent
+  plus.** Ils partageaient le même modèle et donc le même suivi : les deux
+  produisaient des chiffres plausibles et faux.
+- Le service refuse de démarrer en production avec sa documentation ouverte, sauf
+  choix explicite.
+- Le nombre de requêtes par minute est limité, avec un délai d'attente annoncé.
+
 ### Décidé
 
 - L'inférence est exclusivement côté serveur ; il n'y a plus de mode navigateur,
