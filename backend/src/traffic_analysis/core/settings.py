@@ -63,6 +63,14 @@ class Settings(BaseSettings):
     device: str = "auto"  # auto | cpu | 0 | cuda:0
     half: bool = True  # ignoré hors GPU : en fp16 sur CPU, l'inférence ralentit
     default_model_id: str = "yolov8n"
+    #: Préchauffe le modèle par défaut au démarrage, **si son poids est déjà sur le
+    #: disque**. Le premier appel d'un modèle paie son chargement et sa fusion de
+    #: couches, ce qui se lit comme un blocage de plusieurs dizaines de secondes.
+    #:
+    #: La condition « déjà téléchargé » n'est pas négociable : préchauffer un modèle
+    #: absent déclencherait un téléchargement de 137 Mo au démarrage, donc un
+    #: conteneur qui semble bloqué et un healthcheck qui échoue. Le service ne doit
+    #: jamais dépendre du réseau pour démarrer.
     warmup: bool = True
     max_loaded_models: int = Field(2, ge=1, le=8)
     plate_model_path: Path | None = None  # vide = <weights_dir>/license-plate.onnx

@@ -18,11 +18,17 @@ from dataclasses import dataclass, field
 from traffic_analysis.features.counting.domain.geometry import Point
 
 # Les quatre classes COCO comptées, traitées à l'identique.
+#
 # `car`, `motorcycle`, `bus` et `truck` sont mutuellement exclusives sur un objet
 # physique : une camionnette ne doit pas survivre comme `car 0.52` ET `truck 0.41`,
-# sinon elle devient deux pistes, deux identités, et compte deux fois
-# (piège 5 de prompt/13). C'est `classes=[2,3,5,7]` passé au moteur, plus le NMS
-# d'Ultralytics, qui traitent le cas.
+# sinon elle devient deux pistes, deux identités, et compte deux fois (piège 5 de
+# prompt/13).
+#
+# Deux réglages sont nécessaires, et **le second manquait** : `classes=[2,3,5,7]`
+# restreint les détections à ces quatre classes, mais le NMS par défaut
+# d'Ultralytics est *class-aware* — il ne compare que des boîtes de même classe et
+# laisse donc passer le doublon. C'est `agnostic_nms=True`, posé sur les deux
+# appels de `ultralytics_engine.py`, qui traite réellement le cas.
 VEHICLE_CLASS_IDS: tuple[int, ...] = (2, 3, 5, 7)
 
 
@@ -50,6 +56,37 @@ class BoundingBox:
     @property
     def area(self) -> float:
         return self.width * self.height
+
+    def intersection_area(self, other: BoundingBox) -> float:
+        """Aire commune aux deux boîtes, `0` si elles ne se touchent pas."""
+        left = max(self.x, other.x)
+        top = max(self.y, other.y)
+        right = min(self.x + self.width, other.x + other.width)
+        bottom = min(self.y + self.height, other.y + other.height)
+        if right <= left or bottom <= top:
+            return 0.0
+        return (right - left) * (bottom - top)
+
+    def containment(self, other: BoundingBox) -> float:
+        """`intersection / min(aire)` — la mesure qui attrape la boîte incluse.
+
+        **Pas l'IoU, et c'est tout le point.** Sur un bus ou un semi-remorque, le
+        détecteur émet parfois une boîte sur la cabine *et* une sur le véhicule
+        entier. Leur IoU vaut environ 0,3 — sous n'importe quel seuil raisonnable,
+        donc le NMS les garde toutes les deux : deux pistes, deux identités, deux
+        franchissements. Le total est simplement trop haut, et rien ne l'explique.
+
+        La containment, elle, vaut 1,0 dans ce cas : la petite boîte est
+        entièrement dans la grande. Diviser par la **plus petite** aire est ce qui
+        rend la mesure insensible à la différence de taille, là où l'IoU la punit.
+
+        Rend `0` si l'une des deux boîtes est dégénérée, plutôt que de diviser par
+        zéro : une boîte d'aire nulle ne contient rien et n'est contenue par rien.
+        """
+        smallest = min(self.area, other.area)
+        if smallest <= 0:
+            return 0.0
+        return self.intersection_area(other) / smallest
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,6 +343,11 @@ class Diagnostics:
     confirmed_tracks: int = 0
     tentative_tracks: int = 0
     rescued_by_low_score: int = 0
+    #: Boîtes écartées parce qu'entièrement incluses dans une autre — la cabine
+    #: d'un semi-remorque dans la boîte du véhicule entier. Publié plutôt que
+    #: silencieux : une suppression invisible serait aussi opaque que le doublon
+    #: qu'elle évite, et c'est ce chiffre qui dit si le seuil est bien réglé.
+    contained_out: int = 0
 
 
 @dataclass(frozen=True, slots=True)

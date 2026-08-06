@@ -98,6 +98,18 @@ export function GeometryPanel(props: GeometryPanelProps) {
         <p className="mt-3 rounded-input bg-elevated p-2 text-small text-ink-muted">
           Un clic par sommet. Double-cliquez — ou cliquez le premier sommet — pour
           fermer. <kbd className="font-bold">Échap</kbd> annule.
+          {/* La règle de décision, dite **pendant** le tracé.
+              Un véhicule appartient à la zone quand le **centre** de sa boîte y
+              est. Une zone collée aux bords de la chaussée laisse donc échapper
+              les véhicules de bord, dont le centre tombe juste dehors — un
+              sous-comptage discret, sans erreur, que rien n'explique après coup.
+              Le dire ici plutôt que dans une infobulle : c'est maintenant que
+              l'utilisateur place ses sommets (piège 10 de prompt/13). */}
+          <span className="mt-1 block text-micro text-ink-dim">
+            Un véhicule compte quand le <strong>centre</strong> de sa boîte est dans
+            la zone. Tracez donc <strong>large</strong> : une zone serrée laisse
+            échapper les véhicules de bord.
+          </span>
         </p>
       )}
 

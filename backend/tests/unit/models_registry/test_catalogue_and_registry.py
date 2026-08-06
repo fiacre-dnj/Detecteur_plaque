@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -119,6 +120,97 @@ class TestRegistre:
             assert second == "modele:yolov8n"
 
         assert registry.loads == ["yolov8n"]
+
+    def test_deux_bails_simultanes_sur_le_meme_modele_sont_serialises(self, tmp_path: Path) -> None:
+        """**L'invariant 9 du projet**, et il manquait.
+
+        `leases` ne comptait que les usages concurrents sans jamais les empêcher :
+        deux appelants recevaient la *même* instance et lançaient
+        `model.track(..., persist=True)` en parallèle depuis deux threads. Le
+        tracker BoT-SORT garde son état d'une frame à l'autre, donc les deux flux
+        se mélangeaient — des chiffres plausibles et complètement faux, sans la
+        moindre erreur ni la moindre ligne de journal.
+
+        Le cas n'était pas théorique : `max_concurrent_jobs` borne les jobs entre
+        eux et `max_realtime_sessions` les sessions entre elles, mais **rien** ne
+        bornait un job différé et une session temps réel ensemble — et le
+        conteneur les construit sur le même registre.
+
+        Le test observe le **chevauchement**, pas l'ordre : sérialiser signifie
+        qu'à aucun instant deux porteurs ne sont dans leur bail à la fois.
+        """
+        registry = FakeLoadingRegistry(tmp_path)
+        inside = 0
+        overlapped = False
+        started = threading.Barrier(2)
+        guard = threading.Lock()
+
+        def hold() -> None:
+            nonlocal inside, overlapped
+            started.wait(timeout=5)
+            with registry.lease("yolov8n"):
+                with guard:
+                    inside += 1
+                    if inside > 1:
+                        overlapped = True
+                # Assez long pour que l'autre fil ait le temps d'entrer si rien ne
+                # l'en empêche — et sans faire dépendre le verdict de la vitesse
+                # de la machine : un chevauchement serait détecté, jamais inventé.
+                time.sleep(0.05)
+                with guard:
+                    inside -= 1
+
+        threads = [threading.Thread(target=hold) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert not overlapped, "deux bails simultanés ont partagé la même instance"
+
+    def test_le_bail_attend_puis_obtient_l_instance(self, tmp_path: Path) -> None:
+        """Attendre, et non refuser.
+
+        Un refus obligerait chaque appelant à gérer une indisponibilité
+        transitoire, alors que le travail est déjà mis en file en amont. Le second
+        bail doit donc finir par s'ouvrir, pas lever.
+        """
+        registry = FakeLoadingRegistry(tmp_path)
+        obtained: list[str] = []
+
+        def take() -> None:
+            with registry.lease("yolov8n") as model:
+                obtained.append(str(model))
+
+        with registry.lease("yolov8n"):
+            waiter = threading.Thread(target=take)
+            waiter.start()
+            # Le second bail est bloqué tant que le premier n'est pas rendu.
+            waiter.join(timeout=0.2)
+            assert obtained == []
+
+        waiter.join(timeout=5)
+        assert obtained == ["modele:yolov8n"]
+
+    def test_deux_modeles_differents_ne_s_attendent_pas(self, tmp_path: Path) -> None:
+        """Le verrou est **par instance**, jamais global.
+
+        Un verrou unique sérialiserait tout le service : une analyse sur `yolov8n`
+        bloquerait une session temps réel sur `yolo11m`, alors que les deux
+        instances sont distinctes et leurs états de suivi indépendants.
+        """
+        registry = FakeLoadingRegistry(tmp_path)
+        entered = threading.Event()
+
+        def take_other() -> None:
+            with registry.lease("yolo11m"):
+                entered.set()
+
+        with registry.lease("yolov8n"):
+            other = threading.Thread(target=take_other)
+            other.start()
+            assert entered.wait(timeout=5), "un modèle distinct a été bloqué"
+            other.join(timeout=5)
 
     def test_une_instance_occupee_n_est_jamais_evincee(self, tmp_path: Path) -> None:
         """Le piège 28 de prompt/13, côté mémoire.

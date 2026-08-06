@@ -228,6 +228,13 @@ function DiagnosticsPanel({ diagnostics }: { diagnostics: Diagnostics }) {
       value: diagnostics.maskedOut,
       hint: "Écartées parce qu'elles étaient hors des zones.",
     },
+    {
+      label: "Doublons inclus",
+      value: diagnostics.containedOut,
+      hint:
+        "Boîtes entièrement contenues dans une autre — la cabine d'un semi-remorque " +
+        "dans la boîte du véhicule entier. Sans cette suppression, elles compteraient deux fois.",
+    },
   ];
 
   return (
@@ -241,10 +248,29 @@ function DiagnosticsPanel({ diagnostics }: { diagnostics: Diagnostics }) {
           </div>
         ))}
       </dl>
-      <p className="mt-2 text-micro text-ink-dim">
-        Un véhicule manquant est soit jamais détecté, soit détecté faiblement, soit
-        non confirmé, soit masqué par une zone. Ces chiffres disent lequel.
-      </p>
+      {diagnostics.highDetections === 0 && diagnostics.lowDetections === 0 ? (
+        // **Le cinquième cas**, et le seul que les quatre chiffres n'expliquent
+        // pas : zéro détection à *tous* les seuils. Ce n'est alors pas un réglage
+        // trop strict — baisser la confiance n'y changera rien, et c'est
+        // exactement ce que l'utilisateur va essayer pendant vingt minutes.
+        //
+        // La cause habituelle est l'imagerie : les détecteurs COCO sont entraînés
+        // sur des photographies, et s'effondrent sur une scène dessinée, un rendu
+        // 3D stylisé ou une vue de jeu vidéo. Le dire ici évite de conclure à une
+        // panne du service (piège 54 de prompt/13).
+        <p role="status" className="mt-2 text-micro text-warning">
+          <strong>Aucune détection, à aucun seuil.</strong> Baisser la confiance n'y
+          changera rien. Les détecteurs sont entraînés sur des photographies : une
+          scène dessinée, un rendu 3D ou une capture de jeu vidéo ne produit souvent
+          aucune détection. Vérifiez avec une vidéo de trafic réelle avant de
+          conclure à un problème du service.
+        </p>
+      ) : (
+        <p className="mt-2 text-micro text-ink-dim">
+          Un véhicule manquant est soit jamais détecté, soit détecté faiblement, soit
+          non confirmé, soit masqué par une zone. Ces chiffres disent lequel.
+        </p>
+      )}
     </div>
   );
 }

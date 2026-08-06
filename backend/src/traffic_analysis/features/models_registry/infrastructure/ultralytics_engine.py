@@ -97,6 +97,14 @@ class UltralyticsEngine:
                 conf=spec.confidence,
                 iou=spec.iou,
                 classes=list(spec.class_ids),
+                # **NMS inter-classes**, et c'est le piège 5 de prompt/13. Le NMS
+                # par défaut d'Ultralytics est *class-aware* : il ne compare que
+                # des boîtes de même classe. Une camionnette scorée `car 0.52`
+                # **et** `truck 0.41` survit donc en double, devient deux pistes,
+                # deux identités, et compte deux fois. Nos quatre classes sont
+                # mutuellement exclusives sur un objet physique, donc la
+                # suppression doit ignorer la classe.
+                agnostic_nms=True,
                 device=self._registry.device(),
                 half=self._registry.half(),
                 vid_stride=stride,
@@ -150,6 +158,9 @@ class UltralyticsStream:
             conf=self._spec.confidence,
             iou=self._spec.iou,
             classes=list(self._spec.class_ids),
+            # Voir le mode différé : NMS inter-classes, sinon une camionnette
+            # survit en `car` **et** en `truck` et compte deux fois.
+            agnostic_nms=True,
             device=self._registry.device(),
             half=self._registry.half(),
             verbose=False,

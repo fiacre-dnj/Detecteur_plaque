@@ -41,13 +41,26 @@ WARMUP_SIDE = 640
 
 @dataclass(slots=True)
 class _Resident:
-    """Une instance chargée en mémoire."""
+    """Une instance chargée en mémoire, et le verrou qui en sérialise l'usage."""
 
     model: Any
     # Une instance occupée n'est **jamais** évincée : son bail est en cours
     # d'usage, et la retirer laisserait une analyse sans modèle en plein vol.
     busy: bool = False
     leases: int = field(default=0)
+    #: **Le verrou d'exclusion mutuelle de l'invariant 9.**
+    #:
+    #: Sans lui, `leases` était un simple compteur d'usages concurrents : deux
+    #: appelants recevaient la *même* instance et appelaient `model.track(...,
+    #: persist=True)` en parallèle depuis deux threads. Le tracker BoT-SORT garde
+    #: son état d'une frame à l'autre — les deux flux se mélangeaient, et le
+    #: résultat était plausible et complètement faux. Aucune erreur, aucun journal.
+    #:
+    #: Le cas concret n'était pas théorique : `max_concurrent_jobs` borne les jobs
+    #: entre eux et `max_realtime_sessions` les sessions entre elles, mais **rien**
+    #: ne bornait un job et une session ensemble — et le conteneur les construit
+    #: sur le même registre.
+    lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class ModelRegistry:
@@ -162,30 +175,59 @@ class ModelRegistry:
 
     @contextmanager
     def lease(self, model_id: str) -> Iterator[Any]:
-        """Réserve une instance pour la durée de l'usage.
+        """Réserve une instance **en exclusivité** pour la durée de l'usage.
 
-        L'instance est marquée occupée, donc inéluctable à l'éviction, et le bail
-        est **toujours** rendu par le `finally` — y compris si l'analyse lève.
+        Deux garanties, et il a fallu les deux :
+
+        1. l'instance est marquée occupée, donc à l'abri de l'éviction — la
+           retirer laisserait une analyse sans modèle en plein vol ;
+        2. **un seul appelant à la fois** l'utilise réellement. Un second bail sur
+           le même modèle *attend* que le premier soit rendu.
+
+        La seconde manquait, et c'est l'invariant 9 du projet. `leases` ne comptait
+        que les usages concurrents sans jamais les empêcher : deux appelants
+        recevaient la même instance et lançaient `model.track(..., persist=True)`
+        en parallèle. Le tracker garde son état d'une frame à l'autre, donc les
+        deux flux se mélangeaient — des chiffres plausibles et complètement faux,
+        sans la moindre erreur.
+
+        **Le bail attend plutôt que de refuser.** Un refus obligerait chaque
+        appelant à gérer une indisponibilité transitoire, alors que le travail est
+        déjà mis en file en amont (`max_concurrent_jobs`, `max_realtime_sessions`).
+        Attendre est ici le comportement correct : l'analyse suivante démarre dès
+        que la précédente rend la main.
+
+        L'attente a lieu **hors** du verrou du registre : le tenir pendant une
+        analyse de plusieurs minutes bloquerait jusqu'à la lecture du catalogue.
         """
         self.describe(model_id)  # 404 explicite avant tout chargement
-        model = self._acquire(model_id)
-        try:
-            yield model
-        finally:
-            with self._lock:
-                resident = self._residents.get(model_id)
-                if resident is not None:
-                    resident.leases = max(0, resident.leases - 1)
-                    resident.busy = resident.leases > 0
+        resident = self._acquire(model_id)
+        # Sérialise l'usage réel. Acquis après `_acquire`, donc l'instance est déjà
+        # comptée occupée et ne peut pas être évincée pendant qu'on attend son tour.
+        with resident.lock:
+            try:
+                yield resident.model
+            finally:
+                with self._lock:
+                    current = self._residents.get(model_id)
+                    if current is not None:
+                        current.leases = max(0, current.leases - 1)
+                        current.busy = current.leases > 0
 
-    def _acquire(self, model_id: str) -> Any:  # noqa: ANN401 — YOLO n'est pas typé
+    def _acquire(self, model_id: str) -> _Resident:
+        """Réserve l'instance et rend le **résident**, verrou compris.
+
+        Le résident et non le modèle nu : l'appelant a besoin du verrou pour
+        sérialiser l'usage, et le lui faire rechercher séparément rouvrirait une
+        course entre l'obtention de l'instance et celle de son verrou.
+        """
         with self._lock:
             resident = self._residents.get(model_id)
             if resident is not None:
                 self._residents.move_to_end(model_id)
                 resident.leases += 1
                 resident.busy = True
-                return resident.model
+                return resident
 
         # Chargement **hors verrou** : il peut durer le temps d'un téléchargement
         # de 137 Mo, et tenir le verrou bloquerait toute autre analyse.
@@ -199,11 +241,12 @@ class ModelRegistry:
                 self._residents.move_to_end(model_id)
                 existing.leases += 1
                 existing.busy = True
-                return existing.model
+                return existing
 
-            self._residents[model_id] = _Resident(model=model, busy=True, leases=1)
+            fresh = _Resident(model=model, busy=True, leases=1)
+            self._residents[model_id] = fresh
             self._evict_if_needed()
-            return model
+            return fresh
 
     def _evict_if_needed(self) -> None:
         """Évince les plus anciennes instances **non occupées**.

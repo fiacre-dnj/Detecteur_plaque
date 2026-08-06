@@ -1,0 +1,106 @@
+"""Les arguments passés à `model.track()` — vérifiés sur la **source**.
+
+Ces deux arguments décident du nombre de véhicules comptés, et aucun test ne
+pouvait les voir : les 500 tests du comptage injectent un `FakeEngine` et
+n'atteignent jamais `UltralyticsEngine`. C'est le but de l'architecture — la CI
+tourne sans GPU, sans poids et sans ultralytics — et son prix : un chemin utilisé
+uniquement en production n'est couvert par personne.
+
+Le test lit donc le **texte du module** plutôt que d'exécuter l'appel. C'est
+inhabituel et volontairement modeste : construire un faux modèle, un faux registre
+et une fausse vidéo pour observer un appel coûterait bien plus qu'il ne prouve, et
+il n'existe pas d'autre façon d'atteindre ce code sans ultralytics. Ce que ce test
+garantit est étroit mais réel : personne ne retirera silencieusement l'un des deux
+arguments.
+
+Un `agnostic_nms` retiré ne casserait rien de visible — il ferait simplement
+compter une camionnette deux fois, de temps en temps.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import traffic_analysis.features.models_registry.infrastructure.ultralytics_engine as engine_module
+
+SOURCE = Path(engine_module.__file__).read_text(encoding="utf-8")
+
+
+def _track_calls(source: str) -> list[str]:
+    """Extrait le texte des arguments de chaque `.track(...)`.
+
+    Par équilibrage de parenthèses et non par expression régulière : les deux
+    appels n'ont pas la même indentation — l'un est dans un `with`, l'autre non —
+    et une expression paresseuse sur une parenthèse fermante indentée les fusionnait
+    en un seul bloc. Le test de garde ci-dessous l'a attrapé immédiatement, ce qui
+    est exactement pourquoi il existe.
+    """
+    calls: list[str] = []
+    for match in re.finditer(r"\.track\(", source):
+        start = match.end()
+        depth = 1
+        index = start
+        while index < len(source) and depth:
+            if source[index] == "(":
+                depth += 1
+            elif source[index] == ")":
+                depth -= 1
+            index += 1
+        calls.append(source[start : index - 1])
+    return calls
+
+
+#: Les appels au moteur : `model.track(` en différé, `self._model.track(` en direct.
+TRACK_CALLS = _track_calls(SOURCE)
+
+
+def test_les_deux_modes_appellent_bien_le_tracker() -> None:
+    """Garde-fou du garde-fou : si l'expression ne trouve plus rien, les tests
+    suivants passeraient à vide et ne prouveraient plus rien."""
+    assert len(TRACK_CALLS) == 2, (
+        f"{len(TRACK_CALLS)} appel(s) à `.track(` trouvé(s) au lieu de 2 — "
+        "l'expression régulière de ce test doit être mise à jour, sinon les "
+        "vérifications ci-dessous ne portent plus sur rien."
+    )
+
+
+def test_le_nms_ignore_la_classe_dans_les_deux_modes() -> None:
+    """Piège 5 de prompt/13, et le réglage qui manquait réellement.
+
+    Le NMS par défaut d'Ultralytics est *class-aware* : il ne compare que des
+    boîtes de même classe. Une camionnette scorée `car 0.52` **et** `truck 0.41`
+    survit donc en double, devient deux pistes, deux identités, et compte deux
+    fois. `classes=[2,3,5,7]` ne suffit pas — il restreint les classes, il ne
+    déduplique pas entre elles.
+
+    Le commentaire du code affirmait pendant tout le projet que « `classes=` plus
+    le NMS d'Ultralytics traitent le cas ». C'était faux.
+    """
+    for index, call in enumerate(TRACK_CALLS):
+        assert "agnostic_nms=True" in call, (
+            f"L'appel n°{index + 1} à `.track()` n'active pas `agnostic_nms`. "
+            "Une camionnette y sera comptée deux fois, sans aucune erreur."
+        )
+
+
+def test_les_classes_de_vehicules_sont_restreintes_dans_les_deux_modes() -> None:
+    """Sans `classes=`, le modèle rend les 80 classes de COCO.
+
+    Les piétons, les feux et les panneaux deviendraient des pistes, seraient
+    comptés au franchissement, et le post-traitement paierait un travail entier
+    pour des objets qu'on jette ensuite.
+    """
+    for index, call in enumerate(TRACK_CALLS):
+        assert "classes=" in call, f"L'appel n°{index + 1} ne restreint pas les classes."
+
+
+def test_le_suivi_persiste_entre_les_appels() -> None:
+    """`persist=True` est ce qui fait d'une suite d'images un flux.
+
+    Sans lui, chaque frame repartirait avec des identifiants neufs : rien ne
+    serait jamais suivi, et le comptage rendrait autant de véhicules uniques que
+    de détections.
+    """
+    for index, call in enumerate(TRACK_CALLS):
+        assert "persist=True" in call, f"L'appel n°{index + 1} ne persiste pas le suivi."

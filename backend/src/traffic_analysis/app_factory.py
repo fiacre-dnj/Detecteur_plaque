@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING
 
+import anyio.to_thread
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -34,6 +35,7 @@ from traffic_analysis.core.settings import Settings, get_settings
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from traffic_analysis.container import Container
     from traffic_analysis.core.clock import Clock
     from traffic_analysis.features.benchmark.application.ports import InferenceProbe
     from traffic_analysis.features.counting.application.ports import (
@@ -367,6 +369,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     background.add(cleanup)
     cleanup.add_done_callback(background.discard)
 
+    if settings.warmup:
+        warm = asyncio.create_task(_warmup(container), name="warmup")
+        background.add(warm)
+        warm.add_done_callback(background.discard)
+
     logger.info(
         "service démarré",
         version=__version__,
@@ -387,6 +394,44 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             await container.benchmark_service.shutdown()
         await container.dispose()
         logger.info("service arrêté")
+
+
+async def _warmup(container: Container) -> None:
+    """Préchauffe le modèle par défaut, **s'il est déjà téléchargé**.
+
+    Le premier appel d'un modèle inclut son chargement et sa fusion de couches :
+    sans préchauffage, il se lit comme un blocage de plusieurs dizaines de secondes
+    au milieu de la première analyse (piège 31 de prompt/13).
+
+    Trois précautions, et chacune évite une panne concrète :
+
+    - **Rien si le poids est absent.** Préchauffer déclencherait un téléchargement
+      de 137 Mo au démarrage : le conteneur paraîtrait bloqué et son healthcheck
+      échouerait. Le service ne dépend jamais du réseau pour démarrer.
+    - **En tâche de fond**, jamais dans le `lifespan` lui-même. Le chargement d'un
+      modèle prend plusieurs secondes ; le faire bloquer le démarrage retarderait
+      d'autant la première réponse à `/health/live`.
+    - **Dans un thread worker.** Charger un modèle et lancer une inférence sont des
+      opérations bloquantes ; les exécuter sur la boucle asyncio la figerait, et
+      tout le service avec (invariant 11).
+
+    Ce réglage a été **déclaré et jamais lu** pendant tout le projet : `warmup: bool
+    = True` existait, était documenté dans `.env.example`, et aucune ligne ne le
+    consultait. La première analyse réelle payait donc toujours le chargement.
+    """
+    registry = container.model_registry
+    if registry is None:
+        return
+
+    model_id = container.settings.default_model_id
+    if not registry.is_downloaded(model_id):
+        logger.info("préchauffage ignoré : poids absent", model_id=model_id)
+        return
+
+    try:
+        await anyio.to_thread.run_sync(registry.warmup, model_id)
+    except Exception as exc:  # pragma: no cover — `warmup` avale déjà ses erreurs
+        logger.warning("préchauffage en échec", model_id=model_id, error=str(exc))
 
 
 async def _cleanup_loop(app: FastAPI) -> None:

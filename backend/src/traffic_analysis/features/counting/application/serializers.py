@@ -183,6 +183,7 @@ def serialise_stats(stats: AnalysisStats) -> dict[str, Any]:
             "highDetections": stats.diagnostics.high_detections,
             "lowDetections": stats.diagnostics.low_detections,
             "maskedOut": stats.diagnostics.masked_out,
+            "containedOut": stats.diagnostics.contained_out,
             "confirmedTracks": stats.diagnostics.confirmed_tracks,
             "tentativeTracks": stats.diagnostics.tentative_tracks,
             "rescuedByLowScore": stats.diagnostics.rescued_by_low_score,
