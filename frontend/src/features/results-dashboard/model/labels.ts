@@ -68,6 +68,55 @@ export function formatSpeed(kmh: number | null, pxPerSecond: number | null): str
   return "—";
 }
 
+/**
+ * Temps moyen de traitement d'une image, en millisecondes.
+ *
+ * C'est la cadence lue dans l'autre sens, et c'est délibéré : « 5 img/s » répond
+ * à « combien d'images par seconde », « 200 ms » répond à « combien de temps pour
+ * une image » — la question qu'on se pose devant une analyse qui n'avance pas.
+ * Les deux chiffres cohabitent déjà dans le tableau de benchmark, pour la même
+ * raison.
+ *
+ * Ce n'est **pas** une latence de bout en bout côté client : en différé, aucun
+ * aller-retour réseau n'intervient par image. Le libellé doit donc parler du
+ * traitement, pas d'un ping.
+ */
+export function formatFrameLatency(processingFps: number): string {
+  if (!Number.isFinite(processingFps) || processingFps <= 0) return "—";
+  const ms = 1000 / processingFps;
+  // En dessous de 10 ms, l'entier écraserait la différence entre 2 et 9 ms ;
+  // au-delà, la décimale est du bruit — personne ne lit « 213,4 ms ».
+  return ms < 10 ? `${ms.toFixed(1)} ms` : `${Math.round(ms)} ms`;
+}
+
+/**
+ * Part des véhicules détectés qui ont franchi au moins une ligne.
+ *
+ * **Le chiffre qui juge le tracé, pas le modèle.** Un écart franc entre les
+ * véhicules uniques et les franchissements ne dit rien de la détection : il dit
+ * que la ligne n'est pas sur le passage du trafic, ou qu'elle ne couvre qu'une
+ * voie. C'est l'information que ni « 48 uniques » ni « 5 franchissements » ne
+ * donnent séparément, et qu'on ne calcule jamais de tête devant un écran.
+ *
+ * Rendu `null` sans véhicule : afficher « 0 % » quand rien n'a encore été détecté
+ * se lirait comme un comptage en échec, alors que l'analyse commence à peine.
+ */
+export function crossingRate(uniqueVehicles: number, crossings: number): number | null {
+  if (uniqueVehicles <= 0) return null;
+  return crossings / uniqueVehicles;
+}
+
+/**
+ * Le taux, en pourcentage.
+ *
+ * Non borné à 100 % : un aller-retour compte deux fois pour un seul véhicule, et
+ * une ligne posée sur un rond-point peut légitimement dépasser 100 %. Écrêter
+ * masquerait précisément le cas intéressant.
+ */
+export function formatCrossingRate(rate: number | null): string {
+  return rate === null ? "—" : `${Math.round(rate * 100)} %`;
+}
+
 /** Formate un score de plaque en pourcentage. */
 export function formatScore(score: number | null): string {
   return score === null ? "—" : `${Math.round(score * 100)} %`;

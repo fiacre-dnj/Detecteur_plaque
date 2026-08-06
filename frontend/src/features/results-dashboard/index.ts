@@ -3,8 +3,11 @@
 export {
   VEHICLE_CLASSES,
   classLabel,
+  crossingRate,
   directionArrow,
   directionLabel,
+  formatCrossingRate,
+  formatFrameLatency,
   formatSceneTime,
   formatScore,
   formatSpeed,

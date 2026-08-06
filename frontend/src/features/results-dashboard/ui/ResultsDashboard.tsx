@@ -13,7 +13,14 @@ import type { ReactNode } from "react";
 import type { AnalysisStats, CountingLine, Zone } from "@/shared/api/contracts";
 import { MetricCard } from "@/shared/ui/MetricCard";
 
-import { VEHICLE_CLASSES, classLabel, formatSceneTime } from "../model/labels";
+import {
+  VEHICLE_CLASSES,
+  classLabel,
+  crossingRate,
+  formatCrossingRate,
+  formatFrameLatency,
+  formatSceneTime,
+} from "../model/labels";
 
 interface ResultsDashboardProps {
   stats: AnalysisStats;
@@ -85,6 +92,21 @@ export function ResultsDashboard({
             label="Cadence (serveur)"
             value={processingFps > 0 ? processingFps.toFixed(1) : "—"}
             hint="Images analysées par seconde"
+          />
+          <MetricCard
+            label="Latence moyenne"
+            value={formatFrameLatency(processingFps)}
+            // Dit ce que le chiffre mesure : le traitement d'une image côté
+            // serveur, et non un aller-retour réseau — en différé, il n'y en a
+            // pas par image.
+            hint="Temps de traitement par image"
+          />
+          <MetricCard
+            label="Taux de franchissement"
+            value={formatCrossingRate(crossingRate(stats.uniqueVehicles, stats.crossings))}
+            // Ce que ni « uniques » ni « franchissements » ne disent seuls : la
+            // ligne est-elle posée là où le trafic passe ?
+            hint="Véhicules détectés qui franchissent une ligne"
           />
         </div>
         <p className="mt-2 text-small text-ink-dim">

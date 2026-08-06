@@ -12,8 +12,11 @@ import { describe, expect, it } from "bun:test";
 import {
   VEHICLE_CLASSES,
   classLabel,
+  crossingRate,
   directionArrow,
   directionLabel,
+  formatCrossingRate,
+  formatFrameLatency,
   formatSceneTime,
   formatScore,
   formatSpeed,
@@ -55,6 +58,54 @@ describe("formatSpeed — trois cas distincts, jamais confondus", () => {
   it("affiche un tiret quand la vitesse est inconnue", () => {
     // Un `0` voudrait dire « à l'arrêt », ce qui est une affirmation différente.
     expect(formatSpeed(null, null)).toBe("—");
+  });
+});
+
+describe("formatFrameLatency — la cadence lue dans l'autre sens", () => {
+  it("convertit une cadence en temps par image", () => {
+    expect(formatFrameLatency(5)).toBe("200 ms");
+    expect(formatFrameLatency(2.5)).toBe("400 ms");
+  });
+
+  it("garde une décimale sous 10 ms, pas au-delà", () => {
+    // Sur GPU, l'entier écraserait la différence entre 2 et 9 ms ; sur CPU, la
+    // décimale de « 213,4 ms » est du bruit que personne ne lit.
+    expect(formatFrameLatency(400)).toBe("2.5 ms");
+    expect(formatFrameLatency(4.69)).toBe("213 ms");
+  });
+
+  it("rend un tiret plutôt qu'un infini quand rien n'a été mesuré", () => {
+    // Une cadence nulle est le cas normal avant la première image publiée.
+    expect(formatFrameLatency(0)).toBe("—");
+    expect(formatFrameLatency(Number.NaN)).toBe("—");
+    expect(formatFrameLatency(-1)).toBe("—");
+  });
+});
+
+describe("crossingRate — le chiffre qui juge le tracé", () => {
+  it("rapporte les franchissements aux véhicules détectés", () => {
+    // 48 véhicules vus, 5 franchissements : la ligne n'est pas sur le passage du
+    // trafic. Ni « 48 » ni « 5 » ne le disent seuls.
+    expect(formatCrossingRate(crossingRate(48, 5))).toBe("10 %");
+    expect(formatCrossingRate(crossingRate(20, 20))).toBe("100 %");
+  });
+
+  it("n'écrête pas au-dessus de 100 %", () => {
+    // Un aller-retour compte deux fois pour un seul véhicule, et une ligne posée
+    // sur un rond-point dépasse légitimement 100 %. Écrêter masquerait le cas
+    // intéressant.
+    expect(formatCrossingRate(crossingRate(10, 25))).toBe("250 %");
+  });
+
+  it("rend un tiret sans véhicule, jamais « 0 % »", () => {
+    // Au démarrage d'une analyse, « 0 % » se lirait comme un comptage en échec.
+    expect(crossingRate(0, 0)).toBeNull();
+    expect(formatCrossingRate(null)).toBe("—");
+  });
+
+  it("dit bien 0 % quand des véhicules passent sans jamais franchir", () => {
+    // Là, en revanche, le zéro est l'information : la ligne ne compte rien.
+    expect(formatCrossingRate(crossingRate(12, 0))).toBe("0 %");
   });
 });
 
