@@ -485,7 +485,13 @@ export function StudioPage() {
           )}
 
           {busy && (
-            <JobProgressBar upload={session.upload} job={session.job} onCancel={session.cancel} />
+            <JobProgressBar
+              upload={session.upload}
+              job={session.job}
+              onCancel={session.cancel}
+              onPause={session.pause}
+              onResume={session.resume}
+            />
           )}
 
           {/* Le désaccord de dimensions : dit, jamais tu. Sans ce message, l'écran

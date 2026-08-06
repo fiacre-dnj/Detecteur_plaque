@@ -75,7 +75,13 @@ export interface ModelCatalogue {
   maxLoadedModels: number;
 }
 
-export type JobStatus = "queued" | "running" | "done" | "error" | "cancelled";
+/**
+ * `paused` est un état **vivant**, pas terminal : le serveur garde l'analyse en
+ * mémoire, arrêtée entre deux images, et la reprise continue la même — mêmes
+ * identités, mêmes totaux. Un job suspendu occupe donc toujours sa place de
+ * calcul, ce que l'interface doit dire.
+ */
+export type JobStatus = "queued" | "running" | "paused" | "done" | "error" | "cancelled";
 
 export interface Job {
   jobId: string;
@@ -466,7 +472,13 @@ export type ServerMessage = ReadyMessage | FrameResultMessage | RealtimeErrorMes
    Benchmark — miroir de `benchmark/api/schemas.py`.
    ═══════════════════════════════════════════════════════════════════════════ */
 
-export type BenchmarkStatus = JobStatus;
+/**
+ * Les mêmes statuts qu'un job, **sauf `paused`** : un run de benchmark ne se
+ * suspend pas. Énuméré plutôt qu'aliasé sur `JobStatus` — l'alias annoncerait un
+ * état que le serveur ne produit jamais ici, et l'interface écrirait du code mort
+ * pour le traiter.
+ */
+export type BenchmarkStatus = "queued" | "running" | "done" | "error" | "cancelled";
 
 export interface BenchmarkEntry {
   modelId: string;

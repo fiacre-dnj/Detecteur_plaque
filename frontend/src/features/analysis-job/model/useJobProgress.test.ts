@@ -73,12 +73,33 @@ describe("mergeProgress — la barre ne recule jamais", () => {
 
     expect(merged.status).toBe("error");
   });
+
+  it("laisse passer une suspension annoncée avec une progression en retard", () => {
+    // **Le cas réel.** Le serveur ne persiste la progression que toutes les deux
+    // secondes : la réponse qui annonce « suspendue » porte donc souvent un
+    // chiffre inférieur à la dernière frame SSE reçue. Sans exception pour le
+    // changement de statut, l'interface afficherait « analyse en cours » sur une
+    // analyse arrêtée, et jusqu'à la reprise.
+    const merged = mergeProgress(job("running", 0.62), job("paused", 0.6));
+
+    expect(merged.status).toBe("paused");
+    // La barre, elle, ne recule toujours pas.
+    expect(merged.progress).toBe(0.62);
+  });
+
+  it("laisse passer la reprise", () => {
+    const merged = mergeProgress(job("paused", 0.62), job("running", 0.6));
+
+    expect(merged.status).toBe("running");
+    expect(merged.progress).toBe(0.62);
+  });
 });
 
 describe("libellés de statut", () => {
-  it("nomme les cinq statuts en français", () => {
+  it("nomme les six statuts en français", () => {
     expect(statusLabel("queued")).toBe("En file d'attente");
     expect(statusLabel("running")).toBe("Analyse en cours");
+    expect(statusLabel("paused")).toBe("Analyse suspendue");
     expect(statusLabel("done")).toBe("Analyse terminée");
     expect(statusLabel("error")).toBe("Analyse en échec");
     expect(statusLabel("cancelled")).toBe("Analyse annulée");

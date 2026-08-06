@@ -104,6 +104,17 @@ async def _submit(manager: JobManager, tmp_path: Path, job_id: str = "job-1") ->
     )
 
 
+async def _await_running(manager: JobManager, job_id: str, *, timeout_s: float = 5.0) -> None:
+    """Attend que l'analyse tourne **réellement**.
+
+    Bornée par une échéance et non par un nombre d'itérations : un verdict qui
+    dépend de la vitesse de la machine ne prouve rien.
+    """
+    async with asyncio.timeout(timeout_s):
+        while (await manager.get(job_id)).status != "running":
+            await asyncio.sleep(0.005)
+
+
 async def _await_status(manager: JobManager, job_id: str, *, timeout_s: float = 5.0) -> str:
     async with asyncio.timeout(timeout_s):
         while True:
@@ -262,6 +273,134 @@ class TestApercu:
             await collector
 
         assert all(event.kind == "progress" for event in received)
+
+
+class TestSuspensionEtReprise:
+    """Suspendre, reprendre, et ce que la pause garde.
+
+    Ce que ces tests protègent, au-delà du statut : une analyse reprise doit
+    **continuer** la précédente. Si la reprise repartait de zéro, ou perdait les
+    identités, les totaux finaux seraient faux sans que rien ne le signale — et
+    c'est exactement le mode de défaillance que le projet combat partout ailleurs.
+    """
+
+    async def test_suspendre_puis_reprendre_mene_le_job_a_done(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        manager, _, store = await _manager(tmp_path, clock, engine=SlowEngine(_frames()))
+        await _submit(manager, tmp_path)
+        await _await_running(manager, "job-1")
+
+        paused = await manager.pause("job-1")
+        assert paused.status == "paused"
+
+        # La preuve que l'analyse est bien arrêtée : la progression ne bouge plus.
+        frozen = (await manager.get("job-1")).processed_frames
+        await asyncio.sleep(0.2)
+        assert (await manager.get("job-1")).processed_frames == frozen
+
+        assert (await manager.resume("job-1")).status == "running"
+        assert await _await_status(manager, "job-1") == "done"
+        assert store.path_for("job-1") is not None
+
+    async def test_une_analyse_reprise_continue_la_precedente(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """Le résultat est celui d'une analyse entière, pas d'un morceau.
+
+        Le véhicule du scénario franchit la ligne **après** la suspension : si la
+        reprise repartait d'une session neuve, il serait compté comme un second
+        véhicule, ou pas compté du tout.
+        """
+        manager, _, _ = await _manager(tmp_path, clock, engine=SlowEngine(_frames()))
+        await _submit(manager, tmp_path)
+        await _await_running(manager, "job-1")
+
+        await manager.pause("job-1")
+        await manager.resume("job-1")
+        await _await_status(manager, "job-1")
+
+        record = await manager.get("job-1")
+        assert record.unique_vehicles == 1
+        assert record.crossings_total == 1
+
+    async def test_annuler_un_job_suspendu_le_termine_sans_le_reprendre(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """Sinon l'annulation n'aurait lieu qu'à la reprise — c'est-à-dire jamais.
+
+        Le worker est bloqué dans la barrière de pause : si l'annulation ne la
+        libérait pas, le thread attendrait indéfiniment un ordre de reprise que
+        l'utilisateur ne donnera plus, en gardant le bail du modèle.
+        """
+        manager, _, _ = await _manager(tmp_path, clock, engine=SlowEngine(_frames()))
+        await _submit(manager, tmp_path)
+        await _await_running(manager, "job-1")
+        await manager.pause("job-1")
+
+        await manager.cancel_or_purge("job-1")
+
+        assert await _await_status(manager, "job-1") == "cancelled"
+
+    async def test_suspendre_un_job_qui_ne_tourne_pas_est_refuse(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """Le code d'erreur porte la cause : « attendre » et « c'est fini » sont
+        deux situations différentes, et le client doit pouvoir les distinguer sans
+        lire le message."""
+        manager, _, _ = await _manager(tmp_path, clock)
+        await _submit(manager, tmp_path)
+        await _await_status(manager, "job-1")
+
+        with pytest.raises(ConflictError) as excinfo:
+            await manager.pause("job-1")
+
+        assert excinfo.value.code == "job_not_running"
+
+    async def test_reprendre_un_job_qui_n_est_pas_suspendu_est_refuse(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        manager, _, _ = await _manager(tmp_path, clock, engine=SlowEngine(_frames()))
+        await _submit(manager, tmp_path)
+        await _await_running(manager, "job-1")
+
+        with pytest.raises(ConflictError) as excinfo:
+            await manager.resume("job-1")
+
+        assert excinfo.value.code == "job_not_paused"
+        await manager.cancel_or_purge("job-1")
+        await _await_status(manager, "job-1")
+
+    async def test_la_progression_publiee_pendant_la_pause_annonce_la_pause(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """L'image en vol au moment de la suspension ne doit pas dire « en cours ».
+
+        Elle arrive **après** le passage en pause et serait le dernier mot du flux :
+        l'interface afficherait « analyse en cours » sur une analyse arrêtée, et
+        resterait ainsi jusqu'à la reprise.
+        """
+        hub = ProgressHub()
+        manager, _, _ = await _manager(tmp_path, clock, hub=hub, engine=SlowEngine(_frames()))
+        received: list[Any] = []
+
+        async def collect() -> None:
+            async for event in hub.subscribe("job-1"):
+                received.append(event)
+
+        collector = asyncio.create_task(collect())
+        await _submit(manager, tmp_path)
+        await _await_running(manager, "job-1")
+        await manager.pause("job-1")
+        await asyncio.sleep(0.15)
+
+        assert received
+        assert received[-1].payload["status"] == "paused"
+
+        await manager.cancel_or_purge("job-1")
+        await _await_status(manager, "job-1")
+        async with asyncio.timeout(2.0):
+            await collector
 
 
 class TestAnnulation:

@@ -44,6 +44,15 @@ export function mergeProgress(current: Job | null, incoming: Job): Job {
   if (current === null) return incoming;
   if (isTerminal(incoming.status)) return incoming;
   if (isTerminal(current.status)) return current;
+  // **Un changement de statut passe toujours**, en gardant la progression la plus
+  // avancée des deux. Sans cette règle, une suspension serait perdue : le serveur
+  // ne persiste la progression que toutes les deux secondes, donc la trame qui
+  // annonce « suspendue » porte souvent un chiffre *inférieur* à la dernière
+  // frame reçue — et la garde de monotonie la rejetterait. L'interface afficherait
+  // « analyse en cours » sur une analyse arrêtée, jusqu'à la reprise.
+  if (incoming.status !== current.status) {
+    return { ...incoming, progress: Math.max(incoming.progress, current.progress) };
+  }
   return incoming.progress >= current.progress ? incoming : current;
 }
 
@@ -220,6 +229,8 @@ export function statusLabel(status: JobStatus): string {
       return "En file d'attente";
     case "running":
       return "Analyse en cours";
+    case "paused":
+      return "Analyse suspendue";
     case "done":
       return "Analyse terminée";
     case "error":

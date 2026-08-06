@@ -1,6 +1,6 @@
 /** `features/analysis-job` — déposer une vidéo, suivre l'analyse, récupérer le résultat. */
 
-export { cancelJob, fetchResult } from "./model/fetchResult";
+export { cancelJob, fetchResult, pauseJob, resumeJob } from "./model/fetchResult";
 export { formatBytes, uploadJob, type UploadHandle, type UploadProgress } from "./model/uploadJob";
 export {
   POLL_INTERVAL_MS,

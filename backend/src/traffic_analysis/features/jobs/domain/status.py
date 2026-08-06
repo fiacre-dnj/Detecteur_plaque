@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Literal, get_args
 
-type JobStatus = Literal["queued", "running", "done", "error", "cancelled"]
+type JobStatus = Literal["queued", "running", "paused", "done", "error", "cancelled"]
 
 JOB_STATUSES: tuple[JobStatus, ...] = get_args(JobStatus.__value__)
 
@@ -18,11 +18,22 @@ JOB_STATUSES: tuple[JobStatus, ...] = get_args(JobStatus.__value__)
 # qui rend les comparaisons possibles — et évite qu'un historique se réécrive.
 TERMINAL_STATUSES: frozenset[JobStatus] = frozenset({"done", "error", "cancelled"})
 
+#: `paused` est un état **vivant**, pas un état terminal : le thread worker existe
+#: toujours, il attend entre deux images. C'est ce qui permet de reprendre là où
+#: l'on s'est arrêté — et ce qui explique que la place de calcul et le bail du
+#: modèle restent pris pendant la pause. Un job suspendu occupe le serveur ; c'est
+#: le prix d'une reprise exacte, et l'interface doit le dire.
+PAUSABLE_STATUSES: frozenset[JobStatus] = frozenset({"running"})
+
 _ALLOWED: dict[JobStatus, frozenset[JobStatus]] = {
     "queued": frozenset({"running", "cancelled", "error"}),
     # `running` → `queued` n'existe pas : une analyse reprise repart d'un nouveau
     # job, sinon sa progression et ses agrégats partiels mentiraient.
-    "running": frozenset({"done", "error", "cancelled"}),
+    "running": frozenset({"paused", "done", "error", "cancelled"}),
+    # Depuis la pause, on reprend ou on renonce. Pas de `done` : l'analyse est
+    # arrêtée entre deux images, elle ne peut pas se terminer sans repasser par
+    # `running`.
+    "paused": frozenset({"running", "error", "cancelled"}),
     "done": frozenset(),
     "error": frozenset(),
     "cancelled": frozenset(),

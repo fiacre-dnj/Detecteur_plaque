@@ -31,7 +31,14 @@ import {
   type HistoryFilters,
 } from "../model/useJobHistory";
 
-const STATUSES: readonly JobStatus[] = ["queued", "running", "done", "error", "cancelled"];
+const STATUSES: readonly JobStatus[] = [
+  "queued",
+  "running",
+  "paused",
+  "done",
+  "error",
+  "cancelled",
+];
 
 export function HistoryPage() {
   const [filters, setFilters] = useState<HistoryFilters>(NO_FILTERS);

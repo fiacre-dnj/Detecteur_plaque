@@ -221,6 +221,50 @@ async def delete_job(manager: JobManagerDep, job_id: str) -> JobSchema:
     return JobSchema.model_validate(manager.describe(await manager.cancel_or_purge(job_id)))
 
 
+@router.post(
+    "/{job_id}/pause",
+    response_model=JobSchema,
+    operation_id="pauseAnalysisJob",
+    summary="Suspend une analyse en cours",
+    description=(
+        "L'analyse s'arrête **entre deux images**, comme l'annulation : le "
+        "décodeur garde sa position, le suivi garde ses identités, les compteurs "
+        "gardent leurs totaux. Reprendre continue la même analyse ; relancer en "
+        "commencerait une autre, avec d'autres identités.\n\n"
+        "**Un job suspendu occupe toujours le serveur** : sa place de calcul et "
+        "le bail de son modèle restent pris, donc un job en file d'attente "
+        "continue d'attendre. C'est le prix d'une reprise exacte.\n\n"
+        "409 si le job n'est pas en cours — `job_not_running`."
+    ),
+    responses={
+        404: {"model": ProblemDetails, "description": "Job inconnu"},
+        409: {"model": ProblemDetails, "description": "Le job n'est pas en cours"},
+    },
+)
+async def pause_job(manager: JobManagerDep, job_id: str) -> JobSchema:
+    return JobSchema.model_validate(manager.describe(await manager.pause(job_id)))
+
+
+@router.post(
+    "/{job_id}/resume",
+    response_model=JobSchema,
+    operation_id="resumeAnalysisJob",
+    summary="Reprend une analyse suspendue",
+    description=(
+        "Reprend là où la suspension a eu lieu. Le temps passé en pause est "
+        "**retranché de la cadence** rapportée : une analyse suspendue une heure "
+        "n'a pas ralenti, elle a attendu.\n\n"
+        "409 si le job n'est pas suspendu — `job_not_paused`."
+    ),
+    responses={
+        404: {"model": ProblemDetails, "description": "Job inconnu"},
+        409: {"model": ProblemDetails, "description": "Le job n'est pas suspendu"},
+    },
+)
+async def resume_job(manager: JobManagerDep, job_id: str) -> JobSchema:
+    return JobSchema.model_validate(manager.describe(await manager.resume(job_id)))
+
+
 # ── Fonctions internes ───────────────────────────────────────────────────────
 
 

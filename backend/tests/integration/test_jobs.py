@@ -301,6 +301,70 @@ class TestSse:
         assert response.status_code == 404
 
 
+class TestSuspensionHttp:
+    """Suspendre et reprendre depuis l'API — y compris les refus.
+
+    Le moteur est ralenti pour que « en cours » dure assez longtemps pour être
+    observé : avec le moteur nominal, l'analyse se termine avant la requête.
+    """
+
+    @pytest.fixture
+    def fake_engine(self, traversing_frames: list[list[Any]]) -> Any:  # noqa: ANN401
+        import time
+
+        from tests.support.engine import FakeEngine
+
+        class SlowEngine(FakeEngine):
+            def iter_video(self, video_path: Any, spec: Any) -> Any:  # noqa: ANN401
+                for frame in super().iter_video(video_path, spec):
+                    time.sleep(0.05)
+                    yield frame
+
+        return SlowEngine(traversing_frames)
+
+    async def test_le_cycle_suspendre_reprendre_passe_par_l_api(self, client: AsyncClient) -> None:
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+        async with asyncio.timeout(5.0):
+            while (await client.get(f"/api/v1/jobs/{job_id}")).json()["status"] != "running":
+                await asyncio.sleep(0.01)
+
+        paused = await client.post(f"/api/v1/jobs/{job_id}/pause")
+        assert paused.status_code == 200
+        assert paused.json()["status"] == "paused"
+
+        # Suspendre deux fois de suite est refusé, avec la cause dans le code :
+        # le client peut distinguer « déjà suspendu » de « déjà terminé ».
+        again = await client.post(f"/api/v1/jobs/{job_id}/pause")
+        assert again.status_code == 409
+        assert again.json()["code"] == "job_not_running"
+
+        resumed = await client.post(f"/api/v1/jobs/{job_id}/resume")
+        assert resumed.status_code == 200
+        assert resumed.json()["status"] == "running"
+
+        assert (await _wait_until_done(client, job_id))["status"] == "done"
+
+    async def test_reprendre_une_analyse_qui_tourne_est_refuse(self, client: AsyncClient) -> None:
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+        async with asyncio.timeout(5.0):
+            while (await client.get(f"/api/v1/jobs/{job_id}")).json()["status"] != "running":
+                await asyncio.sleep(0.01)
+
+        response = await client.post(f"/api/v1/jobs/{job_id}/resume")
+
+        assert response.status_code == 409
+        assert response.json()["code"] == "job_not_paused"
+        await client.delete(f"/api/v1/jobs/{job_id}")
+        await _wait_until_done(client, job_id)
+
+    async def test_suspendre_un_job_inconnu_rend_404(self, client: AsyncClient) -> None:
+        response = await client.post("/api/v1/jobs/inexistant/pause")
+
+        assert response.status_code == 404
+
+
 class TestApercuSse:
     """L'aperçu tel qu'il arrive réellement au navigateur.
 

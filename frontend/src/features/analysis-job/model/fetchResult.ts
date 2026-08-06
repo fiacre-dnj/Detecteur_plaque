@@ -28,3 +28,22 @@ export async function fetchResult(jobId: string): Promise<AnalysisResult> {
 export async function cancelJob(jobId: string): Promise<Job> {
   return request<Job>(`/api/v1/jobs/${jobId}`, { method: "DELETE" });
 }
+
+/**
+ * Suspend une analyse en cours.
+ *
+ * L'analyse s'arrête **entre deux images** et garde tout : position du décodeur,
+ * identités, compteurs. C'est ce qui distingue « reprendre » de « relancer » —
+ * relancer créerait un autre job, avec d'autres identités et d'autres totaux.
+ *
+ * Le job suspendu **occupe toujours** sa place de calcul sur le serveur. C'est le
+ * prix d'une reprise exacte, et l'interface le dit à l'utilisateur.
+ */
+export async function pauseJob(jobId: string): Promise<Job> {
+  return request<Job>(`/api/v1/jobs/${jobId}/pause`, { method: "POST" });
+}
+
+/** Reprend une analyse suspendue, là où elle s'était arrêtée. */
+export async function resumeJob(jobId: string): Promise<Job> {
+  return request<Job>(`/api/v1/jobs/${jobId}/resume`, { method: "POST" });
+}

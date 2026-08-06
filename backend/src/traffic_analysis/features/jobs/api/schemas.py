@@ -51,7 +51,9 @@ class JobSchema(CamelModel):
     """
 
     job_id: str
-    status: Literal["queued", "running", "done", "error", "cancelled"]
+    # `paused` est un état **vivant** : le worker existe toujours et attend entre
+    # deux images. Il n'entre donc pas dans les statuts terminaux du client.
+    status: Literal["queued", "running", "paused", "done", "error", "cancelled"]
     progress: float = Field(ge=0.0, le=1.0)
     processed_frames: int
     total_frames: int

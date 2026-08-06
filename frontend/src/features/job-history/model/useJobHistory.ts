@@ -120,6 +120,10 @@ export function statusTone(status: JobStatus): { label: string; className: strin
       return { label: "Terminée", className: "text-ink-muted" };
     case "running":
       return { label: "En cours", className: "text-info" };
+    case "paused":
+      // Même teinte que « en cours » : une analyse suspendue est vivante, elle
+      // occupe toujours le serveur. La griser la ferait passer pour terminée.
+      return { label: "Suspendue", className: "text-info" };
     case "queued":
       return { label: "En attente", className: "text-ink-dim" };
     case "error":

@@ -55,6 +55,14 @@ PREVIEW_MIN_INTERVAL_S = 0.2
 type ProgressCallback = Callable[[Progress], None]
 type PreviewCallback = Callable[[PreviewSample], None]
 type CancellationCheck = Callable[[], bool]
+#: Barrière de pause : **bloquante**, appelée entre deux images. Elle rend la main
+#: quand l'analyse reprend, ou quand l'annulation est demandée — jamais avant, et
+#: rend le temps attendu, en secondes.
+#:
+#: Ce temps n'est pas une curiosité : il est retranché de la mesure de cadence.
+#: Sans cela, une pause déjeuner ferait tomber « images par seconde » à une valeur
+#: qui ne décrit plus rien — ni la machine, ni le modèle, ni la vidéo.
+type PauseGate = Callable[[], float]
 
 
 class AnalysisService:
@@ -84,12 +92,20 @@ class AnalysisService:
         on_preview: PreviewCallback | None = None,
         preview_interval_s: float = PREVIEW_MIN_INTERVAL_S,
         is_cancelled: CancellationCheck | None = None,
+        wait_while_paused: PauseGate | None = None,
     ) -> AnalysisResultData:
         """Analyse une vidéo de bout en bout. **Bloquante** : à appeler en thread.
 
         L'annulation est vérifiée à chaque frame plutôt que par `task.cancel()` :
         on n'interrompt pas un `track()` en cours, on lui demande de s'arrêter
         proprement entre deux images.
+
+        La pause suit exactement la même règle, et pour les mêmes raisons : on
+        attend **entre** deux images, jamais au milieu d'un `track()`. Le décodeur
+        reste ouvert sur sa position, l'état du suivi reste vivant, et la reprise
+        continue la même analyse — c'est ce qui la distingue d'un nouveau job.
+        L'ordre est imposé : **annulation d'abord, pause ensuite**, sinon annuler
+        un job suspendu ne prendrait effet qu'à sa reprise.
 
         `on_preview` reçoit un échantillon de l'état courant — pistes, événements
         cumulés, statistiques — au plus une fois toutes les `preview_interval_s`.
@@ -113,6 +129,9 @@ class AnalysisService:
         started = perf_counter()
         processed = 0
         last_preview = started
+        # Temps passé en pause, retranché de la mesure de cadence : une analyse
+        # suspendue vingt minutes n'a pas ralenti, elle a attendu.
+        paused_s = 0.0
         # Événements accumulés depuis le dernier aperçu publié : l'aperçu en
         # transporte l'intégralité, sinon le journal affiché perdrait la plupart
         # des franchissements que ses propres compteurs annoncent.
@@ -122,6 +141,14 @@ class AnalysisService:
         for frame in self._engine.iter_video(video_path, config.engine_spec()):
             if is_cancelled is not None and is_cancelled():
                 raise AnalysisCancelled
+
+            if wait_while_paused is not None:
+                paused_s += wait_while_paused()
+                # Revérifié au réveil : une pause se termine aussi par une
+                # annulation, et reprendre l'analyse d'un job annulé écrirait un
+                # résultat que plus personne n'attend.
+                if is_cancelled is not None and is_cancelled():
+                    raise AnalysisCancelled
 
             outcome = session.feed(frame.frame_index, frame.timestamp_ms, frame.image, frame.tracks)
 
@@ -144,7 +171,7 @@ class AnalysisService:
             processed += 1
 
             if on_progress is not None and processed % PROGRESS_EVERY_FRAMES == 0:
-                on_progress(Progress(processed, total, self._fps(processed, started)))
+                on_progress(Progress(processed, total, self._fps(processed, started, paused_s)))
 
             if on_preview is not None:
                 pending_crossings.extend(outcome.crossings)
@@ -174,8 +201,8 @@ class AnalysisService:
                     pending_crossings.clear()
                     pending_zone_events.clear()
 
-        elapsed = perf_counter() - started
-        result.processing_fps = self._fps(processed, started)
+        elapsed = perf_counter() - started - paused_s
+        result.processing_fps = self._fps(processed, started, paused_s)
         result.vehicles = session.vehicles()
         result.stats = session.stats()
 
@@ -227,13 +254,17 @@ class AnalysisService:
         return max(1, frame_count // max(1, stride))
 
     @staticmethod
-    def _fps(processed: int, started: float) -> float:
+    def _fps(processed: int, started: float, paused_s: float = 0.0) -> float:
         """Cadence de **traitement**, en images par seconde d'horloge murale.
 
         C'est le seul usage légitime de l'horloge murale dans tout le pipeline :
         une mesure de performance, jamais un horodatage métier.
+
+        Le temps passé en pause en est retranché. Une analyse suspendue pendant
+        une réunion n'a pas ralenti : la cadence doit continuer de décrire la
+        machine, le modèle et la vidéo — pas les allées et venues de qui regarde.
         """
-        elapsed = perf_counter() - started
+        elapsed = perf_counter() - started - paused_s
         return processed / elapsed if elapsed > 0 else 0.0
 
     @staticmethod

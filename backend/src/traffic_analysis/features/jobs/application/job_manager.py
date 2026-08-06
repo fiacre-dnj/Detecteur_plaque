@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
+from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 import anyio.to_thread
@@ -63,6 +65,13 @@ logger = get_logger("traffic_analysis.jobs")
 # qu'un écrivain (piège 27 de prompt/13).
 PROGRESS_PERSIST_INTERVAL_S = 2.0
 
+#: Pas de sondage de la barrière de pause, dans le thread worker.
+#:
+#: Assez court pour qu'une reprise paraisse immédiate, assez long pour qu'une
+#: pause d'une heure ne coûte rien. À 50 ms, une heure suspendue représente
+#: 72 000 réveils d'un thread qui n'a rien à faire — mesurable, et pour rien.
+PAUSE_POLL_INTERVAL_S = 0.1
+
 
 class JobManager:
     """Accepte, exécute, suit et annule les analyses différées."""
@@ -73,6 +82,7 @@ class JobManager:
         "_clock",
         "_hub",
         "_max_concurrent",
+        "_pauses",
         "_preview_interval_s",
         "_repository",
         "_result_store",
@@ -102,6 +112,10 @@ class JobManager:
         self._preview_interval_s = preview_interval_ms / 1000.0 if preview_interval_ms > 0 else None
         self._semaphore: asyncio.Semaphore | None = None
         self._cancellations: dict[str, threading.Event] = {}
+        # Un événement **posé** signifie « suspendu ». Comme pour l'annulation, la
+        # boucle asyncio le pose et le thread worker l'observe entre deux images :
+        # c'est le seul point de rendez-vous sûr entre les deux.
+        self._pauses: dict[str, threading.Event] = {}
         # Les tâches de fond sont gardées dans un ensemble : une tâche asyncio
         # sans référence forte peut être ramassée par le GC **en pleine
         # exécution**, et l'analyse s'arrête alors sans aucun message.
@@ -199,6 +213,53 @@ class JobManager:
             )
         return path
 
+    # ── Suspension et reprise ────────────────────────────────────────────────
+
+    async def pause(self, job_id: str) -> JobRecord:
+        """Suspend une analyse en cours, entre deux images.
+
+        Ce que la pause **garde** : la position du décodeur, l'état du suivi, la
+        galerie d'identités, les compteurs. C'est ce qui distingue une reprise
+        d'une relance — reprendre continue la même analyse, relancer en commence
+        une autre, avec d'autres identités et d'autres totaux.
+
+        Ce que la pause **coûte** : la place de calcul et le bail du modèle
+        restent pris. Un job suspendu occupe le serveur, et un job en file
+        d'attente continue d'attendre. L'interface doit le dire — c'est le prix
+        d'une reprise exacte, et il se paie même quand personne ne regarde.
+        """
+        record = await self.get(job_id)
+        if record.status != "running":
+            raise ConflictError(
+                "Seule une analyse en cours peut être suspendue : "
+                f"celle-ci est « {record.status} ».",
+                code="job_not_running",
+            )
+        event = self._pauses.get(job_id)
+        if event is not None:
+            event.set()
+        await self._transition(job_id, "paused")
+        logger.info("analyse suspendue", job_id=job_id, processed=record.processed_frames)
+        return await self.get(job_id)
+
+    async def resume(self, job_id: str) -> JobRecord:
+        """Reprend une analyse suspendue, là où elle s'était arrêtée."""
+        record = await self.get(job_id)
+        if record.status != "paused":
+            raise ConflictError(
+                f"Seule une analyse suspendue peut reprendre : celle-ci est « {record.status} ».",
+                code="job_not_paused",
+            )
+        # Le statut **avant** de libérer la barrière : le worker se réveille et
+        # publie aussitôt de la progression, et une frame annonçant « en pause »
+        # après la reprise ferait clignoter l'interface entre deux états.
+        await self._transition(job_id, "running")
+        event = self._pauses.get(job_id)
+        if event is not None:
+            event.clear()
+        logger.info("analyse reprise", job_id=job_id, processed=record.processed_frames)
+        return await self.get(job_id)
+
     # ── Annulation et purge ──────────────────────────────────────────────────
 
     async def cancel_or_purge(self, job_id: str) -> JobRecord:
@@ -215,6 +276,11 @@ class JobManager:
         event = self._cancellations.get(job_id)
         if event is not None:
             event.set()
+        # Libérer la barrière de pause, sinon annuler un job suspendu ne prendrait
+        # effet qu'à sa reprise — c'est-à-dire jamais, puisqu'on vient de renoncer.
+        paused = self._pauses.get(job_id)
+        if paused is not None:
+            paused.clear()
         # Un job encore `queued` n'a pas de worker pour observer l'événement :
         # on le termine ici, sinon il resterait en attente indéfiniment.
         if record.status == "queued":
@@ -276,13 +342,15 @@ class JobManager:
 
         cancellation = threading.Event()
         self._cancellations[job_id] = cancellation
+        pause = threading.Event()
+        self._pauses[job_id] = pause
         try:
             async with semaphore:
                 # L'annulation peut être arrivée pendant l'attente en file.
                 if cancellation.is_set():
                     await self._finish(job_id, "cancelled")
                     return
-                await self._execute(job_id, video_path, config, cancellation)
+                await self._execute(job_id, video_path, config, cancellation, pause)
         except AnalysisCancelled:
             # Une annulation n'est **pas** une erreur : l'utilisateur sait ce
             # qu'il a fait, lui afficher « échec » serait faux.
@@ -296,6 +364,7 @@ class JobManager:
             )
         finally:
             self._cancellations.pop(job_id, None)
+            self._pauses.pop(job_id, None)
 
     async def _execute(
         self,
@@ -303,16 +372,37 @@ class JobManager:
         video_path: Path,
         config: AnalysisJobConfig,
         cancellation: threading.Event,
+        pause: threading.Event,
     ) -> None:
         await self._transition(job_id, "running", started=True)
 
         loop = asyncio.get_running_loop()
         last_persist = loop.time()
 
+        def wait_while_paused() -> float:
+            """Barrière de pause, **exécutée dans le thread worker**.
+
+            Un sondage plutôt qu'un `Event.wait()` sur la reprise : il faut se
+            réveiller aussi bien sur une reprise que sur une annulation, et
+            attendre deux événements à la fois demanderait une condition
+            partagée pour un gain nul à ce pas de temps.
+            """
+            if not pause.is_set():
+                return 0.0
+            waited_from = perf_counter()
+            while pause.is_set() and not cancellation.is_set():
+                time.sleep(PAUSE_POLL_INTERVAL_S)
+            return perf_counter() - waited_from
+
         def on_progress(progress: Progress) -> None:
             """Appelé **depuis le thread worker**."""
+            # Le statut est **relu** de la barrière, jamais supposé « running » :
+            # l'image en cours au moment de la suspension publierait sinon un
+            # « analyse en cours » juste après le passage en pause, et l'interface
+            # clignoterait entre deux états avant de se figer sur le mauvais.
+            status: JobStatus = "paused" if pause.is_set() else "running"
             self._hub.publish_threadsafe(
-                ProgressEvent(job_id, self._progress_payload(job_id, "running", progress))
+                ProgressEvent(job_id, self._progress_payload(job_id, status, progress))
             )
             nonlocal last_persist
             now = loop.time()
@@ -344,6 +434,7 @@ class JobManager:
                 on_preview=None if interval is None else on_preview,
                 preview_interval_s=interval or 0.0,
                 is_cancelled=cancellation.is_set,
+                wait_while_paused=wait_while_paused,
             )
         )
 

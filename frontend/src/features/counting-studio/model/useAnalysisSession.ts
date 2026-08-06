@@ -14,7 +14,14 @@
 
 import { useCallback, useRef, useState } from "react";
 
-import { cancelJob, fetchResult, uploadJob, type UploadProgress } from "@/features/analysis-job";
+import {
+  cancelJob,
+  fetchResult,
+  pauseJob,
+  resumeJob,
+  uploadJob,
+  type UploadProgress,
+} from "@/features/analysis-job";
 import { useJobProgress } from "@/features/analysis-job";
 import { geometrySignature } from "@/entities/geometry";
 import type {
@@ -49,6 +56,9 @@ export interface AnalysisSession {
   launchSignature: string | null;
   start: (file: File, request: AnalysisRequest, lines: readonly CountingLine[], zones: readonly Zone[]) => Promise<void>;
   cancel: () => void;
+  /** Suspend l'analyse en cours ; l'état vient ensuite du suivi, pas d'ici. */
+  pause: () => void;
+  resume: () => void;
   reset: () => void;
 }
 
@@ -126,6 +136,24 @@ export function useAnalysisSession(): AnalysisSession {
     }
   }, [jobId]);
 
+  /**
+   * Suspendre et reprendre.
+   *
+   * Aucun état optimiste : on n'écrit pas « suspendue » avant que le serveur l'ait
+   * confirmé. Le statut arrive par le suivi — SSE et sondage — comme tous les
+   * autres, et c'est ce qui garantit qu'un refus (409, job déjà terminé) laisse
+   * l'interface sur l'état réel plutôt que sur celui qu'on espérait.
+   */
+  const pause = useCallback(() => {
+    if (jobId === null) return;
+    void pauseJob(jobId).catch((cause: unknown) => setError(messageOf(cause)));
+  }, [jobId]);
+
+  const resume = useCallback(() => {
+    if (jobId === null) return;
+    void resumeJob(jobId).catch((cause: unknown) => setError(messageOf(cause)));
+  }, [jobId]);
+
   const reset = useCallback(() => {
     handle.current?.abort();
     handle.current = null;
@@ -147,6 +175,8 @@ export function useAnalysisSession(): AnalysisSession {
     launchSignature,
     start,
     cancel,
+    pause,
+    resume,
     reset,
   };
 }
