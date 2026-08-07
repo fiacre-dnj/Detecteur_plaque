@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 
 from traffic_analysis.features.counting.domain.models import BoundingBox
-from traffic_analysis.features.counting.domain.plate_ocr_policy import (
+from traffic_analysis.features.counting.domain.plate_policy import (
     PlateOcrOptions,
     PlateOcrPolicy,
 )

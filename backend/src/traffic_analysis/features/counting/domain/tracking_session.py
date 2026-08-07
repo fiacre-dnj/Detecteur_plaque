@@ -333,6 +333,13 @@ class AnalysisSession:
             # oubli : il est identitaire, recopié du vote par `_mirror_plate_text`.
             # L'effacer par symétrie viderait le tampon que le compteur lit juste
             # après, et aucun franchissement ne porterait plus de plaque.
+            #
+            # **Cet effacement reste inconditionnel**, y compris depuis que le
+            # détecteur est étranglé : c'est le service qui repose une boîte à
+            # chaque image via `record_plates`, mesurée ou reprojetée. L'ancre qui
+            # rend cela possible vit dans la politique, côté application, et **pas
+            # ici** — une piste ne peut pas dater ce qu'elle porte, donc elle serait
+            # incapable de dire qu'une plaque a trois images de retard.
             track.plates.clear()
             active.append(track)
         return tuple(active)
@@ -520,7 +527,14 @@ class AnalysisSession:
         best = 0.0
         stored: list[PlateDetection] = []
         for plate in plates:
-            best = max(best, plate.score)
+            # **Une reprojection ne nourrit aucun agrégat.** Elle reproduit le score
+            # de la détection dont elle est issue ; le compter à nouveau ferait
+            # remonter le même chiffre à chaque image sautée, et `best_plate_score`
+            # décrirait la fréquence des reprojections plutôt que la qualité de la
+            # meilleure vue. Le rectangle, lui, est bien stocké : il est là pour
+            # être dessiné.
+            if not plate.stale:
+                best = max(best, plate.score)
             text, char_scores = (
                 normalise_plate_reading(plate.text, plate.text_char_scores)
                 if plate.text

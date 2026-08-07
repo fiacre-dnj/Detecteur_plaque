@@ -307,7 +307,14 @@ function drawTrack(
   for (const plate of track.plates) {
     const plateBox = toCanvasBox(view, plate.box);
     ctx.strokeStyle = CANVAS.plate;
-    ctx.lineWidth = 1.5;
+    // Trait plus fin pour une boîte **reprojetée** : le serveur étrangle son
+    // détecteur de plaques et estime les images qu'il saute à partir de la
+    // dernière détection réelle. Le trait fin dit « estimée » sans changer de
+    // couleur — la couleur du canvas encode une donnée, pas un état de
+    // confiance — et c'est le même vocabulaire que les pistes non confirmées en
+    // pointillés. Sans cette distinction, une estimation se lirait comme une
+    // mesure ; sans le rectangle du tout, il clignoterait.
+    ctx.lineWidth = plate.stale === true ? 0.75 : 1.5;
     ctx.strokeRect(plateBox.x, plateBox.y, plateBox.width, plateBox.height);
   }
   ctx.restore();

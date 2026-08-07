@@ -259,6 +259,22 @@ export interface PlateDetection {
   text: string | null;
   /** Confiance de la **lecture**, distincte de celle de la détection. `null` sans texte. */
   textScore: number | null;
+  /**
+   * Cette boîte est une **reprojection**, pas une mesure de cette image.
+   *
+   * Le serveur étrangle son détecteur de plaques — c'était le poste dominant du
+   * coût de l'ANPR — et donne aux images sautées l'ancre de la dernière détection
+   * réelle, reprojetée sur la boîte courante du véhicule. Sans cela, le rectangle
+   * disparaîtrait deux images sur trois, ce qui se lit comme un défaut de
+   * détection. Le canvas le dessine d'un trait plus fin : même vocabulaire visuel
+   * que les pistes non confirmées en pointillés.
+   *
+   * **Optionnel, et c'est délibéré** — la seule exception à la règle « `null`
+   * explicite » de ce fichier. Un booléen porté par 100 % des plaques de 45 000
+   * images pèse sur chaque octet du résultat, alors qu'il n'a de sens que dans le
+   * cas minoritaire. Absent signifie « mesurée sur cette image ».
+   */
+  stale?: boolean;
 }
 
 /** Une piste, telle qu'une frame de la timeline la fige. */

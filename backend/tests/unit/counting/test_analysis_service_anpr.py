@@ -26,16 +26,38 @@ from traffic_analysis.features.counting.application.analysis_service import Anal
 from traffic_analysis.features.counting.application.dto import (
     AnalysisJobConfig,
     AnalysisResultData,
+    PlateDetectOptions,
     PlateOcrOptions,
 )
 
 VIDEO = Path("/inexistant.mp4")  # `FakeEngine` ne lit jamais le disque.
 
 
+#: Taille de véhicule de ces scénarios : **au-dessus de `min_vehicle_width_px`**.
+#:
+#: 160 px et non les 80 px par défaut des constructeurs, parce que
+#: `PlateDetectPolicy` écarte les pistes trop étroites — sur un véhicule de 80 px,
+#: la plaque ferait une douzaine de pixels et l'inférence coûterait pour rien. Ces
+#: tests-ci portent sur l'orchestration des deux passes, pas sur cette garde : les
+#: laisser sous le seuil ferait passer chaque scénario par le chemin « rien à
+#: faire », et ils ne prouveraient plus rien. La garde a son propre test.
+VEHICLE_SIZE = (160.0, 120.0)
+
+
 def _frames(steps: int = 16) -> list[list[object]]:
     return compose(
-        track_path(1, CAR, straight_line((700.0, 250.0), (700.0, 800.0), steps=steps)),
-        track_path(2, TRUCK, straight_line((1200.0, 800.0), (1200.0, 250.0), steps=steps)),
+        track_path(
+            1,
+            CAR,
+            straight_line((700.0, 250.0), (700.0, 800.0), steps=steps),
+            box_size=VEHICLE_SIZE,
+        ),
+        track_path(
+            2,
+            TRUCK,
+            straight_line((1200.0, 800.0), (1200.0, 250.0), steps=steps),
+            box_size=VEHICLE_SIZE,
+        ),
     )
 
 
@@ -46,6 +68,7 @@ def _run(
     detector: FakePlateDetector | None = None,
     reader: FakePlateReader | None = None,
     ocr: PlateOcrOptions | None = None,
+    detect: PlateDetectOptions | None = None,
     steps: int = 16,
     plate_confidence: float | None = None,
 ) -> AnalysisResultData:
@@ -54,6 +77,7 @@ def _run(
         detector if detector is not None else FakePlateDetector(),
         reader,
         ocr,
+        detect,
     )
     config = AnalysisJobConfig(
         model_id="yolov8n",
@@ -121,9 +145,17 @@ class TestPasseComplete:
         appelé deux fois par frame. `crops == 2 × calls` prouve que les deux
         recadrages sont partis ensemble — et c'était le poste dominant du coût de
         l'ANPR, une inférence de 640×640 par piste et par frame.
+
+        Mesuré **sans décalage** (`stagger=False`), parce que le décalage répartit
+        délibérément les identités sur des images différentes : avec lui, deux
+        pistes qui ne partent pas ensemble sont le comportement voulu, et
+        l'égalité ne dirait plus rien de l'empaquetage.
         """
         detector = FakePlateDetector()
-        _run(detector=detector)
+        _run(
+            detector=detector,
+            detect=PlateDetectOptions(every_n_frames=1, stagger=False, stop_when_confident=False),
+        )
 
         assert detector.calls > 0
         assert detector.crops == 2 * detector.calls
@@ -232,12 +264,124 @@ class TestEtranglement:
         assert 0 < reader.crops < 32
 
     def test_sans_etranglement_chaque_piste_est_lue_a_chaque_frame(self) -> None:
-        """Le témoin : il donne son sens aux bornes des deux tests précédents."""
+        """Le témoin : il donne son sens aux bornes des deux tests précédents.
+
+        **Les deux étranglements doivent être désarmés**, et pas seulement celui de
+        l'OCR : le lecteur ne voit que des boîtes *mesurées*, donc étrangler le
+        détecteur borne mécaniquement les lectures. Ne désarmer que l'OCR mesurerait
+        la cadence du détecteur en croyant mesurer l'absence d'étranglement.
+        """
         reader = FakePlateReader()
         _run(
             reader=reader,
             ocr=PlateOcrOptions(every_n_frames=1, stop_when_confident=False, skip_above_iou=1.0),
+            detect=PlateDetectOptions(every_n_frames=1, stop_when_confident=False),
             steps=16,
         )
 
         assert reader.crops > 20
+
+
+class TestEtranglementDuDetecteur:
+    """L'étranglement du détecteur, et l'ancre qui le rend invisible.
+
+    Le détecteur tournait une fois par piste et par image analysée : une inférence
+    640×640 chacune, soit le poste dominant du coût de l'ANPR. L'objection qui
+    l'interdisait — les rectangles clignoteraient — tombe dès lors que les images
+    sautées reçoivent une reprojection plutôt que rien. Ces trois tests vérifient
+    les trois moitiés de cette phrase : l'économie, l'absence de clignotement, et
+    le fait qu'une extrapolation ne vote jamais.
+    """
+
+    def test_le_detecteur_tourne_environ_une_image_sur_trois(self) -> None:
+        """L'économie, mesurée en **appels** et jamais en durée."""
+        detector = FakePlateDetector()
+        _run(detector=detector, reader=None, steps=30)
+
+        # 30 images × 2 pistes = 60 recadrages sans étranglement. À une image sur
+        # trois, on en attend environ le tiers.
+        assert 0 < detector.crops <= 60 / 3 + 4
+
+    def test_chaque_image_porte_une_boite_pour_chaque_piste(self) -> None:
+        """**Le non-clignotement, qui est tout l'objet de l'ancre.**
+
+        C'est la propriété qui autorisait l'étranglement : une image sautée doit
+        porter une boîte reprojetée, pas un trou. Un seul trou et le rectangle
+        disparaît à l'écran une image sur trois — ce que l'utilisateur lit comme un
+        défaut de détection.
+
+        Les toutes premières images sont exclues : une piste n'a pas encore d'ancre
+        avant sa première détection réelle, et il n'y a alors rien à reprojeter.
+        """
+        result = _run(reader=None, steps=30)
+
+        rows = result.timeline[3:]
+        assert rows
+        for row in rows:
+            for track in row.tracks:
+                assert track.plates, (
+                    f"image {row.frame_index}, piste {track.track_id} : aucune plaque — "
+                    "un rectangle clignoterait ici"
+                )
+
+    def test_l_ocr_ne_lit_jamais_une_boite_reprojetee(self) -> None:
+        """**L'invariant qui protège le vote.**
+
+        Une reprojection n'est pas une mesure : la faire voter fabriquerait de la
+        confiance à partir de rien, et deux relectures du même clip pourraient
+        publier deux plaques (invariant 4). Le journal du lecteur dit *quelles*
+        boîtes il a vues ; aucune ne doit être `stale`.
+        """
+        reader = FakePlateReader()
+        result = _run(reader=reader, steps=30)
+
+        stale_boxes = {
+            (plate.box.x, plate.box.y)
+            for row in result.timeline
+            for track in row.tracks
+            for plate in track.plates
+            if plate.stale
+        }
+        assert stale_boxes, "aucune reprojection : le scénario ne teste rien"
+        assert reader.read_boxes, "aucune lecture : le scénario ne teste rien"
+        for box in reader.read_boxes:
+            assert (box.x, box.y) not in stale_boxes
+
+    def test_les_boites_reprojetees_sont_marquees_stale(self) -> None:
+        """Le drapeau doit traverser jusqu'à la timeline : c'est lui qui permet au
+        canvas de dessiner une estimation d'un trait plus fin qu'une mesure."""
+        result = _run(reader=None, steps=30)
+
+        plates = [
+            plate for row in result.timeline for track in row.tracks for plate in track.plates
+        ]
+        assert any(plate.stale for plate in plates)
+        assert any(not plate.stale for plate in plates)
+
+    def test_une_piste_trop_etroite_ne_coute_aucune_inference(self) -> None:
+        """La garde de taille, vue depuis le service.
+
+        Un véhicule de 80 px porte une plaque d'une douzaine de pixels : la
+        détecter coûterait sans rien pouvoir trouver.
+        """
+        detector = FakePlateDetector()
+        service = AnalysisService(
+            FakeEngine(  # type: ignore[arg-type]
+                compose(
+                    track_path(
+                        1,
+                        CAR,
+                        straight_line((700.0, 250.0), (700.0, 800.0), steps=16),
+                        box_size=(80.0, 60.0),
+                    )
+                )
+            ),
+            detector,
+        )
+        service.run_video(
+            "job-etroit",
+            VIDEO,
+            AnalysisJobConfig(model_id="yolov8n", lines=(make_line(),), detect_plates=True),
+        )
+
+        assert detector.calls == 0

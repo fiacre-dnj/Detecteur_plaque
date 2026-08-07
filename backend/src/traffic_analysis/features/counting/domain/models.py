@@ -195,6 +195,23 @@ class PlateDetection:
     #: information utile pendant trois lignes n'a pas à peser sur chaque frame d'un
     #: clip de trente minutes, ni à élargir un contrat publié.
     text_char_scores: tuple[float, ...] = ()
+    #: Cette boîte est une **reprojection**, pas une mesure de cette image.
+    #:
+    #: Le détecteur est étranglé (`PlateDetectPolicy`) ; les images qu'il saute
+    #: reçoivent l'ancre de la dernière détection réelle, reprojetée sur la boîte
+    #: courante du véhicule. Sans ce drapeau, rien ne distinguerait une plaque vue
+    #: d'une plaque estimée, et deux règles en dépendent :
+    #:
+    #: - **l'OCR ne lit jamais une boîte `stale`** — une extrapolation n'est pas une
+    #:   mesure, et la faire voter fabriquerait de la confiance à partir de rien ;
+    #: - le canvas la dessine en trait plus fin, même vocabulaire visuel que les
+    #:   pistes non confirmées en pointillés.
+    #:
+    #: **Sérialisé seulement quand il vaut `True`** — exception assumée à la règle
+    #: « `null` explicite » du projet, pour la même raison qu'ADR 0008 justifie de
+    #: jeter les confiances par caractère : un booléen sur 100 % des plaques de
+    #: 45 000 images pèse, et il n'a de sens que dans le cas minoritaire.
+    stale: bool = False
 
 
 @dataclass(frozen=True, slots=True)

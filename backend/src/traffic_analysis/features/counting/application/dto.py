@@ -36,7 +36,9 @@ from traffic_analysis.features.counting.domain.plate_geometry import (
     is_plausible,
     select_best,
 )
-from traffic_analysis.features.counting.domain.plate_ocr_policy import (
+from traffic_analysis.features.counting.domain.plate_policy import (
+    PlateDetectOptions,
+    PlateDetectPolicy,
     PlateOcrOptions,
     PlateOcrPolicy,
 )
@@ -76,12 +78,14 @@ __all__ = [
     "CountingLineDef",
     "EngineFrame",
     "EngineSpec",
+    # Réexportés pour le conteneur et le banc de mesure. `PlateGeometry` en
+    # particulier : le filtre géométrique vit dans le domaine et non dans
+    # l'adaptateur, parce que derrière `ultralytics` il n'était jamais traversé par
+    # la CI — aucun test ne pouvait donc prouver qu'une boîte « véhicule entier »
+    # n'atteint pas l'OCR, le défaut même qui a motivé l'ADR 0008.
+    "PlateDetectOptions",
+    "PlateDetectPolicy",
     "PlateDetection",
-    # Réexportés pour l'adaptateur de **détection** de plaques, pour la même raison
-    # que ci-dessous. Le filtre géométrique vit dans le domaine et non dans
-    # l'adaptateur : derrière `ultralytics`, il n'était jamais traversé par la CI,
-    # donc aucun test ne pouvait prouver qu'une boîte « véhicule entier »
-    # n'atteint pas l'OCR — le défaut même qui a motivé l'ADR 0008.
     "PlateGeometry",
     # Réexportés pour l'adaptateur d'OCR, qui vit dans `models_registry` : une autre
     # feature n'importe jamais `counting/domain/`.

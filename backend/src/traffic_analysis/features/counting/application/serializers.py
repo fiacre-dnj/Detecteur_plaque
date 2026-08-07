@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         AnalysisStats,
         BoundingBox,
         CrossingEvent,
+        PlateDetection,
         SessionTrack,
         VehicleRecord,
         VideoInfo,
@@ -59,6 +60,31 @@ def serialise_box(box: BoundingBox) -> dict[str, float]:
     }
 
 
+def serialise_plate(plate: PlateDetection) -> dict[str, Any]:
+    """Une plaque sur le fil.
+
+    `stale` est **omis quand il est faux** — exception assumée à la règle « `null`
+    explicite » qui gouverne le reste de ce module, et pour la raison qu'ADR 0008
+    donne déjà à propos des confiances par caractère : un booléen porté par 100 %
+    des plaques de 45 000 images pèse sur chaque octet du `json.gz`, alors qu'il n'a
+    de sens que dans le cas minoritaire. Le client le déclare donc `stale?`, et son
+    absence signifie « mesurée sur cette image ».
+    """
+    payload: dict[str, Any] = {
+        "box": serialise_box(plate.box),
+        "score": _score(plate.score),
+        # `null` explicite plutôt qu'absent : le client a une branche par
+        # valeur, pas une branche par présence de clé.
+        "text": plate.text,
+        # `null` et non `0` quand rien n'a été lu : `0` dirait « lu, sans
+        # aucune confiance », ce qui n'est pas la même information.
+        "textScore": _score(plate.text_score) if plate.text else None,
+    }
+    if plate.stale:
+        payload["stale"] = True
+    return payload
+
+
 def serialise_track(track: SessionTrack) -> dict[str, Any]:
     return {
         "trackId": track.track_id,
@@ -75,19 +101,7 @@ def serialise_track(track: SessionTrack) -> dict[str, Any]:
         "counted": track.counted,
         "reidCount": track.reid_count,
         "speedPxS": _optional_pixel(track.speed_px_s),
-        "plates": [
-            {
-                "box": serialise_box(plate.box),
-                "score": _score(plate.score),
-                # `null` explicite plutôt qu'absent : le client a une branche par
-                # valeur, pas une branche par présence de clé.
-                "text": plate.text,
-                # `null` et non `0` quand rien n'a été lu : `0` dirait « lu, sans
-                # aucune confiance », ce qui n'est pas la même information.
-                "textScore": _score(plate.text_score) if plate.text else None,
-            }
-            for plate in track.plates
-        ],
+        "plates": [serialise_plate(plate) for plate in track.plates],
         # Le texte **voté**, en plus des lectures de la frame — même raison
         # qu'`identityLabel` : c'est lui que le canvas étiquette. Dessiner
         # `plates[].text` ferait clignoter l'étiquette, l'étranglement de l'OCR ne le

@@ -19,13 +19,16 @@ from traffic_analysis.features.counting.application.dto import (
     TIMELINE_WARNING_THRESHOLD,
     AnalysisCancelled,
     AnalysisResultData,
+    PlateDetectOptions,
+    PlateDetectPolicy,
     PlateOcrOptions,
     PlateOcrPolicy,
     PreviewSample,
     Progress,
     TimelineRow,
 )
-from traffic_analysis.features.counting.domain.models import VideoInfo
+from traffic_analysis.features.counting.domain.models import PlateDetection, VideoInfo
+from traffic_analysis.features.counting.domain.plate_anchor import PlateAnchor, anchor_from
 from traffic_analysis.features.counting.domain.tracking_session import AnalysisSession
 
 if TYPE_CHECKING:
@@ -43,7 +46,6 @@ if TYPE_CHECKING:
     )
     from traffic_analysis.features.counting.domain.models import (
         CrossingEvent,
-        PlateDetection,
         SessionTrack,
         ZoneEntryEvent,
     )
@@ -80,7 +82,13 @@ type PauseGate = Callable[[], float]
 class AnalysisService:
     """Exécute une analyse complète : moteur → session de comptage → résultat."""
 
-    __slots__ = ("_engine", "_plate_detector", "_plate_ocr", "_plate_reader")
+    __slots__ = (
+        "_engine",
+        "_plate_detect",
+        "_plate_detector",
+        "_plate_ocr",
+        "_plate_reader",
+    )
 
     def __init__(
         self,
@@ -88,11 +96,16 @@ class AnalysisService:
         plate_detector: PlateDetector | None = None,
         plate_reader: PlateReader | None = None,
         plate_ocr: PlateOcrOptions | None = None,
+        plate_detect: PlateDetectOptions | None = None,
     ) -> None:
         self._engine = engine
         self._plate_detector = plate_detector
         self._plate_reader = plate_reader
         self._plate_ocr = plate_ocr or PlateOcrOptions()
+        # Réglages de déploiement, comme ceux de l'OCR : ils ne voyagent pas par
+        # requête, parce qu'ils arbitrent du débit contre de la fraîcheur de
+        # rectangle — un choix de machine, pas de scène (ADR 0008 §4).
+        self._plate_detect = plate_detect or PlateDetectOptions()
 
     def probe(self, video_path: Path) -> VideoInfo:
         """Sonde une vidéo. Sert aussi de validation de format réelle."""
@@ -154,6 +167,10 @@ class AnalysisService:
             reader = None
         # Une politique par course : aucun état d'étranglement partagé entre jobs.
         policy = PlateOcrPolicy(self._plate_ocr) if reader is not None else None
+        detect_policy = PlateDetectPolicy(self._plate_detect)
+        #: Identité → dernière plaque **mesurée**, en repère relatif au véhicule.
+        #: Par course, comme les politiques.
+        anchors: dict[int, PlateAnchor] = {}
 
         started = perf_counter()
         processed = 0
@@ -182,25 +199,22 @@ class AnalysisService:
             outcome = session.feed(frame.frame_index, frame.timestamp_ms, frame.image, frame.tracks)
 
             if detector is not None and outcome.tracks:
-                # **Un seul appel pour toutes les pistes de la frame.** C'est à
-                # l'adaptateur de décider comment amortir ses inférences ; il ne peut
-                # le faire que s'il voit toute la frame d'un coup. Cette couche ne
-                # sait pas — et n'a pas à savoir — s'il empaquette ou non.
-                batch = detector.detect_many(
-                    frame.image,
-                    [track.box for track in outcome.tracks],
-                    config.plate_confidence,
+                # `processed` n'est incrémenté que plus bas : il vaut donc ici
+                # l'ordinal 0-indexé de l'image **analysée** courante, ce qu'attendent
+                # les deux politiques. Un `frame.frame_index` serait faux dès que
+                # `frame_stride > 1`.
+                self._detect_plates(
+                    detector=detector,
+                    detect_policy=detect_policy,
+                    anchors=anchors,
+                    reader=reader,
+                    ocr_policy=policy,
+                    session=session,
+                    image=frame.image,
+                    ordinal=processed,
+                    tracks=outcome.tracks,
+                    confidence=config.plate_confidence,
                 )
-                for track, plates in zip(outcome.tracks, batch, strict=True):
-                    if reader is not None and policy is not None and plates:
-                        # `processed` n'est incrémenté que plus bas : il vaut donc ici
-                        # l'ordinal 0-indexé de l'image **analysée** courante, ce
-                        # qu'attend la politique. Un `frame.frame_index` serait faux
-                        # dès que `frame_stride > 1`.
-                        plates = self._read_plate_text(
-                            reader, policy, session, frame.image, processed, track, plates
-                        )
-                    session.record_plates(track, plates)
 
             # Le snapshot est pris **après** la passe ANPR ET la passe OCR, sinon les
             # plaques manquent de la timeline — ou, plus insidieux, y figurent sans
@@ -289,6 +303,123 @@ class AnalysisService:
             crossings=result.stats.crossings,
         )
         return result
+
+    def _detect_plates(
+        self,
+        *,
+        detector: PlateDetector,
+        detect_policy: PlateDetectPolicy,
+        anchors: dict[int, PlateAnchor],
+        reader: PlateReader | None,
+        ocr_policy: PlateOcrPolicy | None,
+        session: AnalysisSession,
+        image: npt.NDArray[np.uint8],
+        ordinal: int,
+        tracks: Sequence[SessionTrack],
+        confidence: float | None,
+    ) -> None:
+        """Détecte, reprojette, lit — dans cet ordre, et pour cette raison.
+
+        **Seules les pistes retenues par la politique partent en inférence.** Les
+        autres reçoivent l'ancre de leur dernière détection réelle, reprojetée sur
+        leur boîte courante : c'est ce qui supprime le clignotement qui interdisait
+        jusqu'ici d'étrangler le détecteur.
+
+        **L'OCR ne tourne que sur les boîtes réellement mesurées.** Une
+        extrapolation n'est pas une observation ; la faire voter fabriquerait de la
+        confiance à partir de rien, et deux relectures du même clip pourraient
+        publier deux plaques (invariant 4).
+
+        Chaque piste reçoit un `record_plates`, y compris celles qui n'ont ni
+        détection ni ancre : c'est ce qui garantit qu'aucun snapshot ne porte de
+        trou, donc qu'aucun rectangle ne clignote.
+        """
+        confident = {
+            track.global_id: session.plate_text_is_confident(track.global_id) for track in tracks
+        }
+
+        wanted = [
+            track
+            for track in tracks
+            if detect_policy.should_detect(
+                track.global_id,
+                ordinal,
+                track.box,
+                vote_is_confident=confident[track.global_id],
+                has_anchor=track.global_id in anchors,
+            )
+        ]
+
+        measured: dict[int, tuple[PlateDetection, ...]] = {}
+        if wanted:
+            # **Un seul appel pour toutes les pistes retenues.** C'est à l'adaptateur
+            # de décider comment amortir ses inférences ; il ne peut le faire que
+            # s'il les voit d'un coup. Cette couche ne sait pas — et n'a pas à
+            # savoir — s'il empaquette ou non.
+            batch = detector.detect_many(image, [track.box for track in wanted], confidence)
+            for track, plates in zip(wanted, batch, strict=True):
+                detect_policy.record(track.global_id, ordinal)
+                measured[track.global_id] = tuple(plates)
+
+        for track in tracks:
+            fresh = measured.get(track.global_id)
+            if fresh is None:
+                # Détection sautée : on repose l'estimation, jamais rien.
+                session.record_plates(track, self._project_anchor(anchors, detect_policy, track))
+                continue
+
+            # Mesure fraîche : elle remplace l'ancre, et **elle seule** peut être lue.
+            self._remember_anchor(anchors, track, fresh)
+            if reader is not None and ocr_policy is not None and fresh:
+                fresh = self._read_plate_text(
+                    reader, ocr_policy, session, image, ordinal, track, fresh
+                )
+            session.record_plates(track, fresh)
+
+    @staticmethod
+    def _remember_anchor(
+        anchors: dict[int, PlateAnchor],
+        track: SessionTrack,
+        plates: Sequence[PlateDetection],
+    ) -> None:
+        """Mémorise la meilleure plaque **mesurée** en repère relatif au véhicule.
+
+        Une détection vide efface l'ancre : le détecteur vient de regarder et n'a
+        rien vu, donc continuer à reprojeter une plaque d'il y a trois images
+        affirmerait le contraire de ce qu'on vient de mesurer.
+        """
+        if not plates:
+            anchors.pop(track.global_id, None)
+            return
+        best = max(plates, key=lambda plate: plate.score)
+        anchor = anchor_from(track.box, best.box, best.score)
+        if anchor is None:
+            anchors.pop(track.global_id, None)
+        else:
+            anchors[track.global_id] = anchor
+
+    @staticmethod
+    def _project_anchor(
+        anchors: dict[int, PlateAnchor],
+        detect_policy: PlateDetectPolicy,
+        track: SessionTrack,
+    ) -> tuple[PlateDetection, ...]:
+        """Reprojette l'ancre d'une piste dont la détection a été sautée.
+
+        Rend un tuple vide au-delà de `max_anchor_age` : une plaque n'est solidaire
+        de son véhicule que sur quelques images, et reprojeter au-delà promènerait
+        un rectangle qui ne décrit plus rien. Ne rien dessiner est alors plus
+        honnête que dessiner faux.
+        """
+        anchor = anchors.get(track.global_id)
+        if anchor is None:
+            return ()
+        aged = anchor.aged()
+        if aged.age > detect_policy.options.max_anchor_age:
+            anchors.pop(track.global_id, None)
+            return ()
+        anchors[track.global_id] = aged
+        return (PlateDetection(box=aged.project(track.box), score=aged.score, stale=True),)
 
     @staticmethod
     def _read_plate_text(

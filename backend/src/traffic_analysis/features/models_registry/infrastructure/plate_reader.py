@@ -5,7 +5,7 @@ de plaques ne lit pas les caractères. Chaque étage recadre plus près.
 
 **Le coût est modeste, et c'est le point.** La détection de plaques domine le temps
 d'une frame (`plate_detector.py`), la lecture quelques dizaines de millisecondes pour
-tout un lot. L'OCR n'est pas le goulot ; `plate_ocr_policy.py` existe donc surtout
+tout un lot. L'OCR n'est pas le goulot ; `plate_policy.py` existe donc surtout
 pour protéger la **justesse** du vote — ne pas voter quarante fois sur le même
 recadrage figé — plutôt que la cadence. C'est aussi ce qui autorise à dépenser
 plusieurs *variantes* de prétraitement par plaque : trois fois presque rien reste
