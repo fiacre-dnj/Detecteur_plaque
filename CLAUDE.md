@@ -30,7 +30,11 @@ En différé **seulement**, une passe ANPR optionnelle localise les plaques puis
 **lit le texte** (OCR) ; le texte publié est un vote sur la vie du véhicule, pas la
 lecture de la frame courante ([ADR 0007](docs/adr/0007-lecture-du-texte-de-plaque.md)),
 et ce vote tranche caractère par caractère quand deux graphies proches s'égalisent
-([ADR 0008](docs/adr/0008-precision-de-l-anpr.md)). Le direct n'a pas d'ANPR du tout.
+([ADR 0008](docs/adr/0008-precision-de-l-anpr.md)). Le détecteur est **étranglé** —
+une image sur trois par piste — et les images sautées portent la dernière plaque
+mesurée, reprojetée sur la boîte du véhicule
+([ADR 0010](docs/adr/0010-etranglement-du-detecteur-de-plaques.md)). Le direct n'a
+pas d'ANPR du tout.
 
 ## `prompt/` est la spécification, pas de la documentation
 
@@ -56,7 +60,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1107 tests
+uv run pytest                                                            # 1193 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -69,7 +73,7 @@ uv run python scripts/fetch_plate_ocr_model.py       # modèle OCR + son diction
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 444 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 471 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -112,8 +116,15 @@ que le moteur factice ne les atteint jamais. **Vérifier contre le vrai serveur
 avant de déclarer une fonctionnalité terminée.**
 
 `features/counting/domain/` est le cœur : `geometry`, `models`, `line_counter`,
-`zone_counter`, `reid`, `speed`, `tracking_session`. Sa spécification est
+`zone_counter`, `reid`, `speed`, `tracking_session`, plus tout ce qui décide de
+l'ANPR sans toucher un pixel — `plate_geometry` (le filtre de plausibilité et les
+raisons de non-lecture), `plate_policy` (les deux étranglements), `plate_anchor`,
+`plate_text`, `plate_vote`. Sa spécification est
 [`prompt/03-DOMAINE-COMPTAGE.md`](prompt/03-DOMAINE-COMPTAGE.md).
+
+Le filtre géométrique vit dans le domaine **et pas dans l'adaptateur**, et ce
+déplacement est ce qui rend les 426 gardées / 112 jetées d'ADR 0008 vérifiables :
+derrière `ultralytics`, la CI ne les traversait jamais.
 
 `features/models_registry/infrastructure/` est le **seul** endroit qui importe
 `ultralytics`.
@@ -253,6 +264,54 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     lignes servent à *situer* un passage, pas à le multiplier. C'est un changement
     de spécification par rapport à `prompt/03`, qui décrivait un garde
     `(ligne, identité, sens)`. [ADR 0009](docs/adr/0009-un-comptage-par-vehicule.md).
+11. **Le détecteur de plaques est étranglé, et une ancre rend l'étranglement
+    invisible.** Il tournait une inférence 640×640 par piste et par image :
+    **823 ms/image mesurées**, soit près de dix minutes pour 30 s de vidéo. Les
+    images sautées reçoivent la dernière plaque *mesurée*, reprojetée en
+    coordonnées relatives à la boîte du véhicule — les rectangles ne clignotent
+    donc pas, ce qui était l'objection d'ADR 0007. Mesuré : **180 → 62 recadrages**
+    (2,9×). Deux règles absolues : **l'OCR ne lit jamais une boîte reprojetée**, et
+    une reprojection ne nourrit aucun agrégat.
+    [ADR 0010](docs/adr/0010-etranglement-du-detecteur-de-plaques.md).
+12. **Le plancher de lecture est mesuré, pas supposé : ~64 px.** L'échelle de
+    vérité terrain rend 8/8 lectures justes à 320 px, 4/8 à 64 px et **0/8 à
+    48 px** — rejouable par `scripts/anpr_bench.py --truth-ladder`. `min_width_px`
+    vaut donc 64 (et non 32, cinq fois trop permissif, ni 150, qui supprimerait
+    toute lecture). L'OCR relit une identité seulement si la nouvelle vignette bat
+    la meilleure déjà lue de 25 % en **qualité = largeur × netteté**.
+13. **Un échec porte son message et son code.** Une `AppError` fait traverser
+    `detail` et `code` jusqu'à l'écran ; tout le reste garde la phrase générique,
+    parce qu'un `RuntimeError` porte des chemins serveur. Le modèle est **chargé
+    avant** le passage en « en cours », donc un modèle absent échoue sans jamais
+    prétendre travailler. `weights_dir` relatif est ancré sur le paquet et non sur
+    le CWD. [ADR 0011](docs/adr/0011-un-job-en-echec-dit-ce-qu-il-est.md).
+14. **Un véhicule sans plaque publiée dit pourquoi**, parmi cinq raisons qui
+    appellent cinq gestes différents, avec la largeur de la meilleure plaque vue.
+    Ce n'est pas un confort : l'étranglement et le plancher de lecture rendent le
+    silence plus fréquent, et un silence non expliqué se lit comme une panne.
+
+## Mesurer avant d'optimiser l'ANPR
+
+`backend/scripts/anpr_bench.py` est le banc. Il existe parce qu'aucun chiffre des
+ADR 0007 et 0008 n'était rejouable — tous produits hors dépôt, à la main — et
+qu'ADR 0008 a déjà démontré une fois que l'intuition se trompe ici.
+
+```bash
+cd backend
+# Rejouable sans aucune vidéo, donc en CI. Valide le banc lui-même.
+uv run python scripts/anpr_bench.py --synthetic --truth-ladder --json out/ladder.json
+# Sur de vraies vidéos, avant / après.
+uv run python scripts/anpr_bench.py --videos D:/TesteIA/Video --frames 40 \
+    --ocr --json out/apres.json --compare out/avant.json
+```
+
+Le couple `textsDecoded` / `textsPublished` est le chiffre qui explique tout : un
+`118 / 0` dit que la chaîne lit du bruit et le **refuse**. Ce n'est pas une panne.
+
+`backend/scripts/build_fixtures.py` régénère les fixtures du contrat. **Toujours
+les régénérer, jamais les corriger à la main** : une fixture éditée pour faire
+passer `tsc` affirme ce que le frontend espère au lieu de ce que le backend
+produit, ce qui retire la seule propriété qu'on lui demandait.
 
 ## Pièges d'environnement de cette machine
 
@@ -274,6 +333,13 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
   depuis `yolo/`, git-ignoré des deux côtés). Contrairement aux `.onnx` de
   véhicules du dossier `yolo/`, **celui-là est utilisable** : la passe ANPR est
   une simple détection, elle ne demande ni tracker ni ReID.
+- **`weights_dir` relatif est ancré sur `backend/`, plus sur le répertoire de
+  lancement.** Avant ce correctif, lancer `uvicorn` depuis la racine du dépôt
+  faisait paraître *tous* les poids absents et rendait l'ANPR indisponible sans
+  qu'aucun message ne le dise — même famille que le piège du `.env` ci-dessus. Le
+  chemin résolu est journalisé au démarrage et exposé dans `/health`
+  (`weightsDir`) : en cas de doute, le regarder avant de chercher ailleurs. Un
+  chemin **enraciné** (`/opt/poids`, `C:\poids`) traverse inchangé.
 - **Cet export est figé à `1×3×640×640` et sa grille d'ancres est une constante.**
   Vérifié par chirurgie de graphe : rendre le lot ou la résolution dynamiques fait
   échouer le `Reshape` du DFL. Ni résolution adaptative ni lot sans ré-export, et
@@ -320,7 +386,7 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1107 (1 skip) | 444 |
+| Nombre | 1193 (1 skip) | 471 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 
