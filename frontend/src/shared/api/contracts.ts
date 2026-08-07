@@ -51,6 +51,14 @@ export interface Health {
    */
   plateOcrAvailable: boolean;
   defaultModelId: string;
+  /**
+   * Répertoire **résolu** où le serveur cherche ses poids, en absolu.
+   *
+   * Exposé pour la même raison que `plateAvailable` : un opérateur doit pouvoir
+   * voir *où* le service regarde. Un `plateAvailable: false` avec le bon fichier
+   * au bon endroit ne s'explique autrement que par une fouille du disque.
+   */
+  weightsDir: string;
 }
 
 export type ModelTier = "nano" | "small" | "medium" | "large" | "xlarge";
@@ -119,6 +127,17 @@ export interface Job {
    * comme le bouton « précharger puis relancer » sur `model_unavailable`.
    */
   errorCode: string | null;
+  /**
+   * Le modèle se charge — **état de passage, jamais persisté**.
+   *
+   * Pas un `JobStatus` : en faire un toucherait `isTerminal`, `statusLabel` et
+   * tous leurs tests pour un état qui ne dure que le temps d'un chargement. Vrai
+   * uniquement sur l'unique trame publiée avant le passage en « en cours », et
+   * c'est elle qui permet d'écrire « Préparation : chargement du modèle » au lieu
+   * de « 0 / 0 images · 0.0 img/s » — le 0 % que l'utilisateur lisait comme une
+   * panne pendant la minute de téléchargement.
+   */
+  preparing: boolean;
   modelId: string;
   fileName: string;
   createdAt: string;

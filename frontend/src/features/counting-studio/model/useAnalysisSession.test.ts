@@ -23,6 +23,7 @@ function job(status: JobStatus, overrides: Partial<Job> = {}): Job {
     processingFps: 12.5,
     error: null,
     errorCode: null,
+    preparing: false,
     modelId: "yolov8n",
     fileName: "carrefour.mp4",
     createdAt: "2026-08-05T10:00:00+00:00",

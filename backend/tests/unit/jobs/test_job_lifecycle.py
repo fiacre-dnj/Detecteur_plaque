@@ -65,6 +65,24 @@ def _frames(steps: int = 40) -> list[list[Any]]:
     return compose(track_path(1, CAR, straight_line((900.0, 250.0), (900.0, 800.0), steps=steps)))
 
 
+class FakePreparer:
+    """Un `ModelPreparer` qui journalise ses appels, et peut refuser.
+
+    `prepare_error` rend testable le scénario réel de 2.1 : un modèle absent du
+    disque et intéléchargeable. Sans doublure, ce chemin ne serait traversé que par
+    le vrai registre, donc jamais par la CI.
+    """
+
+    def __init__(self, *, fails_with: Exception | None = None) -> None:
+        self.calls: list[str] = []
+        self._fails_with = fails_with
+
+    async def prepare(self, model_id: str) -> None:
+        self.calls.append(model_id)
+        if self._fails_with is not None:
+            raise self._fails_with
+
+
 async def _manager(
     tmp_path: Path,
     clock: FrozenClock,
@@ -72,6 +90,7 @@ async def _manager(
     engine: FakeEngine | None = None,
     hub: ProgressHub | None = None,
     preview_interval_ms: int = 0,
+    preparer: FakePreparer | None = None,
 ) -> tuple[JobManager, InMemoryJobRepository, FileResultStore]:
     """Gestionnaire de test. **Aperçu désactivé par défaut** : les scénarios de
     cycle de vie n'en veulent pas, et publier des images à chaque frame y
@@ -84,6 +103,7 @@ async def _manager(
         analysis=AnalysisService(engine or FakeEngine(_frames())),
         hub=hub or ProgressHub(),
         clock=clock,
+        preparer=preparer,
         max_concurrent_jobs=1,
         preview_interval_ms=preview_interval_ms,
     )
@@ -231,6 +251,81 @@ class TestExecution:
         # `describe` est le contrat publié : le code doit y figurer, sinon
         # l'interface ne peut pas brancher son bouton de préchargement dessus.
         assert JobManager.describe(record)["errorCode"] == "model_unavailable"
+
+
+class TestPreparationDuModele:
+    """Le modèle est chargé **avant** que le job prétende travailler.
+
+    Le mode de panne supprimé : le téléchargement d'un poids absent n'avait lieu
+    qu'à la première itération d'`iter_video`, donc après le passage en
+    « en cours ». Un modèle intéléchargeable produisait une analyse « en cours »
+    figée à 0 %, que rien ne distinguait d'un service planté.
+    """
+
+    async def test_le_modele_est_prepare_avant_le_passage_en_cours(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        preparer = FakePreparer()
+        manager, _, _ = await _manager(tmp_path, clock, preparer=preparer)
+        await _submit(manager, tmp_path)
+
+        assert await _await_status(manager, "job-1") == "done"
+        assert preparer.calls == ["yolov8n"]
+
+    async def test_un_modele_impreparable_echoue_sans_jamais_passer_running(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """**Le cœur de 2.1.** Le job ne prétend jamais travailler.
+
+        `started_at` est le témoin le plus sûr : il n'est posé que par la
+        transition vers `running`. Le trouver nul prouve que le job n'y est jamais
+        passé — y compris fugitivement, ce qu'un sondage de statut pourrait rater.
+        """
+        preparer = FakePreparer(
+            fails_with=UnavailableError(
+                "Le modèle « yolo11x » n'a pas pu être chargé : téléchargement impossible.",
+                code="model_unavailable",
+            )
+        )
+        manager, _, _ = await _manager(tmp_path, clock, preparer=preparer)
+        await _submit(manager, tmp_path)
+
+        assert await _await_status(manager, "job-1") == "error"
+        record = await manager.get("job-1")
+        assert record.started_at is None
+        # Le message du registre traverse, et son code avec — c'est le lot 1 qui
+        # rend cette préparation utile plutôt que muette.
+        assert record.error is not None
+        assert "yolo11x" in record.error
+        assert record.error_code == "model_unavailable"
+
+    async def test_la_preparation_est_annoncee_puis_retombee(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """`preparing` est publié **vrai une fois**, et n'est jamais persisté.
+
+        C'est ce qui permet à la barre d'écrire « Préparation : chargement du
+        modèle » au lieu de « 0 / 0 images · 0.0 img/s », sans ajouter un statut à
+        la machine à états pour un état de passage.
+        """
+        hub = ProgressHub()
+        preparer = FakePreparer()
+        manager, _, _ = await _manager(tmp_path, clock, hub=hub, preparer=preparer)
+        received: list[Any] = []
+
+        async def collect() -> None:
+            async for event in hub.subscribe("job-1"):
+                received.append(event)
+
+        collector = asyncio.create_task(collect())
+        await _submit(manager, tmp_path)
+        await _await_status(manager, "job-1")
+        async with asyncio.timeout(2.0):
+            await collector
+
+        assert any(event.payload.get("preparing") is True for event in received)
+        # Jamais persisté : l'état relu de la base ne porte aucune préparation.
+        assert JobManager.describe(await manager.get("job-1"))["preparing"] is False
 
 
 class TestApercu:

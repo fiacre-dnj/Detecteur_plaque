@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     from traffic_analysis.features.jobs.application.ports import (
         JobFilters,
         JobRepository,
+        ModelPreparer,
         ResultStore,
     )
 
@@ -83,6 +84,7 @@ class JobManager:
         "_hub",
         "_max_concurrent",
         "_pauses",
+        "_preparer",
         "_preview_interval_s",
         "_repository",
         "_result_store",
@@ -98,6 +100,7 @@ class JobManager:
         hub: ProgressHub,
         clock: Clock,
         *,
+        preparer: ModelPreparer | None = None,
         max_concurrent_jobs: int = 1,
         preview_interval_ms: int = 200,
     ) -> None:
@@ -106,6 +109,11 @@ class JobManager:
         self._analysis = analysis
         self._hub = hub
         self._clock = clock
+        # `None` est légitime : les tests de cycle de vie injectent un moteur
+        # factice dont le modèle n'a rien à préparer, et la préparation est alors
+        # simplement sautée. Ce n'est pas une dégradation silencieuse — sans
+        # registre, il n'y a aucun poids à télécharger.
+        self._preparer = preparer
         self._max_concurrent = max_concurrent_jobs
         # En millisecondes dans la configuration, en secondes ici : `0` désactive
         # l'aperçu, et la conversion est faite une fois plutôt qu'à chaque job.
@@ -389,6 +397,7 @@ class JobManager:
         cancellation: threading.Event,
         pause: threading.Event,
     ) -> None:
+        await self._prepare_model(job_id, config.model_id)
         await self._transition(job_id, "running", started=True)
 
         loop = asyncio.get_running_loop()
@@ -471,6 +480,31 @@ class JobManager:
         await self._repository.save_result_aggregates(job_id, result)
         await self._finish(job_id, "done")
 
+    async def _prepare_model(self, job_id: str, model_id: str) -> None:
+        """Rend le modèle utilisable **avant** de prétendre travailler.
+
+        Le mode de panne supprimé : le téléchargement d'un poids absent n'avait
+        lieu qu'à la première itération d'`iter_video`, donc **après** le passage
+        en « en cours ». Le catalogue annonce vingt modèles et le disque en porte
+        trois : dix-sept choix sur vingt affichaient donc une analyse « en cours »
+        bloquée à 0 % pendant une à deux minutes, et un échec de téléchargement s'y
+        lisait comme un service planté.
+
+        En préparant ici, un modèle impréparable fait échouer le job **sans jamais
+        passer par `running`**, avec le message du registre — que le lot 1 fait
+        maintenant traverser jusqu'à l'écran.
+
+        L'événement de préparation est publié mais **jamais persisté** : c'est un
+        état de passage, et non un statut. En faire un `JobStatus` toucherait la
+        machine à états, `is_terminal`, les libellés et tous leurs tests, pour un
+        état qui ne dure que le temps d'un chargement.
+        """
+        if self._preparer is None:
+            return
+        record = await self.get(job_id)
+        self._hub.publish(ProgressEvent(job_id, {**self.describe(record), "preparing": True}))
+        await self._preparer.prepare(model_id)
+
     async def _transition(self, job_id: str, status: JobStatus, *, started: bool = False) -> None:
         record = await self.get(job_id)
         ensure_transition(record.status, status)
@@ -515,10 +549,13 @@ class JobManager:
             "totalFrames": progress.total_frames,
             "processingFps": round(progress.processing_fps, 2),
             "error": None,
-            # Présent et nul, jamais absent : `describe` et cette charge utile
-            # sont **la même forme**, et un client qui lit `errorCode` sur une
-            # trame de progression ne doit pas trouver un champ manquant.
+            # Présents et neutres, jamais absents : `describe` et cette charge
+            # utile sont **la même forme**, et un client qui lit `errorCode` ou
+            # `preparing` sur une trame de progression ne doit pas trouver un champ
+            # manquant. Une trame de progression signifie par construction que la
+            # préparation est finie — les images défilent déjà.
             "errorCode": None,
+            "preparing": False,
         }
 
     @staticmethod
@@ -557,6 +594,10 @@ class JobManager:
             # l'interface de proposer l'action qui va avec l'échec — précharger le
             # modèle absent — au lieu de se contenter d'afficher la phrase.
             "errorCode": record.error_code,
+            # Faux ici **par construction** : `describe` décrit un état persisté, et
+            # la préparation n'est jamais persistée. Seul `_prepare_model` publie
+            # `True`, en surchargeant ce champ sur la trame qu'il émet.
+            "preparing": False,
             "modelId": record.model_id,
             "fileName": record.file_name,
             "createdAt": record.created_at.isoformat(),

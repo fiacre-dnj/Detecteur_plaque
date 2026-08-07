@@ -222,6 +222,17 @@ def build_container(
             analysis=analysis_service,
             hub=hub,
             clock=resolved_clock,
+            # `ModelService` satisfait le port `ModelPreparer` par sa seule méthode
+            # `prepare`. C'est lui qui fait échouer un job **avant** qu'il prétende
+            # travailler, quand le poids est absent et intéléchargeable.
+            #
+            # **Seulement avec le moteur réel.** Un test qui injecte un moteur
+            # factice n'utilise jamais le registre pour inférer : préparer y
+            # déclencherait un vrai téléchargement Ultralytics de plusieurs
+            # mégaoctets pour un modèle que rien n'appellera. C'est précisément ce
+            # que l'architecture existe pour éviter — la CI tourne sans GPU, sans
+            # poids et sans ultralytics.
+            preparer=model_service if engine is None else None,
             max_concurrent_jobs=settings.max_concurrent_jobs,
             preview_interval_ms=settings.preview_interval_ms,
         ),

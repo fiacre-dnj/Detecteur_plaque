@@ -382,6 +382,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         version=__version__,
         environment=settings.env,
         docs=settings.docs_enabled,
+        # Les deux chemins **résolus**, dès la première ligne du journal.
+        #
+        # Ils ne dépendent plus du répertoire de lancement, mais les voir reste
+        # nécessaire : un « modèle de plaques absent » avec le bon fichier au bon
+        # endroit se diagnostique en une seconde quand le journal dit où le
+        # service a regardé, et en une heure sinon.
+        weights_dir=str(settings.weights_dir),
+        data_dir=str(settings.data_dir),
     )
     try:
         yield

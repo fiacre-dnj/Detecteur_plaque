@@ -54,10 +54,15 @@ export function SettingsPanels({
   return (
     <>
       <Section title="Détection" defaultOpen>
+        {/* `canPreload={!disabled}` : le préchargement prend un bail sur le
+            modèle, donc le lancer pendant une analyse ferait attendre la fin de
+            celle-ci sans que rien à l'écran ne l'explique. `disabled` vaut
+            exactement « une analyse ou un direct occupe le serveur ». */}
         <ModelPicker
           models={models}
           selectedId={settings.modelId}
           disabled={disabled}
+          canPreload={!disabled}
           onSelect={(modelId) => onChange({ modelId })}
         />
 

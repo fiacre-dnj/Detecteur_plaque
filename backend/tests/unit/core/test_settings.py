@@ -187,6 +187,60 @@ def test_le_chemin_du_modele_de_plaques_a_un_defaut_derive() -> None:
     assert settings.resolved_plate_model_path == Path("/tmp/w/license-plate.onnx")  # noqa: S108
 
 
+def test_un_chemin_de_poids_relatif_ne_depend_pas_du_repertoire_de_lancement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**La panne silencieuse de 2.5, en un test.**
+
+    `Path("./.weights")` résolu depuis le répertoire d'exécution faisait paraître
+    *tous* les poids absents dès qu'on lançait `uvicorn` ailleurs que dans
+    `backend/` — `license-plate.onnx` et les deux fichiers d'OCR compris. L'ANPR
+    devenait indisponible sans qu'aucun message ne mentionne la cause : le service
+    démarre, le catalogue répond, et rien n'a l'air cassé.
+
+    Le verdict porte sur l'**égalité entre deux répertoires courants**, et non sur
+    une valeur écrite en dur : c'est exactement la propriété qui manquait, et une
+    valeur en dur casserait au premier déplacement du paquet.
+    """
+    monkeypatch.chdir(tmp_path)
+    depuis_tmp = _settings(weights_dir=Path("./.weights"))
+
+    ailleurs = tmp_path / "sous-repertoire"
+    ailleurs.mkdir()
+    monkeypatch.chdir(ailleurs)
+    depuis_ailleurs = _settings(weights_dir=Path("./.weights"))
+
+    assert depuis_tmp.weights_dir == depuis_ailleurs.weights_dir
+    assert depuis_tmp.weights_dir.is_absolute()
+    # Ancré sur le paquet : le dossier `.weights` est celui où
+    # `scripts/fetch_*.py` déposent réellement les fichiers.
+    assert depuis_tmp.weights_dir.name == ".weights"
+    assert depuis_tmp.weights_dir.parent.name == "backend"
+
+
+def test_le_repertoire_de_donnees_est_ancre_de_la_meme_facon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`data_dir` porte les résultats et les vidéos déposées : le déplacer sans
+    prévenir ferait disparaître l'historique d'un service relancé ailleurs."""
+    monkeypatch.chdir(tmp_path)
+    settings = _settings(data_dir=Path("./data"))
+
+    assert settings.data_dir.is_absolute()
+    assert settings.data_dir.parent.name == "backend"
+
+
+def test_un_chemin_de_poids_enracine_traverse_inchange() -> None:
+    """La forme d'un déploiement conteneurisé. La réécrire serait une surprise.
+
+    Le critère est la présence d'une racine, **pas** `is_absolute()` : sous
+    Windows, `Path("/opt/poids").is_absolute()` est faux faute de lettre de
+    lecteur. S'y fier ferait déplacer, sur une machine de développement, le chemin
+    qu'un opérateur a écrit explicitement pour la production.
+    """
+    assert _settings(weights_dir=Path("/opt/poids")).weights_dir == Path("/opt/poids")
+
+
 def test_un_chemin_explicite_gagne_sur_le_defaut() -> None:
     settings = _settings(
         weights_dir=Path("/tmp/w"),  # noqa: S108

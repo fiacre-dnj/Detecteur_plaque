@@ -112,6 +112,27 @@ export function modelStateLabel(model: VehicleModel): string {
   return `premier usage : téléchargement ~${model.sizeMb} Mo`;
 }
 
+/**
+ * Faut-il précharger ce modèle au moment où on le choisit ?
+ *
+ * Extrait du composant pour être **testable** : la règle a trois conditions dont
+ * deux ont un coût réel si on les oublie, et aucune n'est vérifiable en lisant du
+ * JSX.
+ *
+ * - `downloaded` ⇒ non. Le poids est là ; l'appel ne ferait que prendre un bail
+ *   pour rien.
+ * - `canPreload` faux ⇒ non. Le préchargement prend un bail, donc le lancer
+ *   pendant une analyse le ferait attendre la fin de celle-ci, sans que rien à
+ *   l'écran ne l'explique.
+ *
+ * **Ce prédicat ne dit rien du geste.** Le composant ne l'appelle que depuis un
+ * *choix* — clic, Entrée, Espace — et jamais depuis la navigation aux flèches :
+ * les confondre lancerait vingt téléchargements pour un parcours de la liste.
+ */
+export function shouldPreload(model: VehicleModel, canPreload: boolean): boolean {
+  return canPreload && !model.downloaded;
+}
+
 /** Taille réelle sur disque si connue, sinon l'estimation du catalogue. */
 export function modelSizeLabel(model: VehicleModel): string {
   if (model.sizeBytes !== null) {

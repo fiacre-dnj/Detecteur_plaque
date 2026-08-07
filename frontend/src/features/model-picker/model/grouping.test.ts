@@ -17,6 +17,7 @@ import {
   modelSizeLabel,
   modelStateLabel,
   nextIndex,
+  shouldPreload,
 } from "./grouping";
 
 function model(id: string, tier: ModelTier, overrides: Partial<VehicleModel> = {}): VehicleModel {
@@ -178,5 +179,22 @@ describe("taille affichée", () => {
 describe("ordre des paliers", () => {
   it("suit la progression de taille du catalogue", () => {
     expect([...TIER_ORDER]).toEqual(["nano", "small", "medium", "large", "xlarge"]);
+  });
+});
+
+describe("préchargement à la sélection", () => {
+  it("précharge un modèle absent du serveur", () => {
+    expect(shouldPreload(model("x", "nano", { downloaded: false }), true)).toBe(true);
+  });
+
+  it("ne précharge pas un modèle déjà téléchargé", () => {
+    // Le poids est là : l'appel ne ferait que prendre un bail pour rien.
+    expect(shouldPreload(model("x", "nano", { downloaded: true }), true)).toBe(false);
+  });
+
+  it("ne précharge jamais pendant qu'une analyse occupe le serveur", () => {
+    // Le préchargement prend un bail sur le modèle : lancé pendant une analyse,
+    // il attendrait la fin de celle-ci sans que rien à l'écran ne l'explique.
+    expect(shouldPreload(model("x", "nano", { downloaded: false }), false)).toBe(false);
   });
 });

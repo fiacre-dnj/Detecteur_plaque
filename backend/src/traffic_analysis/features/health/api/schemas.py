@@ -63,3 +63,13 @@ class HealthSchema(CamelModel):
         )
     )
     default_model_id: str = Field(description="Modèle proposé par défaut.")
+    weights_dir: str = Field(
+        description=(
+            "Répertoire **résolu** où le service cherche les poids, en absolu. "
+            "Exposé pour la même raison que `plateAvailable` : un opérateur doit "
+            "pouvoir voir *où* le service regarde. Un `plateAvailable: false` avec "
+            "le bon fichier au bon endroit ne s'explique autrement que par une "
+            "fouille du système de fichiers."
+        ),
+        examples=["/app/.weights"],
+    )

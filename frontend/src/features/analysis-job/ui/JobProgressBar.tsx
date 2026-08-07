@@ -23,6 +23,8 @@ interface JobProgressBarProps {
   /** Progression de l'envoi, tant qu'il n'est pas achevé. */
   upload: UploadProgress | null;
   job: Job | null;
+  /** Nom lisible du modèle, pour nommer ce qui se charge pendant la préparation. */
+  modelLabel?: string;
   onCancel: () => void;
   /** Suspend l'analyse. Absent tant qu'aucun job ne tourne côté serveur. */
   onPause?: () => void;
@@ -30,8 +32,24 @@ interface JobProgressBarProps {
   onResume?: () => void;
 }
 
-export function JobProgressBar({ upload, job, onCancel, onPause, onResume }: JobProgressBarProps) {
+export function JobProgressBar({
+  upload,
+  job,
+  modelLabel,
+  onCancel,
+  onPause,
+  onResume,
+}: JobProgressBarProps) {
   const uploading = upload !== null && upload.ratio < 1 && job === null;
+  /**
+   * Le serveur charge le modèle — souvent en le téléchargeant.
+   *
+   * Sans cette phase, la barre affichait « 0 / 0 images · 0.0 img/s » pendant une
+   * à deux minutes, ce qui se lit exactement comme une analyse plantée. C'est le
+   * seul moment où la progression ne progresse pas pour une bonne raison, et le
+   * dire coûte une ligne.
+   */
+  const preparing = job?.preparing === true;
   const ratio = uploading ? upload.ratio : (job?.progress ?? 0);
   const finished = job !== null && isTerminal(job.status);
   const paused = job?.status === "paused";
@@ -45,7 +63,11 @@ export function JobProgressBar({ upload, job, onCancel, onPause, onResume }: Job
     <div className="rounded-card bg-surface-2 p-3">
       <div className="flex items-baseline justify-between gap-3">
         <p className="text-caption font-bold text-ink">
-          {uploading ? "Envoi de la vidéo" : statusLabel(job?.status ?? "queued")}
+          {uploading
+            ? "Envoi de la vidéo"
+            : preparing
+              ? "Préparation"
+              : statusLabel(job?.status ?? "queued")}
         </p>
         <div className="flex items-center gap-2">
           <output className="text-small text-ink-muted">{Math.round(ratio * 100)} %</output>
@@ -102,10 +124,15 @@ export function JobProgressBar({ upload, job, onCancel, onPause, onResume }: Job
       <p className="mt-2 text-small text-ink-dim">
         {uploading
           ? `${formatBytes(upload.loaded)} sur ${formatBytes(upload.total)}`
-          : job !== null
-            ? // « Cadence (serveur) » : ce n'est pas la cadence de lecture.
-              `${job.processedFrames} / ${job.totalFrames} images · ${job.processingFps.toFixed(1)} img/s (serveur)`
-            : "En attente du serveur…"}
+          : preparing
+            ? // Le compteur d'images n'a aucun sens ici — aucune n'a été lue. Le
+              // remplacer par la cause réelle de l'attente évite la lecture
+              // « bloqué à 0 % » qui a produit « l'analyse ne fonctionne pas ».
+              `Chargement du modèle ${modelLabel ?? job?.modelId ?? ""} — premier usage, téléchargement possible.`
+            : job !== null
+              ? // « Cadence (serveur) » : ce n'est pas la cadence de lecture.
+                `${job.processedFrames} / ${job.totalFrames} images · ${job.processingFps.toFixed(1)} img/s (serveur)`
+              : "En attente du serveur…"}
       </p>
 
       {/* Ce que coûte une pause, dit une fois et à l'endroit où on la décide.

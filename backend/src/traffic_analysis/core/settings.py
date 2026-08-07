@@ -17,6 +17,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 Environment = Literal["development", "staging", "test", "production"]
 LogFormat = Literal["console", "json"]
 
+#: Racine du dépôt telle que le paquet installé la voit — le `backend/` du projet.
+#:
+#: `parents[2]` depuis `traffic_analysis/core/settings.py` remonte `core/`, puis
+#: `traffic_analysis/`, puis `src/`, et atteint `backend/`. C'est l'ancre des
+#: chemins relatifs de configuration : elle ne dépend pas du répertoire depuis
+#: lequel on a lancé le service, contrairement à `Path.cwd()`.
+_PACKAGE_ROOT = Path(__file__).resolve().parents[3]
+
 
 class Settings(BaseSettings):
     """Toutes les variables d'environnement du service, préfixées `TRAFFIC_`.
@@ -280,6 +288,45 @@ class Settings(BaseSettings):
         if not trimmed or trimmed.startswith("#"):
             return None
         return trimmed
+
+    @field_validator("weights_dir", "data_dir")
+    @classmethod
+    def _anchor_to_package_root(cls, value: Path) -> Path:
+        """Un chemin relatif est ancré sur le dépôt, **jamais sur le CWD**.
+
+        La panne évitée est silencieuse, et c'est la même famille que le
+        commentaire en fin de ligne du `.env` : lancer `uvicorn` depuis la racine
+        du dépôt plutôt que depuis `backend/` faisait résoudre `./.weights` en
+        `<racine>/.weights`, un dossier qui n'existe pas. **Tous** les poids
+        paraissaient alors absents — `license-plate.onnx` et les deux fichiers
+        d'OCR compris — donc l'ANPR devenait indisponible sans qu'aucun message ne
+        mentionne le répertoire de lancement. Le service démarre, le catalogue
+        répond, et rien n'a l'air cassé.
+
+        L'ancrage se fait sur la racine du paquet installé
+        (`backend/`, deux niveaux au-dessus de `traffic_analysis/`), c'est-à-dire
+        l'endroit où `scripts/fetch_*.py` déposent réellement les fichiers.
+
+        Un chemin **enraciné** traverse inchangé : c'est la forme qu'utilise un
+        déploiement conteneurisé, et la réécrire serait une surprise.
+
+        Le critère est « porte une racine ou une lettre de lecteur », et **non**
+        `is_absolute()`. La nuance est propre à Windows et elle compte : là-bas,
+        `Path("/opt/poids").is_absolute()` est **faux** — un chemin enraciné sans
+        lettre de lecteur n'est pas complet au sens de l'API. S'y fier ferait
+        réécrire `/app/.weights` en `<backend>/app/.weights` sur une machine de
+        développement Windows, c'est-à-dire déplacer silencieusement le chemin
+        qu'un opérateur a écrit explicitement — précisément le mode de panne que
+        ce validateur existe pour supprimer.
+
+        À ne pas confondre avec `_tidy_downloaded_weights` du registre, qui garde
+        délibérément son `Path.cwd()` : Ultralytics dépose ses téléchargements
+        dans le répertoire courant, ce qui n'est pas le même chemin ni le même
+        besoin.
+        """
+        if value.is_absolute() or value.root or value.drive:
+            return value
+        return (_PACKAGE_ROOT / value).resolve()
 
     @field_validator("cors_origins", "trusted_hosts", mode="before")
     @classmethod

@@ -65,6 +65,15 @@ class JobSchema(CamelModel):
     # « précharger « X » puis relancer » sur `model_unavailable` — sans faire de
     # correspondance sur du texte, qui casserait à la première reformulation.
     error_code: str | None = None
+    #: Le modèle se charge — **état de passage, jamais persisté**.
+    #:
+    #: Pas un `JobStatus` : en faire un toucherait la machine à états,
+    #: `is_terminal`, les libellés et tous leurs tests, pour un état qui ne dure
+    #: que le temps d'un chargement. Il n'est vrai que sur l'unique trame publiée
+    #: avant le passage en « en cours », et c'est cette trame qui permet à
+    #: l'interface d'écrire « Préparation : chargement du modèle » au lieu de
+    #: « 0 / 0 images · 0.0 img/s ».
+    preparing: bool = False
     model_id: str
     file_name: str
     created_at: str

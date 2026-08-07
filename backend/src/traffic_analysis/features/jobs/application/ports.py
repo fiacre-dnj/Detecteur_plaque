@@ -83,6 +83,37 @@ class JobRepository(Protocol):
         ...
 
 
+class ModelPreparer(Protocol):
+    """Rend un modèle utilisable **avant** que le job prétende travailler.
+
+    Port volontairement étroit — une seule méthode — parce que `jobs` n'a besoin
+    que de cela du registre de modèles. Un port large ferait entrer dans la
+    feature `jobs` des notions (baux, résidence mémoire, catalogue) dont son cycle
+    de vie n'a que faire, et que le prochain lecteur croirait devoir comprendre.
+
+    La règle de dépendance du projet est respectée : `jobs.application` parle à
+    `models_registry.application`, jamais à son domaine ni à son infrastructure.
+    """
+
+    async def prepare(self, model_id: str) -> None:
+        """Charge le modèle, en téléchargeant son poids si nécessaire.
+
+        **Lève** une `AppError` — `UnknownModelError` ou `UnavailableError` — quand
+        le modèle est inconnu ou impossible à charger. C'est le point de tout ce
+        port : l'échec arrive alors *avant* le passage en « en cours », avec le
+        message du registre, au lieu de survenir trente secondes plus tard sous la
+        forme d'une progression bloquée à 0 %.
+
+        **Effet de bord à connaître : la préparation prend un bail sur le modèle.**
+        Si une session temps réel occupe déjà la même instance, l'appel attend
+        qu'elle rende son bail. C'est correct — deux `track()` simultanés sur une
+        même instance mélangeraient deux vidéos — mais cela signifie qu'un job peut
+        rester quelques instants en préparation à cause d'un usage concurrent, et
+        non à cause d'un téléchargement.
+        """
+        ...
+
+
 class ResultStore(Protocol):
     """Stockage du résultat détaillé — le blob de relecture.
 

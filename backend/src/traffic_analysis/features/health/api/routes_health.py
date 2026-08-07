@@ -98,6 +98,7 @@ async def readiness(settings: SettingsDep) -> ReadinessSchema:
                         "plateAvailable": False,
                         "plateOcrAvailable": False,
                         "defaultModelId": "yolov8n",
+                        "weightsDir": "/app/.weights",
                     }
                 }
             }
@@ -118,6 +119,10 @@ async def health(settings: SettingsDep, container: ContainerDep) -> HealthSchema
         plate_available=service.plate_available() if service else False,
         plate_ocr_available=service.plate_ocr_available() if service else False,
         default_model_id=settings.default_model_id,
+        # Le chemin **résolu**, jamais celui de la configuration : c'est
+        # exactement l'écart entre les deux qui rendait l'ANPR silencieusement
+        # indisponible quand on lançait uvicorn depuis un autre répertoire.
+        weights_dir=str(settings.weights_dir),
     )
 
 

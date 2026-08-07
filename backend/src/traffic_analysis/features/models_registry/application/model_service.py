@@ -131,9 +131,28 @@ class ModelService:
 
         Le chargement est bloquant et peut inclure un téléchargement de 137 Mo :
         le laisser dans la boucle figerait tout le service pendant ce temps.
+
+        **Le préchauffage prend un bail sur l'instance.** Si une session temps réel
+        ou une analyse occupe déjà le même modèle, cet appel attend qu'elle rende
+        son bail. C'est voulu — deux `track()` simultanés sur une même instance
+        mélangeraient deux vidéos et produiraient des chiffres plausibles et faux
+        (invariant 9) — mais cela signifie qu'une préparation peut durer sans qu'un
+        seul octet soit téléchargé. Un appelant qui affiche « téléchargement en
+        cours » se trompe donc parfois de cause ; il vaut mieux dire « préparation ».
         """
         self._registry.describe(model_id)  # 404 explicite avant de partir en thread
         await anyio.to_thread.run_sync(self._registry.warmup, model_id)
+
+    async def prepare(self, model_id: str) -> None:
+        """Le port `ModelPreparer` de la feature `jobs`, satisfait par `preload`.
+
+        Un nom distinct plutôt qu'un port qui citerait `preload` : du point de vue
+        d'un job, l'opération est « rendre ce modèle utilisable », et le fait
+        qu'elle passe par un préchauffage est un détail de cette implémentation.
+        Les deux noms cohabitent sans coût — la route HTTP garde `preload`, qui dit
+        ce que l'utilisateur demande.
+        """
+        await self.preload(model_id)
 
     def unload(self, model_id: str) -> bool:
         self._registry.describe(model_id)

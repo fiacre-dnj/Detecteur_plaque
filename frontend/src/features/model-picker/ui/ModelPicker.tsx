@@ -14,18 +14,40 @@
 import { Check, Download, HardDrive } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { preloadModel } from "@/entities/model";
 import type { VehicleModel } from "@/shared/api/contracts";
 
-import { flatOrder, groupByTier, modelSizeLabel, modelStateLabel, nextIndex } from "../model/grouping";
+import {
+  flatOrder,
+  groupByTier,
+  modelSizeLabel,
+  modelStateLabel,
+  nextIndex,
+  shouldPreload,
+} from "../model/grouping";
 
 interface ModelPickerProps {
   models: readonly VehicleModel[];
   selectedId: string;
   disabled?: boolean;
+  /**
+   * Peut-on précharger un modèle absent au moment où on le choisit ?
+   *
+   * Faux pendant qu'un job tourne : le préchargement prend un bail sur le modèle,
+   * et il attendrait donc la fin de l'analyse en cours — une attente que rien à
+   * l'écran n'expliquerait.
+   */
+  canPreload?: boolean;
   onSelect: (modelId: string) => void;
 }
 
-export function ModelPicker({ models, selectedId, disabled = false, onSelect }: ModelPickerProps) {
+export function ModelPicker({
+  models,
+  selectedId,
+  disabled = false,
+  canPreload = false,
+  onSelect,
+}: ModelPickerProps) {
   const groups = useMemo(() => groupByTier(models), [models]);
   const flat = useMemo(() => flatOrder(groups), [groups]);
 
@@ -50,6 +72,30 @@ export function ModelPicker({ models, selectedId, disabled = false, onSelect }: 
     if (index >= 0) setActiveIndex(index);
   }, [selectedId, flat]);
 
+  /**
+   * Choisit un modèle, **et déclenche son téléchargement s'il manque**.
+   *
+   * Appelé depuis le clic et depuis Entrée/Espace — c'est-à-dire depuis les deux
+   * gestes qui *choisissent*, et **jamais** depuis la navigation aux flèches. La
+   * distinction est celle que la docstring de l'option active pose déjà : les
+   * confondre lancerait un préchargement à chaque flèche, donc vingt
+   * téléchargements pour un parcours de la liste.
+   *
+   * Le résultat n'est pas attendu et l'échec est **ignoré** : ce préchargement est
+   * une avance de confort, pas une condition de la sélection. S'il échoue, le
+   * serveur refusera proprement au lancement, avec le message et le bouton de
+   * reprise que porte le Studio — le dire deux fois n'aiderait personne.
+   */
+  const select = useCallback(
+    (model: VehicleModel) => {
+      onSelect(model.id);
+      if (shouldPreload(model, canPreload)) {
+        void preloadModel(model.id).catch(() => undefined);
+      }
+    },
+    [onSelect, canPreload],
+  );
+
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
       if (disabled) return;
@@ -57,12 +103,14 @@ export function ModelPicker({ models, selectedId, disabled = false, onSelect }: 
       if (event.key === "Enter" || event.key === " ") {
         event.preventDefault();
         const target = flat[activeIndex];
-        if (target !== undefined) onSelect(target.id);
+        if (target !== undefined) select(target);
         return;
       }
 
       // **La navigation est à plat** : `flat` ignore les frontières de groupe, qui
       // sont purement visuelles.
+      // **La navigation ne choisit pas** : elle déplace l'option active, et rien
+      // d'autre. Aucun `select` ici — donc aucun préchargement à la flèche.
       const next = nextIndex(event.key, activeIndex, flat.length);
       if (next === null) return;
       event.preventDefault();
@@ -73,7 +121,7 @@ export function ModelPicker({ models, selectedId, disabled = false, onSelect }: 
       const option = listRef.current?.querySelector(`[data-index="${next}"]`);
       option?.scrollIntoView({ block: "nearest" });
     },
-    [disabled, flat, activeIndex, onSelect],
+    [disabled, flat, activeIndex, select],
   );
 
   if (models.length === 0) {
@@ -119,7 +167,7 @@ export function ModelPicker({ models, selectedId, disabled = false, onSelect }: 
                 // Une seule case tabulable : sans cela, la tabulation traverse les
                 // vingt options avant de sortir du composant.
                 tabIndex={active ? 0 : -1}
-                onClick={() => !disabled && onSelect(entry.id)}
+                onClick={() => !disabled && select(entry)}
                 onFocus={() => setActiveIndex(index)}
                 className={[
                   "flex cursor-pointer items-start gap-2 px-2 py-1.5 transition-colors",

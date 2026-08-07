@@ -559,6 +559,7 @@ export function StudioPage() {
             <JobProgressBar
               upload={session.upload}
               job={session.job}
+              modelLabel={selectedModelLabel}
               onCancel={session.cancel}
               onPause={session.pause}
               onResume={session.resume}
