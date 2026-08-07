@@ -11,4 +11,6 @@ export {
   type AnalysisSettings,
 } from "./model/settings";
 
+export { downloadNotice } from "./model/launchNotice";
+
 export { SettingsPanels } from "./ui/SettingsPanels";

@@ -32,6 +32,7 @@ import { useModels } from "@/entities/model";
 import { CrossingLog, JobProgressBar, useFollowAnalysis } from "@/features/analysis-job";
 import {
   SettingsPanels,
+  downloadNotice,
   loadSettings,
   saveSettings,
   toRequest,
@@ -286,6 +287,19 @@ export function StudioPage() {
   const busy = analysing || session.starting || live.active;
   const canAnalyse = serverReady && media.source?.file !== undefined && hasGeometry(geometry) && !busy;
 
+  /**
+   * L'attente cachée du premier usage d'un modèle, dite **avant** le clic.
+   *
+   * Le catalogue annonce vingt modèles, le disque du serveur en porte trois : la
+   * plupart des choix déclenchent un téléchargement qui n'a lieu qu'à la première
+   * image analysée, donc après le passage en « en cours ». Sans cette phrase,
+   * l'écran affiche 0 % pendant une à deux minutes et se lit comme une panne.
+   */
+  const pendingDownload = useMemo(
+    () => downloadNotice(catalogue?.models ?? [], settings.modelId),
+    [catalogue?.models, settings.modelId],
+  );
+
   /** Démarre le direct sur la géométrie **courante**, mise à l'échelle par le hook. */
   const startLive = useCallback(() => {
     live.start(toRequest(settings, geometry.lines, geometry.zones));
@@ -486,8 +500,29 @@ export function StudioPage() {
             )}
           </VideoScene>
 
+          {/* `busy && follow` et non `busy` seul : le gel de la vidéo est **voulu**
+              — `useFollowAnalysis` la cale sur l'image analysée — mais il n'est
+              subi que tant que le suivi est coché. Décocher rend donc la main,
+              conformément à la règle « désactivé ⇒ aucune écriture » du hook.
+              Griser inconditionnellement laissait l'utilisateur devant une vidéo
+              figée et des boutons morts, sans un mot d'explication. */}
           {media.source !== null && (
-            <TransportBar transport={transport} seekable={!isCamera} disabled={busy} />
+            <TransportBar
+              transport={transport}
+              seekable={!isCamera}
+              disabled={busy && follow}
+            />
+          )}
+
+          {/* Le gel expliqué, à l'endroit exact où il se constate. Sans cette
+              phrase, « la vidéo ne bouge plus et les boutons sont gris » se lit
+              comme un plantage — c'est la lecture qui a produit le rapport
+              « j'augmente la vitesse avant d'analyser et l'écran se fige ». */}
+          {analysing && follow && media.source?.file !== undefined && (
+            <p role="status" className="text-caption text-ink-muted">
+              Lecture suspendue : la vidéo se cale sur l'image analysée. Décochez
+              « Suivre l'analyse » pour reprendre la main.
+            </p>
           )}
 
           {busy && (
@@ -602,6 +637,15 @@ export function StudioPage() {
           {!serverReady && (
             <p className="text-small text-ink-dim">
               Le serveur est injoignable : l'analyse est indisponible.
+            </p>
+          )}
+
+          {/* L'attente cachée du premier usage, dite avant le clic et non après.
+              `role="status"` et non `alert` : ce n'est pas une erreur, c'est une
+              information sur ce qui va se passer. */}
+          {pendingDownload !== null && !busy && (
+            <p role="status" className="text-small text-warning">
+              {pendingDownload}
             </p>
           )}
 
