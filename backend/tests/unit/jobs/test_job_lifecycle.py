@@ -15,7 +15,7 @@ import pytest
 
 from tests.support.builders import CAR, compose, straight_line, track_path
 from tests.support.engine import FakeEngine
-from traffic_analysis.core.errors import ConflictError, JobNotFoundError
+from traffic_analysis.core.errors import ConflictError, JobNotFoundError, UnavailableError
 from traffic_analysis.features.counting.application.analysis_service import AnalysisService
 from traffic_analysis.features.counting.application.dto import (
     AnalysisJobConfig,
@@ -195,6 +195,42 @@ class TestExecution:
         assert record.error is not None
         assert "/srv/prive" not in record.error
         assert "RuntimeError" not in record.error
+        # Aucun code : personne n'a rédigé cet échec pour être lu, donc l'interface
+        # n'a aucune action particulière à proposer.
+        assert record.error_code is None
+
+    async def test_une_app_error_fait_traverser_son_message_et_son_code(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """Le pendant exact du test précédent — **les deux tracent la frontière**.
+
+        Une `AppError` a été levée délibérément, avec un message écrit pour un
+        humain et un code stable pour la machine. « Le modèle « yolo11x » n'a pas
+        pu être chargé » dit quoi faire ; « consultez les journaux du serveur » ne
+        dit rien à quelqu'un qui n'a pas accès aux journaux.
+
+        Ce que le test d'à côté garantit reste vrai : un `RuntimeError` n'est pas
+        une `AppError`, donc il tombe dans la branche générique et ne fuit rien.
+        """
+        engine = FakeEngine(
+            _frames(),
+            fail_with=UnavailableError(
+                "Le modèle « yolo11x » n'a pas pu être chargé : téléchargement impossible.",
+                code="model_unavailable",
+            ),
+        )
+        manager, _, _ = await _manager(tmp_path, clock, engine=engine)
+        await _submit(manager, tmp_path)
+
+        assert await _await_status(manager, "job-1") == "error"
+        record = await manager.get("job-1")
+        assert record.error == (
+            "Le modèle « yolo11x » n'a pas pu être chargé : téléchargement impossible."
+        )
+        assert record.error_code == "model_unavailable"
+        # `describe` est le contrat publié : le code doit y figurer, sinon
+        # l'interface ne peut pas brancher son bouton de préchargement dessus.
+        assert JobManager.describe(record)["errorCode"] == "model_unavailable"
 
 
 class TestApercu:

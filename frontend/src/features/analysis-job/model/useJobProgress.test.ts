@@ -23,6 +23,7 @@ function job(status: JobStatus, progress: number, jobId = "j1"): Job {
     totalFrames: 100,
     processingFps: 12.5,
     error: null,
+    errorCode: null,
     modelId: "yolov8n",
     fileName: "carrefour.mp4",
     createdAt: "2026-08-05T10:00:00+00:00",

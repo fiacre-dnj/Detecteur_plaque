@@ -52,6 +52,13 @@ class JobRecord:
     processing_fps: float = 0.0
     # Message destiné à l'utilisateur, **jamais** une trace de pile.
     error: str | None = None
+    # Le code **stable** de l'erreur (`AppError.code`), pour les machines.
+    #
+    # Deux champs et non un, pour la même raison qu'`AppError` en porte deux : le
+    # message d'interface se réécrit sans casser de client, le code non. C'est ce
+    # qui permet au frontend de brancher une action — « précharger puis relancer »
+    # sur `model_unavailable` — sans faire de correspondance sur du texte français.
+    error_code: str | None = None
     video: VideoMetadata = field(default_factory=VideoMetadata)
     stats_json: dict[str, Any] | None = None
     # Dénormalisés pour trier l'historique sans ouvrir le fichier de résultat.

@@ -46,6 +46,9 @@ class JobModel(TimestampMixin, Base):
     processing_fps: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     # Message destiné à l'utilisateur, jamais une trace de pile.
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Le code stable qui accompagne le message : `model_unavailable`, etc.
+    # `String` et non `Text` : c'est un identifiant court et clos, pas de la prose.
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     video_width: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     video_height: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

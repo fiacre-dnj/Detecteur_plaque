@@ -28,7 +28,7 @@ import {
   hasGeometry,
   type Selection,
 } from "@/entities/geometry";
-import { useModels } from "@/entities/model";
+import { preloadModel, useModels } from "@/entities/model";
 import { CrossingLog, JobProgressBar, useFollowAnalysis } from "@/features/analysis-job";
 import {
   SettingsPanels,
@@ -285,6 +285,15 @@ export function StudioPage() {
   const isCamera = media.source?.kind === "camera";
   const analysing = session.job !== null && !isTerminal(session.job.status);
   const busy = analysing || session.starting || live.active;
+  /**
+   * L'analyse a échoué — **et le dire ne dépend plus de `busy`**.
+   *
+   * `busy` exclut les statuts terminaux : à la seconde où le job passe en
+   * `error`, il devient faux. La barre de progression était montée sur `busy`
+   * seul, et comme elle est le seul endroit du Studio qui rende `job.error`, le
+   * message d'échec était démonté à l'instant précis où il devenait utile.
+   */
+  const failed = session.job?.status === "error";
   const canAnalyse = serverReady && media.source?.file !== undefined && hasGeometry(geometry) && !busy;
 
   /**
@@ -297,6 +306,14 @@ export function StudioPage() {
    */
   const pendingDownload = useMemo(
     () => downloadNotice(catalogue?.models ?? [], settings.modelId),
+    [catalogue?.models, settings.modelId],
+  );
+
+  /** Le nom lisible du modèle retenu — l'identifiant si le catalogue l'ignore. */
+  const selectedModelLabel = useMemo(
+    () =>
+      catalogue?.models.find((model) => model.id === settings.modelId)?.label ??
+      settings.modelId,
     [catalogue?.models, settings.modelId],
   );
 
@@ -418,10 +435,23 @@ export function StudioPage() {
           {media.error}
         </p>
       )}
+      {/* L'alerte de haut de page — désormais **réellement alimentée** par un
+          échec serveur, et persistante : elle ne dépend d'aucun `busy`.
+          Sur `model_unavailable`, elle porte l'action qui répare, parce qu'un
+          message qui nomme la cause sans proposer le geste laisse l'utilisateur
+          chercher où précharger un modèle. */}
       {session.error !== null && (
-        <p role="alert" className="text-caption text-negative">
-          {session.error}
-        </p>
+        <div role="alert" className="space-y-2">
+          <p className="text-caption text-negative">{session.error}</p>
+          {session.errorCode === "model_unavailable" && (
+            <PreloadRetry
+              modelId={settings.modelId}
+              modelLabel={selectedModelLabel}
+              canRelaunch={canAnalyse}
+              onRelaunch={launch}
+            />
+          )}
+        </div>
       )}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
@@ -525,7 +555,7 @@ export function StudioPage() {
             </p>
           )}
 
-          {busy && (
+          {(busy || failed) && (
             <JobProgressBar
               upload={session.upload}
               job={session.job}
@@ -768,6 +798,67 @@ export function StudioPage() {
           />
         </Suspense>
       )}
+    </div>
+  );
+}
+
+/**
+ * L'action qui répare un échec « modèle indisponible ».
+ *
+ * Un message qui nomme la cause sans proposer le geste laisse l'utilisateur
+ * chercher où précharger un modèle — et l'endroit où le faire n'existe nulle part
+ * dans l'interface. Ce bouton fait payer le téléchargement **ici**, à un moment
+ * choisi, puis relance ; c'est exactement ce que `POST /models/{id}/preload`
+ * existe pour permettre.
+ *
+ * L'état est local à ce composant : il ne survit pas à l'échec qu'il répare, et le
+ * remonter dans `StudioPage` ajouterait deux champs à un état déjà large pour une
+ * information dont personne d'autre n'a besoin.
+ */
+function PreloadRetry({
+  modelId,
+  modelLabel,
+  canRelaunch,
+  onRelaunch,
+}: {
+  modelId: string;
+  modelLabel: string;
+  canRelaunch: boolean;
+  onRelaunch: () => void;
+}) {
+  const [state, setState] = useState<"idle" | "loading" | "failed">("idle");
+  const [failure, setFailure] = useState<string | null>(null);
+
+  const run = useCallback(() => {
+    setState("loading");
+    setFailure(null);
+    preloadModel(modelId)
+      .then(() => {
+        setState("idle");
+        // Relance seulement si l'écran s'y prête encore : la source a pu être
+        // fermée pendant le téléchargement, et relancer sur rien produirait un
+        // second échec dont la cause n'aurait plus aucun rapport avec le premier.
+        if (canRelaunch) onRelaunch();
+      })
+      .catch((cause: unknown) => {
+        setState("failed");
+        setFailure(cause instanceof Error ? cause.message : "Le préchargement a échoué.");
+      });
+  }, [modelId, canRelaunch, onRelaunch]);
+
+  return (
+    <div className="space-y-1">
+      <Button variant="ghost" disabled={state === "loading"} onClick={run}>
+        {state === "loading"
+          ? `Téléchargement de « ${modelLabel} »…`
+          : `Précharger « ${modelLabel} » puis relancer`}
+      </Button>
+      {state === "loading" && (
+        <p className="text-micro text-ink-dim">
+          Plusieurs dizaines de mégaoctets : l'opération peut prendre une à deux minutes.
+        </p>
+      )}
+      {failure !== null && <p className="text-micro text-negative">{failure}</p>}
     </div>
   );
 }

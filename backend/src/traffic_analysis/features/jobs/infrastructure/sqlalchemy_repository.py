@@ -102,8 +102,18 @@ class SqlAlchemyJobRepository:
                 )
             )
 
-    async def set_status(self, job_id: str, status: JobStatus, *, error: str | None = None) -> None:
-        values: dict[str, Any] = {"status": status, "error": error}
+    async def set_status(
+        self,
+        job_id: str,
+        status: JobStatus,
+        *,
+        error: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        # Les deux écrits **ensemble**, y compris à `None` : une transition vers un
+        # statut sain doit effacer le code d'un échec précédent, sinon une reprise
+        # réussie garderait le code de l'échec qui l'a précédée.
+        values: dict[str, Any] = {"status": status, "error": error, "error_code": error_code}
         now = utcnow()
         if status == "running":
             values["started_at"] = now
@@ -350,6 +360,7 @@ def _to_model(record: JobRecord) -> JobModel:
         total_frames=record.total_frames,
         processing_fps=record.processing_fps,
         error=record.error,
+        error_code=record.error_code,
         created_at=record.created_at,
         updated_at=record.created_at,
         started_at=record.started_at,
@@ -371,6 +382,7 @@ def _to_record(model: JobModel) -> JobRecord:
         total_frames=model.total_frames,
         processing_fps=model.processing_fps,
         error=model.error,
+        error_code=model.error_code,
         video=VideoMetadata(
             width=model.video_width,
             height=model.video_height,

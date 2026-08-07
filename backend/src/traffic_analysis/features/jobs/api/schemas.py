@@ -59,6 +59,12 @@ class JobSchema(CamelModel):
     total_frames: int
     processing_fps: float
     error: str | None
+    # Le code **stable** de l'échec, à côté du message français.
+    #
+    # C'est ce qui permet à l'interface de proposer l'action correspondante —
+    # « précharger « X » puis relancer » sur `model_unavailable` — sans faire de
+    # correspondance sur du texte, qui casserait à la première reformulation.
+    error_code: str | None = None
     model_id: str
     file_name: str
     created_at: str

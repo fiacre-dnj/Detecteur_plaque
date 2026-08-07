@@ -56,7 +56,15 @@ class JobRepository(Protocol):
         status: JobStatus,
         *,
         error: str | None = None,
-    ) -> None: ...
+        error_code: str | None = None,
+    ) -> None:
+        """Change le statut, et **le message et le code** qui l'accompagnent.
+
+        Les deux ensemble et jamais séparément : un message sans code oblige
+        l'interface à faire une correspondance sur du texte français, un code sans
+        message n'a rien à afficher.
+        """
+        ...
 
     async def set_video_metadata(self, job_id: str, video: VideoMetadata) -> None: ...
 

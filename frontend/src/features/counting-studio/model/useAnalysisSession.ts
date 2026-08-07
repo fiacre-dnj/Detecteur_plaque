@@ -50,6 +50,14 @@ export interface AnalysisSession {
   events: readonly CrossingEvent[];
   /** Message d'erreur destiné à l'utilisateur. */
   error: string | null;
+  /**
+   * Code stable de l'échec, `null` quand il n'y en a pas.
+   *
+   * Distinct de `error` parce qu'il sert à autre chose : `error` s'affiche,
+   * `errorCode` décide de l'action proposée à côté. Brancher sur le texte
+   * casserait à la première reformulation du message.
+   */
+  errorCode: string | null;
   /** Vrai entre le clic et le premier octet envoyé. */
   starting: boolean;
   /** Signature de la géométrie au moment du lancement. */
@@ -62,32 +70,72 @@ export interface AnalysisSession {
   reset: () => void;
 }
 
+/**
+ * Ce qu'il faut faire d'un job qui vient d'atteindre un statut terminal.
+ *
+ * **Les trois issues, pas seulement `done`** — c'était le défaut : seul `done`
+ * était traité, donc un échec serveur n'alimentait aucun des deux canaux
+ * d'affichage du Studio, et son message partait avec la barre de progression à
+ * l'instant même où il devenait utile.
+ *
+ * - `done` ⇒ charger le résultat. Uniquement sur celui-là : un job annulé ou en
+ *   échec n'en a pas, et le demander produirait un 409 parlant de « job non
+ *   terminé », déroutant pour quelqu'un qui vient de voir « annulé ».
+ * - `cancelled` ⇒ **rien**. L'utilisateur sait ce qu'il a fait ; lui afficher une
+ *   erreur pour son propre geste serait faux.
+ * - `error` ⇒ le message du serveur et son code.
+ *
+ * Fonction pure et exportée : la décision se teste sans monter de composant, et
+ * c'est la seule partie du hook qui porte une règle métier.
+ */
+export type TerminalOutcome =
+  | { kind: "fetchResult" }
+  | { kind: "reportError"; message: string; code: string | null }
+  | { kind: "silent" };
+
+export function terminalOutcome(finished: Job): TerminalOutcome {
+  if (finished.status === "done") return { kind: "fetchResult" };
+  if (finished.status === "error") {
+    return {
+      kind: "reportError",
+      // Le repli existe pour un serveur d'une version antérieure, ou un échec
+      // dont le message n'a pas été rempli : « échec » sans phrase vaut mieux
+      // qu'une alerte vide, qui se lit comme un défaut d'affichage.
+      message: finished.error ?? "L'analyse a échoué.",
+      code: finished.errorCode,
+    };
+  }
+  return { kind: "silent" };
+}
+
 export function useAnalysisSession(): AnalysisSession {
   const [jobId, setJobId] = useState<string | null>(null);
   const [upload, setUpload] = useState<UploadProgress | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [launchSignature, setLaunchSignature] = useState<string | null>(null);
 
   /** Poignée d'envoi, pour pouvoir l'interrompre avant que le job existe. */
   const handle = useRef<{ abort: () => void } | null>(null);
 
-  /**
-   * Le job est terminé : on charge le résultat.
-   *
-   * Seulement sur `done`. Un job `cancelled` ou `error` n'a pas de résultat, et le
-   * demander produirait un 409 dont le message parlerait de « job non terminé » —
-   * déroutant pour quelqu'un qui vient de voir « annulé ».
-   */
-  const handleDone = useCallback((finished: Job) => {
-    if (finished.status !== "done") return;
-    void fetchResult(finished.jobId)
-      .then(setResult)
-      .catch((cause: unknown) => setError(messageOf(cause)));
+  /** Applique la décision de `terminalOutcome` aux trois états concernés. */
+  const handleTerminal = useCallback((finished: Job) => {
+    const outcome = terminalOutcome(finished);
+    if (outcome.kind === "fetchResult") {
+      void fetchResult(finished.jobId)
+        .then(setResult)
+        .catch((cause: unknown) => setError(messageOf(cause)));
+      return;
+    }
+    if (outcome.kind === "reportError") {
+      setError(outcome.message);
+      setErrorCode(outcome.code);
+    }
   }, []);
 
-  const { job, preview, events } = useJobProgress(jobId, handleDone);
+  const { job, preview, events } = useJobProgress(jobId, handleTerminal);
 
   const start = useCallback(
     async (
@@ -97,6 +145,7 @@ export function useAnalysisSession(): AnalysisSession {
       zones: readonly Zone[],
     ) => {
       setError(null);
+      setErrorCode(null);
       setResult(null);
       setStarting(true);
       setUpload({ loaded: 0, total: file.size, ratio: 0 });
@@ -161,6 +210,7 @@ export function useAnalysisSession(): AnalysisSession {
     setUpload(null);
     setResult(null);
     setError(null);
+    setErrorCode(null);
     setLaunchSignature(null);
   }, []);
 
@@ -171,6 +221,7 @@ export function useAnalysisSession(): AnalysisSession {
     preview,
     events,
     error,
+    errorCode,
     starting,
     launchSignature,
     start,

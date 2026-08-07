@@ -110,6 +110,15 @@ export interface Job {
   processingFps: number;
   /** Message destiné à l'utilisateur, jamais une trace. */
   error: string | null;
+  /**
+   * Code **stable** de l'échec, à côté du message français.
+   *
+   * Deux champs et non un, pour la raison qui vaut côté serveur : le message se
+   * réécrit sans casser de client, le code non. C'est lui — et jamais une
+   * correspondance sur le texte — qui décide de l'action proposée avec l'erreur,
+   * comme le bouton « précharger puis relancer » sur `model_unavailable`.
+   */
+  errorCode: string | null;
   modelId: string;
   fileName: string;
   createdAt: string;

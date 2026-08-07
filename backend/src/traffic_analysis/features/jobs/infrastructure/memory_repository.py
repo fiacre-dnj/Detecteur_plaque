@@ -69,12 +69,21 @@ class InMemoryJobRepository:
             processing_fps=progress.processing_fps,
         )
 
-    async def set_status(self, job_id: str, status: JobStatus, *, error: str | None = None) -> None:
+    async def set_status(
+        self,
+        job_id: str,
+        status: JobStatus,
+        *,
+        error: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
         job = self._jobs.get(job_id)
         if job is None:
             return
         now: datetime = self._clock.now()
-        changes: dict[str, object] = {"status": status, "error": error}
+        # Les deux écrits ensemble, y compris à `None` : une transition vers un
+        # statut sain efface le code d'un échec précédent, comme l'adaptateur SQL.
+        changes: dict[str, object] = {"status": status, "error": error, "error_code": error_code}
         if status == "running" and job.started_at is None:
             changes["started_at"] = now
         if is_terminal(status):

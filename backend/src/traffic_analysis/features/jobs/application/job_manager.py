@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import anyio.to_thread
 
-from traffic_analysis.core.errors import ConflictError, JobNotFoundError
+from traffic_analysis.core.errors import AppError, ConflictError, JobNotFoundError
 from traffic_analysis.core.logging import get_logger
 from traffic_analysis.features.counting.application.dto import (
     AnalysisCancelled,
@@ -355,7 +355,22 @@ class JobManager:
             # Une annulation n'est **pas** une erreur : l'utilisateur sait ce
             # qu'il a fait, lui afficher « échec » serait faux.
             await self._finish(job_id, "cancelled")
+        except AppError as exc:
+            # **Une `AppError` a été levée délibérément, avec un message rédigé
+            # pour un humain.** « Le modèle « yolo11x » n'a pas pu être chargé »
+            # dit quoi faire ; « consultez les journaux du serveur » ne dit rien
+            # à quelqu'un qui n'a pas accès aux journaux. Le `code` accompagne le
+            # message pour que l'interface puisse proposer l'action qui va avec.
+            #
+            # La frontière est exactement là : seul ce qui a été construit pour
+            # être lu traverse. Voir la branche suivante.
+            logger.warning("analyse en échec", job_id=job_id, code=exc.code, detail=exc.detail)
+            await self._finish(job_id, "error", error=exc.detail, error_code=exc.code)
         except Exception as exc:
+            # Tout le reste — `RuntimeError`, `OSError`, une erreur d'une
+            # bibliothèque tierce — porte un message écrit pour un développeur :
+            # chemins de fichiers du serveur, noms de classes, parfois un extrait
+            # de configuration. Le laisser traverser serait une fuite.
             logger.exception("analyse en échec", job_id=job_id, exc_info=exc)
             await self._finish(
                 job_id,
@@ -464,12 +479,19 @@ class JobManager:
             logger.info("analyse démarrée", job_id=job_id, model_id=record.model_id)
         self._publish(await self.get(job_id))
 
-    async def _finish(self, job_id: str, status: JobStatus, *, error: str | None = None) -> None:
+    async def _finish(
+        self,
+        job_id: str,
+        status: JobStatus,
+        *,
+        error: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
         record = await self._repository.get(job_id)
         if record is None or is_terminal(record.status):
             # Le job a pu être purgé pendant l'analyse. Ce n'est pas une erreur.
             return
-        await self._repository.set_status(job_id, status, error=error)
+        await self._repository.set_status(job_id, status, error=error, error_code=error_code)
         final = await self.get(job_id)
         self._publish(final, terminal=True)
 
@@ -493,6 +515,10 @@ class JobManager:
             "totalFrames": progress.total_frames,
             "processingFps": round(progress.processing_fps, 2),
             "error": None,
+            # Présent et nul, jamais absent : `describe` et cette charge utile
+            # sont **la même forme**, et un client qui lit `errorCode` sur une
+            # trame de progression ne doit pas trouver un champ manquant.
+            "errorCode": None,
         }
 
     @staticmethod
@@ -527,6 +553,10 @@ class JobManager:
             "totalFrames": record.total_frames,
             "processingFps": round(record.processing_fps, 2),
             "error": record.error,
+            # Le code **machine** à côté du message humain. C'est lui qui permet à
+            # l'interface de proposer l'action qui va avec l'échec — précharger le
+            # modèle absent — au lieu de se contenter d'afficher la phrase.
+            "errorCode": record.error_code,
             "modelId": record.model_id,
             "fileName": record.file_name,
             "createdAt": record.created_at.isoformat(),
