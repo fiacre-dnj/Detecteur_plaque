@@ -15,7 +15,7 @@ au prix d'un bug :
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from traffic_analysis.features.counting.domain.line_counter import LineCrossingCounter
@@ -34,6 +34,8 @@ from traffic_analysis.features.counting.domain.models import (
     ZoneDef,
     ZoneTally,
 )
+from traffic_analysis.features.counting.domain.plate_text import normalise_plate_reading
+from traffic_analysis.features.counting.domain.plate_vote import PlateTextVote
 from traffic_analysis.features.counting.domain.reid import (
     IdentityGallery,
     ReidCandidate,
@@ -111,6 +113,12 @@ class _IdentityAggregate:
     last_seen_ms: float
     crossings: list[LineCrossing] = field(default_factory=list)
     best_plate_score: float | None = None
+    #: Le vote du texte de plaque. Sur l'agrégat et non sur la piste : la piste est
+    #: détruite à chaque occlusion longue, l'identité non — c'est la même raison qui
+    #: fait porter la déduplication sur l'identité (invariant 6). C'est aussi ce qui
+    #: rend la réhydratation après occlusion gratuite : au retour du véhicule, la
+    #: piste est neuve mais l'agrégat est intact.
+    plate_vote: PlateTextVote = field(default_factory=PlateTextVote)
 
 
 class AnalysisSession:
@@ -182,6 +190,14 @@ class AnalysisSession:
         # uniques et 0 ré-identification ; avec le bon : 1 et 1.
         self._release_lost(timestamp_ms)
         self._resolve_identities(active, image, timestamp_ms)
+
+        # Le texte voté est recopié de l'agrégat vers la piste vivante **ici**, et
+        # pas ailleurs : après `_resolve_identities` l'identité de chaque piste est
+        # arrêtée pour la frame, et avant `observe` le tampon du compteur a de quoi
+        # lire. C'est ce qui fait qu'un franchissement porte le texte que le véhicule
+        # avait **avant** cette frame — le seul texte qui existe à cet instant, la
+        # passe OCR de cette frame n'ayant pas encore eu lieu.
+        self._mirror_plate_text(active)
 
         crossings = self._counter.observe(active, timestamp_ms, frame_index)
         zone_events = self._zones.observe(active, timestamp_ms, frame_index)
@@ -309,9 +325,14 @@ class AnalysisSession:
                 track.centroid = centroid
                 track.hits += 1
                 track.last_seen_ms = timestamp_ms
-            # Les plaques appartiennent à la frame courante : les garder d'une
-            # frame à l'autre ferait afficher une plaque là où le modèle n'en voit
-            # plus.
+            # Les *boîtes* de plaques appartiennent à la frame courante : les garder
+            # d'une frame à l'autre ferait afficher un rectangle là où le modèle n'en
+            # voit plus.
+            #
+            # `plate_text`, en revanche, n'est **pas** touché ici, et ce n'est pas un
+            # oubli : il est identitaire, recopié du vote par `_mirror_plate_text`.
+            # L'effacer par symétrie viderait le tampon que le compteur lit juste
+            # après, et aucun franchissement ne porterait plus de plaque.
             track.plates.clear()
             active.append(track)
         return tuple(active)
@@ -431,6 +452,29 @@ class AnalysisSession:
             track.identity_label = self._gallery.label_of(track.global_id)
             self._released_ids.discard(track.global_id)
 
+    def _mirror_plate_text(self, active: Sequence[SessionTrack]) -> None:
+        """Recopie le texte voté de chaque identité sur sa piste vivante.
+
+        **Un miroir et non une source** : la vérité est dans l'agrégat, qui survit à
+        la destruction de la piste. C'est *aussi* ce qui règle la réhydratation après
+        occlusion sans une ligne de code dédiée — quand BoT-SORT ressuscite un id
+        (`_recover_identity`) ou que la galerie réapparie une identité relâchée
+        (`admit_batch`), la piste est neuve mais l'agrégat est intact, et le miroir de
+        cette frame y repose le texte.
+
+        Réécrit à chaque frame, **y compris pour l'effacer** : une identité dont le
+        vote n'est pas concluant doit afficher « rien », pas le reste d'une frame
+        précédente.
+        """
+        for track in active:
+            aggregate = self._aggregates.get(track.global_id) if track.global_id else None
+            if aggregate is None:
+                track.plate_text = ""
+                track.plate_text_score = 0.0
+                continue
+            track.plate_text = aggregate.plate_vote.text or ""
+            track.plate_text_score = aggregate.plate_vote.score if track.plate_text else 0.0
+
     def _aggregate(
         self,
         active: Sequence[SessionTrack],
@@ -463,17 +507,55 @@ class AnalysisSession:
 
         Appelée par le service **après** `feed` et **avant** le snapshot : la
         timeline doit porter les plaques, sinon la relecture n'en affiche aucune.
+
+        C'est ici — et nulle part ailleurs — que le texte brut du lecteur prend sa
+        forme canonique, et que le vote de l'identité l'enregistre. Normaliser dans
+        l'adaptateur laisserait une doublure de test faire le travail de la
+        production, et les tests ne prouveraient plus rien de la normalisation.
         """
         if not plates:
             return
-        track.plates.extend(plates)
 
-        best = max(plate.score for plate in plates)
         aggregate = self._aggregates.get(track.global_id)
+        best = 0.0
+        stored: list[PlateDetection] = []
+        for plate in plates:
+            best = max(best, plate.score)
+            text, char_scores = (
+                normalise_plate_reading(plate.text, plate.text_char_scores)
+                if plate.text
+                else ("", ())
+            )
+            # `replace` seulement quand la forme canonique diffère du brut, ou qu'il
+            # reste des confiances par caractère à jeter : sur un lecteur qui rend
+            # déjà du propre, cela évite une allocation par plaque et par frame.
+            if text == plate.text and not plate.text_char_scores:
+                stored.append(plate)
+            else:
+                # Les confiances par caractère s'arrêtent ici : elles ont servi au
+                # vote, elles n'ont rien à faire dans la timeline.
+                stored.append(replace(plate, text=text or None, text_char_scores=()))
+            if text and aggregate is not None:
+                aggregate.plate_vote.observe(text, plate.text_score, char_scores)
+
+        # Étendu même sans agrégat : une piste qui n'a pas encore d'identité doit
+        # quand même voir ses rectangles dessinés.
+        track.plates.extend(stored)
+
         if aggregate is None:
             return
         if aggregate.best_plate_score is None or best > aggregate.best_plate_score:
             aggregate.best_plate_score = best
+
+    def plate_text_is_confident(self, global_id: int) -> bool:
+        """Le vote de plaque de cette identité est-il établi ?
+
+        Publié parce que c'est le **service** qui décide de dépenser une inférence —
+        le domaine n'a pas à savoir que l'OCR coûte cher. Rend `False` sans lever sur
+        une identité inconnue : `0` en est une, et le service la rencontre.
+        """
+        aggregate = self._aggregates.get(global_id)
+        return aggregate is not None and aggregate.plate_vote.is_confident
 
     # ── Sorties ──────────────────────────────────────────────────────────────
 
@@ -567,6 +649,10 @@ class AnalysisSession:
                     avg_speed_px_s=average,
                     avg_speed_kmh=to_kmh(average, self._config.pixels_per_meter),
                     best_plate_score=aggregate.best_plate_score,
+                    # Le texte du **vote**, comme `label` est le libellé du vote :
+                    # jamais la dernière lecture, qui est souvent la plus oblique.
+                    plate_text=aggregate.plate_vote.text,
+                    plate_text_score=aggregate.plate_vote.score or None,
                 )
             )
         return tuple(records)

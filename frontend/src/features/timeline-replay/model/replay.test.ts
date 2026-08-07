@@ -14,6 +14,7 @@ import type { AnalysisResult, TimelineRow } from "@/shared/api/contracts";
 
 import { chooseBucketMs, flowBuckets, formatBucketSpan } from "./flowBuckets";
 import {
+  crossingsUpTo,
   RATE_MIN_ELAPSED_MS,
   TRAIL_LENGTH,
   frameAt,
@@ -226,6 +227,43 @@ describe("vehiclesAt et tracksAt", () => {
   });
 });
 
+describe("crossingsUpTo", () => {
+  it("ne montre que les franchissements déjà passés", () => {
+    // Montrer un événement à venir ferait mentir la tête de lecture aussi sûrement
+    // qu'un compteur en avance sur la vidéo.
+    expect(crossingsUpTo(result, -1)).toHaveLength(0);
+    expect(crossingsUpTo(result, result.video.durationMs)).toHaveLength(result.crossings.length);
+  });
+
+  it("place le plus récent en tête, comme le journal du direct", () => {
+    const shown = crossingsUpTo(result, result.video.durationMs);
+    const stamps = shown.map((event) => event.timestampMs);
+
+    expect(stamps).toEqual([...stamps].sort((a, b) => b - a));
+  });
+
+  it("ne réordonne pas le tableau du résultat", () => {
+    // `reverse` mute en place : l'appliquer sur `result.crossings` casserait
+    // l'histogramme et les exports, qui partagent le même tableau.
+    const before = result.crossings.map((event) => event.timestampMs);
+    crossingsUpTo(result, result.video.durationMs);
+
+    expect(result.crossings.map((event) => event.timestampMs)).toEqual(before);
+  });
+
+  it("borne le journal", () => {
+    expect(crossingsUpTo(result, result.video.durationMs, 1)).toHaveLength(1);
+  });
+
+  it("inclut un franchissement situé exactement sur la tête de lecture", () => {
+    const [first] = result.crossings;
+    expect(first).toBeDefined();
+    if (first === undefined) return;
+
+    expect(crossingsUpTo(result, first.timestampMs).length).toBeGreaterThan(0);
+  });
+});
+
 describe("tranches adaptatives de l'histogramme", () => {
   it("choisit la seconde pour un clip très court", () => {
     // Sans adaptation, un clip de 10 s tiendrait dans une seule barre d'une minute.
@@ -265,6 +303,8 @@ describe("tranches adaptatives de l'histogramme", () => {
           direction: 1,
           timestampMs: 0,
           frameIndex: 0,
+          plateText: null,
+          plateTextScore: null,
         },
       ],
       12_000,
@@ -294,6 +334,8 @@ describe("tranches adaptatives de l'histogramme", () => {
           direction: 1,
           timestampMs: 10_000,
           frameIndex: 0,
+          plateText: null,
+          plateTextScore: null,
         },
       ],
       10_000,

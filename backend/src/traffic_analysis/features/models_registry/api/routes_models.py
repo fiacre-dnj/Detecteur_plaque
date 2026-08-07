@@ -54,6 +54,9 @@ class ModelCatalogueSchema(CamelModel):
     half: bool
     ultralytics_version: str
     plate_available: bool
+    #: Deux drapeaux et non un : le détecteur et le lecteur sont deux artefacts
+    #: distincts, et « détection sans lecture » est l'état de tout déploiement neuf.
+    plate_ocr_available: bool
     loaded_ids: list[str]
     max_loaded_models: int
 
@@ -81,6 +84,7 @@ async def list_models(service: ModelServiceDep, container: ContainerDep) -> Mode
         half=service.half(),
         ultralytics_version=service.ultralytics_version(),
         plate_available=service.plate_available(),
+        plate_ocr_available=service.plate_ocr_available(),
         loaded_ids=service.loaded_ids(),
         max_loaded_models=container.settings.max_loaded_models,
     )

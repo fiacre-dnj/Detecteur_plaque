@@ -48,8 +48,18 @@ class HealthSchema(CamelModel):
     max_loaded_models: int = Field(description="Plafond de résidence mémoire.")
     plate_available: bool = Field(
         description=(
-            "Le modèle de plaques est présent. Faux ⇒ l'option ANPR est "
-            "désactivée dans l'interface, et le service fonctionne normalement."
+            "Le modèle de **détection** de plaques est présent. Faux ⇒ l'option ANPR "
+            "est désactivée dans l'interface, et le service fonctionne normalement. "
+            "Ne dit rien de la lecture du texte, voir `plateOcrAvailable`."
+        )
+    )
+    plate_ocr_available: bool = Field(
+        description=(
+            "Le modèle de **lecture** du texte de plaque **et** son dictionnaire de "
+            "caractères sont présents. Distinct de `plateAvailable` : ce sont deux "
+            "artefacts récupérés par deux scripts, et « détection sans lecture » est "
+            "l'état de tout déploiement neuf. Faux ⇒ les plaques sont encadrées mais "
+            "leur texte n'est pas lu."
         )
     )
     default_model_id: str = Field(description="Modèle proposé par défaut.")

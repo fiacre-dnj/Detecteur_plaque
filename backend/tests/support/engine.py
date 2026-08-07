@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from traffic_analysis.features.counting.application.ports import EngineFrame
+from traffic_analysis.features.counting.application.ports import EngineFrame, PlateText
 from traffic_analysis.features.counting.domain.models import (
     BoundingBox,
     PlateDetection,
@@ -23,7 +23,7 @@ from traffic_analysis.features.counting.domain.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
     from pathlib import Path
 
     import numpy.typing as npt
@@ -140,12 +140,23 @@ class FakeStream:
 
 
 class FakePlateDetector:
-    """Détecteur de plaques factice, à disponibilité contrôlable."""
+    """Détecteur de plaques factice, à disponibilité contrôlable.
+
+    Deux compteurs et non un, pour la même raison que `FakePlateReader` : `calls`
+    compte les **lots**, donc il prouve que les pistes d'une frame partent en un seul
+    appel — c'est toute la raison d'être de la mosaïque ; `crops` compte les
+    **recadrages**, donc il reste proportionnel au travail réellement demandé.
+    """
 
     def __init__(self, *, available: bool = True, score: float = 0.71) -> None:
         self._available = available
         self._score = score
         self.calls = 0
+        self.crops = 0
+        #: Dernier seuil reçu, ou `None`. C'est ce qui permet à un test d'affirmer
+        #: qu'un `plateConfidence` de requête atteint réellement l'adaptateur — le
+        #: réglage est resté mort tout un lot sans que rien ne le signale.
+        self.last_confidence: float | None = None
 
     @property
     def available(self) -> bool:
@@ -153,22 +164,103 @@ class FakePlateDetector:
 
     def detect(
         self,
-        image: npt.NDArray[np.uint8],  # noqa: ARG002
+        image: npt.NDArray[np.uint8],
         box: BoundingBox,
+        confidence: float | None = None,
     ) -> tuple[PlateDetection, ...]:
-        """Rend une plaque plausible, en coordonnées de l'image **complète**.
+        """Cherche une plaque dans une seule boîte."""
+        return self.detect_many(image, (box,), confidence)[0]
+
+    def detect_many(
+        self,
+        image: npt.NDArray[np.uint8],  # noqa: ARG002
+        boxes: Sequence[BoundingBox],
+        confidence: float | None = None,
+    ) -> tuple[tuple[PlateDetection, ...], ...]:
+        """Rend une plaque plausible par boîte, en coordonnées de l'image **complète**.
 
         Les coordonnées absolues et non relatives au crop : c'est le contrat du
         port, et un test qui accepterait des coordonnées relatives laisserait
         passer un adaptateur qui oublie de les réexprimer.
         """
-        self.calls += 1
-        if not self._available:
+        if not boxes:
             return ()
-        plate = BoundingBox(
-            x=box.x + box.width * 0.3,
-            y=box.y + box.height * 0.65,
-            width=box.width * 0.4,
-            height=box.height * 0.15,
+        self.calls += 1
+        self.crops += len(boxes)
+        self.last_confidence = confidence
+        if not self._available:
+            return tuple(() for _ in boxes)
+        return tuple(
+            (
+                PlateDetection(
+                    box=BoundingBox(
+                        x=box.x + box.width * 0.3,
+                        y=box.y + box.height * 0.65,
+                        width=box.width * 0.4,
+                        height=box.height * 0.15,
+                    ),
+                    score=self._score,
+                ),
+            )
+            for box in boxes
         )
-        return (PlateDetection(box=plate, score=self._score),)
+
+
+class FakePlateReader:
+    """Lecteur de plaques factice, à disponibilité contrôlable.
+
+    **Rend délibérément du texte non normalisé et en minuscules.** C'est ce qui fait
+    qu'un test aboutissant à `AB-123-CD` *prouve* que la normalisation du domaine a
+    tourné. Une doublure qui normaliserait ferait le travail de la production, et les
+    tests cesseraient de démontrer quoi que ce soit — c'est le mécanisme exact par
+    lequel deux vrais bugs ont traversé 500 tests verts.
+
+    Deux compteurs et non un : `calls` compte les **lots**, donc il prouve que les
+    plaques d'une frame partent en un seul appel ; `crops` compte les **plaques**,
+    donc il prouve que l'étranglement en écarte.
+    """
+
+    def __init__(
+        self,
+        *,
+        available: bool = True,
+        text: str = "ab-123-cd",
+        score: float = 0.93,
+        is_readable: Callable[[BoundingBox], bool] | None = None,
+        bad_length: bool = False,
+    ) -> None:
+        self._available = available
+        self._text = text
+        self._score = score
+        #: Permet à un test — et au script de génération des fixtures — de produire
+        #: l'état « plaque vue mais illisible », que l'interface rate le plus
+        #: facilement. `None` signifie « tout est lisible ».
+        self._is_readable = is_readable
+        #: Simule un lecteur qui viole le contrat d'alignement positionnel du port.
+        #: Le service doit alors renoncer au texte de la frame, pas échouer.
+        self._bad_length = bad_length
+        self.calls = 0
+        self.crops = 0
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def read(
+        self,
+        image: npt.NDArray[np.uint8],  # noqa: ARG002
+        boxes: Sequence[BoundingBox],
+    ) -> tuple[PlateText | None, ...]:
+        """Rend **exactement** un élément par boîte, dans le même ordre."""
+        self.calls += 1
+        self.crops += len(boxes)
+        if not self._available:
+            return (None,) * len(boxes)
+        if self._bad_length:
+            return ()
+        return tuple(
+            PlateText(text=self._text, score=self._score)
+            if self._is_readable is None or self._is_readable(box)
+            else None
+            for box in boxes
+        )

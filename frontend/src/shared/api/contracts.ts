@@ -34,8 +34,22 @@ export interface Health {
   ultralyticsVersion: string;
   loadedModels: string[];
   maxLoadedModels: number;
-  /** Faux ⇒ l'option de lecture de plaques est désactivée dans l'interface. */
+  /**
+   * Le modèle de **détection** de plaques est présent.
+   *
+   * Faux ⇒ l'option ANPR est désactivée dans l'interface. Ne dit **rien** de la lecture
+   * du texte, qui dépend d'un autre fichier — voir `plateOcrAvailable`.
+   */
   plateAvailable: boolean;
+  /**
+   * Le modèle de **lecture** et son dictionnaire de caractères sont présents.
+   *
+   * Distinct de `plateAvailable` : deux artefacts, récupérés par deux scripts, et
+   * « détection sans lecture » est l'état de tout déploiement neuf. Faux ⇒ les plaques
+   * sont encadrées mais leur texte n'est pas lu, et l'interface doit le dire plutôt
+   * que de proposer une case qui ne fait rien.
+   */
+  plateOcrAvailable: boolean;
   defaultModelId: string;
 }
 
@@ -71,6 +85,8 @@ export interface ModelCatalogue {
   half: boolean;
   ultralyticsVersion: string;
   plateAvailable: boolean;
+  /** Deux drapeaux et non un : le détecteur et le lecteur sont deux artefacts. */
+  plateOcrAvailable: boolean;
   loadedIds: string[];
   maxLoadedModels: number;
 }
@@ -163,6 +179,15 @@ export interface AnalysisRequest {
   frameStride: number;
   detectPlates: boolean;
   plateConfidence: number | null;
+  /**
+   * Lire le **texte** des plaques localisées, en plus de les encadrer.
+   *
+   * Subordonné à `detectPlates` — sans boîte, il n'y a rien à lire — et ignoré si
+   * `plateOcrAvailable` est faux. Un drapeau distinct parce que l'OCR a son propre
+   * coût et parce que persister un texte de plaque franchit un cran de
+   * confidentialité qui mérite un consentement explicite.
+   */
+  readPlateText: boolean;
   /** `null` ⇒ les vitesses restent en px/s au lieu d'être converties à tort. */
   pixelsPerMeter: number | null;
   lines: CountingLine[];
@@ -185,9 +210,27 @@ export interface Box {
   height: number;
 }
 
+/**
+ * Une plaque repérée sur un véhicule suivi.
+ *
+ * `box` et `score` viennent du **détecteur** ; `text` et `textScore` de l'**OCR**,
+ * qui est une seconde passe optionnelle. Les deux couples sont donc indépendants, et
+ * c'est ce qui rend trois états distinguables : pas de plaque du tout, une plaque vue
+ * mais illisible (`text === null` avec un `score` bien réel), une plaque lue. Les
+ * confondre afficherait « aucune plaque » sur un véhicule dont le rectangle jaune est
+ * visible à l'écran — la contradiction la plus rapide à repérer et la plus longue à
+ * expliquer.
+ *
+ * `text` n'est rempli qu'une image sur trois : l'OCR est étranglée côté serveur. Pour
+ * une étiquette stable, c'est `TrackSnapshot.plateText` qu'il faut lire.
+ */
 export interface PlateDetection {
   box: Box;
   score: number;
+  /** `null` quand la plaque est repérée mais qu'aucune lecture n'a abouti. */
+  text: string | null;
+  /** Confiance de la **lecture**, distincte de celle de la détection. `null` sans texte. */
+  textScore: number | null;
 }
 
 /** Une piste, telle qu'une frame de la timeline la fige. */
@@ -213,6 +256,16 @@ export interface TrackSnapshot {
   reidCount: number;
   speedPxS: number | null;
   plates: PlateDetection[];
+  /**
+   * Texte de plaque **voté** sur la vie du véhicule, ou `null`.
+   *
+   * Même discipline qu'`identityLabel` face à `label` (invariant 4), et pour la même
+   * raison pratique : `plates[].text` n'est rempli qu'une image sur trois — l'OCR est
+   * étranglée côté serveur — donc dessiner celui-là ferait clignoter l'étiquette.
+   * **C'est ce champ que l'overlay affiche.**
+   */
+  plateText: string | null;
+  plateTextScore: number | null;
 }
 
 export interface TimelineRow {
@@ -231,6 +284,17 @@ export interface CrossingEvent {
   direction: number;
   timestampMs: number;
   frameIndex: number;
+  /**
+   * La plaque du véhicule **telle qu'elle était connue au moment du comptage**.
+   *
+   * Souvent `null` alors que le registre porte le texte, et ce n'est pas une
+   * incohérence : côté serveur, un franchissement est émis *avant* la passe OCR de la
+   * même image. Un franchissement dit ce que le serveur savait quand il a compté ; le
+   * registre dit ce qu'il sait à la fin. **L'autorité est le registre.**
+   */
+  plateText: string | null;
+  /** `null` et non `0` : ici l'absence de lecture et une lecture nulle diffèrent. */
+  plateTextScore: number | null;
 }
 
 export interface ZoneEntryEvent {
@@ -252,7 +316,18 @@ export interface VehicleRecord {
   avgSpeedPxS: number | null;
   /** `null` sans échelle px/m — et non 0, qui voudrait dire « à l'arrêt ». */
   avgSpeedKmh: number | null;
+  /** Meilleure confiance de **détection** de plaque sur la vie du véhicule. */
   bestPlateScore: number | null;
+  /**
+   * La plaque **votée sur toute la vie du véhicule** — l'autorité de l'interface.
+   *
+   * `null` avec un `bestPlateScore` non nul veut dire quelque chose de précis : une
+   * plaque a bien été vue, aucune lecture ne fait consensus. La colonne « Plaque » doit
+   * dire *cela*, et non rester vide en face d'un rectangle visible à l'écran.
+   */
+  plateText: string | null;
+  /** Confiance moyenne de la **lecture** gagnante. C'est l'`ocrConfidence` du vote. */
+  plateTextScore: number | null;
 }
 
 export interface VideoInfo {

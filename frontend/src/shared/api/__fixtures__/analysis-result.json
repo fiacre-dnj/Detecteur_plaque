@@ -39,9 +39,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": "AB-123-CD",
+              "textScore": 0.88
             }
-          ]
+          ],
+          "plateText": null,
+          "plateTextScore": null
         },
         {
           "trackId": 2,
@@ -68,9 +72,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": null,
+              "textScore": null
             }
-          ]
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -103,9 +111,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": "AB-123-CD",
+              "textScore": 0.88
             }
-          ]
+          ],
+          "plateText": null,
+          "plateTextScore": null
         },
         {
           "trackId": 2,
@@ -132,9 +144,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": null,
+              "textScore": null
             }
-          ]
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -167,9 +183,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": "AB-123-CD",
+              "textScore": 0.88
             }
-          ]
+          ],
+          "plateText": "AB-123-CD",
+          "plateTextScore": 0.88
         },
         {
           "trackId": 2,
@@ -196,9 +216,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": null,
+              "textScore": null
             }
-          ]
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -231,9 +255,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": "AB-123-CD",
+              "textScore": 0.88
             }
-          ]
+          ],
+          "plateText": "AB-123-CD",
+          "plateTextScore": 0.88
         },
         {
           "trackId": 2,
@@ -260,9 +288,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": null,
+              "textScore": null
             }
-          ]
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -295,9 +327,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": "AB-123-CD",
+              "textScore": 0.88
             }
-          ]
+          ],
+          "plateText": "AB-123-CD",
+          "plateTextScore": 0.88
         },
         {
           "trackId": 2,
@@ -324,9 +360,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": null,
+              "textScore": null
             }
-          ]
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -359,9 +399,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": "AB-123-CD",
+              "textScore": 0.88
             }
-          ]
+          ],
+          "plateText": "AB-123-CD",
+          "plateTextScore": 0.88
         },
         {
           "trackId": 2,
@@ -377,7 +421,7 @@
             "height": 60.0
           },
           "hits": 6,
-          "counted": true,
+          "counted": false,
           "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
@@ -388,9 +432,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": null,
+              "textScore": null
             }
-          ]
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -412,7 +460,7 @@
             "height": 60.0
           },
           "hits": 7,
-          "counted": false,
+          "counted": true,
           "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
@@ -423,9 +471,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": "AB-123-CD",
+              "textScore": 0.88
             }
-          ]
+          ],
+          "plateText": "AB-123-CD",
+          "plateTextScore": 0.88
         },
         {
           "trackId": 2,
@@ -441,7 +493,7 @@
             "height": 60.0
           },
           "hits": 7,
-          "counted": true,
+          "counted": false,
           "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
@@ -452,9 +504,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": null,
+              "textScore": null
             }
-          ]
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -476,7 +532,7 @@
             "height": 60.0
           },
           "hits": 8,
-          "counted": false,
+          "counted": true,
           "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
@@ -487,9 +543,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": "AB-123-CD",
+              "textScore": 0.88
             }
-          ]
+          ],
+          "plateText": "AB-123-CD",
+          "plateTextScore": 0.88
         },
         {
           "trackId": 2,
@@ -516,9 +576,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": null,
+              "textScore": null
             }
-          ]
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -551,9 +615,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": "AB-123-CD",
+              "textScore": 0.88
             }
-          ]
+          ],
+          "plateText": "AB-123-CD",
+          "plateTextScore": 0.88
         },
         {
           "trackId": 2,
@@ -580,9 +648,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": null,
+              "textScore": null
             }
-          ]
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -615,9 +687,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": "AB-123-CD",
+              "textScore": 0.88
             }
-          ]
+          ],
+          "plateText": "AB-123-CD",
+          "plateTextScore": 0.88
         },
         {
           "trackId": 2,
@@ -644,9 +720,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": null,
+              "textScore": null
             }
-          ]
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -679,9 +759,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": "AB-123-CD",
+              "textScore": 0.88
             }
-          ]
+          ],
+          "plateText": "AB-123-CD",
+          "plateTextScore": 0.88
         },
         {
           "trackId": 2,
@@ -708,9 +792,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": null,
+              "textScore": null
             }
-          ]
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -743,9 +831,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": "AB-123-CD",
+              "textScore": 0.88
             }
-          ]
+          ],
+          "plateText": "AB-123-CD",
+          "plateTextScore": 0.88
         },
         {
           "trackId": 2,
@@ -772,9 +864,13 @@
                 "width": 32.0,
                 "height": 9.0
               },
-              "score": 0.71
+              "score": 0.71,
+              "text": null,
+              "textScore": null
             }
-          ]
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     }
@@ -782,21 +878,25 @@
   "crossings": [
     {
       "lineId": "l1",
-      "globalId": 2,
-      "trackId": 2,
-      "label": "truck",
-      "direction": -1,
-      "timestampMs": 200.0,
-      "frameIndex": 5
-    },
-    {
-      "lineId": "l1",
       "globalId": 1,
       "trackId": 1,
       "label": "car",
       "direction": 1,
-      "timestampMs": 320.0,
-      "frameIndex": 8
+      "timestampMs": 240.0,
+      "frameIndex": 6,
+      "plateText": "AB-123-CD",
+      "plateTextScore": 0.88
+    },
+    {
+      "lineId": "l1",
+      "globalId": 2,
+      "trackId": 2,
+      "label": "truck",
+      "direction": -1,
+      "timestampMs": 280.0,
+      "frameIndex": 7,
+      "plateText": null,
+      "plateTextScore": null
     }
   ],
   "zoneEvents": [],
@@ -810,14 +910,16 @@
         {
           "lineId": "l1",
           "direction": 1,
-          "timestampMs": 320.0
+          "timestampMs": 240.0
         }
       ],
       "zonesVisited": [],
       "reidCount": 0,
       "avgSpeedPxS": 1250.0,
-      "avgSpeedKmh": 360.0,
-      "bestPlateScore": 0.71
+      "avgSpeedKmh": null,
+      "bestPlateScore": 0.71,
+      "plateText": "AB-123-CD",
+      "plateTextScore": 0.88
     },
     {
       "globalId": 2,
@@ -828,14 +930,16 @@
         {
           "lineId": "l1",
           "direction": -1,
-          "timestampMs": 200.0
+          "timestampMs": 280.0
         }
       ],
       "zonesVisited": [],
       "reidCount": 0,
       "avgSpeedPxS": 1250.0,
-      "avgSpeedKmh": 360.0,
-      "bestPlateScore": 0.71
+      "avgSpeedKmh": null,
+      "bestPlateScore": 0.71,
+      "plateText": null,
+      "plateTextScore": null
     }
   ],
   "stats": {
@@ -846,15 +950,15 @@
     },
     "crossings": 2,
     "byClass": {
-      "truck": 1,
-      "car": 1
+      "car": 1,
+      "truck": 1
     },
     "byLine": {
       "l1": {
         "total": 2,
         "byClass": {
-          "truck": 1,
-          "car": 1
+          "car": 1,
+          "truck": 1
         },
         "byDirection": {
           "positive": 1,
@@ -862,13 +966,7 @@
         }
       }
     },
-    "byZone": {
-      "z1": {
-        "entries": 0,
-        "inside": 2,
-        "byClass": {}
-      }
-    },
+    "byZone": {},
     "reidHits": 0,
     "vehiclesPerMinute": 0.0,
     "activeTracks": 2,

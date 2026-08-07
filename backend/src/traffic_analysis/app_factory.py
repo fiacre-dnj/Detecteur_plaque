@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from traffic_analysis.features.counting.application.ports import (
         DetectionTrackingEngine,
         PlateDetector,
+        PlateReader,
     )
     from traffic_analysis.features.jobs.application.ports import JobRepository
 
@@ -157,6 +158,7 @@ def create_app(
     clock: Clock | None = None,
     engine: DetectionTrackingEngine | None = None,
     plate_detector: PlateDetector | None = None,
+    plate_reader: PlateReader | None = None,
     job_repository: JobRepository | None = None,
     benchmark_probe: InferenceProbe | None = None,
 ) -> FastAPI:
@@ -199,6 +201,7 @@ def create_app(
         clock=clock,
         engine=engine,
         plate_detector=plate_detector,
+        plate_reader=plate_reader,
         job_repository=job_repository,
         benchmark_probe=benchmark_probe,
     )

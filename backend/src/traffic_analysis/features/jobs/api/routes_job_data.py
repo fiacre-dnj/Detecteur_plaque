@@ -29,7 +29,8 @@ CSV_MEDIA_TYPE = "text/csv; charset=utf-8"
     summary="Registre des véhicules, paginé et filtrable",
     description=(
         "Une ligne par identité : vu de/à, lignes franchies avec leur sens, "
-        "vitesse, ré-identifications, meilleure plaque.\n\n"
+        "vitesse, ré-identifications, meilleure plaque **détectée** et plaque "
+        "**lue** (`plateText`, vote sur toute la vie du véhicule).\n\n"
         "Les cartes de synthèse disent *combien*, ce registre dit **lesquels** — "
         "c'est lui qui rend un total vérifiable plutôt que croyable."
     ),
@@ -42,11 +43,24 @@ async def list_vehicles(
     page: Annotated[PageParams, Depends(page_params)],
     label: Annotated[str | None, Query(description="Filtre par classe votée.")] = None,
     min_reid: Annotated[int | None, Query(ge=0, description="Ré-identifications ≥ N.")] = None,
-    has_plate: Annotated[bool | None, Query(description="Avec ou sans plaque lue.")] = None,
+    has_plate: Annotated[
+        bool | None, Query(description="Avec ou sans plaque **détectée**.")
+    ] = None,
+    plate_text: Annotated[
+        str | None,
+        Query(
+            max_length=16,
+            description=(
+                "Recherche dans le texte **lu** — sous-chaîne, insensible à la casse. "
+                "Indépendant de `has_plate`, qui porte sur la détection : une plaque "
+                "peut être vue sans qu'aucune lecture ne fasse consensus."
+            ),
+        ),
+    ] = None,
 ) -> Page[dict[str, Any]]:
     await manager.get(job_id)  # 404 explicite plutôt qu'une page vide trompeuse
     return await queries.list_vehicles(
-        job_id, page, label=label, min_reid=min_reid, has_plate=has_plate
+        job_id, page, label=label, min_reid=min_reid, has_plate=has_plate, plate_text=plate_text
     )
 
 

@@ -74,8 +74,9 @@ async def test_health_expose_le_diagnostic_complet(client: AsyncClient) -> None:
     # Aucun modèle chargé tant qu'aucune analyse n'a tourné.
     assert body["loadedModels"] == []
     assert body["maxLoadedModels"] >= 1
-    # La fixture injecte un détecteur de plaques factice disponible.
+    # La fixture injecte un détecteur et un lecteur de plaques factices disponibles.
     assert body["plateAvailable"] is True
+    assert body["plateOcrAvailable"] is True
     assert body["defaultModelId"] == "yolov8n"
 
 
@@ -110,6 +111,46 @@ async def test_l_anpr_absente_est_signalee_sans_empecher_le_service(
 
     assert body["status"] == "ok"
     assert body["plateAvailable"] is False
+
+
+async def test_la_lecture_absente_est_signalee_sans_desactiver_la_detection(
+    settings: Settings, clock: FrozenClock
+) -> None:
+    """Détecteur présent, lecteur absent — l'état de tout déploiement neuf.
+
+    Les deux drapeaux sont **indépendants**, et c'est tout l'enjeu : si l'absence du
+    modèle de lecture faisait retomber `plateAvailable` à faux, un serveur sans OCR
+    perdrait aussi les boîtes qu'il sait produire. L'interface s'appuie sur cette
+    distinction pour proposer la détection sans promettre la lecture.
+    """
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport
+    from httpx import AsyncClient as Client
+
+    from tests.support.engine import FakeEngine, FakePlateDetector, FakePlateReader
+    from traffic_analysis.app_factory import create_app
+
+    app = create_app(
+        settings,
+        clock=clock,
+        engine=FakeEngine([]),
+        plate_detector=FakePlateDetector(),
+        plate_reader=FakePlateReader(available=False),
+    )
+    transport = ASGITransport(app=app)
+    async with (
+        LifespanManager(app),
+        Client(transport=transport, base_url="http://test") as client,
+    ):
+        health = (await client.get("/api/v1/health")).json()
+        models = (await client.get("/api/v1/models")).json()
+
+    assert health["status"] == "ok"
+    assert health["plateAvailable"] is True
+    assert health["plateOcrAvailable"] is False
+    # Le catalogue porte la même distinction : l'interface lit l'un ou l'autre.
+    assert models["plateAvailable"] is True
+    assert models["plateOcrAvailable"] is False
 
 
 @pytest.mark.parametrize(

@@ -10,6 +10,7 @@ transport, de l'orchestration et de la base.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from time import perf_counter
 from typing import TYPE_CHECKING
 
@@ -18,6 +19,8 @@ from traffic_analysis.features.counting.application.dto import (
     TIMELINE_WARNING_THRESHOLD,
     AnalysisCancelled,
     AnalysisResultData,
+    PlateOcrOptions,
+    PlateOcrPolicy,
     PreviewSample,
     Progress,
     TimelineRow,
@@ -26,15 +29,24 @@ from traffic_analysis.features.counting.domain.models import VideoInfo
 from traffic_analysis.features.counting.domain.tracking_session import AnalysisSession
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from pathlib import Path
+
+    import numpy as np
+    import numpy.typing as npt
 
     from traffic_analysis.features.counting.application.dto import AnalysisJobConfig
     from traffic_analysis.features.counting.application.ports import (
         DetectionTrackingEngine,
         PlateDetector,
+        PlateReader,
     )
-    from traffic_analysis.features.counting.domain.models import CrossingEvent, ZoneEntryEvent
+    from traffic_analysis.features.counting.domain.models import (
+        CrossingEvent,
+        PlateDetection,
+        SessionTrack,
+        ZoneEntryEvent,
+    )
 
 logger = get_logger("traffic_analysis.analysis")
 
@@ -68,15 +80,19 @@ type PauseGate = Callable[[], float]
 class AnalysisService:
     """Exécute une analyse complète : moteur → session de comptage → résultat."""
 
-    __slots__ = ("_engine", "_plate_detector")
+    __slots__ = ("_engine", "_plate_detector", "_plate_ocr", "_plate_reader")
 
     def __init__(
         self,
         engine: DetectionTrackingEngine,
         plate_detector: PlateDetector | None = None,
+        plate_reader: PlateReader | None = None,
+        plate_ocr: PlateOcrOptions | None = None,
     ) -> None:
         self._engine = engine
         self._plate_detector = plate_detector
+        self._plate_reader = plate_reader
+        self._plate_ocr = plate_ocr or PlateOcrOptions()
 
     def probe(self, video_path: Path) -> VideoInfo:
         """Sonde une vidéo. Sert aussi de validation de format réelle."""
@@ -126,6 +142,19 @@ class AnalysisService:
             logger.warning("ANPR demandée mais indisponible", job_id=job_id)
             detector = None
 
+        # Garde **indépendant** du précédent. L'OCR est une option DE l'option : son
+        # absence ne doit jamais désactiver la détection de plaques, sinon un
+        # déploiement sans le modèle de lecture perdrait aussi les boîtes qu'il sait
+        # produire. Réciproquement, lire sans détecter n'a pas de sens : il n'y aurait
+        # aucune boîte à lire.
+        wants_text = config.read_plate_text and detector is not None
+        reader = self._plate_reader if wants_text else None
+        if wants_text and (reader is None or not reader.available):
+            logger.warning("lecture de plaque demandée mais indisponible", job_id=job_id)
+            reader = None
+        # Une politique par course : aucun état d'étranglement partagé entre jobs.
+        policy = PlateOcrPolicy(self._plate_ocr) if reader is not None else None
+
         started = perf_counter()
         processed = 0
         last_preview = started
@@ -152,12 +181,31 @@ class AnalysisService:
 
             outcome = session.feed(frame.frame_index, frame.timestamp_ms, frame.image, frame.tracks)
 
-            if detector is not None:
-                for track in outcome.tracks:
-                    session.record_plates(track, detector.detect(frame.image, track.box))
+            if detector is not None and outcome.tracks:
+                # **Un seul appel pour toutes les pistes de la frame.** C'est à
+                # l'adaptateur de décider comment amortir ses inférences ; il ne peut
+                # le faire que s'il voit toute la frame d'un coup. Cette couche ne
+                # sait pas — et n'a pas à savoir — s'il empaquette ou non.
+                batch = detector.detect_many(
+                    frame.image,
+                    [track.box for track in outcome.tracks],
+                    config.plate_confidence,
+                )
+                for track, plates in zip(outcome.tracks, batch, strict=True):
+                    if reader is not None and policy is not None and plates:
+                        # `processed` n'est incrémenté que plus bas : il vaut donc ici
+                        # l'ordinal 0-indexé de l'image **analysée** courante, ce
+                        # qu'attend la politique. Un `frame.frame_index` serait faux
+                        # dès que `frame_stride > 1`.
+                        plates = self._read_plate_text(
+                            reader, policy, session, frame.image, processed, track, plates
+                        )
+                    session.record_plates(track, plates)
 
-            # Le snapshot est pris **après** la passe ANPR, sinon les plaques
-            # manquent de la timeline et la relecture n'en affiche aucune.
+            # Le snapshot est pris **après** la passe ANPR ET la passe OCR, sinon les
+            # plaques manquent de la timeline — ou, plus insidieux, y figurent sans
+            # leur texte : la relecture afficherait des boîtes muettes que l'analyse,
+            # elle, avait su lire.
             snapshots = tuple(track.snapshot() for track in outcome.tracks)
             result.timeline.append(
                 TimelineRow(
@@ -241,6 +289,63 @@ class AnalysisService:
             crossings=result.stats.crossings,
         )
         return result
+
+    @staticmethod
+    def _read_plate_text(
+        reader: PlateReader,
+        policy: PlateOcrPolicy,
+        session: AnalysisSession,
+        image: npt.NDArray[np.uint8],
+        ordinal: int,
+        track: SessionTrack,
+        plates: Sequence[PlateDetection],
+    ) -> tuple[PlateDetection, ...]:
+        """Lit le texte des plaques qui le méritent, en **un seul** appel.
+
+        Les plaques retenues partent en lot : le coût fixe d'une inférence domine sur
+        un tenseur de 48×320, donc trois plaques en trois appels le paient trois fois.
+
+        Le texte posé ici est **brut** — c'est `AnalysisSession.record_plates` qui le
+        canonicalise. Ce partage est volontaire : cette couche compose deux ports,
+        elle n'a pas à connaître la règle de normalisation du domaine.
+        """
+        confident = session.plate_text_is_confident(track.global_id)
+        wanted = [
+            (index, plate)
+            for index, plate in enumerate(plates)
+            if policy.should_read(track.global_id, ordinal, plate.box, vote_is_confident=confident)
+        ]
+        if not wanted:
+            return tuple(plates)
+
+        texts = reader.read(image, [plate.box for _, plate in wanted])
+        if len(texts) != len(wanted):
+            # Le port promet un élément par boîte. Un lecteur qui ne tient pas sa
+            # promesse ne doit pas faire échouer un comptage : on renonce au texte de
+            # cette frame et on le dit.
+            logger.warning(
+                "lecteur de plaque : longueur inattendue",
+                expected=len(wanted),
+                received=len(texts),
+            )
+            return tuple(plates)
+
+        updated = list(plates)
+        for (index, plate), text in zip(wanted, texts, strict=True):
+            # Noté même quand la lecture a échoué : sans cela, une plaque durablement
+            # illisible serait relue à chaque frame — le coût qu'on cherche à éviter.
+            policy.record(track.global_id, ordinal, plate.box)
+            if text is not None:
+                updated[index] = replace(
+                    plate,
+                    text=text.text,
+                    text_score=text.score,
+                    # De passage jusqu'au vote, où `record_plates` les consomme puis
+                    # les jette : le consensus par caractère a besoin de savoir quel
+                    # caractère hésitait, la timeline non.
+                    text_char_scores=text.char_scores,
+                )
+        return tuple(updated)
 
     @staticmethod
     def _expected_frames(frame_count: int, stride: int) -> int:

@@ -19,7 +19,12 @@ import {
   lineLabel,
 } from "./previewLog";
 
-function crossing(globalId: number, timestampMs: number, direction = 1): CrossingEvent {
+function crossing(
+  globalId: number,
+  timestampMs: number,
+  direction = 1,
+  plateText: string | null = null,
+): CrossingEvent {
   return {
     lineId: "l1",
     globalId,
@@ -28,6 +33,10 @@ function crossing(globalId: number, timestampMs: number, direction = 1): Crossin
     direction,
     timestampMs,
     frameIndex: Math.round(timestampMs / 40),
+    plateText,
+    // Un score **seulement** s'il y a un texte : une confiance dans le vide serait
+    // affichée comme un fait.
+    plateTextScore: plateText === null ? null : 0.88,
   };
 }
 

@@ -48,6 +48,17 @@ def _config(**overrides: object) -> SessionConfig:
     return SessionConfig(**base)  # type: ignore[arg-type]
 
 
+def _plate(text: str, text_score: float, score: float = 0.71) -> PlateDetection:
+    """Une plaque lue, telle que le service la remet à `record_plates`.
+
+    Le texte est passé **brut** — c'est le domaine qui le canonicalise, et c'est
+    précisément ce que les tests de cette section vérifient.
+    """
+    return PlateDetection(
+        box=BoundingBox(1.0, 1.0, 20.0, 8.0), score=score, text=text, text_score=text_score
+    )
+
+
 class TestVehiculeQuiTraverse:
     def test_un_vehicule_qui_traverse_donne_un_unique_et_un_franchissement(self) -> None:
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
@@ -149,6 +160,41 @@ class TestReidentification:
         assert stats.unique_vehicles == 1, "le retour a été admis comme un véhicule neuf"
         assert stats.reid_hits >= 1
         assert stats.crossings == 1, "le retour a recompté un franchissement"
+
+    def test_un_vehicule_reidentifie_qui_recroise_compte_une_seconde_fois(self) -> None:
+        """Le pendant du test précédent, et la règle d'[ADR 0009] de bout en bout.
+
+        Même scénario — traversée, trois secondes d'absence, retour reconnu — mais
+        cette fois le véhicule **recroise** la ligne en remontant. La
+        ré-identification a ré-armé son comptage : c'est un second passage, et il
+        doit compter. Toujours **un seul** véhicule unique : on compte des
+        passages, pas des immatriculations.
+
+        Sans ré-armement on mesurerait 1 franchissement, et un véhicule faisant la
+        navette sur une route resterait invisible après son premier passage.
+        """
+        session = AnalysisSession(_config(max_lost_ms=2500.0), FRAME_WIDTH, FRAME_HEIGHT)
+        image = _scene(texture=40)
+
+        # Descente : de y=300 à y=750, la ligne est à y=500.
+        for index, observation in enumerate(
+            track_path(1, CAR, [(900.0, 300.0 + step * 50.0) for step in range(10)])
+        ):
+            session.feed(index, index * FRAME_MS, image, (observation,))
+        assert session.stats().crossings == 1
+
+        # Trois secondes plus tard, un nouvel id de piste remonte depuis le bas et
+        # repasse la ligne. Aucune frame vide : la mort et la naissance ont lieu
+        # dans le même appel, comme le fait le moteur.
+        for step in range(10):
+            observation = track_path(7, CAR, [(910.0, 760.0 - step * 50.0)])[0]
+            session.feed(100 + step, 4000.0 + step * FRAME_MS, image, (observation,))
+
+        stats = session.stats()
+        assert stats.unique_vehicles == 1, "le retour a été admis comme un véhicule neuf"
+        assert stats.reid_hits >= 1
+        assert stats.crossings == 2, "la ré-identification n'a pas ré-armé le comptage"
+        assert stats.by_line["l1"].negative == 1, "le retour remonte, il compte en négatif"
 
     def test_un_id_de_piste_ressuscite_recupere_son_identite(self) -> None:
         """Récupération **par id**, sans passer par l'apparence.
@@ -317,6 +363,11 @@ class TestStatistiques:
         stats = session.stats()
         assert stats.crossings == sum(tally.total for tally in stats.by_line.values())
         assert sum(stats.by_class.values()) == stats.crossings
+        # Le véhicule traverse les deux lignes, mais ne compte qu'une fois (ADR
+        # 0009) : c'est la première ligne franchie qui porte le total.
+        assert stats.crossings == 1
+        assert stats.by_line["haute"].total == 1
+        assert stats.by_line["basse"].total == 0
 
     def test_le_debit_est_nul_sous_trois_secondes_de_flux(self) -> None:
         """En dessous de 3 s, l'extrapolation oscille trop pour être publiable.
@@ -436,6 +487,186 @@ class TestPlaques:
         assert outcome.tracks[0].plates == []
         # …mais le meilleur score reste dans l'agrégat de l'identité.
         assert session.vehicles()[0].best_plate_score == pytest.approx(0.9)
+
+
+class TestTexteDePlaque:
+    """Le vote du texte, et le miroir qui le pose sur la piste vivante.
+
+    Ce que ces tests protègent : **l'invariant 4 appliqué au texte**. Ils affirment
+    trois choses qu'aucun test de `plate_vote.py` ne peut affirmer seul — que la
+    normalisation tourne réellement dans le pipeline, que la source du texte affiché
+    est l'agrégat et non la frame, et que le texte survit à la destruction de la
+    piste par une occlusion longue.
+    """
+
+    def test_record_plates_normalise_avant_de_faire_voter(self) -> None:
+        """Le lecteur rend du sale ; c'est le domaine qui canonicalise.
+
+        L'entrée est en minuscules avec des espaces parasites. Que la sortie soit
+        `AB-123-CD` **prouve** que `normalise_plate_text` a tourné — c'est tout
+        l'intérêt de la placer dans le domaine plutôt que dans l'adaptateur.
+        """
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+        image = _scene(texture=40)
+
+        for index in range(3):
+            outcome = session.feed(
+                index,
+                index * FRAME_MS,
+                image,
+                (track_path(1, CAR, [(900.0, 300.0 + index * 50.0)])[0],),
+            )
+            session.record_plates(outcome.tracks[0], (_plate(" ab-123-cd ", 0.95),))
+
+        assert session.vehicles()[0].plate_text == "AB-123-CD"
+
+    def test_le_texte_apparait_sur_la_piste_a_la_frame_suivante(self) -> None:
+        """La source est l'agrégat, pas la frame — et cela se mesure.
+
+        Les deux lectures du vote ont lieu sur les frames 0 et 1, donc le vote ne
+        tranche qu'après le `record_plates` de la frame 1. Le miroir de la frame 2 est
+        le premier à pouvoir poser le texte. Un texte qui apparaîtrait dès la frame 1
+        signifierait qu'on publie la lecture de la frame courante.
+        """
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+        image = _scene(texture=40)
+
+        first = session.feed(0, 0.0, image, (track_path(1, CAR, [(900.0, 300.0)])[0],))
+        session.record_plates(first.tracks[0], (_plate("AB123CD", 0.95),))
+        assert first.tracks[0].plate_text == ""
+
+        second = session.feed(1, FRAME_MS, image, (track_path(1, CAR, [(900.0, 350.0)])[0],))
+        session.record_plates(second.tracks[0], (_plate("AB123CD", 0.95),))
+        assert second.tracks[0].plate_text == ""
+
+        third = session.feed(2, 2 * FRAME_MS, image, (track_path(1, CAR, [(900.0, 400.0)])[0],))
+        assert third.tracks[0].plate_text == "AB123CD"
+        assert third.tracks[0].plate_text_score == pytest.approx(0.95)
+
+    def test_le_snapshot_emporte_le_texte_vote(self) -> None:
+        """Sans cela, la relecture afficherait des boîtes muettes."""
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+        image = _scene(texture=40)
+
+        for index in range(3):
+            outcome = session.feed(
+                index,
+                index * FRAME_MS,
+                image,
+                (track_path(1, CAR, [(900.0, 300.0 + index * 50.0)])[0],),
+            )
+            session.record_plates(outcome.tracks[0], (_plate("AB123CD", 0.95),))
+
+        snapshot = outcome.tracks[0].snapshot()
+        assert snapshot.plate_text == "AB123CD"
+
+    def test_le_texte_survit_a_une_occlusion_longue(self) -> None:
+        """Le test qui compte le plus : la piste meurt, l'identité non.
+
+        `_release_lost` détruit le `SessionTrack` au-delà de `max_lost_ms`. Quand
+        BoT-SORT ressuscite le même id de piste, `_recover_identity` rend l'identité —
+        et c'est le **miroir** qui repose le texte sur un objet tout neuf, sans une
+        ligne de code dédiée à la réhydratation.
+        """
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+        image = _scene(texture=40)
+
+        for index in range(3):
+            outcome = session.feed(
+                index,
+                index * FRAME_MS,
+                image,
+                (track_path(1, CAR, [(900.0, 300.0 + index * 50.0)])[0],),
+            )
+            session.record_plates(outcome.tracks[0], (_plate("AB123CD", 0.95),))
+        assert outcome.tracks[0].plate_text == "AB123CD"
+
+        # Silence assez long pour que `_release_lost` détruise la piste, mais dans la
+        # fenêtre d'appariement de la galerie : c'est bien une reprise, pas un
+        # nouveau véhicule.
+        revival_ms = 3 * FRAME_MS + 1500.0
+        revived = session.feed(80, revival_ms, image, (track_path(1, CAR, [(900.0, 460.0)])[0],))
+
+        assert revived.tracks[0].global_id == outcome.tracks[0].global_id
+        assert revived.tracks[0].plate_text == "AB123CD"
+
+    def test_le_registre_porte_le_vote_et_non_la_derniere_lecture(self) -> None:
+        """Trois `AB123CD` puis un `XY999ZZ` : le registre affiche `AB123CD`."""
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+        image = _scene(texture=40)
+        readings = ("AB123CD", "AB123CD", "AB123CD", "XY999ZZ")
+
+        for index, text in enumerate(readings):
+            outcome = session.feed(
+                index,
+                index * FRAME_MS,
+                image,
+                (track_path(1, CAR, [(900.0, 300.0 + index * 40.0)])[0],),
+            )
+            session.record_plates(outcome.tracks[0], (_plate(text, 0.95),))
+
+        assert session.vehicles()[0].plate_text == "AB123CD"
+
+    def test_une_lecture_unique_ne_pose_aucun_texte(self) -> None:
+        """L'invariant 4 de bout en bout : une lecture n'est pas un vote."""
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+        image = _scene(texture=40)
+
+        outcome = session.feed(0, 0.0, image, (track_path(1, CAR, [(900.0, 300.0)])[0],))
+        session.record_plates(outcome.tracks[0], (_plate("AB123CD", 0.99),))
+
+        outcome = session.feed(1, FRAME_MS, image, (track_path(1, CAR, [(900.0, 350.0)])[0],))
+
+        assert outcome.tracks[0].plate_text == ""
+        assert session.vehicles()[0].plate_text is None
+
+    def test_une_plaque_sans_texte_laisse_le_registre_muet(self) -> None:
+        """« Vue mais illisible » : un score de détection, aucun texte.
+
+        C'est l'état que l'interface rate le plus facilement, et il doit être
+        distinguable de « aucune plaque ».
+        """
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+        image = _scene(texture=40)
+
+        for index in range(3):
+            outcome = session.feed(
+                index,
+                index * FRAME_MS,
+                image,
+                (track_path(1, CAR, [(900.0, 300.0 + index * 50.0)])[0],),
+            )
+            session.record_plates(
+                outcome.tracks[0], (PlateDetection(BoundingBox(1.0, 1.0, 20.0, 8.0), 0.71),)
+            )
+
+        record = session.vehicles()[0]
+        assert record.plate_text is None
+        assert record.plate_text_score is None
+        assert record.best_plate_score == pytest.approx(0.71)
+
+    def test_une_lecture_illisible_est_refusee_avant_le_vote(self) -> None:
+        """`normalise_plate_text` rend `""` : la lecture ne vote pas du tout."""
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+        image = _scene(texture=40)
+
+        for index in range(4):
+            outcome = session.feed(
+                index,
+                index * FRAME_MS,
+                image,
+                (track_path(1, CAR, [(900.0, 300.0 + index * 40.0)])[0],),
+            )
+            # « A1 » : deux caractères, sous le plancher de plausibilité.
+            session.record_plates(outcome.tracks[0], (_plate("A1", 0.99),))
+            assert outcome.tracks[0].plates[0].text is None
+
+        assert session.vehicles()[0].plate_text is None
+
+    def test_plate_text_is_confident_ne_leve_pas_sur_une_identite_inconnue(self) -> None:
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+        assert session.plate_text_is_confident(0) is False
+        assert session.plate_text_is_confident(999) is False
 
 
 class TestZones:

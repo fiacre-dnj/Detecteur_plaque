@@ -1,14 +1,17 @@
-"""Comptage de franchissements — les dix scénarios normatifs de prompt/03 §3.
+"""Comptage de franchissements — les scénarios normatifs de prompt/03 §3.
 
-Chaque test correspond à un bug réellement survenu, et le nom du test dit lequel.
-Les quatre plus coûteux à repayer :
+La règle centrale est celle d'[ADR 0009](docs/adr/0009-un-comptage-par-vehicule.md) :
+**un véhicule compte une fois**, quelle que soit la ligne et quel que soit le
+sens, jusqu'à sa prochaine ré-identification. `TestDeduplication` en décrit le
+garde, `TestReArmementParReidentification` la seule chose qui le lève.
 
-- `test_un_va_et_vient_compte_une_fois_dans_chaque_sens` et
-  `test_un_tremblement_sur_la_ligne_ne_compte_qu_une_fois` s'opposent : c'est
-  pour les concilier que le garde porte sur `(ligne, identité, sens)` et non sur
-  `(ligne, identité)` ;
+Trois tests valent d'être lus en premier, parce qu'ils tiennent chacun un bug
+réellement survenu :
+
 - `test_deux_pistes_successives_de_la_meme_identite_ne_comptent_qu_une_fois` :
   sans garde d'identité, un véhicule occulté puis revenu compte 2 ;
+- `test_apres_re_armement_la_ligne_suivante_ne_recompte_pas` : le ré-armement
+  redonne droit à **un** franchissement, pas à un par ligne ;
 - `test_un_franchissement_hors_zone_met_quand_meme_le_cote_a_jour` : sans cela la
   piste « regarde dans le mauvais sens » et le franchissement suivant compte à
   l'envers.
@@ -28,7 +31,7 @@ from tests.support.builders import (
 )
 from traffic_analysis.features.counting.domain.geometry import Point
 from traffic_analysis.features.counting.domain.line_counter import LineCrossingCounter
-from traffic_analysis.features.counting.domain.models import SessionTrack
+from traffic_analysis.features.counting.domain.models import CrossingEvent, SessionTrack
 
 # Ligne horizontale à y = 500. Descendre (y croissant) traverse dans le sens +1.
 LINE = make_line("l1")
@@ -154,11 +157,13 @@ class TestFranchissementsRefuses:
 
 
 class TestDeduplication:
-    def test_un_va_et_vient_compte_une_fois_dans_chaque_sens(self) -> None:
-        """Un aller-retour réel est deux passages, et doit compter deux fois.
+    def test_un_va_et_vient_ne_compte_qu_une_fois(self) -> None:
+        """Le sens ne ré-arme pas le comptage (ADR 0009).
 
-        C'est ce scénario qui interdit un garde par `(ligne, identité)` : il n'en
-        compterait qu'un.
+        Un véhicule qui franchit puis revient sur ses pas est **le même
+        véhicule**, jamais reparti : il compte une fois. Seule une vraie
+        ré-identification — le véhicule a disparu du champ puis a été reconnu —
+        redonne droit à un comptage.
         """
         counter = LineCrossingCounter((LINE,), (), min_hits=2)
         aller = straight_line((900.0, 300.0), (900.0, 700.0), steps=6)
@@ -167,19 +172,15 @@ class TestDeduplication:
 
         events = _run(counter, track, [*aller, *retour])
 
-        assert len(events) == 2
-        assert {event.direction for event in events} == {DESCENDING, ASCENDING}  # type: ignore[attr-defined]
+        assert len(events) == 1
+        assert events[0].direction == DESCENDING  # type: ignore[attr-defined]
         tally = counter.by_line["l1"]
-        assert tally.total == 2
+        assert tally.total == 1
         assert tally.positive == 1
-        assert tally.negative == 1
+        assert tally.negative == 0
 
     def test_un_tremblement_sur_la_ligne_ne_compte_qu_une_fois(self) -> None:
-        """Une boîte qui vacille autour de la ligne dans le même sens.
-
-        C'est le pendant du test précédent : le même sens ne compte qu'une fois,
-        même si le côté change plusieurs fois.
-        """
+        """Une boîte qui vacille autour de la ligne dans le même sens."""
         counter = LineCrossingCounter((LINE,), (), min_hits=2)
         path = [
             (900.0, 480.0),
@@ -246,6 +247,73 @@ class TestDeduplication:
         assert counter.counted_identities() == set()
         _run(counter, track, path)
         assert counter.counted_identities() == {42}
+
+
+class TestReArmementParReidentification:
+    """La seule chose qui redonne droit à un comptage (ADR 0009).
+
+    Le compteur lit `track.reid_count` — la **génération** de l'identité, que la
+    galerie n'incrémente que sur une réapparition réelle. Ces tests la fixent à la
+    main : ils décrivent le contrat du compteur, pas celui de la galerie.
+    """
+
+    def test_une_identite_reidentifiee_recompte_une_fois(self) -> None:
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        path = straight_line((900.0, 300.0), (900.0, 700.0), steps=6)
+
+        premier = session_track(track_path(1, CAR, path)[0], hits=5, global_id=42)
+        events_premier = _run(counter, premier, path)
+
+        # Le véhicule a disparu, la galerie l'a reconnu : génération 1.
+        revenu = session_track(track_path(7, CAR, path)[0], hits=5, global_id=42, reid_count=1)
+        events_revenu = _run(counter, revenu, path, start_ms=5000.0)
+
+        assert len(events_premier) == 1
+        assert len(events_revenu) == 1
+        assert counter.by_line["l1"].total == 2
+
+    def test_apres_re_armement_la_ligne_suivante_ne_recompte_pas(self) -> None:
+        """Le ré-armement redonne droit à **un** franchissement, pas à un par ligne."""
+        counter = LineCrossingCounter(
+            (
+                make_line("haute", a=(0.0, 400.0), b=(1920.0, 400.0)),
+                make_line("basse", a=(0.0, 600.0), b=(1920.0, 600.0)),
+            ),
+            (),
+            min_hits=2,
+        )
+        path = straight_line((900.0, 300.0), (900.0, 700.0), steps=12)
+
+        premier = session_track(track_path(1, CAR, path)[0], hits=5, global_id=42)
+        _run(counter, premier, path)
+
+        revenu = session_track(track_path(7, CAR, path)[0], hits=5, global_id=42, reid_count=1)
+        events_revenu = _run(counter, revenu, path, start_ms=5000.0)
+
+        assert len(events_revenu) == 1
+        assert counter.by_line["haute"].total == 2
+        assert counter.by_line["basse"].total == 0
+
+    def test_le_badge_survit_au_re_armement(self) -> None:
+        """Le ✓ ne se rétracte pas parce que le véhicule est revenu.
+
+        `counted_identities()` accumule les générations : le retirer entre la
+        ré-identification et le nouveau franchissement ferait clignoter l'overlay
+        sur un véhicule que le total a bel et bien compté.
+        """
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        path = straight_line((900.0, 300.0), (900.0, 700.0), steps=6)
+
+        premier = session_track(track_path(1, CAR, path)[0], hits=5, global_id=42)
+        _run(counter, premier, path)
+
+        # Revenu, ré-identifié, mais pas encore recroisé : toujours ✓.
+        loin = straight_line((900.0, 200.0), (900.0, 300.0), steps=4)
+        revenu = session_track(track_path(7, CAR, loin)[0], hits=5, global_id=42, reid_count=1)
+        _run(counter, revenu, loin, start_ms=5000.0)
+
+        assert counter.counted_identities() == {42}
+        assert counter.by_line["l1"].total == 1
 
 
 class TestReportSousMinHits:
@@ -405,7 +473,13 @@ class TestInvariantsComptables:
 
 
 class TestPlusieursLignes:
-    def test_une_piste_qui_traverse_deux_lignes_compte_dans_les_deux(self) -> None:
+    def test_une_piste_qui_traverse_deux_lignes_ne_compte_que_sur_la_premiere(self) -> None:
+        """Première ligne servie, les suivantes restent à zéro (ADR 0009).
+
+        C'est la règle métier : plusieurs lignes en travers d'une même voie
+        servent à *situer* le passage, pas à le multiplier. Le total global reste
+        la somme du détail par ligne — un seul des deux compteurs a bougé.
+        """
         counter = LineCrossingCounter(
             (
                 make_line("haute", a=(0.0, 400.0), b=(1920.0, 400.0)),
@@ -419,9 +493,10 @@ class TestPlusieursLignes:
 
         events = _run(counter, track, path)
 
-        assert len(events) == 2
+        assert len(events) == 1
+        assert events[0].line_id == "haute"  # type: ignore[attr-defined]
         assert counter.by_line["haute"].total == 1
-        assert counter.by_line["basse"].total == 1
+        assert counter.by_line["basse"].total == 0
 
     def test_la_premiere_frame_sans_centroide_precedent_ne_leve_pas(self) -> None:
         """`previous_centroid` est `None` à la naissance d'une piste.
@@ -443,3 +518,64 @@ class TestPlusieursLignes:
         )
 
         assert counter.observe((track,), 0.0, 0) == ()
+
+
+class TestTexteDePlaqueTamponne:
+    """Le texte voté que le compteur recopie sur ses événements.
+
+    `test_une_plaque_lue_apres_le_franchissement_ne_figure_pas_sur_la_ligne` affirme
+    **volontairement une limite** : c'est la conséquence de l'ordonnancement de
+    `feed()`, pas un défaut. L'écrire est ce qui empêchera qu'on le signale comme un
+    bug dans six mois. Voir ADR 0007.
+    """
+
+    def test_un_franchissement_porte_le_texte_vote_de_la_piste(self) -> None:
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        path = straight_line((900.0, 300.0), (900.0, 700.0), steps=6)
+        track = session_track(track_path(1, CAR, path)[0], hits=5)
+        track.plate_text = "AB-123-CD"
+        track.plate_text_score = 0.88
+
+        events = _run(counter, track, path)
+
+        assert len(events) == 1
+        event = events[0]
+        assert isinstance(event, CrossingEvent)
+        assert event.plate_text == "AB-123-CD"
+        assert event.plate_text_score == 0.88
+
+    def test_une_piste_sans_texte_tamponne_none_et_non_une_chaine_vide(self) -> None:
+        """« Pas encore lu » est une information ; une plaque vide n'en est pas une."""
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        path = straight_line((900.0, 300.0), (900.0, 700.0), steps=6)
+        track = session_track(track_path(1, CAR, path)[0], hits=5)
+
+        events = _run(counter, track, path)
+
+        event = events[0]
+        assert isinstance(event, CrossingEvent)
+        assert event.plate_text is None
+        assert event.plate_text_score is None
+
+    def test_une_plaque_lue_apres_le_franchissement_ne_figure_pas_sur_la_ligne(self) -> None:
+        """La limite d'ordonnancement, affirmée exprès.
+
+        Les franchissements de la frame N sortent de `feed()` **avant** la passe OCR
+        de la frame N. Une plaque lue pour la première fois sur la frame même du
+        franchissement n'apparaît donc pas sur cette ligne — elle apparaît dans le
+        registre, qui agrège toute la vie du véhicule. Un franchissement dit ce que
+        le serveur savait quand il a compté ; le registre dit ce qu'il sait à la fin.
+        """
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        path = straight_line((900.0, 300.0), (900.0, 700.0), steps=6)
+        track = session_track(track_path(1, CAR, path)[0], hits=5)
+
+        events = _run(counter, track, path)
+
+        # La plaque n'est lue qu'après coup : l'événement déjà émis est immuable.
+        track.plate_text = "AB-123-CD"
+        track.plate_text_score = 0.88
+
+        event = events[0]
+        assert isinstance(event, CrossingEvent)
+        assert event.plate_text is None

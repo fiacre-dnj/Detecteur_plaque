@@ -16,7 +16,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from traffic_analysis.features.counting.application.ports import EngineFrame, EngineSpec
+from traffic_analysis.features.counting.application.ports import (
+    EngineFrame,
+    EngineSpec,
+    PlateText,
+)
 from traffic_analysis.features.counting.domain.geometry import Point
 from traffic_analysis.features.counting.domain.models import (
     VEHICLE_CLASS_IDS,
@@ -26,6 +30,10 @@ from traffic_analysis.features.counting.domain.models import (
     TrackObservation,
     VideoInfo,
     ZoneDef,
+)
+from traffic_analysis.features.counting.domain.plate_ocr_policy import (
+    PlateOcrOptions,
+    PlateOcrPolicy,
 )
 from traffic_analysis.features.counting.domain.reid import ReidOptions
 from traffic_analysis.features.counting.domain.tracking_session import (
@@ -64,6 +72,11 @@ __all__ = [
     "EngineFrame",
     "EngineSpec",
     "PlateDetection",
+    # Réexportés pour l'adaptateur d'OCR, qui vit dans `models_registry` : une autre
+    # feature n'importe jamais `counting/domain/`.
+    "PlateOcrOptions",
+    "PlateOcrPolicy",
+    "PlateText",
     "Point",
     "PreviewSample",
     "Progress",
@@ -95,7 +108,28 @@ class AnalysisJobConfig:
     mask_outside_zones: bool = False
     frame_stride: int = 1
     detect_plates: bool = False
+    #: Seuil du détecteur de plaques pour **cette** course. `None` garde celui du
+    #: déploiement.
+    #:
+    #: Il voyage par requête, contrairement aux seuils d'OCR ci-dessous, parce qu'il
+    #: répond à une question que seul l'utilisateur peut trancher devant sa vidéo :
+    #: « trop de rectangles, ou pas assez ». Il descend jusqu'à l'adaptateur en
+    #: argument de `detect_many`, ce qui lève l'impasse où ADR 0007 l'avait laissé
+    #: mort — annoncé au contrat et sans effet, le pire état d'un réglage.
     plate_confidence: float | None = None
+    #: Lire le **texte** des plaques localisées, en plus de les encadrer.
+    #:
+    #: Distinct de `detect_plates`, et subordonné à lui : lire sans détecter n'a pas
+    #: de sens, il n'y aurait aucune boîte à lire. Un drapeau à part parce que l'OCR
+    #: a son propre coût, son propre modèle — donc sa propre disponibilité — et parce
+    #: que persister un texte de plaque franchit un cran de confidentialité qui
+    #: mérite un consentement explicite plutôt qu'un effet de bord (ADR 0007).
+    #:
+    #: Aucun seuil OCR ici, délibérément : ils vivent tous dans `Settings`. Ce sont
+    #: des arbitrages de déploiement — combien de cœurs, quelle cadence, quelles
+    #: variantes de prétraitement — que l'utilisateur d'une analyse n'a pas à
+    #: connaître, et dont il ne pourrait pas juger l'effet sur sa vidéo.
+    read_plate_text: bool = False
     pixels_per_meter: float | None = None
     reid_min_similarity: float = 0.80
     max_lost_ms: float = 2500.0

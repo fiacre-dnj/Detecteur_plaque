@@ -131,6 +131,7 @@ def session_track(
     *,
     hits: int = 5,
     global_id: int = 1,
+    reid_count: int = 0,
     previous: XY | None = None,
     identity_label: str = "",
 ) -> SessionTrack:
@@ -143,6 +144,10 @@ def session_track(
     `hits=5` et `global_id=1` par défaut : la piste est confirmée et identifiée,
     donc le compteur peut compter. Un scénario qui teste la montée en confiance
     passe explicitement `hits=0`.
+
+    `reid_count` est la **génération** de l'identité, ce que le compteur lit pour
+    savoir s'il doit se ré-armer. Le passer à la main est ce qui permet de tester
+    le recomptage après ré-identification sans monter une galerie.
     """
     return SessionTrack(
         track_id=observation.track_id,
@@ -154,5 +159,6 @@ def session_track(
         previous_centroid=Point(*previous) if previous else None,
         hits=hits,
         global_id=global_id,
+        reid_count=reid_count,
         identity_label=identity_label,
     )

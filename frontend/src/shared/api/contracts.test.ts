@@ -91,12 +91,54 @@ describe("contrat d'une piste", () => {
       "hits",
       "identityLabel",
       "label",
+      "plateText",
+      "plateTextScore",
       "plates",
       "reidCount",
       "score",
       "speedPxS",
       "trackId",
     ]);
+  });
+
+  it("porte `plateText` voté en plus des lectures de l'image", () => {
+    // Même raison d'être qu'`identityLabel` : l'OCR est étranglée côté serveur et ne
+    // remplit `plates[].text` qu'une image sur trois. C'est `plateText` que l'overlay
+    // dessine, sinon l'étiquette clignoterait.
+    const voted = result.timeline
+      .flatMap((row) => row.tracks)
+      .find((candidate) => candidate.plateText !== null);
+    expect(voted).toBeDefined();
+    if (voted === undefined) return;
+
+    expect(voted.plateText).toBe("AB-123-CD");
+    expect(typeof voted.plateTextScore).toBe("number");
+  });
+
+  it("ne vote aucun texte sur la première image d'un véhicule", () => {
+    // Le vote exige **deux lectures concordantes** : une lecture unique *est* la
+    // lecture de l'image courante, exactement ce que l'invariant 4 interdit de
+    // publier. Un texte présent dès la première image signifierait que le serveur
+    // publie la frame et non le vote — et deux relectures du même clip donneraient
+    // alors deux plaques différentes.
+    const [firstRow] = result.timeline;
+    expect(firstRow).toBeDefined();
+    if (firstRow === undefined) return;
+
+    for (const candidate of firstRow.tracks) {
+      expect(candidate.plateText).toBeNull();
+    }
+  });
+
+  it("le texte voté d'une piste est celui du registre pour la même identité", () => {
+    // Le vote agrège sous `globalId` (invariant 4). Un désaccord ici serait
+    // structurel : la piste et le registre liraient deux agrégats différents.
+    const byId = new Map(result.vehicles.map((vehicle) => [vehicle.globalId, vehicle]));
+
+    for (const candidate of result.timeline.flatMap((row) => row.tracks)) {
+      if (candidate.plateText === null) continue;
+      expect(byId.get(candidate.globalId)?.plateText).toBe(candidate.plateText);
+    }
   });
 
   it("porte `identityLabel` en plus de `label`", () => {
@@ -124,6 +166,32 @@ describe("contrat d'une piste", () => {
     expect(plate.box.x).toBeGreaterThanOrEqual(track.box.x);
     expect(plate.box.x + plate.box.width).toBeLessThanOrEqual(track.box.x + track.box.width);
   });
+
+  it("porte le texte de la plaque en plus de sa boîte", () => {
+    const [plate] = track.plates;
+    expect(plate).toBeDefined();
+    if (plate === undefined) return;
+
+    expect(Object.keys(plate).sort()).toEqual(["box", "score", "text", "textScore"]);
+    expect(plate.text).toBe("AB-123-CD");
+    expect(typeof plate.textScore).toBe("number");
+  });
+
+  it("distingue « plaque vue mais illisible » de « aucune plaque »", () => {
+    // L'état que l'interface rate le plus facilement, et la raison pour laquelle la
+    // fixture porte deux véhicules dont un seul est lu. Une plaque vue sans texte garde
+    // un `score` de détection bien réel : une case vide en face serait une
+    // contradiction avec le rectangle jaune visible à l'écran.
+    const unreadable = result.timeline
+      .flatMap((row) => row.tracks)
+      .flatMap((candidate) => candidate.plates)
+      .find((plate) => plate.text === null);
+    expect(unreadable).toBeDefined();
+    if (unreadable === undefined) return;
+
+    expect(unreadable.textScore).toBeNull();
+    expect(unreadable.score).toBeGreaterThan(0);
+  });
 });
 
 describe("invariants que l'affichage ne doit jamais contredire", () => {
@@ -145,10 +213,11 @@ describe("invariants que l'affichage ne doit jamais contredire", () => {
     }
   });
 
-  it("un aller-retour compte une fois dans chaque sens", () => {
-    // La fixture décrit deux véhicules traversant en sens opposés : la
-    // déduplication porte sur `(ligne, identité, sens)` et non sur
-    // `(ligne, identité)`, sinon l'un des deux sens disparaîtrait.
+  it("deux véhicules en sens opposés comptent chacun dans son sens", () => {
+    // La fixture décrit **deux véhicules distincts** traversant en sens
+    // opposés — pas un aller-retour, qui ne compterait qu'une fois depuis
+    // l'ADR 0009. La déduplication porte sur l'identité : deux identités
+    // distinctes comptent toujours chacune.
     const tally = result.stats.byLine.l1;
     expect(tally).toBeDefined();
     if (tally === undefined) return;
@@ -176,6 +245,84 @@ describe("invariants que l'affichage ne doit jamais contredire", () => {
 
   it("uniqueVehicles correspond à la taille du registre", () => {
     expect(result.stats.uniqueVehicles).toBe(result.vehicles.length);
+  });
+
+  it("un franchissement expose la plaque connue à l'instant du comptage", () => {
+    const [crossing] = result.crossings;
+    expect(crossing).toBeDefined();
+    if (crossing === undefined) return;
+
+    expect(Object.keys(crossing).sort()).toEqual([
+      "direction",
+      "frameIndex",
+      "globalId",
+      "label",
+      "lineId",
+      "plateText",
+      "plateTextScore",
+      "timestampMs",
+      "trackId",
+    ]);
+
+    // Un score sans texte serait une confiance dans le vide, que l'interface
+    // afficherait comme un fait.
+    for (const event of result.crossings) {
+      if (event.plateText === null) expect(event.plateTextScore).toBeNull();
+    }
+  });
+
+  it("le registre est l'autorité sur la plaque, le journal dit ce qu'on savait", () => {
+    // Un franchissement peut porter `null` là où le registre porte le texte : côté
+    // serveur, les franchissements d'une image sont émis **avant** sa passe OCR. Les
+    // deux disent la vérité de ce qu'ils décrivent — mais quand les deux portent un
+    // texte, ce doit être le même, sinon le vote n'agrège pas sous `globalId`.
+    const byId = new Map(result.vehicles.map((vehicle) => [vehicle.globalId, vehicle]));
+
+    for (const crossing of result.crossings) {
+      if (crossing.plateText === null) continue;
+      expect(byId.get(crossing.globalId)?.plateText).toBe(crossing.plateText);
+    }
+  });
+});
+
+describe("contrat du registre des véhicules", () => {
+  it("expose une ligne complète, les deux confiances de plaque comprises", () => {
+    const [vehicle] = result.vehicles;
+    expect(vehicle).toBeDefined();
+    if (vehicle === undefined) return;
+
+    expect(Object.keys(vehicle).sort()).toEqual([
+      "avgSpeedKmh",
+      "avgSpeedPxS",
+      "bestPlateScore",
+      "crossedLines",
+      "firstSeenMs",
+      "globalId",
+      "label",
+      "lastSeenMs",
+      "plateText",
+      "plateTextScore",
+      "reidCount",
+      "zonesVisited",
+    ]);
+  });
+
+  it("un texte lu implique toujours une plaque détectée", () => {
+    // Le détecteur précède l'OCR : un texte sans score de détection serait un texte
+    // lu sur rien, donc un bug de câblage entre les deux passes.
+    for (const vehicle of result.vehicles) {
+      if (vehicle.plateText !== null) expect(vehicle.bestPlateScore).not.toBeNull();
+    }
+  });
+
+  it("distingue « plaque vue mais illisible » de « aucune plaque »", () => {
+    const unreadable = result.vehicles.find((vehicle) => vehicle.plateText === null);
+    expect(unreadable).toBeDefined();
+    if (unreadable === undefined) return;
+
+    // Vue — le score de détection le prouve — mais aucune lecture ne fait consensus.
+    expect(unreadable.bestPlateScore).not.toBeNull();
+    expect(unreadable.plateTextScore).toBeNull();
   });
 });
 
@@ -219,7 +366,7 @@ describe("contrat de l'aperçu d'une analyse en cours", () => {
     ]);
   });
 
-  it("décrit une piste exactement comme la timeline", () => {
+  it("décrit une piste exactement comme la timeline, plaques comprises", () => {
     // C'est cette égalité de forme qui permet à `drawScene` de dessiner
     // l'aperçu, la relecture et le direct sans une seule branche.
     const [track] = preview.tracks;
@@ -233,6 +380,19 @@ describe("contrat de l'aperçu d'une analyse en cours", () => {
     if (fromTimeline === undefined) return;
 
     expect(Object.keys(track).sort()).toEqual(Object.keys(fromTimeline).sort());
+
+    // **Les clés imbriquées aussi.** Comparer seulement le premier niveau laisserait
+    // passer un aperçu dont les plaques n'auraient pas de `text` : les rectangles
+    // seraient muets pendant l'analyse et bavards à la relecture, et rien ici ne le
+    // verrait — c'est précisément le mode de divergence que ce test existe pour
+    // attraper.
+    const [previewPlate] = track.plates;
+    const [timelinePlate] = fromTimeline.plates;
+    expect(previewPlate).toBeDefined();
+    expect(timelinePlate).toBeDefined();
+    if (previewPlate === undefined || timelinePlate === undefined) return;
+
+    expect(Object.keys(previewPlate).sort()).toEqual(Object.keys(timelinePlate).sort());
   });
 
   it("annonce les dimensions décodées par le serveur", () => {

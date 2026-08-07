@@ -14,11 +14,18 @@ l'application, ou une contrainte d'environnement qui a fait perdre du temps.
    porter sur l'**identité** (`globalId`), pas sur la piste. Reproduit avant
    correction : un véhicule qui franchit, disparaît 15 frames et revient avec une
    boîte qui tremble sur la ligne comptait **2**.
+   *La clé exacte a changé depuis : elle est `(identité, génération)` et non plus
+   `(ligne, identité, sens)` — un véhicule compte une fois, toutes lignes et tous
+   sens confondus ([ADR 0009](../docs/adr/0009-un-comptage-par-vehicule.md)). Le
+   piège, lui, est intact : rien de ce garde ne doit vivre sur la piste. C'est
+   pourquoi `_LineState` ne porte plus que de la géométrie.*
 2. **Le badge ✓ appartient au compteur, pas au tracker.** Écrire `counted` depuis
    la détection de franchissement peignait ✓ pour un franchissement que le garde
    d'identité supprimait ensuite : l'overlay affirmait qu'un véhicule était compté
    alors que le compteur n'avait pas bougé. C'est exactement ainsi que le bug a
-   été rapporté.
+   été rapporté. Symétriquement, le ✓ ne doit **jamais se rétracter** :
+   `counted_identities()` accumule les générations, donc un véhicule ré-identifié
+   reste marqué compté en attendant de recroiser.
 3. **Relâcher avant d'admettre.** Le tracker détruit une piste morte et crée sa
    remplaçante **dans le même appel** ; relâcher les identités après
    `admit_batch` laisse l'ancienne marquée vivante quand la remplaçante la

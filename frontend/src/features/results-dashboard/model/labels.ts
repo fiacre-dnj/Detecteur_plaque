@@ -98,6 +98,12 @@ export function formatFrameLatency(processingFps: number): string {
  * voie. C'est l'information que ni « 48 uniques » ni « 5 franchissements » ne
  * donnent séparément, et qu'on ne calcule jamais de tête devant un écran.
  *
+ * Le chiffre se lit littéralement depuis l'ADR 0009 : un véhicule compte une
+ * fois, toutes lignes confondues, donc le rapport est vraiment « combien des
+ * véhicules vus sont passés par la ligne ». Avec l'ancien garde par ligne et par
+ * sens, un second tracé suffisait à faire doubler le taux sans qu'un véhicule de
+ * plus soit passé.
+ *
  * Rendu `null` sans véhicule : afficher « 0 % » quand rien n'a encore été détecté
  * se lirait comme un comptage en échec, alors que l'analyse commence à peine.
  */
@@ -109,9 +115,10 @@ export function crossingRate(uniqueVehicles: number, crossings: number): number 
 /**
  * Le taux, en pourcentage.
  *
- * Non borné à 100 % : un aller-retour compte deux fois pour un seul véhicule, et
- * une ligne posée sur un rond-point peut légitimement dépasser 100 %. Écrêter
- * masquerait précisément le cas intéressant.
+ * Non borné à 100 %, et pour une seule raison depuis l'ADR 0009 : un véhicule
+ * disparu puis reconnu à son retour recompte. Une caméra qui voit passer la même
+ * navette plusieurs fois dépasse donc légitimement 100 %, et écrêter masquerait
+ * précisément ce cas.
  */
 export function formatCrossingRate(rate: number | null): string {
   return rate === null ? "—" : `${Math.round(rate * 100)} %`;

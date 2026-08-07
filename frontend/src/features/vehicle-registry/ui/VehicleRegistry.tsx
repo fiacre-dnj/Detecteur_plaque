@@ -16,11 +16,12 @@
  *   est simplement dans une autre unité.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 import { directionLabel, formatSceneTime, formatScore, formatSpeed } from "@/features/results-dashboard";
 import type { AnalysisResult, VehicleRecord } from "@/shared/api/contracts";
 import { classColor } from "@/shared/config/palettes";
+import { plateCell, plateTitle } from "@/shared/lib/plate";
 import { Button } from "@/shared/ui/Button";
 
 import {
@@ -30,6 +31,7 @@ import {
   resultJson,
   vehiclesCsv,
 } from "../model/exportCsv";
+import { filterByPlate } from "../model/filterPlate";
 import { INITIAL_ROWS, ROW_HEIGHT, shouldVirtualise, visibleWindow } from "../model/virtualise";
 
 interface VehicleRegistryProps {
@@ -53,27 +55,47 @@ export function VehicleRegistry({
 }: VehicleRegistryProps) {
   const [expanded, setExpanded] = useState(false);
   const [scrollTop, setScrollTop] = useState(0);
+  // L'état de recherche vit **ici**, comme `expanded` et `scrollTop` : c'est un état de
+  // vue de ce tableau. Le hisser dans `StudioPage` ferait remonter chaque frappe dans le
+  // composant qui rend aussi le canvas. La règle « le câblage passe par StudioPage »
+  // vise les dépendances **entre features**, pas l'état interne d'un composant.
+  const [plateQuery, setPlateQuery] = useState("");
+  // Le champ répond au clavier, le tableau rattrape. Pas de debounce maison : React sait
+  // déjà déprioriser ce rendu, et il n'existe aucun utilitaire de debounce dans ce dépôt.
+  const deferredQuery = useDeferredValue(plateQuery);
   const scroller = useRef<HTMLDivElement>(null);
 
-  const virtualised = expanded && shouldVirtualise(vehicles.length);
-  const shown = expanded ? vehicles : vehicles.slice(0, INITIAL_ROWS);
-  const remaining = vehicles.length - shown.length;
+  const filtered = useMemo(() => filterByPlate(vehicles, deferredQuery), [vehicles, deferredQuery]);
+
+  const virtualised = expanded && shouldVirtualise(filtered.length);
+  const shown = expanded ? filtered : filtered.slice(0, INITIAL_ROWS);
+  const remaining = filtered.length - shown.length;
 
   const window = useMemo(
     () =>
       virtualised
-        ? visibleWindow(vehicles.length, scrollTop, VIEWPORT_HEIGHT)
+        ? visibleWindow(filtered.length, scrollTop, VIEWPORT_HEIGHT)
         : { start: 0, end: shown.length, totalHeight: 0, offsetTop: 0 },
-    [virtualised, vehicles.length, scrollTop, shown.length],
+    [virtualised, filtered.length, scrollTop, shown.length],
   );
 
-  const rows = virtualised ? vehicles.slice(window.start, window.end) : shown;
+  const rows = virtualised ? filtered.slice(window.start, window.end) : shown;
 
   const handleScroll = useCallback(() => {
     const element = scroller.current;
     if (element !== null) setScrollTop(element.scrollTop);
   }, []);
 
+  // Remise à zéro du défilement quand la recherche change : sinon `visibleWindow`
+  // calcule une fenêtre au-delà de la fin d'un jeu réduit, et le tableau **paraît vide**
+  // alors qu'il contient des lignes.
+  useEffect(() => {
+    setScrollTop(0);
+    if (scroller.current !== null) scroller.current.scrollTop = 0;
+  }, [deferredQuery]);
+
+  // Ce garde reste sur la liste **non filtrée** : il annoncerait sinon un registre vide
+  // alors que c'est la recherche qui ne rend rien — deux causes très différentes.
   if (vehicles.length === 0) {
     return (
       <section aria-labelledby="registry-title">
@@ -98,7 +120,11 @@ export function VehicleRegistry({
           <Th>Lignes franchies</Th>
           <Th className="w-24">Vitesse</Th>
           <Th className="w-16">Ré-id</Th>
-          <Th className="w-20">Plaque</Th>
+          {/* Deux colonnes et non une cellule à deux valeurs : une cellule sur deux
+              lignes casserait `ROW_HEIGHT`, dont la virtualisation dépend. `w-20`
+              tenait « 71 % » mais ni `AB-123-CD` ni « illisible ». */}
+          <Th className="w-28">Plaque</Th>
+          <Th className="w-20">Conf. lecture</Th>
         </tr>
       </thead>
       <tbody>
@@ -148,7 +174,26 @@ export function VehicleRegistry({
             <Td className="tabular">
               {vehicle.reidCount > 0 ? `↻ ${vehicle.reidCount}` : "—"}
             </Td>
-            <Td className="tabular">{formatScore(vehicle.bestPlateScore)}</Td>
+            <Td
+              // Le texte lu est de l'information de premier plan ; « illisible » et
+              // « — » sont des états, donc atténués. C'est la couleur qui dit « ceci
+              // est une lecture » sans ajouter un mot dans la cellule.
+              className={vehicle.plateText === null ? "text-ink-dim" : "tabular text-ink"}
+            >
+              {/* Jamais une cellule vide : « rien » se lirait « pas de plaque » alors
+                  que `bestPlateScore` prouve le contraire. L'infobulle porte les deux
+                  confiances, qui répondent à deux questions différentes. */}
+              <span
+                title={plateTitle(
+                  vehicle.plateText,
+                  vehicle.plateTextScore,
+                  vehicle.bestPlateScore,
+                )}
+              >
+                {plateCell(vehicle.plateText, vehicle.bestPlateScore)}
+              </span>
+            </Td>
+            <Td className="tabular">{formatScore(vehicle.plateTextScore)}</Td>
           </tr>
         ))}
       </tbody>
@@ -161,7 +206,22 @@ export function VehicleRegistry({
         <h3 id="registry-title" className="label-micro">
           Registre des véhicules
         </h3>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2">
+            <span className="sr-only">Rechercher une plaque</span>
+            <input
+              type="search"
+              value={plateQuery}
+              onChange={(event) => setPlateQuery(event.target.value)}
+              maxLength={16}
+              // Un exemple plutôt qu'une consigne : il montre du même coup que la
+              // ponctuation et la casse n'ont pas d'importance.
+              placeholder="Plaque — ex. 2418tbe"
+              className="w-44 rounded-input bg-elevated px-3 py-1.5 text-small text-ink placeholder:text-ink-dim"
+            />
+          </label>
+          {/* Les exports restent sur `result` complet : un CSV amputé par une recherche
+              à l'écran serait un fichier dont personne ne saurait ce qu'il contient. */}
           <Button
             size="sm"
             variant="ghost"
@@ -204,6 +264,21 @@ export function VehicleRegistry({
         </div>
       </div>
 
+      {/* Le second vide, distinct de celui du registre entier. Sans le bouton
+          d'effacement, un utilisateur qui a tapé une plaque absente voit un tableau vide
+          et conclut que l'analyse a échoué. */}
+      {filtered.length === 0 ? (
+        <p className="rounded-card bg-surface p-4 text-caption text-ink-dim shadow-card">
+          Aucune plaque ne contient « {plateQuery} ».{" "}
+          <button
+            type="button"
+            onClick={() => setPlateQuery("")}
+            className="underline transition-colors hover:text-ink"
+          >
+            Effacer la recherche
+          </button>
+        </p>
+      ) : (
       <div className="overflow-hidden rounded-card bg-surface shadow-card">
         {virtualised ? (
           <div
@@ -222,6 +297,7 @@ export function VehicleRegistry({
           <div className="overflow-x-auto">{table}</div>
         )}
       </div>
+      )}
 
       {remaining > 0 && (
         <button

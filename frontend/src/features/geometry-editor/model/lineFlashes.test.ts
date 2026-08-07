@@ -21,6 +21,10 @@ function crossing(lineId: string, direction = 1, globalId = 1): CrossingEvent {
     direction,
     timestampMs: 1000,
     frameIndex: 25,
+    // Le clignotement d'une ligne ne connaît pas les plaques ; le littéral doit
+    // seulement rester complet.
+    plateText: null,
+    plateTextScore: null,
   };
 }
 

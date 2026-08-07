@@ -23,8 +23,16 @@ import { BOUNDS, DEFAULT_CONFIDENCE, type AnalysisSettings } from "../model/sett
 interface SettingsPanelsProps {
   settings: AnalysisSettings;
   models: readonly VehicleModel[];
-  /** Faux quand le serveur signale le modèle de plaques absent. */
+  /** Faux quand le serveur signale le modèle de **détection** de plaques absent. */
   plateAvailable: boolean;
+  /**
+   * Faux quand le modèle de **lecture** ou son dictionnaire manque.
+   *
+   * Distinct de `plateAvailable` : ce sont deux artefacts, et « détection sans lecture »
+   * est l'état de tout déploiement neuf. Sans ce drapeau, l'interface proposerait une
+   * case qui ne fait rien.
+   */
+  plateOcrAvailable: boolean;
   /** Vrai s'il existe au moins une zone : « ignorer hors zone » en dépend. */
   hasZones: boolean;
   /** Diagnostic de la dernière analyse, `null` avant. */
@@ -37,6 +45,7 @@ export function SettingsPanels({
   settings,
   models,
   plateAvailable,
+  plateOcrAvailable,
   hasZones,
   diagnostics,
   disabled,
@@ -74,13 +83,15 @@ export function SettingsPanels({
           }
         />
 
+        {/* Piloté par `plateAvailable` **seul** : la détection reste utile sans OCR,
+            les rectangles jaunes valident déjà un cadrage. */}
         <Toggle
-          label="Lire les plaques (ANPR)"
+          label="Repérer les plaques (ANPR)"
           checked={settings.detectPlates}
           disabled={disabled || !plateAvailable}
           hint={
             plateAvailable
-              ? "Recadre chaque véhicule suivi et y cherche une plaque — nettement plus lent."
+              ? "Recadre chaque véhicule suivi et y localise sa plaque — plus lent, mais les recadrages d'une même image partent groupés."
               : "Le modèle de plaques n'est pas installé sur ce serveur."
           }
           onChange={(detectPlates) => onChange({ detectPlates })}
@@ -93,7 +104,24 @@ export function SettingsPanels({
             bounds={BOUNDS.plateConfidence}
             disabled={disabled}
             format={(value) => `${Math.round(value * 100)} %`}
+            hint="Seule la meilleure plaque de chaque véhicule est retenue : monter ce seuil en garde moins, pas de plus précises."
             onChange={(plateConfidence) => onChange({ plateConfidence })}
+          />
+        )}
+
+        {/* Une option **de** l'option : elle n'apparaît que si le repérage est actif,
+            parce que lire sans détecter n'a pas de sens — il n'y aurait aucune boîte. */}
+        {settings.detectPlates && (
+          <Toggle
+            label="Lire le texte des plaques (OCR)"
+            checked={settings.readPlateText}
+            disabled={disabled || !plateOcrAvailable}
+            hint={
+              plateOcrAvailable
+                ? "Le texte affiché est voté sur toute la vie du véhicule, pas lu sur une seule image — et il est conservé en base avec le résultat."
+                : "Le modèle de lecture n'est pas installé sur ce serveur : les plaques sont encadrées, leur texte n'est pas lu."
+            }
+            onChange={(readPlateText) => onChange({ readPlateText })}
           />
         )}
       </Section>

@@ -72,6 +72,9 @@ export function vehiclesCsv(result: AnalysisResult): string {
       "Ré-identifications",
       "Vitesse (px/s)",
       "Vitesse (km/h)",
+      // Le texte lu d'abord — c'est ce qu'on cherche —, puis les deux confiances.
+      "Plaque",
+      "Confiance lecture",
       "Score plaque",
     ],
     result.vehicles.map((vehicle: VehicleRecord) => [
@@ -86,6 +89,11 @@ export function vehiclesCsv(result: AnalysisResult): string {
       vehicle.reidCount,
       vehicle.avgSpeedPxS,
       vehicle.avgSpeedKmh,
+      // `null` devient une case vide, **pas** « illisible » : un CSV n'est pas une vue,
+      // et un mot dans cette colonne serait une valeur à nettoyer à la main avant tout
+      // tri ou filtre de tableur.
+      vehicle.plateText,
+      vehicle.plateTextScore,
       vehicle.bestPlateScore,
     ]),
   );
@@ -94,7 +102,7 @@ export function vehiclesCsv(result: AnalysisResult): string {
 /** Les franchissements en CSV, un par ligne. */
 export function crossingsCsv(result: AnalysisResult): string {
   return toCsv(
-    ["Ligne", "Identité", "Piste", "Type", "Sens", "Horodatage", "Image"],
+    ["Ligne", "Identité", "Piste", "Type", "Sens", "Horodatage", "Image", "Plaque"],
     result.crossings.map((event) => [
       event.lineId,
       event.globalId,
@@ -103,6 +111,9 @@ export function crossingsCsv(result: AnalysisResult): string {
       directionLabel(event.direction),
       formatSceneTime(event.timestampMs),
       event.frameIndex,
+      // Ce que le serveur savait au moment de compter — souvent vide alors que le
+      // registre porte le texte, et c'est normal (ADR 0007).
+      event.plateText,
     ]),
   );
 }

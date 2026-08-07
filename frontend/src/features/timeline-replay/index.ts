@@ -12,6 +12,7 @@ export {
 export {
   RATE_MIN_ELAPSED_MS,
   TRAIL_LENGTH,
+  crossingsUpTo,
   frameAt,
   frameIndexAt,
   hasRate,

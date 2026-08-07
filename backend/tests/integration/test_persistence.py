@@ -98,6 +98,11 @@ def _result(job_id: str = "job-1", *, vehicles: int = 3, crossings: int = 5) -> 
             avg_speed_px_s=120.0 + index,
             avg_speed_kmh=None,
             best_plate_score=0.7 if index == 0 else None,
+            # Seul le véhicule 1 a une plaque **lue**. Les autres couvrent les deux
+            # autres états : « vue mais illisible » n'existe pas ici puisque seul le
+            # premier a un score de détection, donc les suivants sont « sans plaque ».
+            plate_text="AB-123-CD" if index == 0 else None,
+            plate_text_score=0.88 if index == 0 else None,
         )
         for index in range(vehicles)
     )
@@ -110,6 +115,10 @@ def _result(job_id: str = "job-1", *, vehicles: int = 3, crossings: int = 5) -> 
             direction=1 if index % 2 == 0 else -1,
             timestamp_ms=index * 250.0,
             frame_index=index * 5,
+            # Le premier franchissement porte la plaque connue au moment de compter ;
+            # les autres non, ce qui est le cas le plus fréquent en pratique.
+            plate_text="AB-123-CD" if index == 0 else None,
+            plate_text_score=0.88 if index == 0 else None,
         )
         for index in range(crossings)
     ]
@@ -372,6 +381,135 @@ class TestFiltresEtPagination:
         assert positive.total == 3
         assert all(item["direction"] == 1 for item in positive.items)
         assert all(500.0 <= item["timestampMs"] <= 1000.0 for item in window.items)
+
+
+class TestTexteDePlaque:
+    """L'aller-retour du texte de plaque, et sa recherche.
+
+    **Tous ces tests passent par `save_result_aggregates`**, jamais par un `insert` à
+    la main. C'est le seul chemin qui exerce `_CAMEL_TO_SNAKE` — donc le seul qui
+    attrape l'oubli le plus discret du lot : une clé ajoutée au sérialiseur sans son
+    entrée de traduction fait échouer l'insertion en lot **à la fin d'une analyse de
+    plusieurs minutes**, au moment d'écrire les agrégats.
+    """
+
+    async def test_le_registre_conserve_le_texte_et_ses_deux_confiances(
+        self, repository: SqlAlchemyJobRepository
+    ) -> None:
+        await repository.add(_job())
+        await repository.save_result_aggregates("job-1", _result(vehicles=3))
+
+        page = await repository.list_vehicles("job-1", PageParams())
+        first = next(item for item in page.items if item["globalId"] == 1)
+
+        assert first["plateText"] == "AB-123-CD"
+        assert first["plateTextScore"] == pytest.approx(0.88)
+        # La confiance de **détection** est distincte de celle de la lecture.
+        assert first["bestPlateScore"] == pytest.approx(0.7)
+
+    async def test_un_vehicule_sans_lecture_rend_null_et_non_une_chaine_vide(
+        self, repository: SqlAlchemyJobRepository
+    ) -> None:
+        await repository.add(_job())
+        await repository.save_result_aggregates("job-1", _result(vehicles=3))
+
+        page = await repository.list_vehicles("job-1", PageParams())
+        second = next(item for item in page.items if item["globalId"] == 2)
+
+        assert second["plateText"] is None
+        assert second["plateTextScore"] is None
+
+    async def test_les_franchissements_conservent_la_plaque_du_moment(
+        self, repository: SqlAlchemyJobRepository
+    ) -> None:
+        await repository.add(_job())
+        await repository.save_result_aggregates("job-1", _result(crossings=4))
+
+        page = await repository.list_crossings("job-1", PageParams())
+        with_plate = [item for item in page.items if item["plateText"] is not None]
+
+        assert len(with_plate) == 1
+        assert with_plate[0]["plateText"] == "AB-123-CD"
+        assert with_plate[0]["plateTextScore"] == pytest.approx(0.88)
+
+    async def test_all_crossings_porte_aussi_la_plaque(
+        self, repository: SqlAlchemyJobRepository
+    ) -> None:
+        """Le chemin de l'export CSV, distinct de la lecture paginée."""
+        await repository.add(_job())
+        await repository.save_result_aggregates("job-1", _result(crossings=4))
+
+        rows = await repository.all_crossings("job-1")
+
+        assert any(row["plateText"] == "AB-123-CD" for row in rows)
+
+    @pytest.mark.parametrize("needle", ["123", "CD", "AB-123-CD", "ab", "ab-123-cd"])
+    async def test_la_recherche_trouve_par_sous_chaine_et_sans_casse(
+        self, repository: SqlAlchemyJobRepository, needle: str
+    ) -> None:
+        """Un opérateur se souvient de quatre chiffres, ou de la fin d'une plaque.
+
+        Une recherche par préfixe seul échouerait sur « CD », et une comparaison
+        sensible à la casse sur « ab » — c'est-à-dire sur les deux formes les plus
+        naturelles à taper.
+        """
+        await repository.add(_job())
+        await repository.save_result_aggregates("job-1", _result(vehicles=3))
+
+        page = await repository.list_vehicles("job-1", PageParams(), plate_text=needle)
+
+        assert page.total == 1
+        assert page.items[0]["plateText"] == "AB-123-CD"
+
+    async def test_une_recherche_sans_correspondance_ne_rend_rien(
+        self, repository: SqlAlchemyJobRepository
+    ) -> None:
+        """Rien, et non tout : c'est l'erreur classique d'un filtre mal court-circuité."""
+        await repository.add(_job())
+        await repository.save_result_aggregates("job-1", _result(vehicles=3))
+
+        page = await repository.list_vehicles("job-1", PageParams(), plate_text="ZZ999")
+
+        assert page.total == 0
+
+    async def test_une_recherche_vide_n_exclut_personne(
+        self, repository: SqlAlchemyJobRepository
+    ) -> None:
+        """`?plateText=` dans une URL arrive comme chaîne vide, pas comme absence."""
+        await repository.add(_job())
+        await repository.save_result_aggregates("job-1", _result(vehicles=3))
+
+        page = await repository.list_vehicles("job-1", PageParams(), plate_text="")
+
+        assert page.total == 3
+
+    async def test_la_recherche_se_combine_avec_les_autres_filtres(
+        self, repository: SqlAlchemyJobRepository
+    ) -> None:
+        await repository.add(_job())
+        await repository.save_result_aggregates("job-1", _result(vehicles=4))
+
+        found = await repository.list_vehicles(
+            "job-1", PageParams(), label="car", has_plate=True, plate_text="123"
+        )
+        contradictory = await repository.list_vehicles(
+            "job-1", PageParams(), label="truck", plate_text="123"
+        )
+
+        assert found.total == 1
+        # Les critères s'accumulent : le véhicule 1 est une voiture, pas un camion.
+        assert contradictory.total == 0
+
+    async def test_la_recherche_exclut_les_vehicules_sans_lecture(
+        self, repository: SqlAlchemyJobRepository
+    ) -> None:
+        """`plate_text IS NULL` ne doit jamais satisfaire un `LIKE`."""
+        await repository.add(_job())
+        await repository.save_result_aggregates("job-1", _result(vehicles=4))
+
+        page = await repository.list_vehicles("job-1", PageParams(), plate_text="A")
+
+        assert page.total == 1
 
 
 class TestPurgeTtl:

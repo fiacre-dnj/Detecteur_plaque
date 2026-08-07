@@ -158,6 +158,8 @@ class SqlAlchemyJobRepository:
                 "avg_speed_px_s": record.avg_speed_px_s,
                 "avg_speed_kmh": record.avg_speed_kmh,
                 "best_plate_score": record.best_plate_score,
+                "plate_text": record.plate_text,
+                "plate_text_score": record.plate_text_score,
                 "zones_visited_json": list(record.zones_visited),
                 "crossed_lines_json": serialise_vehicle(record)["crossedLines"],
             }
@@ -225,11 +227,16 @@ class SqlAlchemyJobRepository:
         label: str | None = None,
         min_reid: int | None = None,
         has_plate: bool | None = None,
+        plate_text: str | None = None,
     ) -> Page[dict[str, Any]]:
         """Registre paginé et filtrable, **sans ouvrir le fichier de résultat**.
 
         C'est tout l'intérêt d'avoir dénormalisé : filtrer 10 000 véhicules côté
         client obligerait à télécharger le résultat complet.
+
+        `has_plate` porte sur la **détection**, `plate_text` sur la **lecture** : les
+        deux sont indépendants, et un véhicule peut avoir une plaque vue sans qu'aucune
+        lecture ne fasse consensus.
         """
         criteria = [JobVehicleModel.job_id == job_id]
         if label is not None:
@@ -240,6 +247,24 @@ class SqlAlchemyJobRepository:
             criteria.append(JobVehicleModel.best_plate_score.is_not(None))
         elif has_plate is False:
             criteria.append(JobVehicleModel.best_plate_score.is_(None))
+        if plate_text is not None:
+            needle = plate_text.strip().upper()
+            if needle:
+                # **Sous-chaîne et non préfixe** : un opérateur se souvient souvent de
+                # la fin d'une plaque, ou de quatre chiffres relevés au passage.
+                # L'index `(job_id, plate_text)` ne sert pas un joker de tête, mais le
+                # prédicat `job_id` borne déjà le balayage à quelques milliers de
+                # lignes — une fraction de milliseconde.
+                #
+                # Le `LIKE` de SQLite est insensible à la casse sur l'ASCII ;
+                # l'`upper()` est une ceinture en plus des bretelles, et il rend le
+                # comportement indépendant du moteur — ce qui comptera le jour d'une
+                # migration vers Postgres.
+                #
+                # Le besoin n'est **pas** passé par `normalise_plate_text` : cela
+                # transformerait la recherche partielle `AB-` en `AB` et changerait le
+                # sens de ce que l'utilisateur a tapé.
+                criteria.append(JobVehicleModel.plate_text.like(f"%{needle}%"))
 
         async with self._session_factory() as session:
             total = await session.scalar(
@@ -370,6 +395,12 @@ _CAMEL_TO_SNAKE = {
     "trackId": "track_id",
     "timestampMs": "timestamp_ms",
     "frameIndex": "frame_index",
+    # Ajouter une clé au sérialiseur **sans** l'ajouter ici fait échouer l'insertion
+    # en lot sur une colonne inconnue — c'est-à-dire à la toute fin d'une analyse de
+    # plusieurs minutes, au moment d'écrire les agrégats. C'est la ligne la plus
+    # discrètement risquée de ce module.
+    "plateText": "plate_text",
+    "plateTextScore": "plate_text_score",
 }
 
 
@@ -396,6 +427,8 @@ def _vehicle_payload(model: JobVehicleModel) -> dict[str, Any]:
         "avgSpeedPxS": model.avg_speed_px_s,
         "avgSpeedKmh": model.avg_speed_kmh,
         "bestPlateScore": model.best_plate_score,
+        "plateText": model.plate_text,
+        "plateTextScore": model.plate_text_score,
     }
 
 
@@ -408,4 +441,6 @@ def _crossing_payload(model: JobCrossingModel) -> dict[str, Any]:
         "direction": model.direction,
         "timestampMs": model.timestamp_ms,
         "frameIndex": model.frame_index,
+        "plateText": model.plate_text,
+        "plateTextScore": model.plate_text_score,
     }

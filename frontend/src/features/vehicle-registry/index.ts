@@ -8,6 +8,8 @@ export {
   vehiclesCsv,
 } from "./model/exportCsv";
 
+export { filterByPlate } from "./model/filterPlate";
+
 export {
   INITIAL_ROWS,
   OVERSCAN,

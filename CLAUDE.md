@@ -26,6 +26,12 @@ même tracé donne les mêmes chiffres dans les deux :
   ([ADR 0006](docs/adr/0006-apercu-live-des-analyses.md)) ;
 - **direct** : frames JPEG sur WebSocket, une image en vol à la fois.
 
+En différé **seulement**, une passe ANPR optionnelle localise les plaques puis en
+**lit le texte** (OCR) ; le texte publié est un vote sur la vie du véhicule, pas la
+lecture de la frame courante ([ADR 0007](docs/adr/0007-lecture-du-texte-de-plaque.md)),
+et ce vote tranche caractère par caractère quand deux graphies proches s'égalisent
+([ADR 0008](docs/adr/0008-precision-de-l-anpr.md)). Le direct n'a pas d'ANPR du tout.
+
 ## `prompt/` est la spécification, pas de la documentation
 
 Le dossier [`prompt/`](prompt/) (15 fichiers, à lire dans l'ordre depuis
@@ -50,7 +56,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 860 tests
+uv run pytest                                                            # 1107 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -58,11 +64,12 @@ uv run alembic upgrade head
 uv run alembic revision --autogenerate -m "ajoute la table X"
 uv run python scripts/fetch_weights.py --tiers nano,medium,large,xlarge
 uv run python scripts/fetch_plate_model.py
+uv run python scripts/fetch_plate_ocr_model.py       # modèle OCR + son dictionnaire
 
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 372 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 444 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -155,14 +162,23 @@ Chacun est un bug déjà payé.
 3. **Un compteur affiché est dérivé, jamais accumulé en double.**
    `crossings == Σ by_line[*].total` et `total == positive + negative`.
 4. **On compte sous `identity_label`** (vote majoritaire de la galerie), jamais
-   sous la lecture de la frame courante.
+   sous la lecture de la frame courante. **Le texte de plaque suit la même règle** :
+   ce qui est publié est le vote de `PlateTextVote` sur toute la vie du véhicule,
+   jamais la lecture de la frame — sinon deux relectures du même clip donnent deux
+   plaques.
 5. **Le badge ✓ dérive du tally**, jamais de la comptabilité interne d'une piste.
-6. **La déduplication porte sur `(ligne, identité, sens)`** — pas sur la piste,
-   détruite à chaque occlusion longue, et pas sur `(ligne, identité)`, sinon un
-   aller-retour réel ne compte qu'une fois.
+6. **Un véhicule compte une fois, la ré-identification ré-arme.** La
+   déduplication porte sur `(identité, génération)` — jamais sur la piste,
+   détruite à chaque occlusion longue. Ni la ligne ni le sens n'entrent dans la
+   clé : deux lignes en travers de la même voie ne doublent pas le total (c'est la
+   **première** franchie qui le porte), et un aller-retour compte 1. La génération
+   est `reid_count`, que la galerie n'incrémente que sur une réapparition réelle.
+   [ADR 0009](docs/adr/0009-un-comptage-par-vehicule.md).
 7. **`_release_lost` avant `_resolve_identities`.** Mesuré avec le mauvais ordre :
    2 véhicules uniques et 0 ré-identification ; avec le bon : 1 et 1.
-8. **La timeline stocke des `snapshot()`**, pris **après** la passe ANPR.
+8. **La timeline stocke des `snapshot()`**, pris **après** la passe ANPR **et**
+   après la passe OCR. Un snapshot pris entre les deux porterait des boîtes muettes
+   que l'analyse, elle, avait su lire.
 9. **Un bail (`lease`) par usage de modèle.** Deux `track()` simultanés sur la
    même instance mélangent deux vidéos — des chiffres plausibles et faux.
 10. **Ne jamais déduire une caractéristique d'un modèle de son nom de fichier.**
@@ -220,6 +236,23 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
    variante `dark:` dans les composants, et **les couleurs du canvas ne changent
    pas** — elles sont posées sur de la vidéo, pas sur le fond de page. Amendement
    d'[ADR 0004](docs/adr/0004-systeme-de-design.md).
+8. **OCR de plaque : onnxruntime + PP-OCRv3 rec, en différé seulement, texte voté
+   sur la vie du véhicule.** Aucune dépendance nouvelle — `onnxruntime` et `onnx`
+   étaient déjà des dépendances dures. Ni PaddleOCR (600 Mo de `paddlepaddle` et un
+   téléchargement de poids au runtime) ni EasyOCR.
+   [ADR 0007](docs/adr/0007-lecture-du-texte-de-plaque.md).
+9. **La précision de l'ANPR se joue au filtre géométrique, pas au modèle.** Sur 538
+   détections réelles, 112 étaient la boîte du véhicule entier — dont certaines à
+   0,87 de confiance, donc inatteignables par un seuil. La mosaïque d'inférence
+   existe mais reste **désactivée par défaut** : elle échange du rappel contre de la
+   vitesse (côté 2 : 3,4× pour −16 % de rappel ; côté 3 : 6,6× pour −44 %), et ce
+   n'est pas un arbitrage à faire en silence.
+   [ADR 0008](docs/adr/0008-precision-de-l-anpr.md).
+10. **Un véhicule compte une fois, toutes lignes et tous sens confondus** ; seule
+    une vraie ré-identification lui redonne droit à un franchissement. Plusieurs
+    lignes servent à *situer* un passage, pas à le multiplier. C'est un changement
+    de spécification par rapport à `prompt/03`, qui décrivait un garde
+    `(ligne, identité, sens)`. [ADR 0009](docs/adr/0009-un-comptage-par-vehicule.md).
 
 ## Pièges d'environnement de cette machine
 
@@ -241,6 +274,29 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
   depuis `yolo/`, git-ignoré des deux côtés). Contrairement aux `.onnx` de
   véhicules du dossier `yolo/`, **celui-là est utilisable** : la passe ANPR est
   une simple détection, elle ne demande ni tracker ni ReID.
+- **Cet export est figé à `1×3×640×640` et sa grille d'ancres est une constante.**
+  Vérifié par chirurgie de graphe : rendre le lot ou la résolution dynamiques fait
+  échouer le `Reshape` du DFL. Ni résolution adaptative ni lot sans ré-export, et
+  le `.pt` d'origine n'est pas dans le dépôt. C'est ce qui force la mosaïque comme
+  seul levier de débit ([ADR 0008](docs/adr/0008-precision-de-l-anpr.md)).
+- **L'OCR a un plancher de résolution, mesuré : ~150 px de large.** En dessous elle
+  décroche (80 px → 3/8, 48 px → 0/8), et sur les vidéos de `D:\TesteIA\Video` les
+  plaques font 27 à 88 px : elle n'y lira rien, quel que soit le prétraitement. Elle
+  se tait au lieu d'inventer, ce qui est voulu — mais ne pas conclure à une panne.
+- L'OCR demande **deux** fichiers dans `backend/.weights/` :
+  `license-plate-ocr.onnx` (`en_PP-OCRv3_rec`, 97 classes) et
+  `license-plate-ocr.charset.txt` (`en_dict.txt`, 95 lignes), récupérés ensemble par
+  `scripts/fetch_plate_ocr_model.py`. `plateOcrAvailable` est faux si l'un des deux
+  manque, et c'est délibéré : le dictionnaire **fait partie du contrat du modèle** —
+  l'indice 37 signifie ce que le dictionnaire d'entraînement disait. Un dictionnaire
+  d'une autre taille ne lève rien, il rend des plaques fausses et plausibles ;
+  l'adaptateur refuse donc de charger si les tailles ne correspondent pas.
+- **`en_dict.txt` contient une ligne dont le seul contenu est un espace.** C'est un
+  caractère de l'alphabet, pas un blanc de mise en forme : un `line.strip()` qui
+  l'écarte décale tout ce qui suit de deux crans. Ce bug a traversé 1 030 tests verts
+  et n'a été trouvé qu'en installant les vrais poids — troisième cas où une doublure
+  ne pouvait pas voir. 95 lignes + espace de `use_space_char` + blanc CTC = 97.
+  Voir [ADR 0007](docs/adr/0007-lecture-du-texte-de-plaque.md), « Effet de bord ».
 - **Aucun GPU.** `TRAFFIC_HALF=false`, et les mesures de benchmark sont des mesures
   CPU — à interpréter comme telles.
 - Le frontend est passé de pnpm à **bun** ; `bun.lock` est le lockfile committé.
@@ -264,7 +320,7 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 859 (1 skip) | 372 |
+| Nombre | 1107 (1 skip) | 444 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

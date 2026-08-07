@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
     from pathlib import Path
 
     import numpy as np
@@ -118,11 +118,38 @@ class PlateDetector(Protocol):
     plein cadre ne la voit pas.
     """
 
-    def detect(self, image: npt.NDArray[np.uint8], box: BoundingBox) -> tuple[PlateDetection, ...]:
+    def detect(
+        self, image: npt.NDArray[np.uint8], box: BoundingBox, confidence: float | None = None
+    ) -> tuple[PlateDetection, ...]:
         """Cherche une plaque dans `box`, en coordonnées de l'image **complète**.
+
+        `confidence` remplace le seuil de l'adaptateur pour cet appel. `None` — le
+        cas courant — garde celui de la configuration du service.
 
         Ne lève jamais : une passe ANPR ratée rend une liste vide et journalise.
         Un comptage ne doit pas échouer parce qu'une plaque était illisible.
+        """
+        ...
+
+    def detect_many(
+        self,
+        image: npt.NDArray[np.uint8],
+        boxes: Sequence[BoundingBox],
+        confidence: float | None = None,
+    ) -> tuple[tuple[PlateDetection, ...], ...]:
+        """Cherche une plaque dans **chaque** boîte, et rend un tuple par boîte.
+
+        Un lot et non un recadrage, pour la même raison que `PlateReader.read` : c'est
+        à l'adaptateur de décider comment amortir ses inférences, et il ne peut le
+        faire que s'il voit toute la frame d'un coup. L'implémentation ONNX sait
+        empaqueter plusieurs recadrages dans une seule entrée de réseau — un échange
+        rappel/vitesse qu'elle documente et que le déploiement arbitre.
+
+        Rend **exactement** un tuple par boîte, dans le même ordre : c'est l'appelant
+        qui sait à quelle piste appartient quel recadrage. Un recadrage trop petit
+        rend un tuple vide, il ne décale pas les suivants.
+
+        Ne lève jamais.
         """
         ...
 
@@ -133,5 +160,80 @@ class PlateDetector(Protocol):
         Distinct de « l'objet existe » : les poids sont chargés paresseusement, et
         leur absence ne doit pas empêcher le service de démarrer — l'option est
         simplement signalée indisponible dans `/health` et désactivée dans l'UI.
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class PlateText:
+    """Un texte de plaque lu, tel que le moteur d'OCR le rapporte.
+
+    **Brut** : ni normalisé, ni filtré. La forme canonique est décidée par le domaine
+    (`normalise_plate_text`) et pas par l'adaptateur — sinon deux adaptateurs, ou un
+    adaptateur et sa doublure de test, voteraient sur des chaînes différentes et les
+    tests ne prouveraient plus rien de la normalisation.
+    """
+
+    text: str
+    #: Moyenne des probabilités maximales des pas de temps **retenus** par le
+    #: décodage. Jamais la moyenne sur tous les pas : une plaque de sept caractères
+    #: occupe une dizaine de pas sur les quarante que rend le modèle, et la longue
+    #: traîne de blancs — dont la probabilité frôle 1,0 — tirerait toute confiance
+    #: vers 0,95 en rendant n'importe quel seuil inopérant.
+    score: float
+    #: Confiance de **chaque** caractère, alignée sur `text`. Le consensus par
+    #: caractère du vote en a besoin : une moyenne dit qu'une lecture hésitait, elle
+    #: ne dit pas *où*, et c'est précisément la position litigieuse qu'il faut
+    #: trancher entre `AB123CD` et `AB123CO`.
+    #:
+    #: Vide par défaut, et le vote sait faire sans : un lecteur d'une autre
+    #: implémentation, ou une doublure de test, n'a pas à fabriquer des confiances
+    #: qu'il ne mesure pas. Le vote retombe alors sur la confiance de la lecture
+    #: entière — moins fin, jamais faux.
+    char_scores: tuple[float, ...] = ()
+
+
+@runtime_checkable
+class PlateReader(Protocol):
+    """Lecture des caractères d'une plaque **déjà localisée**.
+
+    Étage **trois** et non deux : le modèle plein cadre ne voit pas la plaque, le
+    détecteur de plaques ne lit pas les caractères. Chaque étage recadre plus près.
+
+    **Un lot et non un recadrage.** La tête de reconnaissance a une entrée fixe
+    48×320 : sur un tenseur si petit, le coût fixe d'un appel d'inférence — traversée
+    de la frontière pybind11, réveil du pool de threads, allocation de l'arène — pèse
+    autant que le calcul lui-même. Quatre plaques en quatre appels le paient quatre
+    fois ; en un appel, une fois. Les GEMM du backbone, eux, sortent enfin du régime
+    où leur synchronisation coûte plus que leur travail.
+    """
+
+    def read(
+        self, image: npt.NDArray[np.uint8], boxes: Sequence[BoundingBox]
+    ) -> tuple[PlateText | None, ...]:
+        """Lit les plaques de `boxes`, en coordonnées de l'image **complète**.
+
+        Rend **exactement** un élément par boîte, dans le même ordre : c'est
+        l'appelant qui sait à quelle détection appartient quelle boîte, et lui rendre
+        une liste plus courte l'obligerait à deviner. `None` signifie « rien de
+        lisible ici » — un refus honnête, pas une erreur.
+
+        Ne lève **jamais** : une lecture ratée rend `(None, …)` et journalise. Un
+        comptage ne doit pas échouer parce qu'une plaque était sale.
+        """
+        ...
+
+    @property
+    def available(self) -> bool:
+        """Les poids **et** le dictionnaire de caractères sont-ils présents ?
+
+        Les deux, et c'est le piège propre à ce port : un `argmax` qui indexe un
+        dictionnaire absent — ou d'une autre taille que celle du modèle — ne lève pas
+        forcément. Il rend une chaîne fausse et parfaitement plausible. Répondre
+        « disponible » avec un seul des deux fichiers produirait des plaques
+        inventées.
+
+        Une vérification de présence et non de chargement, comme
+        `PlateDetector.available` : l'interface interroge `/health` en permanence.
         """
         ...

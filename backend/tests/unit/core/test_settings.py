@@ -96,6 +96,51 @@ class TestValeursVidesEtCommentaires:
         # source, `.env` compris.
         assert _settings(static_dir="").static_dir is None
 
+    def test_les_chemins_d_ocr_retombent_aussi_sur_leurs_defauts(self) -> None:
+        """Le même piège, sur les deux nouveaux chemins.
+
+        Six réglages d'OCR sont des `Path | None` ou `str | None` et rejoignent donc le
+        validateur. Les seuils numériques, eux, n'y sont **pas** : le validateur rend
+        `None`, et `None` sur un `float` non optionnel produirait une erreur de
+        démarrage dont le message ne dirait rien de la vraie cause.
+        """
+        settings = _settings(plate_ocr_model_path="", plate_ocr_charset_path="")
+
+        assert settings.plate_ocr_model_path is None
+        assert settings.plate_ocr_charset_path is None
+        assert (
+            settings.resolved_plate_ocr_model_path
+            == settings.weights_dir / "license-plate-ocr.onnx"
+        )
+        assert (
+            settings.resolved_plate_ocr_charset_path
+            == settings.weights_dir / "license-plate-ocr.charset.txt"
+        )
+
+    def test_un_commentaire_ne_devient_pas_un_chemin_d_ocr(self, tmp_path: Path) -> None:
+        """La même protection, pour les `.env` écrits d'après le nouvel exemple."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "TRAFFIC_PLATE_OCR_MODEL_PATH=    # vide = <weights>/license-plate-ocr.onnx\n"
+            "TRAFFIC_PLATE_OCR_CHARSET_URL=   # à renseigner\n",
+            encoding="utf-8",
+        )
+
+        settings = Settings(_env_file=env_file)  # type: ignore[call-arg]
+
+        assert settings.plate_ocr_model_path is None
+        assert settings.plate_ocr_charset_url is None
+        assert settings.resolved_plate_ocr_model_path.name == "license-plate-ocr.onnx"
+
+    def test_les_chemins_d_ocr_explicites_sont_respectes(self, tmp_path: Path) -> None:
+        settings = _settings(
+            plate_ocr_model_path=str(tmp_path / "autre.onnx"),
+            plate_ocr_charset_path=str(tmp_path / "autre.txt"),
+        )
+
+        assert settings.resolved_plate_ocr_model_path == tmp_path / "autre.onnx"
+        assert settings.resolved_plate_ocr_charset_path == tmp_path / "autre.txt"
+
 
 def test_une_liste_separee_par_des_virgules_est_acceptee() -> None:
     """`docker run -e TRAFFIC_CORS_ORIGINS=a,b` est la forme la plus courante

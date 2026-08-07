@@ -57,9 +57,9 @@ Bons exemples :
 ```
 feat(backend/counting): compte les franchissements par ligne et par sens
 
-Le garde de déduplication porte sur (ligne, identité, sens) et non
-(ligne, identité) : un véhicule qui tremble sur la ligne ne compte qu'une
-fois, mais un aller-retour réel compte une fois dans chaque sens.
+Le garde de déduplication porte sur (identité, génération) et non sur la
+piste, détruite à chaque occlusion longue : un véhicule compte une fois,
+toutes lignes et tous sens confondus, jusqu'à sa ré-identification.
 
 Le côté de la piste est mis à jour même quand le franchissement est rejeté
 par la zone, sinon la piste « regarde dans le mauvais sens » et le

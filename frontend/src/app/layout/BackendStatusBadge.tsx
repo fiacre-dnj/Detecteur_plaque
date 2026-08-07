@@ -48,7 +48,14 @@ export function BackendStatusBadge() {
     health.loadedModels.length > 0
       ? `Résidents : ${health.loadedModels.join(", ")}`
       : "Aucun modèle en mémoire",
-    health.plateAvailable ? "Lecture de plaques disponible" : "Lecture de plaques indisponible",
+    // Trois états et non deux. « Lecture de plaques disponible » décrivait déjà ce qui
+    // n'était qu'une détection ; le corriger maintenant évite qu'un serveur sans OCR
+    // annonce une lecture qu'il ne sait pas faire.
+    !health.plateAvailable
+      ? "Plaques : indisponibles"
+      : health.plateOcrAvailable
+        ? "Plaques : détection et lecture disponibles"
+        : "Plaques : détection seule, sans lecture du texte",
   ].join(" · ");
 
   return (

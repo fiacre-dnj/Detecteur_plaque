@@ -11,6 +11,8 @@ import asyncio
 import json
 from typing import TYPE_CHECKING
 
+import pytest
+
 if TYPE_CHECKING:
     from httpx import AsyncClient
 
@@ -68,6 +70,43 @@ class TestRegistre:
         job_id = await _finished_job(client)
 
         response = await client.get(f"/api/v1/jobs/{job_id}/vehicles?limit=5000")
+
+        assert response.status_code == 422
+
+    async def test_le_registre_expose_le_texte_de_plaque(self, client: AsyncClient) -> None:
+        """Les clés doivent être là même quand la lecture n'a pas tourné.
+
+        Le client a une branche par **valeur**, pas une branche par présence de clé :
+        une clé absente et une clé nulle ne doivent pas se ressembler côté serveur.
+        """
+        job_id = await _finished_job(client)
+
+        vehicle = (await client.get(f"/api/v1/jobs/{job_id}/vehicles")).json()["items"][0]
+
+        assert vehicle["plateText"] is None
+        assert vehicle["plateTextScore"] is None
+
+    async def test_la_recherche_par_plaque_est_acceptee_et_ne_trouve_rien(
+        self, client: AsyncClient
+    ) -> None:
+        """Le scénario n'active pas l'OCR : la route répond, sans résultat.
+
+        Ce qui est vérifié ici est le **câblage** du paramètre jusqu'au dépôt — la
+        sémantique du filtre, elle, est couverte au niveau du dépôt.
+        """
+        job_id = await _finished_job(client)
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/vehicles?plate_text=AB123")
+
+        assert response.status_code == 200
+        assert response.json()["total"] == 0
+
+    async def test_une_recherche_de_plaque_trop_longue_est_refusee(
+        self, client: AsyncClient
+    ) -> None:
+        job_id = await _finished_job(client)
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/vehicles?plate_text={'A' * 20}")
 
         assert response.status_code == 422
 
@@ -164,6 +203,75 @@ class TestExportCsv:
         response = await client.get(f"/api/v1/jobs/{job_id}/export.csv?dataset=tout")
 
         assert response.status_code == 422
+
+    @pytest.mark.parametrize("dataset", ["vehicles", "crossings"])
+    async def test_chaque_ligne_a_autant_de_colonnes_que_l_en_tete(
+        self, client: AsyncClient, dataset: str
+    ) -> None:
+        """Le bug classique de ce module, et **il ne lève rien**.
+
+        Ajouter une colonne à l'en-tête sans l'ajouter aux lignes — ou l'inverse —
+        décale tout le reste du tableau, et cela ne se voit que dans Excel, une fois
+        le fichier transmis à quelqu'un d'autre.
+        """
+        job_id = await _finished_job(client)
+
+        content = (
+            await client.get(f"/api/v1/jobs/{job_id}/export.csv?dataset={dataset}")
+        ).content.decode("utf-8")
+
+        lines = content.lstrip("﻿").splitlines()
+        expected = len(lines[0].split(";"))
+        assert len(lines) > 1, "aucune ligne de données à vérifier"
+        for index, row in enumerate(lines[1:], start=2):
+            assert len(row.split(";")) == expected, f"ligne {index} décalée : {row}"
+
+    async def test_les_colonnes_de_plaque_sont_annoncees_par_l_en_tete(
+        self, client: AsyncClient
+    ) -> None:
+        """Le texte lu et sa confiance, voisins du score de détection."""
+        job_id = await _finished_job(client)
+
+        content = (
+            await client.get(f"/api/v1/jobs/{job_id}/export.csv?dataset=vehicles")
+        ).content.decode("utf-8")
+
+        header = content.lstrip("﻿").splitlines()[0].split(";")
+        assert header.index("Plaque") == header.index("Confiance lecture") - 1
+        assert header.index("Confiance lecture") == header.index("Score de plaque") - 1
+
+    async def test_une_plaque_absente_est_une_case_vide_et_non_le_mot_none(
+        self, client: AsyncClient
+    ) -> None:
+        """Une case vide est triable dans un tableur ; « None » est à nettoyer.
+
+        Le scénario de test n'active pas la lecture de plaques, donc la colonne doit
+        être entièrement vide — et surtout pas porter la représentation Python de
+        `None`, qui est le défaut silencieux d'un `str()` mal placé.
+        """
+        job_id = await _finished_job(client)
+
+        content = (
+            await client.get(f"/api/v1/jobs/{job_id}/export.csv?dataset=vehicles")
+        ).content.decode("utf-8")
+
+        lines = content.lstrip("﻿").splitlines()
+        column = lines[0].split(";").index("Plaque")
+        values = [row.split(";")[column] for row in lines[1:]]
+        assert values
+        assert all(value == "" for value in values), values
+
+    async def test_le_csv_des_franchissements_porte_aussi_la_plaque(
+        self, client: AsyncClient
+    ) -> None:
+        job_id = await _finished_job(client)
+
+        content = (
+            await client.get(f"/api/v1/jobs/{job_id}/export.csv?dataset=crossings")
+        ).content.decode("utf-8")
+
+        header = content.lstrip("﻿").splitlines()[0].split(";")
+        assert header[-2:] == ["Plaque", "Confiance lecture"]
 
 
 class TestSurvieAuRedemarrage:

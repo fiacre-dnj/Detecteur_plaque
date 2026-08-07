@@ -59,6 +59,7 @@ const REQUEST: AnalysisRequest = {
   frameStride: 1,
   detectPlates: false,
   plateConfidence: null,
+  readPlateText: false,
   pixelsPerMeter: 20,
   lines: [LINE],
   zones: [ZONE],

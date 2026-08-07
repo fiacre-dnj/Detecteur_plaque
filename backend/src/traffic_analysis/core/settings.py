@@ -75,10 +75,80 @@ class Settings(BaseSettings):
     max_loaded_models: int = Field(2, ge=1, le=8)
     plate_model_path: Path | None = None  # vide = <weights_dir>/license-plate.onnx
     plate_confidence: float = Field(0.25, ge=0.05, le=0.95)
+    #: IoU de la suppression des non-maxima du modèle de plaques. Le défaut
+    #: d'Ultralytics (0,70) est calibré pour une scène COCO encombrée ; sur une
+    #: classe unique et un objet par véhicule, 0,45 supprime les doublons décalés
+    #: que 0,70 laissait passer.
+    plate_iou: float = Field(0.45, ge=0.1, le=0.9)
+    #: Combien de plaques garder par véhicule, les meilleures d'abord. Un véhicule
+    #: a une plaque visible ; en garder plus multiplie les rectangles à l'écran et
+    #: le coût d'OCR sans rien apprendre.
+    plate_max_per_vehicle: int = Field(1, ge=1, le=8)
+    #: Côté de la mosaïque : `n²` recadrages de véhicules par inférence.
+    #:
+    #: **`1` par défaut, c'est-à-dire pas de mosaïque**, parce que l'empaquetage
+    #: échange du rappel contre de la vitesse et que l'échange n'est pas gratuit.
+    #: Ce qui décide qu'une plaque est trouvée n'est pas l'agrandissement du
+    #: recadrage mais la taille de la plaque **dans l'entrée du réseau**, et elle ne
+    #: dépend que de la cellule : `plaque ≈ 0,15 × côté_de_cellule`. Mesuré sur 657
+    #: véhicules de vraie circulation, à 8,2 véhicules par image :
+    #:
+    #: | côté | cellule | ms/image | rappel |
+    #: |------|---------|----------|--------|
+    #: | 1    | 616 px  | 760      | 100 %  |
+    #: | 2    | 302 px  | 221      | 84 %   |
+    #: | 3    | 197 px  | 116      | 56 %   |
+    #:
+    #: `2` est l'échange raisonnable quand le débit prime : 3,4× pour 16 % de
+    #: détections en moins, largement absorbées par le vote qui agrège plusieurs
+    #: images du même véhicule. `3` ne se justifie que sur des plans serrés où les
+    #: véhicules sont grands.
+    plate_mosaic_side: int = Field(1, ge=1, le=3)
     # Utilisés par scripts/fetch_plate_model.py uniquement. Le service ne
     # télécharge jamais de lui-même : un démarrage ne doit pas dépendre du réseau.
     plate_model_url: str | None = None
     plate_model_sha256: str | None = None
+
+    # ── Lecture du texte de plaque (OCR) ─────────────────────────────────────
+    # Deux fichiers, et les deux sont nécessaires : le dictionnaire fait partie du
+    # contrat du modèle — l'indice 37 signifie ce que le dictionnaire
+    # d'entraînement disait. Un dictionnaire d'une autre taille ne lève rien, il
+    # rend des plaques fausses et plausibles (ADR 0007).
+    plate_ocr_model_path: Path | None = None
+    plate_ocr_charset_path: Path | None = None
+    #: Plancher de confiance d'une lecture. Sous ce seuil, la chaîne n'atteint même
+    #: pas le vote : une hésitation ne doit pas figurer sur le fil, même étiquetée
+    #: comme telle — une chaîne affichée est crue.
+    plate_ocr_min_text_score: float = Field(0.50, ge=0.0, le=1.0)
+    #: Étranglement : une image analysée sur N par piste.
+    plate_ocr_every_n_frames: int = Field(3, ge=1, le=30)
+    #: Sous cette largeur de vignette, ~4 px par caractère : l'inférence coûterait
+    #: sans jamais rien lire.
+    plate_ocr_min_width_px: int = Field(32, ge=8, le=512)
+    #: Au-dessus de cette IoU avec la dernière boîte lue, on ne relit pas. Protège
+    #: surtout la *justesse* du vote : cent recadrages identiques d'un véhicule
+    #: arrêté au feu ne feraient que gonfler la confiance d'un texte peut-être faux.
+    plate_ocr_skip_iou: float = Field(0.85, ge=0.0, le=1.0)
+    #: `0` laisse onnxruntime décider. À baisser si `max_concurrent_jobs` dépasse 1 :
+    #: deux analyses créeraient chacune son pool intra-op et se disputeraient les
+    #: cœurs.
+    plate_ocr_intra_op_threads: int = Field(0, ge=0, le=32)
+    #: Lire chaque plaque sous plusieurs prétraitements — redressée, cadre rogné —
+    #: et garder la meilleure lecture. Toutes les variantes partent dans le **même**
+    #: lot : le surcoût est celui de quelques lignes de tenseur, pas d'une inférence
+    #: de plus. À désactiver seulement pour comparer.
+    plate_ocr_variants: bool = True
+    #: Négocier la largeur du tenseur avec le lot au lieu des 320 px de PP-OCR. Une
+    #: plaque européenne tient en 226 px — 30 % de convolutions en moins — et une
+    #: plaque très large cesse d'être comprimée. Repli à 320 si un export refusait
+    #: une largeur variable.
+    plate_ocr_dynamic_width: bool = True
+    # Utilisés par scripts/fetch_plate_ocr_model.py uniquement, même règle que le
+    # détecteur : le service ne télécharge jamais de lui-même.
+    plate_ocr_model_url: str | None = None
+    plate_ocr_model_sha256: str | None = None
+    plate_ocr_charset_url: str | None = None
+    plate_ocr_charset_sha256: str | None = None
 
     # ── Bornes d'exécution ───────────────────────────────────────────────────
     # Un GPU = une analyse à la fois. Les suivantes attendent en file et sont
@@ -145,14 +215,40 @@ class Settings(BaseSettings):
         """
         return self.plate_model_path or self.weights_dir / "license-plate.onnx"
 
+    @property
+    def resolved_plate_ocr_model_path(self) -> Path:
+        """Chemin effectif du modèle de lecture. Même règle « vide ⇒ défaut »."""
+        return self.plate_ocr_model_path or self.weights_dir / "license-plate-ocr.onnx"
+
+    @property
+    def resolved_plate_ocr_charset_path(self) -> Path:
+        """Chemin effectif du dictionnaire de caractères.
+
+        Séparé du modèle parce que ce sont deux fichiers distincts, mais **jamais
+        indépendants** : le dictionnaire dit ce que veut dire chaque indice de sortie.
+        `available` exige les deux, et l'adaptateur refuse de charger si leurs tailles
+        ne correspondent pas.
+        """
+        return self.plate_ocr_charset_path or self.weights_dir / "license-plate-ocr.charset.txt"
+
     # ── Validation ───────────────────────────────────────────────────────────
 
+    # Seuls les champs `Path | None` et `str | None` sont candidats à ce validateur :
+    # il rend `None` pour une valeur vide, et `None` sur un `float`/`int` non
+    # optionnel produirait une erreur de démarrage dont le message ne dirait rien de
+    # la vraie cause. Les seuils OCR n'y figurent donc pas, à dessein.
     @field_validator(
         "plate_model_path",
         "static_dir",
         "cors_origin_regex",
         "plate_model_url",
         "plate_model_sha256",
+        "plate_ocr_model_path",
+        "plate_ocr_charset_path",
+        "plate_ocr_model_url",
+        "plate_ocr_model_sha256",
+        "plate_ocr_charset_url",
+        "plate_ocr_charset_sha256",
         mode="before",
     )
     @classmethod

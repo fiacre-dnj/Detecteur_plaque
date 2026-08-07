@@ -96,6 +96,7 @@ async def readiness(settings: SettingsDep) -> ReadinessSchema:
                         "loadedModels": ["yolov8n"],
                         "maxLoadedModels": 2,
                         "plateAvailable": False,
+                        "plateOcrAvailable": False,
                         "defaultModelId": "yolov8n",
                     }
                 }
@@ -115,6 +116,7 @@ async def health(settings: SettingsDep, container: ContainerDep) -> HealthSchema
         loaded_models=service.loaded_ids() if service else [],
         max_loaded_models=settings.max_loaded_models,
         plate_available=service.plate_available() if service else False,
+        plate_ocr_available=service.plate_ocr_available() if service else False,
         default_model_id=settings.default_model_id,
     )
 

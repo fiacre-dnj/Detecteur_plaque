@@ -6,10 +6,11 @@ et des chargements paresseux, qui explosent en contexte async avec un
 `MissingGreenlet` dont le message ne dit rien de la cause.
 
 Une décision de schéma mérite d'être lue avant d'être modifiée : **aucune
-contrainte d'unicité sur `job_crossings`**. Deux franchissements légitimes de la
-même identité sur la même ligne dans **deux sens** doivent coexister. La
+contrainte d'unicité sur `job_crossings`**. Un véhicule disparu puis reconnu à son
+retour compte une seconde fois, éventuellement sur la même ligne et dans le même
+sens (ADR 0009) : deux lignes rigoureusement identiques doivent donc coexister. La
 déduplication est une règle de domaine, déjà appliquée en amont ; la reproduire en
-contrainte SQL casserait le cas de l'aller-retour.
+contrainte SQL supprimerait ce second passage bien réel.
 """
 
 from __future__ import annotations
@@ -97,6 +98,11 @@ class JobVehicleModel(Base):
     avg_speed_px_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     avg_speed_kmh: Mapped[float | None] = mapped_column(Float, nullable=True)
     best_plate_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    #: Texte voté, déjà normalisé par le domaine. `NULL` = aucune lecture concluante,
+    #: distinct de `''`. 16 caractères : la normalisation plafonne à 10 alphanumériques
+    #: plus ses séparateurs, donc 16 laisse de la marge sans être une invitation.
+    plate_text: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    plate_text_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     zones_visited_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     crossed_lines_json: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, nullable=False, default=list
@@ -109,6 +115,7 @@ class JobVehicleModel(Base):
         # numérotation, qui n'a aucune raison de coïncider.
         Index("uq_job_vehicles_identity", "job_id", "global_id", unique=True),
         Index("ix_job_vehicles_label", "job_id", "label"),
+        Index("ix_job_vehicles_plate_text", "job_id", "plate_text"),
     )
 
 
@@ -128,9 +135,16 @@ class JobCrossingModel(Base):
     direction: Mapped[int] = mapped_column(Integer, nullable=False)
     timestamp_ms: Mapped[float] = mapped_column(Float, nullable=False)
     frame_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: Ce que le serveur savait de la plaque **au moment de compter**. Souvent `NULL`
+    #: alors que le registre porte le texte : les franchissements sont émis avant la
+    #: passe OCR de la même frame (ADR 0007).
+    plate_text: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    plate_text_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     job: Mapped[JobModel] = relationship(back_populates="crossings")
 
+    # Pas d'index sur la plaque ici, contrairement au registre : les franchissements
+    # se lisent par ligne et par temps, jamais par plaque.
     __table_args__ = (
         Index("ix_job_crossings_line", "job_id", "line_id"),
         # La relecture parcourt les événements par horodatage croissant : cet

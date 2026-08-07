@@ -43,6 +43,18 @@ export interface AnalysisSettings {
   frameStride: number;
   detectPlates: boolean;
   plateConfidence: number | null;
+  /**
+   * Lire le **texte** des plaques, en plus de les encadrer.
+   *
+   * Subordonné à `detectPlates` — sans boîte, il n'y a rien à lire — et gardé par
+   * `plateOcrAvailable`, qui décrit un **autre** fichier que `plateAvailable`.
+   *
+   * Pas d'incrément de `SETTINGS_SCHEMA_VERSION` pour ce champ : la fusion est champ
+   * par champ, donc un `localStorage` écrit avant lui reprend simplement le défaut.
+   * La version se réserve aux champs qui changent de **sens**, où relire une valeur
+   * ancienne produirait une analyse différente de ce que l'écran affiche.
+   */
+  readPlateText: boolean;
   /** `null` = échelle non définie : les vitesses restent en px/s. */
   pixelsPerMeter: number | null;
   showTrails: boolean;
@@ -60,6 +72,9 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   frameStride: 1,
   detectPlates: false,
   plateConfidence: null,
+  // Faux par défaut : l'OCR est un surcoût, et persister un texte de plaque franchit
+  // un cran de confidentialité qui doit être choisi, pas hérité.
+  readPlateText: false,
   pixelsPerMeter: null,
   showTrails: true,
 };
@@ -106,6 +121,10 @@ export function toRequest(
     frameStride: settings.frameStride,
     detectPlates: settings.detectPlates,
     plateConfidence: settings.detectPlates ? settings.plateConfidence : null,
+    // Subordonné à `detectPlates`, comme côté serveur : lire sans détecter n'a pas de
+    // sens, et laisser passer `true` seul demanderait au serveur d'arbitrer une
+    // incohérence que le client pouvait éviter.
+    readPlateText: settings.detectPlates && settings.readPlateText,
     pixelsPerMeter:
       settings.pixelsPerMeter !== null && settings.pixelsPerMeter > 0
         ? settings.pixelsPerMeter
@@ -181,6 +200,7 @@ function mergeSettings(source: Record<string, unknown>): AnalysisSettings {
 
   if (typeof source.maskOutsideZones === "boolean") merged.maskOutsideZones = source.maskOutsideZones;
   if (typeof source.detectPlates === "boolean") merged.detectPlates = source.detectPlates;
+  if (typeof source.readPlateText === "boolean") merged.readPlateText = source.readPlateText;
   if (typeof source.showTrails === "boolean") merged.showTrails = source.showTrails;
 
   return merged;

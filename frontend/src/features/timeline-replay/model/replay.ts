@@ -224,3 +224,25 @@ export function vehiclesAt(result: AnalysisResult, timeMs: number) {
 export function tracksAt(result: AnalysisResult, timeMs: number): readonly TrackSnapshot[] {
   return frameAt(result.timeline, timeMs)?.tracks ?? [];
 }
+
+/**
+ * Les franchissements déjà passés à `timeMs`, **le plus récent en tête**.
+ *
+ * Le journal du direct disparaissait à la fin de l'analyse, alors que c'est lui — et non
+ * le registre — qui permet de dire « à 00:12.4, cette plaque-là a franchi cette ligne-là
+ * dans ce sens-là ». Le registre dit *lesquels*, le journal dit *quand*.
+ *
+ * Même ordre qu'en direct : le lecteur qui suit la vidéo cherche l'événement qui vient
+ * de se produire, pas le premier de l'analyse. Borné pour la même raison que
+ * `LOG_LIMIT` — personne ne défile jusqu'à la millième ligne.
+ */
+export function crossingsUpTo(
+  result: AnalysisResult,
+  timeMs: number,
+  limit = 200,
+): readonly CrossingEvent[] {
+  const past = result.crossings.filter((event) => event.timestampMs <= timeMs);
+  // `reverse` sur une copie produite par `filter` : `result.crossings` ne doit pas être
+  // réordonné, il est partagé avec l'histogramme et les exports.
+  return past.reverse().slice(0, limit);
+}

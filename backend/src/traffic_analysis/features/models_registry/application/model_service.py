@@ -26,7 +26,7 @@ from traffic_analysis.features.models_registry.domain.catalogue import (
 )
 
 if TYPE_CHECKING:
-    from traffic_analysis.features.counting.application.ports import PlateDetector
+    from traffic_analysis.features.counting.application.ports import PlateDetector, PlateReader
     from traffic_analysis.features.models_registry.infrastructure.registry import ModelRegistry
 
 
@@ -52,7 +52,7 @@ class ModelInfo:
 class ModelService:
     """Catalogue enrichi de l'état mémoire, préchargement, déchargement."""
 
-    __slots__ = ("_default_model_id", "_plate_detector", "_registry")
+    __slots__ = ("_default_model_id", "_plate_detector", "_plate_reader", "_registry")
 
     def __init__(
         self,
@@ -60,10 +60,12 @@ class ModelService:
         *,
         default_model_id: str,
         plate_detector: PlateDetector | None = None,
+        plate_reader: PlateReader | None = None,
     ) -> None:
         self._registry = registry
         self._default_model_id = default_model_id
         self._plate_detector = plate_detector
+        self._plate_reader = plate_reader
 
     def catalogue_with_state(self) -> list[ModelInfo]:
         loaded = set(self._registry.loaded_ids())
@@ -102,7 +104,19 @@ class ModelService:
         return self._registry.loaded_ids()
 
     def plate_available(self) -> bool:
+        """Le **détecteur** de plaques est-il disponible ?"""
         return self._plate_detector is not None and self._plate_detector.available
+
+    def plate_ocr_available(self) -> bool:
+        """Le **lecteur** de plaques — modèle *et* dictionnaire — est-il disponible ?
+
+        Distinct de `plate_available` : ce sont deux artefacts différents, récupérés
+        par deux scripts différents, et l'état « détecteur présent, lecteur absent »
+        est celui de tout déploiement neuf. Sans ce drapeau, l'interface proposerait
+        une case « lire le texte » qui ne fait rien — précisément le mode de panne que
+        `plateAvailable` avait été inventé pour éviter.
+        """
+        return self._plate_reader is not None and self._plate_reader.available
 
     def ultralytics_version(self) -> str:
         """Version d'Ultralytics, déléguée à l'infrastructure.

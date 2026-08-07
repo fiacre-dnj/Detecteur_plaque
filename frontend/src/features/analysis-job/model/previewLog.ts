@@ -10,6 +10,12 @@
  * Le journal est borné. Une analyse d'une heure produit des milliers d'entrées, et
  * personne ne défile jusqu'à la première : garder tout ferait grossir la mémoire du
  * navigateur pour une information que l'interface n'affiche jamais.
+ *
+ * **Le journal et le registre peuvent afficher deux plaques différentes pour le même
+ * véhicule, et c'est légitime.** Côté serveur, un franchissement est émis *avant* la
+ * passe OCR de la même image : il porte donc ce que le serveur savait au moment de
+ * compter, souvent rien. Le registre, lui, agrège toute la vie du véhicule.
+ * **L'autorité est le registre** (ADR 0007).
  */
 
 import type { CrossingEvent } from "@/shared/api/contracts";

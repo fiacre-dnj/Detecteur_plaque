@@ -18,7 +18,16 @@ const TRACK: TrackSnapshot = {
   counted: true,
   reidCount: 1,
   speedPxS: 120,
-  plates: [{ box: { x: 320, y: 190, width: 24, height: 9 }, score: 0.77 }],
+  plates: [
+    {
+      box: { x: 320, y: 190, width: 24, height: 9 },
+      score: 0.77,
+      text: "AB-123-CD",
+      textScore: 0.9,
+    },
+  ],
+  plateText: "AB-123-CD",
+  plateTextScore: 0.9,
 };
 
 /** Facteur d'une webcam 720p : 960 / 1280. */
@@ -47,6 +56,19 @@ describe("unscaleTrack", () => {
     expect(plate?.box.y).toBeCloseTo(253.333333, 5);
     expect(plate?.box.width).toBe(32);
     expect(plate?.box.height).toBe(12);
+  });
+
+  test("laisse le texte de la plaque intact — ce n'est pas une longueur", () => {
+    // Le `{ ...plate, box }` fait déjà survivre ces champs. Ce test **verrouille** ce
+    // fait au lieu d'y faire confiance : le jour où quelqu'un reconstruira l'objet
+    // champ par champ pour « être explicite », le texte disparaîtrait en silence — et
+    // une plaque non redilatée se voit, une plaque muette ne se voit pas.
+    const rescaled = unscaleTrack(TRACK, FACTOR);
+
+    expect(rescaled.plates[0]?.text).toBe("AB-123-CD");
+    expect(rescaled.plates[0]?.textScore).toBe(0.9);
+    expect(rescaled.plateText).toBe("AB-123-CD");
+    expect(rescaled.plateTextScore).toBe(0.9);
   });
 
   test("convertit la vitesse : c'est une longueur par seconde", () => {

@@ -37,6 +37,10 @@ VEHICLE_HEADERS = (
     "Ré-identifications",
     "Vitesse moyenne (px/s)",
     "Vitesse moyenne (km/h)",
+    # Les deux colonnes de plaque sont voisines, et dans cet ordre : le texte lu
+    # d'abord — c'est ce qu'on cherche —, puis la confiance de la détection.
+    "Plaque",
+    "Confiance lecture",
     "Score de plaque",
 )
 
@@ -47,6 +51,8 @@ CROSSING_HEADERS = (
     "Sens",
     "Instant (s)",
     "Image",
+    "Plaque",
+    "Confiance lecture",
 )
 
 # Libellés français des classes comptées. Un CSV destiné à un humain
@@ -122,6 +128,11 @@ def vehicles_csv(vehicles: Sequence[dict[str, Any]]) -> str:
             str(vehicle["reidCount"]),
             _decimal(vehicle.get("avgSpeedPxS")),
             _decimal(vehicle.get("avgSpeedKmh")),
+            # Case **vide** et non « illisible » : un CSV n'est pas une vue, et un
+            # mot dans cette colonne serait une valeur à nettoyer à la main avant
+            # tout tri ou filtre de tableur.
+            vehicle.get("plateText") or "",
+            _decimal(vehicle.get("plateTextScore"), digits=2),
             _decimal(vehicle.get("bestPlateScore"), digits=2),
         )
         for vehicle in vehicles
@@ -139,6 +150,10 @@ def crossings_csv(crossings: Sequence[dict[str, Any]]) -> str:
             _direction(crossing["direction"]),
             _seconds(crossing["timestampMs"]),
             str(crossing["frameIndex"]),
+            # Ce que le serveur savait au moment de compter — souvent vide alors que
+            # le registre porte le texte, et c'est normal (ADR 0007).
+            crossing.get("plateText") or "",
+            _decimal(crossing.get("plateTextScore"), digits=2),
         )
         for crossing in crossings
     ]

@@ -89,6 +89,15 @@ class AnalysisRequestSchema(CamelModel):
     frame_stride: int = Field(1, ge=1, le=10)
     detect_plates: bool = False
     plate_confidence: float | None = Field(None, ge=0.05, le=0.95)
+    read_plate_text: bool = Field(
+        False,
+        description=(
+            "Lire le texte des plaques localisées. La lecture n'a lieu que si "
+            "`detectPlates` est vrai — sans boîte, il n'y a rien à lire — et que le "
+            "modèle d'OCR est installé (`plateOcrAvailable`). Le texte publié est un "
+            "vote sur toute la vie du véhicule, pas la lecture de l'image courante."
+        ),
+    )
     pixels_per_meter: float | None = Field(
         None,
         gt=0,
@@ -166,6 +175,7 @@ class AnalysisRequestSchema(CamelModel):
             frame_stride=self.frame_stride,
             detect_plates=self.detect_plates,
             plate_confidence=self.plate_confidence,
+            read_plate_text=self.read_plate_text,
             pixels_per_meter=self.pixels_per_meter,
             reid_min_similarity=self.reid_min_similarity,
             max_lost_ms=self.max_lost_ms,

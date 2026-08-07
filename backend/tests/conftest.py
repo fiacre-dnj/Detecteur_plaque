@@ -18,7 +18,7 @@ from asgi_lifespan import LifespanManager
 from httpx import AsyncClient
 
 from tests.support.builders import CAR, TRUCK, compose, straight_line, track_path
-from tests.support.engine import FakeEngine, FakePlateDetector
+from tests.support.engine import FakeEngine, FakePlateDetector, FakePlateReader
 from tests.support.probe import FakeProbe
 from traffic_analysis.app_factory import create_app
 from traffic_analysis.core.clock import FrozenClock
@@ -97,6 +97,11 @@ def plate_detector() -> FakePlateDetector:
 
 
 @pytest.fixture
+def plate_reader() -> FakePlateReader:
+    return FakePlateReader()
+
+
+@pytest.fixture
 def benchmark_probe() -> FakeProbe:
     """Sonde de mesure factice, connaissant **tout le catalogue réel**.
 
@@ -117,6 +122,7 @@ def app(
     clock: FrozenClock,
     fake_engine: FakeEngine,
     plate_detector: FakePlateDetector,
+    plate_reader: FakePlateReader,
     benchmark_probe: FakeProbe,
 ) -> FastAPI:
     return create_app(
@@ -124,6 +130,7 @@ def app(
         clock=clock,
         engine=fake_engine,
         plate_detector=plate_detector,
+        plate_reader=plate_reader,
         benchmark_probe=benchmark_probe,
     )
 

@@ -19,6 +19,7 @@
 import type { Box, CountingLine, Point, TrackSnapshot, Zone } from "@/shared/api/contracts";
 import { CANVAS, TRAJECTORY_ALPHA, classColor } from "@/shared/config/palettes";
 import { midpoint, positiveNormal } from "@/shared/lib/geometry";
+import { bestReadPlate, plateLabel } from "@/shared/lib/plate";
 
 import type { LineFlash } from "./lineFlashes";
 
@@ -272,6 +273,11 @@ function drawTrails(
  * Le badge ✓ signale « compté ». Il dérive de `counted`, que le serveur calcule
  * depuis le tally : un franchissement supprimé par le garde d'identité ne doit pas
  * peindre ✓ (invariant 5).
+ *
+ * **L'étiquette de plaque est peinte après celle du véhicule**, sous le rectangle de la
+ * plaque et non au-dessus de la boîte : celle du véhicule occupe déjà `box.y - 6`, et
+ * deux étiquettes au même endroit se recouvriraient sur tout véhicule dont la plaque
+ * est haute dans la boîte — un deux-roues, une camionnette vue de face.
  */
 function drawTrack(
   ctx: CanvasRenderingContext2D,
@@ -310,6 +316,47 @@ function drawTrack(
   if (track.reidCount > 0) parts.push(`↻${track.reidCount}`);
   parts.push(track.counted ? "✓" : "…");
   drawLabelAt(ctx, { x: box.x, y: box.y }, parts.join(" "), color, { dy: -6 });
+
+  // Le texte **voté** (`plateText`), jamais `plates[].text` : l'OCR est étranglée côté
+  // serveur et ne remplit ce dernier qu'une image sur trois, donc l'étiquette
+  // clignoterait. Même raison qu'`identityLabel` face à `label`.
+  //
+  // Une seule étiquette, même sur un poids lourd qui porte deux plaques : deux
+  // rectangles de texte sur 80 pixels de large se masqueraient. `bestReadPlate` ne
+  // choisit que le point d'ancrage — la mieux lue, plutôt que l'ordre du détecteur.
+  const plateText = plateLabel(track.plateText, track.plateTextScore);
+  if (plateText !== null) {
+    const anchor = bestReadPlate(track.plates);
+    const plateBox = anchor === null ? box : toCanvasBox(view, anchor.box);
+    drawLabelAt(
+      ctx,
+      { x: plateBox.x, y: plateLabelBaseline(plateBox, view.height) },
+      plateText,
+      CANVAS.plate,
+      { dy: 0 },
+    );
+  }
+}
+
+/** Hauteur d'une étiquette, telle que `drawLabelAt` la peint. */
+const LABEL_HEIGHT = 16;
+/** Écart entre le rectangle de plaque et son étiquette. */
+const PLATE_LABEL_GAP = 2;
+
+/**
+ * Ligne de base de l'étiquette de plaque : **sous** le rectangle, ou au-dessus quand il
+ * n'y a plus la place.
+ *
+ * Pourquoi la bascule et pas un simple décalage vers le bas : une plaque lisible est
+ * une plaque proche, donc basse dans l'image. Sans bascule, l'étiquette sortirait du
+ * canvas précisément dans le cas où elle porte l'information la plus sûre — et le seul
+ * symptôme serait « ça ne s'affiche pas », sans rien à déboguer.
+ *
+ * Exporté pour être testé : `drawLabelAt` a besoin d'un contexte 2D, ce calcul non.
+ */
+export function plateLabelBaseline(plateBox: Box, canvasHeight: number): number {
+  const below = plateBox.y + plateBox.height + PLATE_LABEL_GAP + LABEL_HEIGHT;
+  return below <= canvasHeight ? below : plateBox.y - PLATE_LABEL_GAP;
 }
 
 /**

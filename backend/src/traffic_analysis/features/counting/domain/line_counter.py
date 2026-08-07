@@ -9,7 +9,7 @@ véhicule est compté alors que le total n'a pas bougé.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from traffic_analysis.features.counting.domain.geometry import (
@@ -31,7 +31,12 @@ if TYPE_CHECKING:
 
 @dataclass(slots=True)
 class _LineState:
-    """Ce que le compteur retient d'un couple (piste, ligne)."""
+    """Ce que le compteur retient d'un couple (piste, ligne) — de la géométrie seule.
+
+    Aucune comptabilité ici : la déduplication porte sur l'identité, pas sur la
+    piste (piège 1 de prompt/13), et une piste détruite par une occlusion
+    emporterait sa mémoire avec elle.
+    """
 
     # Dernier côté observé. `0` signifie « pas encore amorcé » : une piste vue
     # pour la première fois n'a pas de côté précédent, donc rien à comparer.
@@ -40,25 +45,34 @@ class _LineState:
     # Il est mis en attente, pas jeté : le jeter perdrait tout véhicule qui
     # franchit dans ses premières frames — fréquent avec une ligne près du bord.
     pending_direction: int | None = None
-    # Sens déjà comptés pour cette piste sur cette ligne.
-    counted_directions: set[int] = field(default_factory=set)
 
 
 class LineCrossingCounter:
-    """Compte les franchissements par ligne et par sens, sans double compte.
+    """Compte **un** franchissement par véhicule, jusqu'à sa prochaine réapparition.
 
-    Trois gardes se superposent, et chacun répond à un bug distinct :
+    Deux gardes se superposent, et chacun répond à un bug distinct :
 
     1. **intersection de segments** — sinon un véhicule qui passe au-delà des
        extrémités tracées est compté, parce qu'il change de côté de la droite
        *infinie* ;
-    2. **un sens par piste et par ligne** — sinon une boîte qui tremble sur la
-       ligne compte plusieurs fois ;
-    3. **`(ligne, identité, sens)`** — sinon un véhicule occulté puis revenu, dont
-       la piste a été détruite et recréée, recompte.
+    2. **`(identité, génération)`** — le garde de comptage. La génération est le
+       nombre de ré-identifications déjà subies par l'identité
+       (`SessionTrack.reid_count`).
 
-    Le garde 3 porte sur le **sens** en plus de l'identité, et c'est délibéré : un
-    aller-retour réel doit compter une fois dans chaque sens.
+    Ce que le garde 2 **coûte**, et qui est voulu (ADR 0009) :
+
+    - un aller-retour réel ne compte **qu'une fois**. Le sens ne ré-arme pas ;
+    - un véhicule qui franchit deux lignes successives ne compte **qu'une fois**,
+      sur la première ligne franchie. Les lignes suivantes restent à zéro pour
+      lui. C'est ce qui garde `crossings == Σ by_line[*].total` vrai sans
+      accumuler deux totaux en parallèle.
+
+    Ce qui le **ré-arme** : une vraie ré-identification, et elle seule. La
+    galerie n'incrémente `reid_count` que lorsqu'un véhicule réellement disparu
+    revient (`reacquire` ou `Admission.reidentified`), donc un tremblement de
+    boîte, une occlusion courte tenue par le tracker ou un simple demi-tour ne
+    donnent jamais un second comptage. Après ré-armement, la règle repart
+    identique : un franchissement, puis plus rien.
     """
 
     __slots__ = ("_lines", "_min_hits", "_state", "_tallied", "_zones", "by_line")
@@ -73,8 +87,10 @@ class LineCrossingCounter:
         self._zones = {zone.id: zone for zone in zones}
         self._min_hits = min_hits
         self._state: dict[tuple[int, str], _LineState] = {}
-        # Le garde d'identité. Clé : (ligne, identité, sens).
-        self._tallied: set[tuple[str, int, int]] = set()
+        # Le garde de comptage. Clé : (identité, génération). Ni la ligne ni le
+        # sens n'y figurent : un véhicule compte une fois, où qu'il franchisse et
+        # dans quelque sens que ce soit, jusqu'à sa prochaine ré-identification.
+        self._tallied: set[tuple[int, int]] = set()
         # Chaque ligne a son compteur dès le départ : une ligne sans
         # franchissement doit s'afficher à zéro, pas manquer du tableau.
         self.by_line: dict[str, LineTally] = {line.id: LineTally() for line in self._lines}
@@ -101,9 +117,14 @@ class LineCrossingCounter:
 
         C'est la **source du badge ✓**. Le dériver d'ici et non de la comptabilité
         d'une piste est ce qui évite d'afficher « compté » pour un franchissement
-        que le garde d'identité a supprimé.
+        que le garde a supprimé.
+
+        Le ✓ ne se rétracte **jamais** : un ré-armement ajoute une génération sans
+        retirer les précédentes, donc un véhicule ré-identifié reste marqué compté
+        en attendant de recroiser. Voir le franchissement disparaître de l'overlay
+        parce que le véhicule est revenu se lirait comme une panne de comptage.
         """
-        return {global_id for _, global_id, _ in self._tallied}
+        return {global_id for global_id, _ in self._tallied}
 
     def _observe_line(
         self,
@@ -119,9 +140,7 @@ class LineCrossingCounter:
         # 1. Émission différée : la piste vient de se confirmer, et un
         #    franchissement l'attendait.
         if state.pending_direction is not None and confirmed:
-            event = self._tally(
-                track, line, state, state.pending_direction, timestamp_ms, frame_index
-            )
+            event = self._tally(track, line, state.pending_direction, timestamp_ms, frame_index)
             state.pending_direction = None
             if event is not None:
                 events.append(event)
@@ -144,17 +163,16 @@ class LineCrossingCounter:
         if side == state.side:
             return
 
-        # 4. Changement de côté : trois conditions doivent tenir.
-        accepted = (
-            side not in state.counted_directions
-            and self._crossing_is_in_scope(track, line)
-            and segments_intersect(
-                track.previous_centroid or track.centroid, track.centroid, line.a, line.b
-            )
+        # 4. Changement de côté : deux conditions **géométriques** doivent tenir.
+        #    La déduplication n'en fait pas partie — elle est décidée dans
+        #    `_tally`, qui refuse en rendant `None`. Filtrer ici sur ce qui a déjà
+        #    compté remettrait un garde sur la piste, que l'occlusion efface.
+        accepted = self._crossing_is_in_scope(track, line) and segments_intersect(
+            track.previous_centroid or track.centroid, track.centroid, line.a, line.b
         )
         if accepted:
             if confirmed:
-                event = self._tally(track, line, state, side, timestamp_ms, frame_index)
+                event = self._tally(track, line, side, timestamp_ms, frame_index)
                 if event is not None:
                     events.append(event)
             else:
@@ -188,28 +206,24 @@ class LineCrossingCounter:
         self,
         track: SessionTrack,
         line: CountingLineDef,
-        state: _LineState,
         direction: int,
         timestamp_ms: float,
         frame_index: int,
     ) -> CrossingEvent | None:
         """Comptabilise un franchissement, ou refuse et rend `None`.
 
-        Deux refus possibles, pour deux raisons différentes :
+        Un seul refus : cette identité a déjà compté pour sa génération courante.
+        Peu importe que ce soit sur une autre ligne, dans l'autre sens, ou sous
+        une piste depuis longtemps détruite — c'est le même véhicule, il a déjà
+        été compté, et il ne le sera plus tant qu'il ne sera pas réapparu.
 
-        - `counted_directions` : cette *piste* a déjà compté ce sens sur cette
-          ligne (la boîte tremble) ;
-        - `_tallied` : cette *identité* a déjà compté ce sens sur cette ligne (le
-          véhicule est revenu après une occlusion et la galerie lui a redonné son
-          identité).
+        `track.reid_count` est lu et non recalculé : la session l'a arrêté pour
+        cette frame dans `_resolve_identities`, juste avant `observe`. Le
+        compteur n'a donc pas à savoir ce qu'est une galerie.
 
         Rendre `None` plutôt qu'un événement est ce qui garde le badge ✓ honnête.
         """
-        if direction in state.counted_directions:
-            return None
-        state.counted_directions.add(direction)
-
-        key = (line.id, track.global_id, direction)
+        key = (track.global_id, track.reid_count)
         if key in self._tallied:
             return None
         self._tallied.add(key)
@@ -231,4 +245,10 @@ class LineCrossingCounter:
             direction=direction,
             timestamp_ms=timestamp_ms,
             frame_index=frame_index,
+            # Le texte **voté** porté par la piste, jamais la lecture d'une frame :
+            # le compteur ne sait pas qu'une OCR existe, il lit un champ. `None` et
+            # non `""` — « pas encore lu » est une information, une chaîne vide
+            # serait une plaque vide.
+            plate_text=track.plate_text or None,
+            plate_text_score=track.plate_text_score or None,
         )

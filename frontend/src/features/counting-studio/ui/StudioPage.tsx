@@ -46,7 +46,13 @@ import {
   useRealtimeSession,
 } from "@/features/realtime-counting";
 import { ResultsDashboard } from "@/features/results-dashboard";
-import { chooseBucketMs, flowBuckets, useReplay, vehiclesAt } from "@/features/timeline-replay";
+import {
+  chooseBucketMs,
+  crossingsUpTo,
+  flowBuckets,
+  useReplay,
+  vehiclesAt,
+} from "@/features/timeline-replay";
 import { VehicleRegistry } from "@/features/vehicle-registry";
 import { TransportBar, useVideoTransport } from "@/features/video-transport";
 import type { CrossingEvent, Point, Preset } from "@/shared/api/contracts";
@@ -578,6 +584,7 @@ export function StudioPage() {
             // désactivée **avec sa raison**, plutôt que de produire une analyse
             // sans plaques que rien n'expliquerait.
             plateAvailable={catalogue?.plateAvailable ?? false}
+            plateOcrAvailable={catalogue?.plateOcrAvailable ?? false}
             hasZones={geometry.zones.length > 0}
             // Le diagnostic **vivant** pendant l'analyse, celui de la dernière
             // sinon. C'est ce qui permet de comprendre pendant que ça tourne
@@ -655,7 +662,16 @@ export function StudioPage() {
             zones={geometry.zones}
             processingFps={session.result.processingFps}
             replaying
-          />
+          >
+            {/* Le journal survit à la fin de l'analyse, calé sur la tête de lecture.
+                Sans lui, la plaque au moment du comptage disparaissait avec l'aperçu :
+                le registre dit *lesquels*, le journal dit *quand*. */}
+            <CrossingLog
+              events={crossingsUpTo(session.result, replay.timeMs)}
+              lineNames={lineNames}
+              title="Franchissements jusqu'ici"
+            />
+          </ResultsDashboard>
 
           <Suspense fallback={<div className="h-24 rounded-card bg-surface" />}>
             <FlowHistogram

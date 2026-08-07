@@ -168,10 +168,33 @@ class PlateDetection:
     L'adaptateur ANPR travaille sur un recadrage mais réexprime ses boîtes dans
     le référentiel de l'image entière : aucune couche en aval ne doit avoir à le
     savoir.
+
+    `box`/`score` viennent du **détecteur**, `text`/`text_score` du **lecteur**,
+    qui est une passe distincte et optionnelle. Les deux couples sont donc
+    indépendants, et c'est ce qui rend trois états distinguables : aucune plaque,
+    une plaque vue mais illisible (`text is None` avec un `score` bien réel), une
+    plaque lue. Les confondre afficherait « aucune plaque » sur un véhicule dont le
+    rectangle est visible à l'écran.
     """
 
     box: BoundingBox
     score: float
+    #: Texte **normalisé** (A-Z, 0-9, tirets), ou `None` si rien n'a été lu.
+    #: `None` et non `""` : « pas lu » et « lu vide » ne sont pas la même
+    #: information, et le fil doit pouvoir les distinguer.
+    text: str | None = None
+    #: Confiance du décodage. `0.0` quand `text is None` — et c'est le sérialiseur
+    #: qui traduit cela en `null`, pour ne pas annoncer « lu, sans aucune
+    #: confiance ».
+    text_score: float = 0.0
+    #: Confiance de chaque caractère de `text`, le temps d'atteindre le vote.
+    #:
+    #: **De passage, jamais stockée** : `record_plates` la consomme pour alimenter le
+    #: consensus par caractère, puis la remet à vide avant de ranger la détection dans
+    #: la piste. Elle ne figure donc ni dans la timeline, ni sur le fil — une
+    #: information utile pendant trois lignes n'a pas à peser sur chaque frame d'un
+    #: clip de trente minutes, ni à élargir un contrat publié.
+    text_char_scores: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +213,17 @@ class CrossingEvent:
     direction: int  # +1 (A→B) | -1 (B→A)
     timestamp_ms: float
     frame_index: int
+    #: Texte de plaque **voté au moment du franchissement**, ou `None`.
+    #:
+    #: `None` est fréquent et légitime : les franchissements de la frame *N* sont
+    #: émis dans `AnalysisSession.feed()`, donc **avant** la passe OCR de la frame
+    #: *N*. Une plaque lue pour la première fois sur la frame même du
+    #: franchissement n'apparaît donc pas sur cette ligne — elle apparaît dans le
+    #: registre, qui agrège toute la vie du véhicule. Un franchissement dit ce que
+    #: le serveur savait quand il a compté ; le registre dit ce qu'il sait à la
+    #: fin, et c'est lui l'autorité. Voir ADR 0007.
+    plate_text: str | None = None
+    plate_text_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,6 +263,18 @@ class SessionTrack:
     last_seen_ms: float = 0.0
     speed_px_s: float | None = None
     plates: list[PlateDetection] = field(default_factory=list)
+    #: Texte **voté** de l'identité, recopié depuis son agrégat par
+    #: `AnalysisSession._mirror_plate_text`. Pas la lecture de la frame : c'est
+    #: l'invariant 4 appliqué au texte, et c'est ce champ — non `plates[].text` —
+    #: que l'interface affiche. L'étranglement de l'OCR ne remplit `plates[].text`
+    #: qu'une frame sur trois : dessiner cela ferait clignoter l'étiquette. Même
+    #: raison d'être qu'`identity_label` à côté de `label`.
+    #:
+    #: `""` tant que le vote n'est pas concluant, et **survit** à ce que
+    #: `_advance_tracks` efface : les *boîtes* appartiennent à la frame, le texte
+    #: appartient à l'identité.
+    plate_text: str = ""
+    plate_text_score: float = 0.0
 
     def snapshot(self) -> SessionTrack:
         """Copie figée de l'état courant — **ce n'est pas une commodité**.
@@ -241,8 +287,10 @@ class SessionTrack:
         `plates` est copié explicitement : partager la liste ferait réapparaître
         le même bug un niveau plus bas.
 
-        Le snapshot doit être pris **après** la passe ANPR, sinon les plaques
-        manquent — c'est la responsabilité du service d'orchestration.
+        Le snapshot doit être pris **après** la passe ANPR **et** après la passe
+        OCR, sinon les plaques manquent — ou, plus insidieux, y figurent sans leur
+        texte, et la relecture afficherait des boîtes muettes que l'analyse avait su
+        lire. C'est la responsabilité du service d'orchestration.
         """
         return SessionTrack(
             track_id=self.track_id,
@@ -260,6 +308,8 @@ class SessionTrack:
             last_seen_ms=self.last_seen_ms,
             speed_px_s=self.speed_px_s,
             plates=list(self.plates),
+            plate_text=self.plate_text,
+            plate_text_score=self.plate_text_score,
         )
 
     @property
@@ -324,7 +374,19 @@ class VehicleRecord:
     reid_count: int
     avg_speed_px_s: float | None
     avg_speed_kmh: float | None
+    #: Meilleure confiance de **détection** de plaque sur toute la vie du véhicule.
     best_plate_score: float | None
+    #: Texte **voté** sur toute la vie du véhicule — l'autorité de l'interface, au
+    #: même titre que `label` est le libellé du vote et non la dernière lecture.
+    #:
+    #: `None` avec un `best_plate_score` non nul veut dire quelque chose de précis :
+    #: une plaque a bien été vue, aucune lecture ne fait consensus. L'interface doit
+    #: dire *cela*, et non laisser une case vide en face d'un rectangle visible.
+    plate_text: str | None = None
+    #: Confiance moyenne de la **lecture** gagnante, distincte de celle de la
+    #: détection. Une plaque affichée sans dire à quel point le serveur y croit
+    #: invite à croire toutes les lignes également.
+    plate_text_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

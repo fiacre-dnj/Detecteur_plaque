@@ -22,6 +22,7 @@ from traffic_analysis.features.benchmark.infrastructure.sqlalchemy_repository im
     SqlAlchemyBenchmarkRepository,
 )
 from traffic_analysis.features.counting.application.analysis_service import AnalysisService
+from traffic_analysis.features.counting.application.dto import PlateOcrOptions
 from traffic_analysis.features.jobs.application.job_manager import JobManager
 from traffic_analysis.features.jobs.application.progress_hub import ProgressHub
 from traffic_analysis.features.jobs.infrastructure.result_store import FileResultStore
@@ -34,7 +35,9 @@ from traffic_analysis.features.models_registry.infrastructure.inference_probe im
 )
 from traffic_analysis.features.models_registry.infrastructure.plate_detector import (
     OnnxPlateDetector,
+    PlateGeometry,
 )
+from traffic_analysis.features.models_registry.infrastructure.plate_reader import OnnxPlateReader
 from traffic_analysis.features.models_registry.infrastructure.registry import ModelRegistry
 from traffic_analysis.features.models_registry.infrastructure.ultralytics_engine import (
     UltralyticsEngine,
@@ -53,6 +56,7 @@ if TYPE_CHECKING:
     from traffic_analysis.features.counting.application.ports import (
         DetectionTrackingEngine,
         PlateDetector,
+        PlateReader,
     )
     from traffic_analysis.features.jobs.application.ports import JobRepository
 
@@ -104,6 +108,7 @@ def build_container(
     clock: Clock | None = None,
     engine: DetectionTrackingEngine | None = None,
     plate_detector: PlateDetector | None = None,
+    plate_reader: PlateReader | None = None,
     job_repository: JobRepository | None = None,
     benchmark_probe: InferenceProbe | None = None,
 ) -> Container:
@@ -130,15 +135,44 @@ def build_container(
     )
     resolved_engine = engine or UltralyticsEngine(registry)
     resolved_plates = plate_detector or OnnxPlateDetector(
-        settings.resolved_plate_model_path, settings.plate_confidence
+        settings.resolved_plate_model_path,
+        settings.plate_confidence,
+        iou=settings.plate_iou,
+        mosaic_side=settings.plate_mosaic_side,
+        geometry=PlateGeometry(max_per_vehicle=settings.plate_max_per_vehicle),
+    )
+    resolved_plate_reader = plate_reader or OnnxPlateReader(
+        settings.resolved_plate_ocr_model_path,
+        settings.resolved_plate_ocr_charset_path,
+        min_score=settings.plate_ocr_min_text_score,
+        intra_op_threads=settings.plate_ocr_intra_op_threads,
+        variants=settings.plate_ocr_variants,
+        dynamic_width=settings.plate_ocr_dynamic_width,
     )
     model_service = ModelService(
         registry,
         default_model_id=settings.default_model_id,
         plate_detector=resolved_plates,
+        plate_reader=resolved_plate_reader,
     )
 
-    analysis_service = AnalysisService(resolved_engine, resolved_plates)
+    analysis_service = AnalysisService(
+        resolved_engine,
+        resolved_plates,
+        resolved_plate_reader,
+        # Les seuils d'OCR viennent des réglages et aucun de la requête : ce sont des
+        # arbitrages de déploiement — combien de cœurs, quelle cadence — que
+        # l'utilisateur d'une analyse n'a pas à connaître. `plate_confidence` fait
+        # exception et voyage bien par requête, parce qu'il répond à une question que
+        # seul l'utilisateur peut trancher devant sa vidéo : « trop de rectangles, ou
+        # pas assez ». Il descend jusqu'à l'adaptateur en argument de `detect_many`,
+        # ce qui lève l'impasse où ADR 0007 le laissait mort.
+        PlateOcrOptions(
+            every_n_frames=settings.plate_ocr_every_n_frames,
+            skip_above_iou=settings.plate_ocr_skip_iou,
+            min_width_px=float(settings.plate_ocr_min_width_px),
+        ),
+    )
     realtime_service = RealtimeSessionService(
         resolved_engine, max_sessions=settings.max_realtime_sessions
     )

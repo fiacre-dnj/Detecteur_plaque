@@ -112,18 +112,20 @@ def test_aucun_compteur_n_est_negatif(scenario: Scenario) -> None:
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=str)
-def test_les_passages_ne_depassent_jamais_le_nombre_de_paires_identite_sens(
-    scenario: Scenario,
-) -> None:
+def test_les_passages_ne_depassent_jamais_le_nombre_de_generations(scenario: Scenario) -> None:
     """Un franchissement de plus que possible signalerait un garde en défaut.
 
-    Chaque identité ne peut compter qu'une fois par ligne et par sens : le
-    plafond est donc `uniques × lignes × 2`.
+    Chaque identité compte **une fois par génération** (ADR 0009), et une
+    génération naît soit à l'admission, soit d'une ré-identification. Le plafond
+    exact est donc `uniques + ré-identifications` — ni la ligne ni le sens n'y
+    entrent, contrairement à l'ancienne règle.
+
+    Ce plafond est serré, et c'est ce qui fait sa valeur : l'ancien
+    (`uniques × lignes × 2`) restait vrai même avec le garde débranché.
     """
     stats = _play(scenario)
-    ceiling = stats.unique_vehicles * max(len(stats.by_line), 1) * 2
 
-    assert stats.crossings <= ceiling
+    assert stats.crossings <= stats.unique_vehicles + stats.reid_hits
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=str)

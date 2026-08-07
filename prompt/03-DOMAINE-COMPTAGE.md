@@ -171,11 +171,17 @@ Classe `LineCrossingCounter(lines, zones, min_hits)`. Elle **détecte et
 déduplique au même endroit**, et `observe()` ne rend que les événements qui ont
 réellement atteint un compteur.
 
+> **Amendé par [ADR 0009](../docs/adr/0009-un-comptage-par-vehicule.md).** Le
+> garde décrit ici comme `(ligne, identité, sens)` porte désormais sur
+> `(identité, génération)` : **un véhicule compte une fois**, quelle que soit la
+> ligne et quel que soit le sens, jusqu'à sa prochaine ré-identification. Les
+> passages ci-dessous en tiennent compte ; l'ADR dit pourquoi.
+
 État interne :
 - `_state: dict[(track_id, line_id), _LineState]` où
-  `_LineState(side: int = 0, pending_direction: int | None = None,
-  counted_directions: set[int])` ;
-- `_tallied: set[(line_id, global_id, direction)]` — **le garde d'identité** ;
+  `_LineState(side: int = 0, pending_direction: int | None = None)` — de la
+  géométrie seule, aucune comptabilité ;
+- `_tallied: set[(global_id, reid_count)]` — **le garde de comptage** ;
 - `by_line: dict[str, LineTally]`.
 
 ### Algorithme de `observe(tracks, timestamp_ms, frame_index)`
@@ -192,29 +198,33 @@ Pour chaque piste, pour chaque ligne :
    compter**. Une piste vue pour la première fois déjà au-delà d'une ligne n'a
    pas été *observée* la franchir.
 5. Si `side == state.side`, rien à faire.
-6. Sinon (changement de côté), vérifier **trois** conditions :
-   - `side not in state.counted_directions` (une fois par sens) ;
+6. Sinon (changement de côté), vérifier **deux** conditions, toutes deux
+   géométriques :
    - `in_zone` : si `line.zone_id` est renseigné, le centroïde doit être dans le
      polygone ;
    - `segments_intersect(previous_centroid or centroid, centroid, line.a, line.b)`.
-   Si les trois sont vraies : comptabiliser si `confirmed`, sinon
-   `state.pending_direction = side`.
+   Si les deux sont vraies : comptabiliser si `confirmed`, sinon
+   `state.pending_direction = side`. La déduplication n'est **pas** une de ces
+   conditions : elle est décidée dans `_tally`, qui refuse en rendant `None`.
+   Filtrer ici sur ce qui a déjà compté remettrait un garde sur la piste, que
+   l'occlusion efface.
 7. **`state.side = side` est écrit même quand le franchissement est rejeté.**
    Sans cela, une piste rejetée « regarde dans le mauvais sens » et le
    franchissement suivant compte à l'envers.
 
 ### `_tally(...)`
-- refuse si `direction in state.counted_directions` ;
-- ajoute `direction` à `counted_directions` ;
-- clé `(line.id, track.global_id, direction)` : **si déjà dans `_tallied`, rien
-  n'atteint le compteur** (une piste réincarnée après une occlusion, à laquelle
-  la galerie a redonné la même identité, ne recompte pas) ;
+- un seul refus : clé `(track.global_id, track.reid_count)` — **si déjà dans
+  `_tallied`, rien n'atteint le compteur**. Peu importe que ce soit sur une autre
+  ligne, dans l'autre sens, ou sous une piste depuis longtemps détruite : c'est le
+  même véhicule, il a déjà compté ;
 - label = `track.identity_label or track.label` ;
 - incrémente `total`, `by_class[label]`, et `positive`/`negative` ;
 - émet un `CrossingEvent`.
 
-`counted_identities()` rend `{global_id for (_, global_id, _) in _tallied}` :
-c'est la source du badge ✓.
+`counted_identities()` rend `{global_id for (global_id, _) in _tallied}` : c'est
+la source du badge ✓. Les générations s'accumulent, donc **le ✓ ne se rétracte
+jamais** — un véhicule ré-identifié reste marqué compté en attendant de
+recroiser.
 
 ### Pourquoi ces règles (à conserver dans les docstrings)
 - Sans le report `min_hits`, **tout véhicule qui franchit dans ses premières
@@ -223,8 +233,11 @@ c'est la source du badge ✓.
   cheval sur la ligne devient un véhicule.
 - Sans le garde d'identité, un véhicule qui franchit, disparaît 15 frames et
   revient avec une boîte qui tremble sur la ligne **compte 2**.
-- Un aller-retour réel compte **une fois dans chaque sens** : c'est pour cela que
-  le garde est par `(ligne, identité, sens)` et non par `(ligne, identité)`.
+- Ni la ligne ni le sens n'entrent dans la clé : plusieurs lignes en travers
+  d'une même voie servent à *situer* un passage, pas à le multiplier, et un
+  demi-tour devant la caméra n'est pas un second passage.
+- Seule une **vraie** ré-identification ré-arme, parce que `reid_count`
+  n'augmente que lorsqu'un véhicule réellement disparu est reconnu à son retour.
 
 ### Tests obligatoires
 | Scénario | Attendu |
@@ -232,13 +245,16 @@ c'est la source du badge ✓.
 | Piste traversant le segment, confirmée | 1 événement, `direction` correct |
 | Piste passant au-delà des extrémités (ligne infinie franchie) | 0 |
 | Piste apparaissant déjà de l'autre côté | 0 |
-| Aller-retour complet | 2 (un par sens) |
+| Aller-retour complet | 1 (le sens ne ré-arme pas) |
 | Tremblement sur la ligne dans le même sens | 1 |
 | Franchissement pendant `hits < min_hits`, piste ensuite confirmée | 1, émis à la confirmation |
 | Idem mais piste qui meurt avant confirmation | 0 |
 | Deux pistes successives, même `global_id`, même sens | 1 |
+| Une piste qui traverse deux lignes successives | 1, sur la **première** franchie ; la seconde reste à 0 |
+| Identité ré-identifiée (`reid_count` incrémenté) qui recroise | 1 de plus, et **un seul** même si elle retraverse plusieurs lignes |
 | Ligne liée à une zone, franchissement hors zone | 0, **et** `state.side` mis à jour (le franchissement suivant dans l'autre sens compte correctement) |
 | `crossings` = Σ `by_line[*].total` et `total = positive + negative` | toujours vrai |
+| `crossings` ≤ `unique_vehicles + reid_hits` | toujours vrai |
 
 ---
 
@@ -298,7 +314,7 @@ disparition : c'est elle qui distingue « véhicules uniques » de « passages �
 ### Options (`ReidOptions`) — valeurs et raisons
 | Champ | Défaut | Raison |
 |---|---|---|
-| `min_similarity` | **0.80** | Trop haut : un véhicule qui revient est recompté. Trop bas : deux sosies fusionnent et le second n'est jamais compté. Exposé dans l'UI |
+| `min_similarity` | **0.80** | Trop haut : un véhicule qui revient devient un **véhicule unique de plus** (son second passage compterait de toute façon, cf. ADR 0009 — c'est le décompte des uniques qui dérive). Trop bas : deux sosies fusionnent et le second n'est jamais compté. Exposé dans l'UI |
 | `class_mismatch_penalty` | 0.12 | Volontairement **petite** : car/bus/truck sont réellement confondus par le détecteur et doivent rester appariables |
 | `aspect_penalty_weight` | 0.30 | C'est **ceci** qui sépare les classes : une moto (~0,7) et une voiture (~1,5) donnent une pénalité ~0,25, assez pour mettre l'identité d'une voiture hors de portée d'une moto |
 | `min_gap_ms` | **0.0** | Le tracker détruit une piste morte et crée sa remplaçante dans le *même* appel : un écart minimum non nul refuserait le match légitime |
@@ -461,6 +477,10 @@ Ils utilisent des `TrackObservation` fabriquées à la main (aucun moteur) :
 1. Un véhicule qui traverse : 1 unique, 1 franchissement, ✓ posé.
 2. Un véhicule occulté 3 s puis revenu au même endroit : **1 unique**, ≥ 1
    `reid_hits`, et **1** franchissement s'il ne recroise pas.
+2 bis. Le même, mais qui **recroise** la ligne en remontant : toujours **1
+   unique**, ≥ 1 `reid_hits`, et **2** franchissements — la ré-identification a
+   ré-armé le comptage (ADR 0009). C'est le pendant du test 2 : sans lui, un
+   véhicule faisant la navette resterait invisible après son premier passage.
 3. Deux véhicules identiques simultanés : 2 uniques (exclusivité).
 4. `mask_outside_zones` : une observation hors zone ne crée aucune piste.
 5. Une piste dont la lecture alterne bus/camion : `identity_label` stable,

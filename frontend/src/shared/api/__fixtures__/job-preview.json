@@ -14,25 +14,29 @@
       "score": 0.9,
       "box": {
         "x": 660.0,
-        "y": 476.7,
+        "y": 570.0,
         "width": 80.0,
         "height": 60.0
       },
       "hits": 8,
       "counted": true,
       "reidCount": 0,
-      "speedPxS": 916.7,
+      "speedPxS": 1250.0,
       "plates": [
         {
           "box": {
             "x": 684.0,
-            "y": 515.7,
+            "y": 609.0,
             "width": 32.0,
             "height": 9.0
           },
-          "score": 0.71
+          "score": 0.71,
+          "text": "AB-123-CD",
+          "textScore": 0.88
         }
-      ]
+      ],
+      "plateText": "AB-123-CD",
+      "plateTextScore": 0.88
     },
     {
       "trackId": 2,
@@ -43,36 +47,42 @@
       "score": 0.9,
       "box": {
         "x": 1160.0,
-        "y": 513.3,
+        "y": 420.0,
         "width": 80.0,
         "height": 60.0
       },
       "hits": 8,
-      "counted": false,
+      "counted": true,
       "reidCount": 0,
-      "speedPxS": 916.7,
+      "speedPxS": 1250.0,
       "plates": [
         {
           "box": {
             "x": 1184.0,
-            "y": 552.3,
+            "y": 459.0,
             "width": 32.0,
             "height": 9.0
           },
-          "score": 0.71
+          "score": 0.71,
+          "text": null,
+          "textScore": null
         }
-      ]
+      ],
+      "plateText": null,
+      "plateTextScore": null
     }
   ],
   "crossings": [
     {
       "lineId": "l1",
-      "globalId": 1,
-      "trackId": 1,
-      "label": "car",
-      "direction": 1,
+      "globalId": 2,
+      "trackId": 2,
+      "label": "truck",
+      "direction": -1,
       "timestampMs": 280.0,
-      "frameIndex": 7
+      "frameIndex": 7,
+      "plateText": null,
+      "plateTextScore": null
     }
   ],
   "zoneEvents": [],
@@ -82,19 +92,21 @@
       "car": 1,
       "truck": 1
     },
-    "crossings": 1,
+    "crossings": 2,
     "byClass": {
-      "car": 1
+      "car": 1,
+      "truck": 1
     },
     "byLine": {
       "l1": {
-        "total": 1,
+        "total": 2,
         "byClass": {
-          "car": 1
+          "car": 1,
+          "truck": 1
         },
         "byDirection": {
           "positive": 1,
-          "negative": 0
+          "negative": 1
         }
       }
     },

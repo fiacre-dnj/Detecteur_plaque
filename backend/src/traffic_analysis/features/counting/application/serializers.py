@@ -76,9 +76,24 @@ def serialise_track(track: SessionTrack) -> dict[str, Any]:
         "reidCount": track.reid_count,
         "speedPxS": _optional_pixel(track.speed_px_s),
         "plates": [
-            {"box": serialise_box(plate.box), "score": _score(plate.score)}
+            {
+                "box": serialise_box(plate.box),
+                "score": _score(plate.score),
+                # `null` explicite plutôt qu'absent : le client a une branche par
+                # valeur, pas une branche par présence de clé.
+                "text": plate.text,
+                # `null` et non `0` quand rien n'a été lu : `0` dirait « lu, sans
+                # aucune confiance », ce qui n'est pas la même information.
+                "textScore": _score(plate.text_score) if plate.text else None,
+            }
             for plate in track.plates
         ],
+        # Le texte **voté**, en plus des lectures de la frame — même raison
+        # qu'`identityLabel` : c'est lui que le canvas étiquette. Dessiner
+        # `plates[].text` ferait clignoter l'étiquette, l'étranglement de l'OCR ne le
+        # remplissant qu'une frame sur trois.
+        "plateText": track.plate_text or None,
+        "plateTextScore": _score(track.plate_text_score) if track.plate_text else None,
     }
 
 
@@ -99,6 +114,14 @@ def serialise_crossing(event: CrossingEvent) -> dict[str, Any]:
         "direction": event.direction,
         "timestampMs": _pixel(event.timestamp_ms),
         "frameIndex": event.frame_index,
+        # Ce que le serveur savait de la plaque **au moment de compter**. Souvent
+        # `null` alors que le registre porte le texte, et c'est normal : les
+        # franchissements sortent de `feed()` avant la passe OCR de la même frame.
+        # L'autorité est le registre (ADR 0007).
+        "plateText": event.plate_text,
+        "plateTextScore": None
+        if event.plate_text_score is None
+        else _score(event.plate_text_score),
     }
 
 
@@ -133,6 +156,13 @@ def serialise_vehicle(record: VehicleRecord) -> dict[str, Any]:
         "bestPlateScore": None
         if record.best_plate_score is None
         else _score(record.best_plate_score),
+        # Le texte du **vote** sur toute la vie du véhicule. `null` avec un
+        # `bestPlateScore` non nul dit quelque chose de précis : une plaque a été vue,
+        # aucune lecture ne fait consensus.
+        "plateText": record.plate_text,
+        "plateTextScore": None
+        if record.plate_text_score is None
+        else _score(record.plate_text_score),
     }
 
 
