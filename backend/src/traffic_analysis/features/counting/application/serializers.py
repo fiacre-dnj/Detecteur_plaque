@@ -177,6 +177,14 @@ def serialise_vehicle(record: VehicleRecord) -> dict[str, Any]:
         "plateTextScore": None
         if record.plate_text_score is None
         else _score(record.plate_text_score),
+        # **Pourquoi** aucune plaque n'est publiée. `null` quand il y en a une.
+        # Sans ce champ, une case vide se lit comme une panne du service — et
+        # l'étranglement du détecteur comme le plancher de lecture rendent le
+        # silence plus fréquent, pas moins.
+        "plateUnreadReason": record.plate_unread_reason,
+        # Le chiffre qui rend la raison actionnable : « vue à 48 px » dit de
+        # resserrer le plan, « non détectée » dit tout autre chose.
+        "plateBestWidthPx": _optional_pixel(record.plate_best_width_px),
     }
 
 

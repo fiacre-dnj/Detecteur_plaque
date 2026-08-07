@@ -49,9 +49,30 @@ class PlateOcrOptions:
     #: c'est-à-dire un véhicule qui s'approche — un point de vue réellement neuf.
     skip_above_iou: float = 0.85
 
-    #: Sous cette largeur, ~4 px par caractère : l'inférence coûterait sans jamais
-    #: rien lire.
-    min_width_px: float = 32.0
+    #: Largeur minimale d'une vignette — **le plancher de lecture mesuré**.
+    #:
+    #: 64 px : l'échelle de vérité terrain (`scripts/anpr_bench.py --truth-ladder`)
+    #: donne 4/8 lectures justes à cette largeur et **0/8 à 48 px**. La valeur
+    #: précédente, 32, était cinq fois trop permissive par rapport à la mesure et
+    #: dépensait le budget sur des vignettes dont on savait qu'elles ne rendraient
+    #: rien. Couper plus haut supprimerait en revanche toute lecture sur des scènes
+    #: où quelque chose passait : le vote agrège sur la vie du véhicule, donc 4/8
+    #: par lecture n'est pas rien.
+    min_width_px: float = 64.0
+
+    #: Netteté minimale, en variance de laplacien. `0` désactive la porte.
+    #:
+    #: Anti-flou de mouvement : une plaque large mais floue est aussi illisible
+    #: qu'une plaque nette et minuscule. La largeur seule ne les distingue pas.
+    min_sharpness: float = 0.0
+
+    #: Facteur d'amélioration exigé pour relire une identité déjà lue.
+    #:
+    #: `1.0` désactive la sélection par qualité. Au-dessus, on ne relit que si la
+    #: nouvelle vignette bat la meilleure déjà lue de ce facteur : sous ce seuil,
+    #: l'inférence rendrait la même chaîne en moins sûr et gonflerait la confiance
+    #: d'un texte peut-être faux.
+    quality_improvement: float = 1.0
 
     #: Cesser l'OCR d'une identité dont le vote est établi. **La plus grosse
     #: économie du dispositif**, et de loin : un véhicule passe de quarante
@@ -90,6 +111,8 @@ class PlateOcrPolicy:
     last_ordinal: dict[int, int] = field(default_factory=dict)
     #: Identité → boîte de plaque de la dernière inférence tentée.
     last_box: dict[int, BoundingBox] = field(default_factory=dict)
+    #: Identité → meilleure **qualité** déjà lue (largeur × netteté).
+    best_quality: dict[int, float] = field(default_factory=dict)
 
     def should_read(
         self,
@@ -98,6 +121,7 @@ class PlateOcrPolicy:
         box: BoundingBox,
         *,
         vote_is_confident: bool,
+        sharpness: float = 0.0,
     ) -> bool:
         """Faut-il dépenser une inférence sur cette plaque ?
 
@@ -118,9 +142,31 @@ class PlateOcrPolicy:
         if self.options.stop_when_confident and vote_is_confident:
             return False
 
-        # 2. Trop petit : gratuit à évaluer, garanti sans résultat.
+        # 2. Trop petit : gratuit à évaluer, garanti sans résultat. Le plancher est
+        #    **mesuré** — 0/8 lectures justes à 48 px.
         if box.width < self.options.min_width_px:
             return False
+
+        # 2 bis. Trop flou. Une plaque large mais floue est aussi illisible qu'une
+        #    plaque nette et minuscule, et la largeur seule ne les distingue pas.
+        if self.options.min_sharpness > 0.0 and sharpness < self.options.min_sharpness:
+            return False
+
+        # 2 ter. Pas meilleure que ce qu'on a déjà lu de cette identité.
+        #
+        #    La qualité est le **produit** largeur × netteté : les deux façons d'être
+        #    illisible se compensent sinon, et une vignette large et floue passerait
+        #    pour meilleure qu'une vignette nette un peu plus petite.
+        #
+        #    Relire une vignette équivalente rendrait la même chaîne en moins sûr et
+        #    gonflerait la confiance d'un texte peut-être faux. Le budget doit aller
+        #    aux **meilleures** vignettes, pas à la troisième venue.
+        if self.options.quality_improvement > 1.0:
+            best = self.best_quality.get(global_id)
+            if best is not None and self._quality(box, sharpness) < best * (
+                self.options.quality_improvement
+            ):
+                return False
 
         # 3. Cadence : une image analysée sur N.
         last = self.last_ordinal.get(global_id)
@@ -134,14 +180,35 @@ class PlateOcrPolicy:
         previous = self.last_box.get(global_id)
         return previous is None or _iou(previous, box) <= self.options.skip_above_iou
 
-    def record(self, global_id: int, ordinal: int, box: BoundingBox) -> None:
+    @staticmethod
+    def _quality(box: BoundingBox, sharpness: float) -> float:
+        """Qualité d'une vignette : **le produit** largeur × netteté.
+
+        Le produit et non l'une des deux : une vignette large et floue et une
+        vignette nette et minuscule sont toutes deux illisibles, et seul le produit
+        écarte les deux. Une netteté nulle — porte désactivée, ou mesure absente —
+        rend la largeur seule, ce qui garde la sélection utilisable sans mesure.
+        """
+        return box.width * (sharpness if sharpness > 0.0 else 1.0)
+
+    def record(
+        self, global_id: int, ordinal: int, box: BoundingBox, sharpness: float = 0.0
+    ) -> None:
         """Note qu'une inférence a eu lieu — **même si elle n'a rien lu**.
 
         Sinon une plaque durablement illisible serait relue à chaque frame, c'est-à-
         dire exactement le coût qu'on cherche à éviter.
+
+        La qualité retenue est un **maximum**, jamais la dernière vue : sinon une
+        vignette médiocre succédant à une bonne rabaisserait la barre, et la
+        sélection par qualité perdrait tout son sens dès la deuxième lecture.
         """
         self.last_ordinal[global_id] = ordinal
         self.last_box[global_id] = box
+        quality = self._quality(box, sharpness)
+        previous = self.best_quality.get(global_id)
+        if previous is None or quality > previous:
+            self.best_quality[global_id] = quality
 
 
 @dataclass(frozen=True, slots=True)

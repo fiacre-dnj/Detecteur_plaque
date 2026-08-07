@@ -300,8 +300,13 @@ describe("contrat du registre des véhicules", () => {
       "globalId",
       "label",
       "lastSeenMs",
+      // Le couple qui remplace une case vide par une cause : « vue à 48 px » dit
+      // de resserrer le plan, « non détectée » dit tout autre chose. Sans lui, le
+      // silence se lit comme une panne du service.
+      "plateBestWidthPx",
       "plateText",
       "plateTextScore",
+      "plateUnreadReason",
       "reidCount",
       "zonesVisited",
     ]);
@@ -392,7 +397,18 @@ describe("contrat de l'aperçu d'une analyse en cours", () => {
     expect(timelinePlate).toBeDefined();
     if (previewPlate === undefined || timelinePlate === undefined) return;
 
-    expect(Object.keys(previewPlate).sort()).toEqual(Object.keys(timelinePlate).sort());
+    // `stale` est **délibérément optionnel** — sérialisé seulement quand il vaut
+    // `true`, parce qu'un booléen sur 100 % des plaques de 45 000 images pèse pour
+    // une information qui n'a de sens que dans le cas minoritaire. Il est donc
+    // écarté de la comparaison de forme, qui porte sur les clés **toujours**
+    // présentes. Ce que le test protège reste entier : une plaque d'aperçu sans
+    // `text` serait muette pendant l'analyse et bavarde à la relecture.
+    const required = (plate: object): string[] =>
+      Object.keys(plate)
+        .filter((key) => key !== "stale")
+        .sort();
+
+    expect(required(previewPlate)).toEqual(required(timelinePlate));
   });
 
   it("annonce les dimensions décodées par le serveur", () => {

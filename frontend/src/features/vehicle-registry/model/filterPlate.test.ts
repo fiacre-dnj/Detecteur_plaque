@@ -29,6 +29,10 @@ function vehicle(globalId: number, plateText: string | null): VehicleRecord {
     bestPlateScore: plateText === null ? null : 0.71,
     plateText,
     plateTextScore: plateText === null ? null : 0.88,
+    // Un véhicule sans plaque publiée porte toujours une raison : c'est ce qui
+    // remplace la case vide que l'utilisateur lisait comme une panne.
+    plateUnreadReason: plateText === null ? "no_consensus" : null,
+    plateBestWidthPx: plateText === null ? null : 96,
   };
 }
 

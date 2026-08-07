@@ -22,10 +22,10 @@
           "identityLabel": "car",
           "score": 0.9,
           "box": {
-            "x": 660.0,
-            "y": 220.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 620.0,
+            "y": 190.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 1,
           "counted": false,
@@ -34,14 +34,14 @@
           "plates": [
             {
               "box": {
-                "x": 684.0,
-                "y": 259.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 668.0,
+                "y": 268.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": "AB-123-CD",
-              "textScore": 0.88
+              "textScore": 0.93
             }
           ],
           "plateText": null,
@@ -55,10 +55,10 @@
           "identityLabel": "truck",
           "score": 0.9,
           "box": {
-            "x": 1160.0,
-            "y": 770.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 1120.0,
+            "y": 740.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 1,
           "counted": false,
@@ -67,10 +67,10 @@
           "plates": [
             {
               "box": {
-                "x": 1184.0,
-                "y": 809.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 1168.0,
+                "y": 818.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": null,
@@ -94,10 +94,10 @@
           "identityLabel": "car",
           "score": 0.9,
           "box": {
-            "x": 660.0,
-            "y": 270.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 620.0,
+            "y": 240.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 2,
           "counted": false,
@@ -106,14 +106,14 @@
           "plates": [
             {
               "box": {
-                "x": 684.0,
-                "y": 309.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 668.0,
+                "y": 318.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
-              "text": "AB-123-CD",
-              "textScore": 0.88
+              "text": null,
+              "textScore": null
             }
           ],
           "plateText": null,
@@ -127,10 +127,10 @@
           "identityLabel": "truck",
           "score": 0.9,
           "box": {
-            "x": 1160.0,
-            "y": 720.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 1120.0,
+            "y": 690.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 2,
           "counted": false,
@@ -139,14 +139,15 @@
           "plates": [
             {
               "box": {
-                "x": 1184.0,
-                "y": 759.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 1168.0,
+                "y": 768.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": null,
-              "textScore": null
+              "textScore": null,
+              "stale": true
             }
           ],
           "plateText": null,
@@ -166,10 +167,10 @@
           "identityLabel": "car",
           "score": 0.9,
           "box": {
-            "x": 660.0,
-            "y": 320.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 620.0,
+            "y": 290.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 3,
           "counted": false,
@@ -178,18 +179,19 @@
           "plates": [
             {
               "box": {
-                "x": 684.0,
-                "y": 359.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 668.0,
+                "y": 368.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
-              "text": "AB-123-CD",
-              "textScore": 0.88
+              "text": null,
+              "textScore": null,
+              "stale": true
             }
           ],
-          "plateText": "AB-123-CD",
-          "plateTextScore": 0.88
+          "plateText": null,
+          "plateTextScore": null
         },
         {
           "trackId": 2,
@@ -199,10 +201,10 @@
           "identityLabel": "truck",
           "score": 0.9,
           "box": {
-            "x": 1160.0,
-            "y": 670.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 1120.0,
+            "y": 640.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 3,
           "counted": false,
@@ -211,10 +213,10 @@
           "plates": [
             {
               "box": {
-                "x": 1184.0,
-                "y": 709.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 1168.0,
+                "y": 718.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": null,
@@ -238,10 +240,10 @@
           "identityLabel": "car",
           "score": 0.9,
           "box": {
-            "x": 660.0,
-            "y": 370.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 620.0,
+            "y": 340.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 4,
           "counted": false,
@@ -250,18 +252,19 @@
           "plates": [
             {
               "box": {
-                "x": 684.0,
-                "y": 409.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 668.0,
+                "y": 418.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
-              "text": "AB-123-CD",
-              "textScore": 0.88
+              "text": null,
+              "textScore": null,
+              "stale": true
             }
           ],
-          "plateText": "AB-123-CD",
-          "plateTextScore": 0.88
+          "plateText": null,
+          "plateTextScore": null
         },
         {
           "trackId": 2,
@@ -271,10 +274,10 @@
           "identityLabel": "truck",
           "score": 0.9,
           "box": {
-            "x": 1160.0,
-            "y": 620.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 1120.0,
+            "y": 590.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 4,
           "counted": false,
@@ -283,14 +286,15 @@
           "plates": [
             {
               "box": {
-                "x": 1184.0,
-                "y": 659.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 1168.0,
+                "y": 668.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": null,
-              "textScore": null
+              "textScore": null,
+              "stale": true
             }
           ],
           "plateText": null,
@@ -310,10 +314,10 @@
           "identityLabel": "car",
           "score": 0.9,
           "box": {
-            "x": 660.0,
-            "y": 420.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 620.0,
+            "y": 390.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 5,
           "counted": false,
@@ -322,18 +326,18 @@
           "plates": [
             {
               "box": {
-                "x": 684.0,
-                "y": 459.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 668.0,
+                "y": 468.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": "AB-123-CD",
-              "textScore": 0.88
+              "textScore": 0.93
             }
           ],
-          "plateText": "AB-123-CD",
-          "plateTextScore": 0.88
+          "plateText": null,
+          "plateTextScore": null
         },
         {
           "trackId": 2,
@@ -343,10 +347,10 @@
           "identityLabel": "truck",
           "score": 0.9,
           "box": {
-            "x": 1160.0,
-            "y": 570.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 1120.0,
+            "y": 540.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 5,
           "counted": false,
@@ -355,14 +359,15 @@
           "plates": [
             {
               "box": {
-                "x": 1184.0,
-                "y": 609.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 1168.0,
+                "y": 618.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": null,
-              "textScore": null
+              "textScore": null,
+              "stale": true
             }
           ],
           "plateText": null,
@@ -382,10 +387,10 @@
           "identityLabel": "car",
           "score": 0.9,
           "box": {
-            "x": 660.0,
-            "y": 470.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 620.0,
+            "y": 440.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 6,
           "counted": false,
@@ -394,18 +399,19 @@
           "plates": [
             {
               "box": {
-                "x": 684.0,
-                "y": 509.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 668.0,
+                "y": 518.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
-              "text": "AB-123-CD",
-              "textScore": 0.88
+              "text": null,
+              "textScore": null,
+              "stale": true
             }
           ],
           "plateText": "AB-123-CD",
-          "plateTextScore": 0.88
+          "plateTextScore": 0.93
         },
         {
           "trackId": 2,
@@ -415,10 +421,10 @@
           "identityLabel": "truck",
           "score": 0.9,
           "box": {
-            "x": 1160.0,
-            "y": 520.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 1120.0,
+            "y": 490.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 6,
           "counted": false,
@@ -427,10 +433,10 @@
           "plates": [
             {
               "box": {
-                "x": 1184.0,
-                "y": 559.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 1168.0,
+                "y": 568.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": null,
@@ -454,10 +460,10 @@
           "identityLabel": "car",
           "score": 0.9,
           "box": {
-            "x": 660.0,
-            "y": 520.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 620.0,
+            "y": 490.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 7,
           "counted": true,
@@ -466,18 +472,19 @@
           "plates": [
             {
               "box": {
-                "x": 684.0,
-                "y": 559.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 668.0,
+                "y": 568.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
-              "text": "AB-123-CD",
-              "textScore": 0.88
+              "text": null,
+              "textScore": null,
+              "stale": true
             }
           ],
           "plateText": "AB-123-CD",
-          "plateTextScore": 0.88
+          "plateTextScore": 0.93
         },
         {
           "trackId": 2,
@@ -487,10 +494,10 @@
           "identityLabel": "truck",
           "score": 0.9,
           "box": {
-            "x": 1160.0,
-            "y": 470.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 1120.0,
+            "y": 440.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 7,
           "counted": false,
@@ -499,14 +506,15 @@
           "plates": [
             {
               "box": {
-                "x": 1184.0,
-                "y": 509.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 1168.0,
+                "y": 518.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": null,
-              "textScore": null
+              "textScore": null,
+              "stale": true
             }
           ],
           "plateText": null,
@@ -526,10 +534,10 @@
           "identityLabel": "car",
           "score": 0.9,
           "box": {
-            "x": 660.0,
-            "y": 570.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 620.0,
+            "y": 540.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 8,
           "counted": true,
@@ -538,18 +546,18 @@
           "plates": [
             {
               "box": {
-                "x": 684.0,
-                "y": 609.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 668.0,
+                "y": 618.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": "AB-123-CD",
-              "textScore": 0.88
+              "textScore": 0.93
             }
           ],
           "plateText": "AB-123-CD",
-          "plateTextScore": 0.88
+          "plateTextScore": 0.93
         },
         {
           "trackId": 2,
@@ -559,10 +567,10 @@
           "identityLabel": "truck",
           "score": 0.9,
           "box": {
-            "x": 1160.0,
-            "y": 420.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 1120.0,
+            "y": 390.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 8,
           "counted": true,
@@ -571,14 +579,15 @@
           "plates": [
             {
               "box": {
-                "x": 1184.0,
-                "y": 459.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 1168.0,
+                "y": 468.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": null,
-              "textScore": null
+              "textScore": null,
+              "stale": true
             }
           ],
           "plateText": null,
@@ -598,10 +607,10 @@
           "identityLabel": "car",
           "score": 0.9,
           "box": {
-            "x": 660.0,
-            "y": 620.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 620.0,
+            "y": 590.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 9,
           "counted": true,
@@ -610,18 +619,19 @@
           "plates": [
             {
               "box": {
-                "x": 684.0,
-                "y": 659.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 668.0,
+                "y": 668.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
-              "text": "AB-123-CD",
-              "textScore": 0.88
+              "text": null,
+              "textScore": null,
+              "stale": true
             }
           ],
           "plateText": "AB-123-CD",
-          "plateTextScore": 0.88
+          "plateTextScore": 0.93
         },
         {
           "trackId": 2,
@@ -631,10 +641,10 @@
           "identityLabel": "truck",
           "score": 0.9,
           "box": {
-            "x": 1160.0,
-            "y": 370.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 1120.0,
+            "y": 340.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 9,
           "counted": true,
@@ -643,10 +653,10 @@
           "plates": [
             {
               "box": {
-                "x": 1184.0,
-                "y": 409.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 1168.0,
+                "y": 418.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": null,
@@ -670,10 +680,10 @@
           "identityLabel": "car",
           "score": 0.9,
           "box": {
-            "x": 660.0,
-            "y": 670.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 620.0,
+            "y": 640.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 10,
           "counted": true,
@@ -682,18 +692,19 @@
           "plates": [
             {
               "box": {
-                "x": 684.0,
-                "y": 709.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 668.0,
+                "y": 718.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
-              "text": "AB-123-CD",
-              "textScore": 0.88
+              "text": null,
+              "textScore": null,
+              "stale": true
             }
           ],
           "plateText": "AB-123-CD",
-          "plateTextScore": 0.88
+          "plateTextScore": 0.93
         },
         {
           "trackId": 2,
@@ -703,10 +714,10 @@
           "identityLabel": "truck",
           "score": 0.9,
           "box": {
-            "x": 1160.0,
-            "y": 320.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 1120.0,
+            "y": 290.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 10,
           "counted": true,
@@ -715,14 +726,15 @@
           "plates": [
             {
               "box": {
-                "x": 1184.0,
-                "y": 359.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 1168.0,
+                "y": 368.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": null,
-              "textScore": null
+              "textScore": null,
+              "stale": true
             }
           ],
           "plateText": null,
@@ -742,10 +754,10 @@
           "identityLabel": "car",
           "score": 0.9,
           "box": {
-            "x": 660.0,
-            "y": 720.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 620.0,
+            "y": 690.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 11,
           "counted": true,
@@ -754,18 +766,19 @@
           "plates": [
             {
               "box": {
-                "x": 684.0,
-                "y": 759.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 668.0,
+                "y": 768.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
-              "text": "AB-123-CD",
-              "textScore": 0.88
+              "text": null,
+              "textScore": null,
+              "stale": true
             }
           ],
           "plateText": "AB-123-CD",
-          "plateTextScore": 0.88
+          "plateTextScore": 0.93
         },
         {
           "trackId": 2,
@@ -775,10 +788,10 @@
           "identityLabel": "truck",
           "score": 0.9,
           "box": {
-            "x": 1160.0,
-            "y": 270.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 1120.0,
+            "y": 240.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 11,
           "counted": true,
@@ -787,14 +800,15 @@
           "plates": [
             {
               "box": {
-                "x": 1184.0,
-                "y": 309.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 1168.0,
+                "y": 318.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": null,
-              "textScore": null
+              "textScore": null,
+              "stale": true
             }
           ],
           "plateText": null,
@@ -814,10 +828,10 @@
           "identityLabel": "car",
           "score": 0.9,
           "box": {
-            "x": 660.0,
-            "y": 770.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 620.0,
+            "y": 740.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 12,
           "counted": true,
@@ -826,18 +840,19 @@
           "plates": [
             {
               "box": {
-                "x": 684.0,
-                "y": 809.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 668.0,
+                "y": 818.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
-              "text": "AB-123-CD",
-              "textScore": 0.88
+              "text": null,
+              "textScore": null,
+              "stale": true
             }
           ],
           "plateText": "AB-123-CD",
-          "plateTextScore": 0.88
+          "plateTextScore": 0.93
         },
         {
           "trackId": 2,
@@ -847,10 +862,10 @@
           "identityLabel": "truck",
           "score": 0.9,
           "box": {
-            "x": 1160.0,
-            "y": 220.0,
-            "width": 80.0,
-            "height": 60.0
+            "x": 1120.0,
+            "y": 190.0,
+            "width": 160.0,
+            "height": 120.0
           },
           "hits": 12,
           "counted": true,
@@ -859,10 +874,10 @@
           "plates": [
             {
               "box": {
-                "x": 1184.0,
-                "y": 259.0,
-                "width": 32.0,
-                "height": 9.0
+                "x": 1168.0,
+                "y": 268.0,
+                "width": 64.0,
+                "height": 18.0
               },
               "score": 0.71,
               "text": null,
@@ -885,7 +900,7 @@
       "timestampMs": 240.0,
       "frameIndex": 6,
       "plateText": "AB-123-CD",
-      "plateTextScore": 0.88
+      "plateTextScore": 0.93
     },
     {
       "lineId": "l1",
@@ -919,7 +934,9 @@
       "avgSpeedKmh": null,
       "bestPlateScore": 0.71,
       "plateText": "AB-123-CD",
-      "plateTextScore": 0.88
+      "plateTextScore": 0.93,
+      "plateUnreadReason": null,
+      "plateBestWidthPx": 64.0
     },
     {
       "globalId": 2,
@@ -939,7 +956,9 @@
       "avgSpeedKmh": null,
       "bestPlateScore": 0.71,
       "plateText": null,
-      "plateTextScore": null
+      "plateTextScore": null,
+      "plateUnreadReason": "too_blurry",
+      "plateBestWidthPx": 64.0
     }
   ],
   "stats": {

@@ -372,7 +372,39 @@ export interface VehicleRecord {
   plateText: string | null;
   /** Confiance moyenne de la **lecture** gagnante. C'est l'`ocrConfidence` du vote. */
   plateTextScore: number | null;
+  /**
+   * **Pourquoi** aucune plaque n'est publiée. `null` quand il y en a une.
+   *
+   * Cinq causes parce qu'elles appellent cinq gestes différents : installer un
+   * modèle, resserrer le plan, stabiliser la caméra, ou ne rien faire. Une case
+   * vide, elle, se lit comme une panne du service.
+   */
+  plateUnreadReason: PlateUnreadReason | null;
+  /**
+   * Largeur de la meilleure plaque vue, en pixels. `null` si aucune.
+   *
+   * C'est ce chiffre qui rend la raison actionnable : « vue à 48 px » dit de
+   * resserrer le plan, là où « non détectée » dit tout autre chose.
+   */
+  plateBestWidthPx: number | null;
 }
+
+/**
+ * Pourquoi une plaque n'est pas publiée — miroir exact du `Literal` pydantic.
+ *
+ * - `ocr_disabled` : la lecture n'a pas été demandée, ou son modèle est absent.
+ * - `not_detected` : aucune plaque localisée — angle, occlusion, vue de côté.
+ * - `too_small` : vue, mais sous le plancher de lecture (~64 px mesurés).
+ * - `too_blurry` : assez large, trop floue — flou de mouvement ou mise au point.
+ * - `no_consensus` : plusieurs lectures, aucune majorité. Le refus **honnête** du
+ *   vote, et non une panne.
+ */
+export type PlateUnreadReason =
+  | "ocr_disabled"
+  | "not_detected"
+  | "too_small"
+  | "too_blurry"
+  | "no_consensus";
 
 export interface VideoInfo {
   width: number;

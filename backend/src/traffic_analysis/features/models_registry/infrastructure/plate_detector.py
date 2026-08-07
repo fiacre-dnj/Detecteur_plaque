@@ -213,7 +213,7 @@ class OnnxPlateDetector:
             per_tile = side * side
             for start in range(0, len(crops), per_tile):
                 chunk = crops[start : start + per_tile]
-                for index, found in self._infer_tile(model, chunk, threshold).items():
+                for index, found in self._infer_tile(model, chunk, threshold, image).items():
                     results[index] = found
             return tuple(results)
         except Exception as exc:
@@ -261,8 +261,14 @@ class OnnxPlateDetector:
         model: Any,  # noqa: ANN401 — YOLO n'est pas typé
         chunk: Sequence[tuple[int, npt.NDArray[np.uint8], int, int]],
         threshold: float,
+        image: npt.NDArray[np.uint8],
     ) -> dict[int, tuple[PlateDetection, ...]]:
-        """Une inférence pour tout un paquet de recadrages."""
+        """Une inférence pour tout un paquet de recadrages.
+
+        `image` est l'image **source complète** : elle sert à mesurer la netteté de
+        chaque vignette retenue, sur les pixels d'origine plutôt que sur ceux de la
+        mosaïque, où la vignette a déjà été redimensionnée.
+        """
         tile, placements = self._pack(chunk)
         # `imgsz` explicite : sans lui, Ultralytics choisit sa valeur par défaut, et
         # une mosaïque redimensionnée casserait la correspondance des cellules.
@@ -293,7 +299,7 @@ class OnnxPlateDetector:
             if in_crop is not None and self._is_plausible(in_crop, placement):
                 found.setdefault(placement.index, []).append((placement, in_crop, float(score)))
 
-        return {index: self._select(candidates) for index, candidates in found.items()}
+        return {index: self._select(candidates, image) for index, candidates in found.items()}
 
     def _pack(
         self, chunk: Sequence[tuple[int, npt.NDArray[np.uint8], int, int]]
@@ -398,27 +404,60 @@ class OnnxPlateDetector:
         )
 
     def _select(
-        self, candidates: Sequence[tuple[_Placement, BoundingBox, float]]
+        self,
+        candidates: Sequence[tuple[_Placement, BoundingBox, float]],
+        image: npt.NDArray[np.uint8],
     ) -> tuple[PlateDetection, ...]:
         """Les `max_per_vehicle` meilleures, réexprimées dans l'image complète.
 
         Aucune couche en aval ne doit avoir à savoir qu'il y a eu un recadrage :
         le classement se fait dans le domaine, la remise en repère ici.
+
+        La **netteté** est mesurée ici parce que c'est la seule couche qui ait à la
+        fois les pixels et le droit d'importer `cv2` : `test_architecture.py`
+        l'interdit dans `application` et dans `domain`. Elle est mesurée sur
+        l'image source et non sur la mosaïque, où la vignette a déjà été
+        redimensionnée — une netteté mesurée après interpolation décrirait
+        l'interpolation, pas la prise de vue.
         """
         # Les candidates d'un même véhicule partagent leur placement — c'est la
         # cellule de *ce* recadrage. Le prendre une fois évite d'avoir à réapparier
         # une boîte à son placement après le tri du domaine.
         placement = candidates[0][0]
         best = select_best([(box, score) for _, box, score in candidates], self._geometry)
-        return tuple(
-            PlateDetection(
-                box=BoundingBox(
-                    x=box.x + placement.origin_x,
-                    y=box.y + placement.origin_y,
-                    width=box.width,
-                    height=box.height,
-                ),
-                score=score,
+        detections: list[PlateDetection] = []
+        for box, score in best:
+            absolute = BoundingBox(
+                x=box.x + placement.origin_x,
+                y=box.y + placement.origin_y,
+                width=box.width,
+                height=box.height,
             )
-            for box, score in best
-        )
+            detections.append(
+                PlateDetection(
+                    box=absolute,
+                    score=score,
+                    sharpness=self._sharpness(image, absolute),
+                )
+            )
+        return tuple(detections)
+
+    @staticmethod
+    def _sharpness(image: npt.NDArray[np.uint8], box: BoundingBox) -> float:
+        """Variance du laplacien de la vignette — la mesure de flou usuelle.
+
+        Coût : quelques microsecondes sur une vignette de 60×20, contre 93 ms
+        d'inférence. Ne lève jamais : une vignette hors cadre ou dégénérée rend
+        `0.0`, que la politique interprète comme « non mesurée » et non comme
+        « parfaitement floue » — elle retombe alors sur la largeur seule.
+        """
+        height, width = image.shape[:2]
+        x1 = max(0, int(box.x))
+        y1 = max(0, int(box.y))
+        x2 = min(width, int(box.x + box.width))
+        y2 = min(height, int(box.y + box.height))
+        if x2 - x1 < 2 or y2 - y1 < 2:
+            return 0.0
+        crop = image[y1:y2, x1:x2]
+        grey = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+        return float(cv2.Laplacian(grey, cv2.CV_64F).var())

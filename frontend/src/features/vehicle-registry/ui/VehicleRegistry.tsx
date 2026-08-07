@@ -32,6 +32,7 @@ import {
   vehiclesCsv,
 } from "../model/exportCsv";
 import { filterByPlate } from "../model/filterPlate";
+import { plateUnreadLabel, plateUnreadMessage } from "../model/plateUnread";
 import { INITIAL_ROWS, ROW_HEIGHT, shouldVirtualise, visibleWindow } from "../model/virtualise";
 
 interface VehicleRegistryProps {
@@ -181,16 +182,32 @@ export function VehicleRegistry({
               className={vehicle.plateText === null ? "text-ink-dim" : "tabular text-ink"}
             >
               {/* Jamais une cellule vide : « rien » se lirait « pas de plaque » alors
-                  que `bestPlateScore` prouve le contraire. L'infobulle porte les deux
-                  confiances, qui répondent à deux questions différentes. */}
+                  que `bestPlateScore` prouve le contraire.
+
+                  Quand le serveur dit **pourquoi**, sa raison l'emporte sur le
+                  générique « illisible » : « trop petite » et « non détectée »
+                  appellent deux gestes différents, et l'infobulle porte la phrase
+                  complète avec la largeur mesurée. C'est ce qui distingue « la
+                  chaîne refuse d'inventer » d'une panne du service — et
+                  l'étranglement du détecteur comme le plancher de lecture rendent
+                  ce silence plus fréquent, pas moins. */}
               <span
-                title={plateTitle(
-                  vehicle.plateText,
-                  vehicle.plateTextScore,
-                  vehicle.bestPlateScore,
-                )}
+                title={
+                  vehicle.plateText === null && vehicle.plateUnreadReason !== null
+                    ? plateUnreadMessage(
+                        vehicle.plateUnreadReason,
+                        vehicle.plateBestWidthPx,
+                      )
+                    : plateTitle(
+                        vehicle.plateText,
+                        vehicle.plateTextScore,
+                        vehicle.bestPlateScore,
+                      )
+                }
               >
-                {plateCell(vehicle.plateText, vehicle.bestPlateScore)}
+                {vehicle.plateText === null && vehicle.plateUnreadReason !== null
+                  ? plateUnreadLabel(vehicle.plateUnreadReason)
+                  : plateCell(vehicle.plateText, vehicle.bestPlateScore)}
               </span>
             </Td>
             <Td className="tabular">{formatScore(vehicle.plateTextScore)}</Td>

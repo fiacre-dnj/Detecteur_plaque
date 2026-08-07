@@ -143,7 +143,6 @@ class AnalysisService:
         nul publie chaque frame, ce dont seuls les tests ont l'usage.
         """
         info = self._engine.probe(video_path)
-        session = AnalysisSession(config.session_config(), info.width, info.height)
         result = AnalysisResultData(job_id=job_id, model_id=config.model_id, video=info)
 
         total = self._expected_frames(info.frame_count, config.frame_stride)
@@ -168,6 +167,20 @@ class AnalysisService:
         # Une politique par course : aucun état d'étranglement partagé entre jobs.
         policy = PlateOcrPolicy(self._plate_ocr) if reader is not None else None
         detect_policy = PlateDetectPolicy(self._plate_detect)
+
+        # La session est construite **après** la résolution de l'OCR, et pas avant :
+        # elle a besoin de savoir si la lecture tourne *réellement* — modèle présent
+        # compris — pour distinguer « rien n'a été tenté » des quatre autres raisons
+        # de non-lecture. La requête seule ne le dit pas.
+        session = AnalysisSession(
+            replace(
+                config.session_config(),
+                plate_ocr_enabled=reader is not None,
+                plate_ocr_min_width_px=self._plate_ocr.min_width_px,
+            ),
+            info.width,
+            info.height,
+        )
         #: Identité → dernière plaque **mesurée**, en repère relatif au véhicule.
         #: Par course, comme les politiques.
         anchors: dict[int, PlateAnchor] = {}
@@ -444,7 +457,15 @@ class AnalysisService:
         wanted = [
             (index, plate)
             for index, plate in enumerate(plates)
-            if policy.should_read(track.global_id, ordinal, plate.box, vote_is_confident=confident)
+            if policy.should_read(
+                track.global_id,
+                ordinal,
+                plate.box,
+                vote_is_confident=confident,
+                # La netteté vient du détecteur, seule couche à avoir les pixels.
+                # Elle s'arrête à la politique : la timeline n'en a rien à faire.
+                sharpness=plate.sharpness,
+            )
         ]
         if not wanted:
             return tuple(plates)
@@ -465,7 +486,7 @@ class AnalysisService:
         for (index, plate), text in zip(wanted, texts, strict=True):
             # Noté même quand la lecture a échoué : sans cela, une plaque durablement
             # illisible serait relue à chaque frame — le coût qu'on cherche à éviter.
-            policy.record(track.global_id, ordinal, plate.box)
+            policy.record(track.global_id, ordinal, plate.box, plate.sharpness)
             if text is not None:
                 updated[index] = replace(
                     plate,

@@ -22,7 +22,11 @@ from traffic_analysis.features.benchmark.infrastructure.sqlalchemy_repository im
     SqlAlchemyBenchmarkRepository,
 )
 from traffic_analysis.features.counting.application.analysis_service import AnalysisService
-from traffic_analysis.features.counting.application.dto import PlateGeometry, PlateOcrOptions
+from traffic_analysis.features.counting.application.dto import (
+    PlateDetectOptions,
+    PlateGeometry,
+    PlateOcrOptions,
+)
 from traffic_analysis.features.jobs.application.job_manager import JobManager
 from traffic_analysis.features.jobs.application.progress_hub import ProgressHub
 from traffic_analysis.features.jobs.infrastructure.result_store import FileResultStore
@@ -170,7 +174,12 @@ def build_container(
             every_n_frames=settings.plate_ocr_every_n_frames,
             skip_above_iou=settings.plate_ocr_skip_iou,
             min_width_px=float(settings.plate_ocr_min_width_px),
+            min_sharpness=settings.plate_ocr_min_sharpness,
+            quality_improvement=settings.plate_ocr_quality_improvement,
         ),
+        # L'étranglement du détecteur suit la **cadence de l'OCR** : détecter plus
+        # souvent qu'on ne lit produirait des boîtes que personne ne consomme.
+        PlateDetectOptions(every_n_frames=settings.plate_ocr_every_n_frames),
     )
     realtime_service = RealtimeSessionService(
         resolved_engine, max_sessions=settings.max_realtime_sessions

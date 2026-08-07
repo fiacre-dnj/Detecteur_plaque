@@ -14,8 +14,32 @@ L'empreinte mémoire devient visible.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from traffic_analysis.features.counting.domain.geometry import Point
+
+#: Pourquoi aucune plaque n'est publiée pour un véhicule — **cinq causes, cinq
+#: gestes différents**.
+#:
+#: - `ocr_disabled` : la lecture n'a pas été demandée, ou son modèle est absent.
+#:   Rien n'a été tenté ; ce n'est pas un échec.
+#: - `not_detected` : aucune plaque n'a été localisée. Angle de vue, occlusion, ou
+#:   véhicule vu de côté — pas une affaire de résolution.
+#: - `too_small` : des plaques ont été vues, toutes sous le plancher de lecture.
+#:   **La cause dominante sur les vidéos disponibles** (27 à 88 px pour un plancher
+#:   mesuré à ~64). Un plan plus serré ou un capteur plus défini y répondrait.
+#: - `too_blurry` : assez larges, mais trop floues — flou de mouvement ou mise au
+#:   point. Une vitesse d'obturation plus courte y répondrait.
+#: - `no_consensus` : plusieurs lectures, aucune majorité. C'est le refus honnête
+#:   du vote, et non une panne : publier une des lectures divergentes ferait
+#:   apparaître une plaque fausse et parfaitement plausible.
+type PlateUnreadReason = Literal[
+    "ocr_disabled",
+    "not_detected",
+    "too_small",
+    "too_blurry",
+    "no_consensus",
+]
 
 # Les quatre classes COCO comptées, traitées à l'identique.
 #
@@ -212,6 +236,18 @@ class PlateDetection:
     #: jeter les confiances par caractère : un booléen sur 100 % des plaques de
     #: 45 000 images pèse, et il n'a de sens que dans le cas minoritaire.
     stale: bool = False
+    #: Netteté de la vignette, en variance de laplacien. **De passage, jamais
+    #: sérialisée** — exactement le statut de `text_char_scores`.
+    #:
+    #: Mesurée par le détecteur, seule couche qui ait les pixels et le droit
+    #: d'importer `cv2` ; consommée par `PlateOcrPolicy`, qui décide s'il vaut la
+    #: peine de relire cette identité. Elle ne va pas plus loin : la timeline n'a
+    #: rien à en faire, et un flottant par plaque et par image d'un clip de trente
+    #: minutes pèserait pour une information utile pendant trois lignes.
+    #:
+    #: `0.0` signifie « non mesurée » et non « parfaitement floue » : la politique
+    #: retombe alors sur la largeur seule, ce qui garde tout utilisable sans mesure.
+    sharpness: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -404,6 +440,26 @@ class VehicleRecord:
     #: détection. Une plaque affichée sans dire à quel point le serveur y croit
     #: invite à croire toutes les lignes également.
     plate_text_score: float | None = None
+    #: **Pourquoi** aucune plaque n'est publiée pour ce véhicule.
+    #:
+    #: `None` quand il y en a une. Sinon, la cause exacte parmi cinq, parce que les
+    #: cinq appellent des gestes différents : installer un modèle, resserrer le
+    #: plan, stabiliser la caméra, ou rien du tout. Une case vide, elle, se lit
+    #: comme une panne du service — et c'est ce que l'étranglement et le plancher
+    #: de lecture rendent **plus** fréquent, pas moins.
+    #:
+    #: Au niveau **identité** et jamais au niveau image, pour la raison qu'ADR 0008
+    #: donne à propos des confiances par caractère : `VehicleRecord` est en
+    #: O(véhicules), `TrackSnapshot` en O(images × pistes), et une raison d'échec
+    #: est un fait de la vie du véhicule.
+    plate_unread_reason: PlateUnreadReason | None = None
+    #: Largeur de la meilleure plaque vue, en pixels. `None` si aucune.
+    #:
+    #: C'est le chiffre qui rend la raison **actionnable** : « vue à 48 px » dit de
+    #: resserrer le plan ou de changer de capteur, « non détectée » dit tout autre
+    #: chose. Sans lui, `too_small` laisse l'utilisateur sans repère sur l'ampleur
+    #: de l'écart.
+    plate_best_width_px: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -34,6 +34,7 @@ from traffic_analysis.features.counting.domain.models import (
     ZoneDef,
     ZoneTally,
 )
+from traffic_analysis.features.counting.domain.plate_geometry import unread_reason
 from traffic_analysis.features.counting.domain.plate_text import normalise_plate_reading
 from traffic_analysis.features.counting.domain.plate_vote import PlateTextVote
 from traffic_analysis.features.counting.domain.reid import (
@@ -85,6 +86,17 @@ class SessionConfig:
     max_lost_ms: float = 2500.0
     pixels_per_meter: float | None = None
     reid: ReidOptions = field(default_factory=ReidOptions)
+    #: La lecture du texte de plaque tourne-t-elle réellement ?
+    #:
+    #: Ce que le service a **résolu**, et non ce que la requête a demandé : le
+    #: modèle d'OCR peut être absent. Sert uniquement à distinguer
+    #: `ocr_disabled` — rien n'a été tenté, ce n'est pas un échec — des quatre
+    #: autres raisons de non-lecture.
+    plate_ocr_enabled: bool = False
+    #: Plancher de lecture effectif, en pixels. Recopié de `PlateOcrOptions` : le
+    #: registre doit dire « vue à 48 px, sous le plancher de 64 » avec **le** seuil
+    #: réellement appliqué, pas une constante rappelée de mémoire.
+    plate_ocr_min_width_px: float = 64.0
 
 
 def _copy_line_tally(tally: LineTally) -> LineTally:
@@ -119,6 +131,18 @@ class _IdentityAggregate:
     #: rend la réhydratation après occlusion gratuite : au retour du véhicule, la
     #: piste est neuve mais l'agrégat est intact.
     plate_vote: PlateTextVote = field(default_factory=PlateTextVote)
+    #: Largeur de la meilleure plaque **mesurée** de cette identité, en pixels.
+    #:
+    #: Le chiffre qui rend une raison de non-lecture actionnable : « vue à 48 px »
+    #: dit de resserrer le plan, là où « non détectée » dit tout autre chose.
+    best_plate_width_px: float | None = None
+    #: Une lecture a-t-elle été **tentée** sur cette identité ?
+    #:
+    #: Distingue `too_small` — des plaques vues, aucune assez grande pour être
+    #: tentée — de `no_consensus`, où l'OCR a tourné sans qu'aucune majorité ne se
+    #: dégage. Sans ce drapeau, les deux se confondraient en « pas de texte », et
+    #: les deux appellent pourtant des gestes opposés.
+    plate_read_attempted: bool = False
 
 
 class AnalysisSession:
@@ -560,6 +584,21 @@ class AnalysisSession:
             return
         if aggregate.best_plate_score is None or best > aggregate.best_plate_score:
             aggregate.best_plate_score = best
+        # La largeur suit la **meilleure vue**, jamais la dernière : c'est elle qui
+        # décide si un plan plus serré aurait suffi.
+        widest = max(
+            (plate.box.width for plate in plates if not plate.stale),
+            default=0.0,
+        )
+        if widest > 0.0 and (
+            aggregate.best_plate_width_px is None or widest > aggregate.best_plate_width_px
+        ):
+            aggregate.best_plate_width_px = widest
+        # Une lecture a été tentée si au moins une plaque porte un texte — même
+        # illisible, `text` vaut alors `None` mais `text_score` a été renseigné par
+        # l'adaptateur. On se contente du signal le plus sûr : un texte présent.
+        if any(plate.text for plate in plates):
+            aggregate.plate_read_attempted = True
 
     def plate_text_is_confident(self, global_id: int) -> bool:
         """Le vote de plaque de cette identité est-il établi ?
@@ -667,6 +706,21 @@ class AnalysisSession:
                     # jamais la dernière lecture, qui est souvent la plus oblique.
                     plate_text=aggregate.plate_vote.text,
                     plate_text_score=aggregate.plate_vote.score or None,
+                    # **Dérivée à la fin**, jamais accumulée : l'état final donne la
+                    # cause sans ambiguïté, là où accumuler obligerait à décider
+                    # laquelle gagne quand deux causes se succèdent.
+                    plate_unread_reason=(
+                        None
+                        if aggregate.plate_vote.text
+                        else unread_reason(
+                            ocr_enabled=self._config.plate_ocr_enabled,
+                            plate_seen=aggregate.best_plate_score is not None,
+                            best_width_px=aggregate.best_plate_width_px,
+                            read_attempted=aggregate.plate_read_attempted,
+                            min_width_px=self._config.plate_ocr_min_width_px,
+                        )
+                    ),
+                    plate_best_width_px=aggregate.best_plate_width_px,
                 )
             )
         return tuple(records)

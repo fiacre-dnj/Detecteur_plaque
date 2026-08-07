@@ -11,6 +11,13 @@ export {
 export { filterByPlate } from "./model/filterPlate";
 
 export {
+  READING_FLOOR_PX,
+  plateSilenceSummary,
+  plateUnreadLabel,
+  plateUnreadMessage,
+} from "./model/plateUnread";
+
+export {
   INITIAL_ROWS,
   OVERSCAN,
   ROW_HEIGHT,

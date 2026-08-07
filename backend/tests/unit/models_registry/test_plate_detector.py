@@ -240,7 +240,8 @@ class TestAllerRetourDeCoordonnees:
         placement = placements[0]
 
         selected = detector._select(
-            [(placement, BoundingBox(x=10.0, y=100.0, width=80.0, height=20.0), 0.9)]
+            [(placement, BoundingBox(x=10.0, y=100.0, width=80.0, height=20.0), 0.9)],
+            _crop(1920, 1080),
         )
 
         assert selected[0].box.x == pytest.approx(810.0)
@@ -321,7 +322,8 @@ class TestSelection:
                 (placement, BoundingBox(x=10.0, y=110.0, width=80.0, height=20.0), 0.42),
                 (placement, BoundingBox(x=60.0, y=112.0, width=82.0, height=21.0), 0.91),
                 (placement, BoundingBox(x=20.0, y=118.0, width=70.0, height=18.0), 0.55),
-            ]
+            ],
+            _crop(1920, 1080),
         )
 
         assert len(selected) == 1
@@ -337,7 +339,8 @@ class TestSelection:
                 (placement, BoundingBox(x=10.0, y=110.0, width=80.0, height=20.0), 0.42),
                 (placement, BoundingBox(x=60.0, y=112.0, width=82.0, height=21.0), 0.91),
                 (placement, BoundingBox(x=20.0, y=118.0, width=70.0, height=18.0), 0.55),
-            ]
+            ],
+            _crop(1920, 1080),
         )
 
         assert [round(detection.score, 2) for detection in selected] == [0.91, 0.55]

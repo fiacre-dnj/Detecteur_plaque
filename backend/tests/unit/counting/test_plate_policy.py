@@ -24,7 +24,7 @@ from traffic_analysis.features.counting.domain.plate_policy import (
     PlateOcrPolicy,
 )
 
-PLATE = BoundingBox(x=100.0, y=200.0, width=60.0, height=18.0)
+PLATE = BoundingBox(x=100.0, y=200.0, width=96.0, height=28.0)
 
 
 def _policy(**overrides: object) -> PlateOcrPolicy:
@@ -50,13 +50,13 @@ class TestShouldRead:
     def test_la_cadence_bloque_l_image_suivante(self) -> None:
         policy = _policy()
         policy.record(7, 0, PLATE)
-        moved = BoundingBox(x=400.0, y=600.0, width=60.0, height=18.0)
+        moved = BoundingBox(x=400.0, y=600.0, width=96.0, height=28.0)
         assert policy.should_read(7, 1, moved, vote_is_confident=False) is False
 
     def test_la_cadence_se_rouvre_apres_n_images(self) -> None:
         policy = _policy(every_n_frames=3)
         policy.record(7, 0, PLATE)
-        moved = BoundingBox(x=400.0, y=600.0, width=60.0, height=18.0)
+        moved = BoundingBox(x=400.0, y=600.0, width=96.0, height=28.0)
         assert policy.should_read(7, 3, moved, vote_is_confident=False) is True
 
     def test_une_boite_immobile_n_est_pas_relue(self) -> None:
@@ -73,7 +73,7 @@ class TestShouldRead:
         """
         policy = _policy()
         policy.record(7, 0, PLATE)
-        closer = BoundingBox(x=90.0, y=195.0, width=95.0, height=28.0)
+        closer = BoundingBox(x=90.0, y=195.0, width=150.0, height=44.0)
         assert policy.should_read(7, 10, closer, vote_is_confident=False) is True
 
     @pytest.mark.parametrize("ordinal", [0, 1, 10])
@@ -108,8 +108,99 @@ class TestRecord:
         """La comparaison porte sur la **dernière** boîte lue, pas la première."""
         policy = _policy(every_n_frames=1)
         policy.record(7, 0, PLATE)
-        closer = BoundingBox(x=90.0, y=195.0, width=95.0, height=28.0)
+        closer = BoundingBox(x=90.0, y=195.0, width=150.0, height=44.0)
         policy.record(7, 1, closer)
 
         assert policy.last_box[7] == closer
         assert policy.should_read(7, 2, closer, vote_is_confident=False) is False
+
+
+class TestSelectionParQualite:
+    """Dépenser le budget sur les **meilleures** vignettes, pas sur la troisième venue.
+
+    Le défaut corrigé : la politique lisait « une image sur trois » quelle que soit
+    la qualité du recadrage, donc souvent une vignette minuscule et floue, alors que
+    le véhicule offrirait deux secondes plus tard une vignette deux fois plus large.
+    Même nombre d'inférences, meilleures vignettes — donc moins de bruit concordant
+    soumis au vote, donc moins de faux consensus.
+    """
+
+    def test_une_vignette_equivalente_n_est_pas_relue(self) -> None:
+        """Elle rendrait la même chaîne en moins sûr, et **gonflerait la confiance
+        d'un texte peut-être faux**. C'est un gain de justesse, pas de vitesse."""
+        policy = _policy(quality_improvement=1.25, every_n_frames=1, skip_above_iou=1.0)
+        policy.record(7, 0, PLATE, sharpness=100.0)
+
+        equivalente = BoundingBox(x=400.0, y=600.0, width=100.0, height=30.0)
+        assert (
+            policy.should_read(7, 5, equivalente, vote_is_confident=False, sharpness=100.0) is False
+        )
+
+    def test_une_vignette_nettement_meilleure_est_relue(self) -> None:
+        policy = _policy(quality_improvement=1.25, every_n_frames=1, skip_above_iou=1.0)
+        policy.record(7, 0, PLATE, sharpness=100.0)
+
+        deux_fois_plus_large = BoundingBox(x=400.0, y=600.0, width=200.0, height=58.0)
+        assert (
+            policy.should_read(7, 5, deux_fois_plus_large, vote_is_confident=False, sharpness=100.0)
+            is True
+        )
+
+    def test_la_qualite_est_le_produit_largeur_par_nettete(self) -> None:
+        """**Les deux façons d'être illisible se compensent sinon.**
+
+        Une vignette deux fois plus large mais deux fois plus floue n'apporte rien :
+        prendre la largeur seule la ferait relire, et le vote recevrait du bruit
+        supplémentaire pour le même prix.
+        """
+        policy = _policy(quality_improvement=1.25, every_n_frames=1, skip_above_iou=1.0)
+        policy.record(7, 0, PLATE, sharpness=100.0)
+
+        large_mais_floue = BoundingBox(x=400.0, y=600.0, width=200.0, height=58.0)
+        assert (
+            policy.should_read(7, 5, large_mais_floue, vote_is_confident=False, sharpness=50.0)
+            is False
+        )
+
+    def test_la_meilleure_qualite_est_un_maximum_et_non_la_derniere(self) -> None:
+        """Sinon une vignette médiocre succédant à une bonne rabaisserait la barre,
+        et la sélection perdrait tout son sens dès la deuxième lecture."""
+        policy = _policy(quality_improvement=1.25, every_n_frames=1, skip_above_iou=1.0)
+        excellente = BoundingBox(x=100.0, y=200.0, width=300.0, height=88.0)
+        policy.record(7, 0, excellente, sharpness=100.0)
+        policy.record(7, 1, PLATE, sharpness=10.0)  # médiocre
+
+        # Toujours mesurée contre l'excellente, pas contre la médiocre.
+        moyenne = BoundingBox(x=400.0, y=600.0, width=200.0, height=58.0)
+        assert policy.should_read(7, 5, moyenne, vote_is_confident=False, sharpness=100.0) is False
+
+    def test_desactivee_a_1_la_selection_ne_bloque_rien(self) -> None:
+        """Le témoin : il donne son sens aux quatre tests précédents."""
+        policy = _policy(quality_improvement=1.0, every_n_frames=1, skip_above_iou=1.0)
+        policy.record(7, 0, PLATE, sharpness=100.0)
+
+        equivalente = BoundingBox(x=400.0, y=600.0, width=100.0, height=30.0)
+        assert (
+            policy.should_read(7, 5, equivalente, vote_is_confident=False, sharpness=100.0) is True
+        )
+
+
+class TestPorteDeNettete:
+    def test_une_vignette_trop_floue_est_refusee(self) -> None:
+        """Anti-flou de mouvement : une plaque large mais floue est aussi illisible
+        qu'une plaque nette et minuscule, et la largeur seule ne les distingue pas."""
+        policy = _policy(min_sharpness=20.0)
+
+        assert policy.should_read(7, 0, PLATE, vote_is_confident=False, sharpness=5.0) is False
+
+    def test_une_vignette_nette_passe(self) -> None:
+        policy = _policy(min_sharpness=20.0)
+
+        assert policy.should_read(7, 0, PLATE, vote_is_confident=False, sharpness=50.0) is True
+
+    def test_la_porte_est_desactivable(self) -> None:
+        """`0` signifie « pas de porte » : la netteté n'est pas mesurable partout,
+        et un seuil imposé sans mesure supprimerait des lectures utiles."""
+        policy = _policy(min_sharpness=0.0)
+
+        assert policy.should_read(7, 0, PLATE, vote_is_confident=False, sharpness=0.0) is True

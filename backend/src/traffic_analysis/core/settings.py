@@ -130,9 +130,60 @@ class Settings(BaseSettings):
     plate_ocr_min_text_score: float = Field(0.50, ge=0.0, le=1.0)
     #: Étranglement : une image analysée sur N par piste.
     plate_ocr_every_n_frames: int = Field(3, ge=1, le=30)
-    #: Sous cette largeur de vignette, ~4 px par caractère : l'inférence coûterait
-    #: sans jamais rien lire.
-    plate_ocr_min_width_px: int = Field(32, ge=8, le=512)
+    #: Largeur minimale d'une vignette envoyée à l'OCR — **le plancher de lecture**.
+    #:
+    #: Mesuré par `scripts/anpr_bench.py --truth-ladder`, sur huit plaques de vérité
+    #: terrain rendues aux paliers du tableau (rejouable par commande) :
+    #:
+    #: | largeur | lectures justes |
+    #: |---------|-----------------|
+    #: | 320 px  | 8/8             |
+    #: | 160 px  | 7/8             |
+    #: | 128 px  | 7/8             |
+    #: |  96 px  | 7/8             |
+    #: |  80 px  | 6/8             |
+    #: |  64 px  | 4/8             |
+    #: |  48 px  | **0/8**         |
+    #:
+    #: **64 et non 150**, alors que la lecture ne redevient franchement fiable qu'au
+    #: delà : le vote agrège sur toute la vie du véhicule, donc 4/8 par lecture à
+    #: 64 px n'est pas rien, et couper à 150 supprimerait toute lecture sur des
+    #: scènes où quelque chose passait. 64 est la dernière valeur qui rend encore des
+    #: lectures justes ; 48 n'en rend prouvablement aucune.
+    #:
+    #: **64 et non 32**, la valeur précédente : elle était cinq fois trop permissive
+    #: par rapport à la mesure, et dépensait le budget d'inférence sur des vignettes
+    #: dont on savait qu'elles ne rendraient rien.
+    #:
+    #: À ne pas confondre avec `MIN_PLATE_WIDTH_PX` de `plate_reader.py`, qui reste à
+    #: 32 : celui-là est le refus de dernier recours de l'adaptateur, pas la politique
+    #: de dépense. Les confondre créerait un plancher invisible pour l'opérateur qui
+    #: baisse ce réglage.
+    plate_ocr_min_width_px: int = Field(64, ge=8, le=512)
+    #: Netteté minimale d'une vignette, en variance de laplacien.
+    #:
+    #: Porte anti-flou de mouvement : une plaque large mais floue est aussi
+    #: illisible qu'une plaque nette et minuscule, et seule cette mesure distingue
+    #: la première de la seconde. `0` désactive la porte.
+    #:
+    #: **À calibrer par le banc**, pas au jugé : la variance de laplacien dépend du
+    #: contraste de la scène et de la compression du flux, donc sa valeur utile n'est
+    #: pas universelle. Le défaut est délibérément bas — on écarte le franchement
+    #: flou, pas l'imparfait.
+    plate_ocr_min_sharpness: float = Field(8.0, ge=0.0, le=10_000.0)
+    #: Facteur d'amélioration exigé pour **relire** une identité déjà lue.
+    #:
+    #: La qualité est le **produit** largeur × netteté : une vignette large et floue
+    #: et une vignette nette et minuscule sont toutes deux illisibles, et seul le
+    #: produit écarte les deux. On ne relit que si la nouvelle bat la meilleure déjà
+    #: lue de ce facteur ; sous ce seuil, l'inférence rendrait la même chaîne en
+    #: moins sûr et **gonflerait la confiance d'un texte peut-être faux**.
+    #:
+    #: Effet visé : **même nombre d'inférences, meilleures vignettes**. Avant, la
+    #: politique dépensait son budget sur la première vignette venue — souvent
+    #: minuscule et floue — alors que le véhicule offrirait deux secondes plus tard
+    #: une vignette deux fois plus large.
+    plate_ocr_quality_improvement: float = Field(1.25, ge=1.0, le=10.0)
     #: Au-dessus de cette IoU avec la dernière boîte lue, on ne relit pas. Protège
     #: surtout la *justesse* du vote : cent recadrages identiques d'un véhicule
     #: arrêté au feu ne feraient que gonfler la confiance d'un texte peut-être faux.

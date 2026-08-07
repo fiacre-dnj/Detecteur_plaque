@@ -34,6 +34,8 @@ from traffic_analysis.features.counting.domain.models import BoundingBox
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from traffic_analysis.features.counting.domain.models import PlateUnreadReason
+
 
 @dataclass(frozen=True, slots=True)
 class PlateGeometry:
@@ -101,6 +103,41 @@ def is_plausible(
     if box.height > geometry.max_relative_height * crop_height:
         return False
     return (box.y + box.height / 2.0) / crop_height >= geometry.min_vertical_centre
+
+
+def unread_reason(
+    *,
+    ocr_enabled: bool,
+    plate_seen: bool,
+    best_width_px: float | None,
+    read_attempted: bool,
+    min_width_px: float,
+) -> PlateUnreadReason:
+    """Pourquoi aucune plaque n'est publiée — **dérivé, jamais accumulé**.
+
+    Une fonction pure appelée une fois à la fin de la vie du véhicule, et non un
+    champ mis à jour au fil des images : accumuler une raison obligerait à décider
+    laquelle gagne quand deux causes se succèdent, alors que l'état final la donne
+    sans ambiguïté.
+
+    L'ordre des tests suit la chaîne : rien de demandé, rien de vu, trop petit,
+    trop flou, pas de consensus. Chaque cause appelle un geste différent — d'où
+    cinq valeurs et non un booléen.
+
+    N'est appelée que lorsqu'il n'y a **pas** de texte publié : ce n'est donc
+    jamais une explication d'un succès.
+    """
+    if not ocr_enabled:
+        return "ocr_disabled"
+    if not plate_seen or best_width_px is None:
+        return "not_detected"
+    if best_width_px < min_width_px:
+        return "too_small"
+    if not read_attempted:
+        # Assez large et pourtant jamais tentée : la seule garde restante est
+        # celle de netteté.
+        return "too_blurry"
+    return "no_consensus"
 
 
 def select_best(

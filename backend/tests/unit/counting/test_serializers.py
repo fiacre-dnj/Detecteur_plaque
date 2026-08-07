@@ -169,8 +169,10 @@ class TestSerialiseVehicle:
             "globalId",
             "label",
             "lastSeenMs",
+            "plateBestWidthPx",
             "plateText",
             "plateTextScore",
+            "plateUnreadReason",
             "reidCount",
             "zonesVisited",
         ]
