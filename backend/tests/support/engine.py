@@ -148,15 +148,35 @@ class FakePlateDetector:
     **recadrages**, donc il reste proportionnel au travail réellement demandé.
     """
 
-    def __init__(self, *, available: bool = True, score: float = 0.71) -> None:
+    def __init__(
+        self,
+        *,
+        available: bool = True,
+        score: float = 0.71,
+        plates_for: Callable[[BoundingBox], Sequence[tuple[BoundingBox, float]]] | None = None,
+    ) -> None:
         self._available = available
         self._score = score
+        #: Rend la main sur **ce que le détecteur trouve**, boîte par boîte.
+        #:
+        #: Ce qui devient possible : la boîte « véhicule entier » à 0,87 de
+        #: confiance — le cas qui a motivé l'ADR 0008 et qu'aucun test ne
+        #: traversait, parce que la doublure ne savait rendre qu'une plaque
+        #: parfaitement plausible. `None` garde ce comportement par défaut.
+        self._plates_for = plates_for
         self.calls = 0
         self.crops = 0
         #: Dernier seuil reçu, ou `None`. C'est ce qui permet à un test d'affirmer
         #: qu'un `plateConfidence` de requête atteint réellement l'adaptateur — le
         #: réglage est resté mort tout un lot sans que rien ne le signale.
         self.last_confidence: float | None = None
+        #: Les boîtes **réellement soumises**, image par image.
+        #:
+        #: Un compteur dit *combien* d'inférences ont eu lieu ; ce journal dit
+        #: *lesquelles*, et c'est ce qu'il faut pour prouver qu'un étranglement
+        #: écarte les bonnes pistes — et surtout qu'il ne laisse aucun trou dans
+        #: les snapshots des images qu'il saute.
+        self.submitted: list[tuple[BoundingBox, ...]] = []
 
     @property
     def available(self) -> bool:
@@ -188,8 +208,16 @@ class FakePlateDetector:
         self.calls += 1
         self.crops += len(boxes)
         self.last_confidence = confidence
+        self.submitted.append(tuple(boxes))
         if not self._available:
             return tuple(() for _ in boxes)
+        if self._plates_for is not None:
+            return tuple(
+                tuple(
+                    PlateDetection(box=plate, score=score) for plate, score in self._plates_for(box)
+                )
+                for box in boxes
+            )
         return tuple(
             (
                 PlateDetection(
@@ -241,6 +269,12 @@ class FakePlateReader:
         self._bad_length = bad_length
         self.calls = 0
         self.crops = 0
+        #: Les boîtes **réellement lues**, dans l'ordre.
+        #:
+        #: C'est ce journal qui permet de prouver qu'une sélection par qualité a
+        #: retenu la meilleure vignette et non la troisième venue — un compteur
+        #: dirait seulement qu'il y a eu autant de lectures.
+        self.read_boxes: list[BoundingBox] = []
 
     @property
     def available(self) -> bool:
@@ -254,6 +288,7 @@ class FakePlateReader:
         """Rend **exactement** un élément par boîte, dans le même ordre."""
         self.calls += 1
         self.crops += len(boxes)
+        self.read_boxes.extend(boxes)
         if not self._available:
             return (None,) * len(boxes)
         if self._bad_length:

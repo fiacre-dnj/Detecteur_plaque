@@ -49,7 +49,18 @@ import cv2
 import numpy as np
 
 from traffic_analysis.core.logging import get_logger
-from traffic_analysis.features.counting.application.dto import BoundingBox, PlateDetection
+
+# Le filtre géométrique vient du **domaine**, par le contrat publié de `counting`
+# — comme `BoundingBox`. Il vivait ici, donc derrière `ultralytics`, donc hors de
+# portée de la CI : aucun test ne pouvait prouver qu'une boîte « véhicule entier »
+# n'atteint pas l'OCR. C'est maintenant vérifiable sur des tuples.
+from traffic_analysis.features.counting.application.dto import (
+    BoundingBox,
+    PlateDetection,
+    PlateGeometry,
+    is_plausible,
+    select_best,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -86,44 +97,6 @@ MAX_MOSAIC_SIDE = 3
 #: du rappel contre de la vitesse, et ce n'est pas à l'adaptateur de faire cet
 #: arbitrage tout seul.
 DEFAULT_MOSAIC_SIDE = 1
-
-
-@dataclass(frozen=True, slots=True)
-class PlateGeometry:
-    """Ce qu'une boîte doit vérifier pour être une plaque plausible sur ce véhicule.
-
-    **Un filtre ne peut que retirer des détections**, jamais en inventer : à modèle
-    inchangé il ne peut donc pas dégrader le rappel des boîtes correctes, seulement
-    écarter celles qui n'ont aucun sens géométrique. Chaque borne est volontairement
-    large — on écarte l'absurde, pas l'inhabituel.
-
-    Sans ce filtre, la sortie brute du modèle est publiée telle quelle : le
-    `max_det` par défaut d'Ultralytics vaut 300, donc un seul véhicule peut porter
-    des dizaines de rectangles à l'écran, et chacun d'eux part en OCR.
-    """
-
-    #: Une plaque est plus large que haute. En dessous de 1,1 c'est un logo, un
-    #: phare ou un reflet. Les plaques de moto (~1,4:1) passent.
-    min_aspect: float = 1.1
-    #: Au-delà, c'est une bande de calandre ou un bandeau de concessionnaire.
-    max_aspect: float = 9.0
-    #: Fraction de la largeur du véhicule. Une plaque qui occupe plus de 90 % de la
-    #: largeur du véhicule est le véhicule lui-même.
-    max_relative_width: float = 0.9
-    #: En dessous, la boîte est trop petite pour être une plaque de ce véhicule —
-    #: typiquement un écusson.
-    min_relative_width: float = 0.03
-    #: Fraction de la hauteur du véhicule. Une plaque n'est jamais un demi-véhicule.
-    max_relative_height: float = 0.5
-    #: Le centre de la plaque, en fraction de la hauteur du véhicule depuis le haut.
-    #: Écarte les reflets de pare-brise et les feux de toit ; 0,12 reste très
-    #: permissif, y compris pour un plan plongeant sur un camion.
-    min_vertical_centre: float = 0.12
-    #: Combien de plaques au plus par véhicule. Un véhicule a **une** plaque
-    #: visible ; en garder plusieurs multiplie les rectangles à l'écran et le coût
-    #: d'OCR, et laisse le vote d'identité arbitrer entre deux lectures d'objets
-    #: différents.
-    max_per_vehicle: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -414,34 +387,29 @@ class OnnxPlateDetector:
     def _is_plausible(self, box: BoundingBox, placement: _Placement) -> bool:
         """La boîte peut-elle être la plaque de **ce** véhicule ?
 
-        Tout est en coordonnées du recadrage, donc le recadrage vaut le véhicule :
-        les fractions se lisent directement.
+        Délègue au domaine : la décision est une règle de géométrie, pas une
+        affaire d'ONNX, et ici elle serait hors de portée de la CI.
         """
-        geometry = self._geometry
-        crop_width = float(placement.crop_width)
-        crop_height = float(placement.crop_height)
-
-        aspect = box.width / box.height
-        if not geometry.min_aspect <= aspect <= geometry.max_aspect:
-            return False
-        if not (
-            geometry.min_relative_width * crop_width
-            <= box.width
-            <= geometry.max_relative_width * crop_width
-        ):
-            return False
-        if box.height > geometry.max_relative_height * crop_height:
-            return False
-        return (box.y + box.height / 2.0) / crop_height >= geometry.min_vertical_centre
+        return is_plausible(
+            box,
+            float(placement.crop_width),
+            float(placement.crop_height),
+            self._geometry,
+        )
 
     def _select(
         self, candidates: Sequence[tuple[_Placement, BoundingBox, float]]
     ) -> tuple[PlateDetection, ...]:
         """Les `max_per_vehicle` meilleures, réexprimées dans l'image complète.
 
-        Aucune couche en aval ne doit avoir à savoir qu'il y a eu un recadrage.
+        Aucune couche en aval ne doit avoir à savoir qu'il y a eu un recadrage :
+        le classement se fait dans le domaine, la remise en repère ici.
         """
-        best = sorted(candidates, key=lambda candidate: -candidate[2])
+        # Les candidates d'un même véhicule partagent leur placement — c'est la
+        # cellule de *ce* recadrage. Le prendre une fois évite d'avoir à réapparier
+        # une boîte à son placement après le tri du domaine.
+        placement = candidates[0][0]
+        best = select_best([(box, score) for _, box, score in candidates], self._geometry)
         return tuple(
             PlateDetection(
                 box=BoundingBox(
@@ -452,5 +420,5 @@ class OnnxPlateDetector:
                 ),
                 score=score,
             )
-            for placement, box, score in best[: self._geometry.max_per_vehicle]
+            for box, score in best
         )

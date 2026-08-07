@@ -31,6 +31,11 @@ from traffic_analysis.features.counting.domain.models import (
     VideoInfo,
     ZoneDef,
 )
+from traffic_analysis.features.counting.domain.plate_geometry import (
+    PlateGeometry,
+    is_plausible,
+    select_best,
+)
 from traffic_analysis.features.counting.domain.plate_ocr_policy import (
     PlateOcrOptions,
     PlateOcrPolicy,
@@ -72,6 +77,12 @@ __all__ = [
     "EngineFrame",
     "EngineSpec",
     "PlateDetection",
+    # Réexportés pour l'adaptateur de **détection** de plaques, pour la même raison
+    # que ci-dessous. Le filtre géométrique vit dans le domaine et non dans
+    # l'adaptateur : derrière `ultralytics`, il n'était jamais traversé par la CI,
+    # donc aucun test ne pouvait prouver qu'une boîte « véhicule entier »
+    # n'atteint pas l'OCR — le défaut même qui a motivé l'ADR 0008.
+    "PlateGeometry",
     # Réexportés pour l'adaptateur d'OCR, qui vit dans `models_registry` : une autre
     # feature n'importe jamais `counting/domain/`.
     "PlateOcrOptions",
@@ -84,6 +95,8 @@ __all__ = [
     "TrackObservation",
     "VideoInfo",
     "ZoneDef",
+    "is_plausible",
+    "select_best",
 ]
 
 # Au-delà, la timeline devient un objet de plusieurs centaines de mégaoctets.

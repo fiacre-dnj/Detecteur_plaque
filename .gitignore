@@ -48,3 +48,8 @@ frontend/public/demo/*.mp4
 .DS_Store
 Thumbs.db
 *.log
+
+# ─── Sorties du banc de mesure ANPR ────────────────────────────────────────
+# Les rapports de `scripts/anpr_bench.py` sont des mesures d'une machine et
+# d'un instant : ils appartiennent à une ADR ou à un ticket, pas au dépôt.
+backend/out/

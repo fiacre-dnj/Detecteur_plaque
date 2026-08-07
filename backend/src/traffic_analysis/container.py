@@ -22,7 +22,7 @@ from traffic_analysis.features.benchmark.infrastructure.sqlalchemy_repository im
     SqlAlchemyBenchmarkRepository,
 )
 from traffic_analysis.features.counting.application.analysis_service import AnalysisService
-from traffic_analysis.features.counting.application.dto import PlateOcrOptions
+from traffic_analysis.features.counting.application.dto import PlateGeometry, PlateOcrOptions
 from traffic_analysis.features.jobs.application.job_manager import JobManager
 from traffic_analysis.features.jobs.application.progress_hub import ProgressHub
 from traffic_analysis.features.jobs.infrastructure.result_store import FileResultStore
@@ -35,7 +35,6 @@ from traffic_analysis.features.models_registry.infrastructure.inference_probe im
 )
 from traffic_analysis.features.models_registry.infrastructure.plate_detector import (
     OnnxPlateDetector,
-    PlateGeometry,
 )
 from traffic_analysis.features.models_registry.infrastructure.plate_reader import OnnxPlateReader
 from traffic_analysis.features.models_registry.infrastructure.registry import ModelRegistry
