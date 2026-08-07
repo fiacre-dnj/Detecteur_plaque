@@ -32,6 +32,41 @@ export interface UploadHandle {
   abort: () => void;
 }
 
+/** ~10 Hz : au-delà, l'œil ne distingue plus rien et le rendu coûte. */
+export const PROGRESS_MIN_INTERVAL_MS = 100;
+/** Un point de pourcentage : le plus petit pas que l'affichage sait montrer. */
+export const PROGRESS_MIN_STEP = 0.01;
+
+/**
+ * Faut-il publier cette progression d'envoi ?
+ *
+ * `XMLHttpRequest` émet `progress` à chaque paquet : sur une vidéo de 800 Mo,
+ * cela fait des centaines d'événements par seconde, dont **chacun** provoquait un
+ * `setUpload` et donc un rendu complet du studio. L'interface devenait pâteuse
+ * pendant tout l'envoi, ce qui se lit comme « l'application rame » alors que rien
+ * n'est en train de calculer.
+ *
+ * Deux portes plutôt qu'une seule minuterie : le pas de 1 % laisse passer une
+ * progression rapide sur un petit fichier, où attendre 100 ms perdrait la moitié
+ * des étapes visibles.
+ *
+ * **Le dernier événement passe toujours** (`force`), et c'est indispensable : sans
+ * lui, une barre étranglée s'arrête à 97 % sur un envoi terminé, et l'utilisateur
+ * attend une fin qui a déjà eu lieu.
+ *
+ * Fonction pure — l'horloge est un paramètre — pour être testable sans minuteries.
+ */
+export function shouldPublishProgress(
+  ratio: number,
+  nowMs: number,
+  last: { ratio: number; atMs: number } | null,
+  force = false,
+): boolean {
+  if (force || last === null) return true;
+  if (nowMs - last.atMs >= PROGRESS_MIN_INTERVAL_MS) return true;
+  return Math.abs(ratio - last.ratio) >= PROGRESS_MIN_STEP;
+}
+
 /**
  * Envoie la vidéo et sa configuration, en rapportant la progression.
  *
@@ -48,14 +83,24 @@ export function uploadJob(
 ): UploadHandle {
   const xhr = new XMLHttpRequest();
 
+  /** Dernière progression réellement publiée — l'état de l'étranglement. */
+  let published: { ratio: number; atMs: number } | null = null;
+
+  const publish = (event: ProgressEvent, force = false): void => {
+    const total = event.lengthComputable ? event.total : 0;
+    const ratio = event.lengthComputable && event.total > 0 ? event.loaded / event.total : 0;
+    const now = performance.now();
+    if (!shouldPublishProgress(ratio, now, published, force)) return;
+    published = { ratio, atMs: now };
+    onProgress({ loaded: event.loaded, total, ratio });
+  };
+
   const jobId = new Promise<string>((resolve, reject) => {
-    xhr.upload.addEventListener("progress", (event) => {
-      onProgress({
-        loaded: event.loaded,
-        total: event.lengthComputable ? event.total : 0,
-        ratio: event.lengthComputable && event.total > 0 ? event.loaded / event.total : 0,
-      });
-    });
+    xhr.upload.addEventListener("progress", (event) => publish(event));
+    // **Le dernier événement, forcé.** Sans lui, une barre étranglée resterait
+    // figée à 97 % sur un envoi achevé, et l'utilisateur attendrait une fin déjà
+    // survenue — exactement le défaut que l'étranglement doit éviter d'introduire.
+    xhr.upload.addEventListener("load", (event) => publish(event, true));
 
     xhr.addEventListener("load", () => {
       // 202 attendu : le serveur accepte et analyse en tâche de fond.

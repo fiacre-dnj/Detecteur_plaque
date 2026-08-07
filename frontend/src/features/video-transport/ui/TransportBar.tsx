@@ -21,18 +21,54 @@ import {
   SkipBack,
   SkipForward,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import { PLAYBACK_RATES, formatRate, formatTime, hasSeekableDuration } from "../model/formatTime";
-import type { VideoTransport } from "../model/useVideoTransport";
+import { useVideoTransport } from "../model/useVideoTransport";
 
 interface TransportBarProps {
-  transport: VideoTransport;
+  /**
+   * L'élément vidéo à piloter, `null` avant son montage.
+   *
+   * **La barre appelle `useVideoTransport` elle-même**, plutôt que de recevoir un
+   * `transport` déjà construit. Le hook miroite `currentTime` à ~60 Hz pendant la
+   * lecture ; tant que l'appel vivait dans `StudioPage`, ces 60 mises à jour par
+   * seconde re-rendaient tout l'écran — `GeometryCanvas` compris — et l'édition de
+   * géométrie devenait saccadée dès qu'on lisait la vidéo. L'en-tête du hook
+   * affirmait déjà que « seul le composant de transport consomme » cet état ;
+   * c'est désormais vrai.
+   *
+   * La **référence** et non l'élément : un `ref` ne provoque pas de rendu en se
+   * remplissant, donc passer `ref.current` ferait dépendre l'abonnement d'un rendu
+   * ultérieur qui n'est garanti par rien. Le `useEffect` ci-dessous relit la
+   * référence au montage, quand la balise existe forcément.
+   */
+  videoRef: React.RefObject<HTMLVideoElement | null>;
   /** Faux pour un flux caméra : lecture et déplacement n'y ont pas de sens. */
   seekable?: boolean;
   disabled?: boolean;
+  /** Fin de lecture — le studio y affiche son bandeau de relecture. */
+  onEnded?: () => void;
 }
 
-export function TransportBar({ transport, seekable = true, disabled = false }: TransportBarProps) {
+export function TransportBar({
+  videoRef,
+  seekable = true,
+  disabled = false,
+  onEnded,
+}: TransportBarProps) {
+  /**
+   * L'élément, une fois monté.
+   *
+   * Un état et non `videoRef.current` lu au rendu : remplir un `ref` ne déclenche
+   * aucun rendu, donc la barre resterait branchée sur `null` jusqu'à ce qu'autre
+   * chose la re-rende. Un effet au montage lit la référence quand la balise
+   * existe, et le rendu qui s'ensuit abonne le transport pour de bon.
+   */
+  const [video, setVideo] = useState<HTMLVideoElement | null>(null);
+  useEffect(() => setVideo(videoRef.current), [videoRef]);
+
+  const transport = useVideoTransport(video, onEnded);
   const showTimeline = seekable && hasSeekableDuration(transport.duration);
   const inert = disabled;
 

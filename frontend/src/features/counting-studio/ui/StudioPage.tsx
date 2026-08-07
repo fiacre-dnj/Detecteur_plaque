@@ -55,7 +55,7 @@ import {
   vehiclesAt,
 } from "@/features/timeline-replay";
 import { VehicleRegistry } from "@/features/vehicle-registry";
-import { TransportBar, useVideoTransport } from "@/features/video-transport";
+import { TransportBar } from "@/features/video-transport";
 import type { CrossingEvent, Point, Preset } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
 import { Button } from "@/shared/ui/Button";
@@ -182,7 +182,23 @@ export function StudioPage() {
   const session = useAnalysisSession();
 
   const handleEnded = useCallback(() => setEnded(true), []);
-  const transport = useVideoTransport(video.current, handleEnded);
+
+  /**
+   * Revoir depuis le début, **sans passer par l'état du transport**.
+   *
+   * `useVideoTransport` vit maintenant dans `TransportBar` : le studio n'a plus
+   * besoin de son état, seulement de ce geste-là. Deux lignes sur la balise
+   * suffisent, et cela évite de remonter soixante mises à jour de position par
+   * seconde jusqu'ici pour un unique bouton.
+   */
+  const replayFromStart = useCallback(() => {
+    const element = video.current;
+    if (element === null) return;
+    element.currentTime = 0;
+    setEnded(false);
+    void element.play().catch(() => undefined);
+  }, []);
+
   const replay = useReplay(video.current, session.result);
   const live = useRealtimeSession(video.current);
 
@@ -538,9 +554,10 @@ export function StudioPage() {
               figée et des boutons morts, sans un mot d'explication. */}
           {media.source !== null && (
             <TransportBar
-              transport={transport}
+              videoRef={video}
               seekable={!isCamera}
               disabled={busy && follow}
+              onEnded={handleEnded}
             />
           )}
 
@@ -594,7 +611,7 @@ export function StudioPage() {
           {stale && <StaleResultBanner onRelaunch={launch} canRelaunch={canAnalyse} />}
 
           {ended && session.result !== null && (
-            <PlaybackEndedBanner onReplay={transport.restart} />
+            <PlaybackEndedBanner onReplay={replayFromStart} />
           )}
         </div>
 
