@@ -312,6 +312,167 @@ class TestMateriel:
         assert registry.device() == "cuda:0"
         assert registry.half() is True
 
+
+class TestDiagnosticMateriel:
+    """Pourquoi `device()` vaut ce qu'il vaut, et le nom du GPU retenu.
+
+    Sans ces champs, un « cpu » ne distingue pas « aucun GPU sur cette machine »
+    de « la détection a échoué » — deux causes qui appellent deux gestes
+    différents : rien à faire dans le premier cas, installer un pilote dans le
+    second.
+    """
+
+    def test_un_device_explicite_porte_sa_raison(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path, max_loaded=2, device="cuda:0", half=True)
+
+        assert registry.device() == "cuda:0"
+        assert registry.device_reason() == "configuré explicitement"
+
+    def test_cuda_detecte_porte_sa_raison_et_son_nom(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import torch
+
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda _index=0: "GPU factice")
+        registry = ModelRegistry(tmp_path, max_loaded=2, device="auto", half=True)
+
+        assert registry.device() == "0"
+        assert registry.device_reason() == "CUDA détecté"
+        assert registry.gpu_name() == "GPU factice"
+
+    def test_aucun_gpu_detecte_porte_sa_raison_et_aucun_nom(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import torch
+
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        registry = ModelRegistry(tmp_path, max_loaded=2, device="auto", half=False)
+
+        assert registry.device() == "cpu"
+        assert registry.device_reason() == "aucun GPU CUDA détecté"
+        assert registry.gpu_name() is None
+
+    def test_torch_indisponible_porte_sa_propre_raison(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`None` dans `sys.modules` fait échouer l'import avec une
+        `ModuleNotFoundError` — la façon standard de simuler une dépendance
+        absente sans la désinstaller pour de vrai."""
+        import sys
+
+        monkeypatch.setitem(sys.modules, "torch", None)
+        registry = ModelRegistry(tmp_path, max_loaded=2, device="auto", half=False)
+
+        assert registry.device() == "cpu"
+        assert registry.device_reason() == "torch indisponible"
+
+    def test_gpu_name_est_none_sur_cpu(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path, max_loaded=2, device="cpu", half=False)
+
+        assert registry.gpu_name() is None
+
+    def test_device_reason_est_none_avant_toute_resolution(self, tmp_path: Path) -> None:
+        registry = ModelRegistry(tmp_path, max_loaded=2, device="cpu", half=False)
+
+        assert registry.device_reason() is None
+
+
+class _ModeleQuiExigeUnDeviceMarche:
+    """Un `.predict()` qui échoue sur tout device sauf celui attendu.
+
+    C'est la seule façon de tester le repli sans un vrai GPU : simuler
+    exactement ce qu'un pilote incomplet ferait — répondre `is_available() ==
+    True` puis échouer à la première inférence réelle.
+    """
+
+    def __init__(self, working_device: str) -> None:
+        self._working_device = working_device
+        self.predict_calls: list[str] = []
+
+    def predict(self, *_args: object, device: str, **_kwargs: object) -> None:
+        self.predict_calls.append(device)
+        if device != self._working_device:
+            raise RuntimeError(f"simulé : device « {device} » indisponible à l'inférence")
+
+
+class _RegistreAvecModeleFactice(ModelRegistry):
+    """Charge `_ModeleQuiExigeUnDeviceMarche` au lieu d'un vrai `.pt`."""
+
+    def __init__(self, weights_dir: Path, *, working_device: str, half: bool = False) -> None:
+        super().__init__(weights_dir, max_loaded=2, device="auto", half=half)
+        self._working_device = working_device
+
+    def _load(self, model_id: str) -> Any:  # noqa: ANN401
+        self.describe(model_id)
+        return _ModeleQuiExigeUnDeviceMarche(self._working_device)
+
+
+class TestPrechauffageEtDevice:
+    """Le warmup est la seule vérification **réelle** du GPU choisi.
+
+    `torch.cuda.is_available()` interroge le pilote ; il peut répondre vrai
+    alors que la première inférence échoue quand même. Sans ce repli, le
+    service resterait configuré sur un device qui vient de démontrer qu'il ne
+    fonctionne pas, et chaque analyse suivante échouerait pareil.
+    """
+
+    def test_un_echec_sur_gpu_detecte_replie_sur_cpu_et_reussit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import torch
+
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        registry = _RegistreAvecModeleFactice(tmp_path, working_device="cpu")
+
+        registry.warmup("yolov8n")
+
+        assert registry.device() == "cpu"
+        assert registry.device_reason() == "échec d'inférence GPU au préchauffage, repli CPU"
+
+    def test_le_repli_invalide_half(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Un GPU qui disparaît ne doit pas laisser `half=True` actif sur le CPU
+        qui prend sa place (piège 30 de prompt/13)."""
+        import torch
+
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        registry = _RegistreAvecModeleFactice(tmp_path, working_device="cpu", half=True)
+
+        registry.warmup("yolov8n")
+
+        assert registry.half() is False
+
+    def test_un_device_explicite_qui_echoue_n_est_pas_retourne(self, tmp_path: Path) -> None:
+        """L'opérateur qui force un device fait un choix : le lui rendre en
+        silence masquerait une configuration fausse plutôt que de la signaler."""
+
+        class _RegistreDeviceExplicite(ModelRegistry):
+            def _load(self, model_id: str) -> Any:  # noqa: ANN401
+                self.describe(model_id)
+                return _ModeleQuiExigeUnDeviceMarche("cpu")
+
+        registry = _RegistreDeviceExplicite(tmp_path, max_loaded=2, device="cuda:0", half=False)
+
+        registry.warmup("yolov8n")
+
+        # Toujours « cuda:0 » : le warmup a échoué et journalisé, mais n'a pas
+        # touché à un device explicitement demandé.
+        assert registry.device() == "cuda:0"
+        assert registry.device_reason() == "configuré explicitement"
+
+    def test_un_succes_direct_ne_declenche_aucun_repli(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import torch
+
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        registry = _RegistreAvecModeleFactice(tmp_path, working_device="0")
+
+        registry.warmup("yolov8n")
+
+        assert registry.device() == "0"
+        assert registry.device_reason() == "CUDA détecté"
+
     def test_la_taille_est_absente_tant_que_le_poids_n_est_pas_la(self, tmp_path: Path) -> None:
         """`size_mb` est une estimation du catalogue ; `size_bytes` est la vérité."""
         registry = ModelRegistry(tmp_path, max_loaded=2, device="cpu", half=False)

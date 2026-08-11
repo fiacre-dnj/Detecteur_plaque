@@ -69,6 +69,8 @@ async def test_health_expose_le_diagnostic_complet(client: AsyncClient) -> None:
     assert body["environment"] == "test"
     # Aucun GPU sur cette machine : le device est résolu, et half suit.
     assert body["device"] == "cpu"
+    assert body["deviceReason"] == "aucun GPU CUDA détecté"
+    assert body["gpuName"] is None
     assert body["half"] is False
     assert body["ultralyticsVersion"]
     # Aucun modèle chargé tant qu'aucune analyse n'a tourné.

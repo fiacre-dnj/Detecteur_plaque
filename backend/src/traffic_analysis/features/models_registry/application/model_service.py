@@ -97,6 +97,19 @@ class ModelService:
     def device(self) -> str:
         return self._registry.device()
 
+    def device_reason(self) -> str | None:
+        """Pourquoi `device()` vaut ce qu'il vaut, déléguée à l'infrastructure.
+
+        `None` seulement avant tout appel à `device()` — en pratique jamais côté
+        API, puisque `/health` appelle toujours `device()` d'abord.
+        """
+        return self._registry.device_reason()
+
+    def gpu_name(self) -> str | None:
+        """Nom du GPU retenu, ou `None` hors GPU. Délégué pour la même raison que
+        `device_reason` : l'application ne connaît aucune bibliothèque de vision."""
+        return self._registry.gpu_name()
+
     def half(self) -> bool:
         return self._registry.half()
 

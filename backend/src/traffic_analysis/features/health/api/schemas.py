@@ -33,6 +33,21 @@ class HealthSchema(CamelModel):
         description="Device d'inférence résolu : « cpu », « 0 », « cuda:0 »…",
         examples=["cpu"],
     )
+    device_reason: str | None = Field(
+        description=(
+            "Pourquoi `device` vaut cette valeur : configuré explicitement, GPU "
+            "détecté, aucun GPU détecté, torch indisponible, ou repli après un "
+            "échec d'inférence constaté au préchauffage. Un « cpu » seul ne dit "
+            "pas laquelle de ces raisons s'applique, et elles n'appellent pas le "
+            "même geste — installer un pilote n'est pas la même chose que revoir "
+            "un réglage explicite."
+        ),
+        examples=["aucun GPU CUDA détecté"],
+    )
+    gpu_name: str | None = Field(
+        description="Nom du GPU retenu par le pilote, ou `null` hors GPU.",
+        examples=[None],
+    )
     half: bool = Field(
         description=(
             "Inférence en demi-précision. Toujours faux hors GPU : "

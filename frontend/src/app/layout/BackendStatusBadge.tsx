@@ -44,6 +44,14 @@ export function BackendStatusBadge() {
   // Le détail matériel est dans l'infobulle plutôt qu'à l'écran : il compte
   // quand on interprète un chiffre de latence, pas en permanence.
   const detail = [
+    // La raison distingue « aucun GPU sur cette machine » de « la détection a
+    // échoué » — deux causes qui n'appellent pas le même geste. Le nom du GPU
+    // n'apparaît que s'il y en a un à nommer.
+    health.gpuName !== null
+      ? `${health.device === "cpu" ? "CPU" : "GPU"} (${health.gpuName})`
+      : health.deviceReason !== null
+        ? `${health.device === "cpu" ? "CPU" : "GPU"} (${health.deviceReason})`
+        : null,
     `Ultralytics ${health.ultralyticsVersion}`,
     health.loadedModels.length > 0
       ? `Résidents : ${health.loadedModels.join(", ")}`
@@ -56,7 +64,9 @@ export function BackendStatusBadge() {
       : health.plateOcrAvailable
         ? "Plaques : détection et lecture disponibles"
         : "Plaques : détection seule, sans lecture du texte",
-  ].join(" · ");
+  ]
+    .filter((line): line is string => line !== null)
+    .join(" · ");
 
   return (
     <span

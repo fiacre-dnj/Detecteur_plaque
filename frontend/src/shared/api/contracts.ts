@@ -29,6 +29,16 @@ export interface Health {
   environment: string;
   /** « cpu », « 0 », « cuda:0 »… */
   device: string;
+  /**
+   * Pourquoi `device` vaut cette valeur : configuré explicitement, GPU détecté,
+   * aucun GPU détecté, torch indisponible, ou repli après un échec d'inférence
+   * constaté au préchauffage. Un « cpu » seul ne distingue pas ces causes, qui
+   * n'appellent pas le même geste — installer un pilote n'est pas la même chose
+   * que revoir un réglage explicite.
+   */
+  deviceReason: string | null;
+  /** Nom du GPU retenu par le pilote, `null` hors GPU. */
+  gpuName: string | null;
   /** Toujours faux hors GPU : en fp16 sur CPU, l'inférence ralentit. */
   half: boolean;
   ultralyticsVersion: string;
