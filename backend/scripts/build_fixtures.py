@@ -14,10 +14,11 @@ propriété qu'on cherchait : elle affirme alors ce que le frontend espère, au 
 de ce que le backend produit. Jusqu'ici la régénération se faisait de mémoire —
 d'où ce script.
 
-La scène est volontairement petite et **entièrement déterministe** : deux
-véhicules, un franchissement dans chaque sens, une plaque lue et une plaque vue
-mais non lue. C'est le jeu minimal qui exerce les trois états de plaque que
-l'interface doit distinguer.
+La scène est volontairement petite et **entièrement déterministe** : trois
+véhicules, deux franchissements, une plaque lue, une plaque vue mais non lue, et
+une plaque lue plusieurs fois sans qu'aucune lecture ne fasse majorité. C'est le
+jeu minimal qui exerce les quatre états de plaque que l'interface doit
+distinguer.
 """
 
 from __future__ import annotations
@@ -67,14 +68,39 @@ FIXTURES = (
 VEHICLE_SIZE = (160.0, 120.0)
 
 
-def _readable(box: BoundingBox) -> bool:
-    """Une plaque sur deux est lisible.
+#: Abscisse du véhicule 3 : constante sur toute sa trajectoire (seul `y` varie),
+#: ce qui permet de reconnaître ses lectures par position dans `_text_for`.
+DISCORDANT_VEHICLE_X = 2100.0
 
-    C'est ce qui donne à la fixture ses **trois** états de plaque : lue, vue mais
-    illisible, absente. L'état du milieu est celui que l'interface rate le plus
-    facilement, et il n'existerait pas si tout était lisible.
+
+def _readable(box: BoundingBox) -> bool:
+    """Lisible pour les véhicules 1 et 3, illisible pour le véhicule 2.
+
+    C'est ce qui donne à la fixture ses **quatre** états de plaque : lue, vue mais
+    illisible, lue sans consensus, absente. Le véhicule 2 (illisible) est celui que
+    l'interface rate le plus facilement, et n'existerait pas si tout était lisible.
     """
-    return box.x < 1000.0
+    return box.x < 1000.0 or box.x > 1900.0
+
+
+def _text_for(box: BoundingBox, *, discordant_reads: list[int]) -> str:
+    """Le véhicule 1 lit toujours la même plaque ; le véhicule 3 jamais deux fois
+    la même graphie de suite, pour que son vote n'atteigne jamais le consensus —
+    le seul moyen d'exercer `plateBestGuess`, qui n'a de sens que sous
+    `no_consensus`. Deux longueurs distinctes : à longueur égale, le consensus par
+    caractère pourrait trancher là où le vote par chaîne entière refuse.
+
+    `box` est celle de la **plaque**, décalée du centre du véhicule qui l'a
+    produite (voir `FakePlateDetector.detect_many`) — une comparaison exacte à
+    `DISCORDANT_VEHICLE_X` ne matcherait donc jamais. Une plage large suffit,
+    puisque les trois véhicules de la scène sont à plus de 400 px les uns des
+    autres.
+    """
+    if abs(box.x - DISCORDANT_VEHICLE_X) > 200.0:
+        return "ab-123-cd"
+    index = discordant_reads[0]
+    discordant_reads[0] += 1
+    return ("ab-123-cd", "xy-78-zw")[index % 2]
 
 
 def build_result() -> dict[str, Any]:
@@ -88,11 +114,21 @@ def build_result() -> dict[str, Any]:
             straight_line((1200.0, 800.0), (1200.0, 250.0), steps=12),
             box_size=VEHICLE_SIZE,
         ),
+        track_path(
+            3,
+            CAR,
+            straight_line((DISCORDANT_VEHICLE_X, 250.0), (DISCORDANT_VEHICLE_X, 800.0), steps=12),
+            box_size=VEHICLE_SIZE,
+        ),
     )
+    discordant_reads = [0]
     service = AnalysisService(
         FakeEngine(frames),
         FakePlateDetector(),
-        FakePlateReader(is_readable=_readable),
+        FakePlateReader(
+            is_readable=_readable,
+            text_for=lambda box: _text_for(box, discordant_reads=discordant_reads),
+        ),
         PlateOcrOptions(min_width_px=8.0),
     )
     result = service.run_video(

@@ -236,6 +236,27 @@ class PlateTextVote:
         return text, score
 
     @property
+    def best_guess(self) -> tuple[str, float] | None:
+        """Le meilleur candidat même **sans** consensus, ou `None` si rien n'a été lu.
+
+        Ne remplace jamais `text` : c'est un indice à afficher *en plus*, marqué
+        comme incertain, jamais à la place — republier la lecture de la frame la
+        plus favorable serait exactement ce que l'invariant 4 interdit. La
+        différence est que `text` engage le serveur (« ceci est la plaque ») alors
+        que `best_guess` ne fait que rapporter ce qu'il a vu sans y souscrire.
+
+        Même candidat que celui qui alimenterait `text` s'il passait les trois
+        seuils de publication — `leader`, sans leur filtre.
+        """
+        leader = self.leader
+        if not leader:
+            return None
+        reads = self.reads.get(leader, 0)
+        if reads == 0:
+            return None
+        return leader, self.accumulated[leader] / reads
+
+    @property
     def is_confident(self) -> bool:
         """Plus rien à apprendre : l'OCR peut cesser pour cette identité.
 

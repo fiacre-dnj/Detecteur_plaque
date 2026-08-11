@@ -367,6 +367,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     if container.db_engine is not None and not settings.is_production:
         await run_migrations(container.db_engine)
 
+    # **Avant le préchauffage**, qui est la première inférence du processus : un
+    # pool de threads déjà dimensionné se redimensionne mal. `0` ne fait rien, donc
+    # aucun coût pour qui n'a pas posé le réglage — l'import de torch lui-même est
+    # évité dans ce cas, ce qui préserve les tests à moteur factice.
+    if settings.inference_threads > 0:
+        await anyio.to_thread.run_sync(
+            container.model_registry.apply_thread_budget, settings.inference_threads
+        )
+
     background: set[asyncio.Task[None]] = set()
     cleanup = asyncio.create_task(_cleanup_loop(app), name="cleanup")
     background.add(cleanup)

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -154,6 +154,36 @@ class ModelRegistry:
         if self._half is None:
             self._half = self._configured_half and self.device() != "cpu"
         return self._half
+
+    def apply_thread_budget(self, threads: int) -> None:
+        """Borne le nombre de threads d'inférence CPU de torch. `0` ne fait rien.
+
+        **Appelée une fois au démarrage, avant toute inférence.** `set_num_threads`
+        redimensionne un pool déjà créé, mais le faire en cours d'analyse changerait
+        la cadence au milieu d'une mesure.
+
+        Sans effet sur GPU : l'inférence n'y vit pas sur ces threads. On l'applique
+        quand même sans condition, parce que le pré et le post-traitement, eux,
+        restent sur CPU.
+
+        Ne lève jamais. Un budget de threads est un confort d'exécution ; un service
+        qui refuserait de démarrer parce qu'il n'a pas pu le poser échangerait une
+        gêne contre une panne.
+        """
+        if threads <= 0:
+            return
+        try:
+            import torch
+
+            torch.set_num_threads(threads)
+            # Le pool inter-op ne se redimensionne pas après la première inférence,
+            # et lève alors plutôt que d'ignorer. Toléré séparément : borner
+            # l'intra-op est l'essentiel du gain.
+            with suppress(Exception):
+                torch.set_num_interop_threads(max(1, threads // 2))
+            logger.info("budget de threads d'inférence posé", threads=threads)
+        except Exception as exc:
+            logger.warning("budget de threads non appliqué", error=str(exc))
 
     def loaded_ids(self) -> list[str]:
         with self._lock:

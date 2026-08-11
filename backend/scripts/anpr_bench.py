@@ -605,6 +605,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     settings = Settings()
 
+    # Le service pose ce budget dans son `lifespan`, avant toute inférence. Le banc
+    # doit le poser aussi, et pour la même raison : mesurer une machine dont les
+    # cœurs sont tous pris quand le service, lui, en laisse au navigateur donnerait
+    # des chiffres qui ne décrivent aucune exécution réelle.
+    if settings.inference_threads > 0:
+        from traffic_analysis.features.models_registry.infrastructure.registry import ModelRegistry
+
+        ModelRegistry(
+            settings.weights_dir,
+            max_loaded=settings.max_loaded_models,
+            device=settings.device,
+            half=settings.half,
+        ).apply_thread_budget(settings.inference_threads)
+
     synthetic = args.synthetic or args.truth_ladder
     if not synthetic and args.videos is None:
         print("Indiquez --videos, ou --synthetic --truth-ladder.", file=sys.stderr)
@@ -614,7 +628,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings.resolved_plate_ocr_model_path,
         settings.resolved_plate_ocr_charset_path,
         min_score=settings.plate_ocr_min_text_score,
-        intra_op_threads=settings.plate_ocr_intra_op_threads,
+        # Résolu, comme le fait le conteneur : un banc qui mesurerait une autre
+        # configuration que le service ne mesurerait pas le service.
+        intra_op_threads=settings.resolved_plate_ocr_intra_op_threads,
         variants=settings.plate_ocr_variants,
         dynamic_width=settings.plate_ocr_dynamic_width,
     )

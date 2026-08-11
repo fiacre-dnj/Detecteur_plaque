@@ -79,6 +79,39 @@
           ],
           "plateText": null,
           "plateTextScore": null
+        },
+        {
+          "trackId": 3,
+          "globalId": 3,
+          "classId": 2,
+          "label": "car",
+          "identityLabel": "car",
+          "score": 0.9,
+          "box": {
+            "x": 2020.0,
+            "y": 190.0,
+            "width": 160.0,
+            "height": 120.0
+          },
+          "hits": 1,
+          "counted": false,
+          "reidCount": 0,
+          "speedPxS": null,
+          "plates": [
+            {
+              "box": {
+                "x": 2068.0,
+                "y": 268.0,
+                "width": 64.0,
+                "height": 18.0
+              },
+              "score": 0.71,
+              "text": "AB-123-CD",
+              "textScore": 0.93
+            }
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -141,6 +174,40 @@
               "box": {
                 "x": 1168.0,
                 "y": 768.0,
+                "width": 64.0,
+                "height": 18.0
+              },
+              "score": 0.71,
+              "text": null,
+              "textScore": null,
+              "stale": true
+            }
+          ],
+          "plateText": null,
+          "plateTextScore": null
+        },
+        {
+          "trackId": 3,
+          "globalId": 3,
+          "classId": 2,
+          "label": "car",
+          "identityLabel": "car",
+          "score": 0.9,
+          "box": {
+            "x": 2020.0,
+            "y": 240.0,
+            "width": 160.0,
+            "height": 120.0
+          },
+          "hits": 2,
+          "counted": false,
+          "reidCount": 0,
+          "speedPxS": 1250.0,
+          "plates": [
+            {
+              "box": {
+                "x": 2068.0,
+                "y": 318.0,
                 "width": 64.0,
                 "height": 18.0
               },
@@ -225,6 +292,40 @@
           ],
           "plateText": null,
           "plateTextScore": null
+        },
+        {
+          "trackId": 3,
+          "globalId": 3,
+          "classId": 2,
+          "label": "car",
+          "identityLabel": "car",
+          "score": 0.9,
+          "box": {
+            "x": 2020.0,
+            "y": 290.0,
+            "width": 160.0,
+            "height": 120.0
+          },
+          "hits": 3,
+          "counted": false,
+          "reidCount": 0,
+          "speedPxS": 1250.0,
+          "plates": [
+            {
+              "box": {
+                "x": 2068.0,
+                "y": 368.0,
+                "width": 64.0,
+                "height": 18.0
+              },
+              "score": 0.71,
+              "text": null,
+              "textScore": null,
+              "stale": true
+            }
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -299,6 +400,39 @@
           ],
           "plateText": null,
           "plateTextScore": null
+        },
+        {
+          "trackId": 3,
+          "globalId": 3,
+          "classId": 2,
+          "label": "car",
+          "identityLabel": "car",
+          "score": 0.9,
+          "box": {
+            "x": 2020.0,
+            "y": 340.0,
+            "width": 160.0,
+            "height": 120.0
+          },
+          "hits": 4,
+          "counted": false,
+          "reidCount": 0,
+          "speedPxS": 1250.0,
+          "plates": [
+            {
+              "box": {
+                "x": 2068.0,
+                "y": 418.0,
+                "width": 64.0,
+                "height": 18.0
+              },
+              "score": 0.71,
+              "text": "XY-78-ZW",
+              "textScore": 0.93
+            }
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -361,6 +495,40 @@
               "box": {
                 "x": 1168.0,
                 "y": 618.0,
+                "width": 64.0,
+                "height": 18.0
+              },
+              "score": 0.71,
+              "text": null,
+              "textScore": null,
+              "stale": true
+            }
+          ],
+          "plateText": null,
+          "plateTextScore": null
+        },
+        {
+          "trackId": 3,
+          "globalId": 3,
+          "classId": 2,
+          "label": "car",
+          "identityLabel": "car",
+          "score": 0.9,
+          "box": {
+            "x": 2020.0,
+            "y": 390.0,
+            "width": 160.0,
+            "height": 120.0
+          },
+          "hits": 5,
+          "counted": false,
+          "reidCount": 0,
+          "speedPxS": 1250.0,
+          "plates": [
+            {
+              "box": {
+                "x": 2068.0,
+                "y": 468.0,
                 "width": 64.0,
                 "height": 18.0
               },
@@ -445,6 +613,40 @@
           ],
           "plateText": null,
           "plateTextScore": null
+        },
+        {
+          "trackId": 3,
+          "globalId": 3,
+          "classId": 2,
+          "label": "car",
+          "identityLabel": "car",
+          "score": 0.9,
+          "box": {
+            "x": 2020.0,
+            "y": 440.0,
+            "width": 160.0,
+            "height": 120.0
+          },
+          "hits": 6,
+          "counted": false,
+          "reidCount": 0,
+          "speedPxS": 1250.0,
+          "plates": [
+            {
+              "box": {
+                "x": 2068.0,
+                "y": 518.0,
+                "width": 64.0,
+                "height": 18.0
+              },
+              "score": 0.71,
+              "text": null,
+              "textScore": null,
+              "stale": true
+            }
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     },
@@ -515,6 +717,39 @@
               "text": null,
               "textScore": null,
               "stale": true
+            }
+          ],
+          "plateText": null,
+          "plateTextScore": null
+        },
+        {
+          "trackId": 3,
+          "globalId": 3,
+          "classId": 2,
+          "label": "car",
+          "identityLabel": "car",
+          "score": 0.9,
+          "box": {
+            "x": 2020.0,
+            "y": 490.0,
+            "width": 160.0,
+            "height": 120.0
+          },
+          "hits": 7,
+          "counted": false,
+          "reidCount": 0,
+          "speedPxS": 1250.0,
+          "plates": [
+            {
+              "box": {
+                "x": 2068.0,
+                "y": 568.0,
+                "width": 64.0,
+                "height": 18.0
+              },
+              "score": 0.71,
+              "text": "AB-123-CD",
+              "textScore": 0.93
             }
           ],
           "plateText": null,
@@ -592,6 +827,40 @@
           ],
           "plateText": null,
           "plateTextScore": null
+        },
+        {
+          "trackId": 3,
+          "globalId": 3,
+          "classId": 2,
+          "label": "car",
+          "identityLabel": "car",
+          "score": 0.9,
+          "box": {
+            "x": 2020.0,
+            "y": 540.0,
+            "width": 160.0,
+            "height": 120.0
+          },
+          "hits": 8,
+          "counted": false,
+          "reidCount": 0,
+          "speedPxS": 1250.0,
+          "plates": [
+            {
+              "box": {
+                "x": 2068.0,
+                "y": 618.0,
+                "width": 64.0,
+                "height": 18.0
+              },
+              "score": 0.71,
+              "text": null,
+              "textScore": null,
+              "stale": true
+            }
+          ],
+          "plateText": "AB-123-CD",
+          "plateTextScore": 0.93
         }
       ]
     },
@@ -665,6 +934,40 @@
           ],
           "plateText": null,
           "plateTextScore": null
+        },
+        {
+          "trackId": 3,
+          "globalId": 3,
+          "classId": 2,
+          "label": "car",
+          "identityLabel": "car",
+          "score": 0.9,
+          "box": {
+            "x": 2020.0,
+            "y": 590.0,
+            "width": 160.0,
+            "height": 120.0
+          },
+          "hits": 9,
+          "counted": false,
+          "reidCount": 0,
+          "speedPxS": 1250.0,
+          "plates": [
+            {
+              "box": {
+                "x": 2068.0,
+                "y": 668.0,
+                "width": 64.0,
+                "height": 18.0
+              },
+              "score": 0.71,
+              "text": null,
+              "textScore": null,
+              "stale": true
+            }
+          ],
+          "plateText": "AB-123-CD",
+          "plateTextScore": 0.93
         }
       ]
     },
@@ -739,6 +1042,39 @@
           ],
           "plateText": null,
           "plateTextScore": null
+        },
+        {
+          "trackId": 3,
+          "globalId": 3,
+          "classId": 2,
+          "label": "car",
+          "identityLabel": "car",
+          "score": 0.9,
+          "box": {
+            "x": 2020.0,
+            "y": 640.0,
+            "width": 160.0,
+            "height": 120.0
+          },
+          "hits": 10,
+          "counted": false,
+          "reidCount": 0,
+          "speedPxS": 1250.0,
+          "plates": [
+            {
+              "box": {
+                "x": 2068.0,
+                "y": 718.0,
+                "width": 64.0,
+                "height": 18.0
+              },
+              "score": 0.71,
+              "text": "XY-78-ZW",
+              "textScore": 0.93
+            }
+          ],
+          "plateText": "AB-123-CD",
+          "plateTextScore": 0.93
         }
       ]
     },
@@ -802,6 +1138,40 @@
               "box": {
                 "x": 1168.0,
                 "y": 318.0,
+                "width": 64.0,
+                "height": 18.0
+              },
+              "score": 0.71,
+              "text": null,
+              "textScore": null,
+              "stale": true
+            }
+          ],
+          "plateText": null,
+          "plateTextScore": null
+        },
+        {
+          "trackId": 3,
+          "globalId": 3,
+          "classId": 2,
+          "label": "car",
+          "identityLabel": "car",
+          "score": 0.9,
+          "box": {
+            "x": 2020.0,
+            "y": 690.0,
+            "width": 160.0,
+            "height": 120.0
+          },
+          "hits": 11,
+          "counted": false,
+          "reidCount": 0,
+          "speedPxS": 1250.0,
+          "plates": [
+            {
+              "box": {
+                "x": 2068.0,
+                "y": 768.0,
                 "width": 64.0,
                 "height": 18.0
               },
@@ -886,6 +1256,40 @@
           ],
           "plateText": null,
           "plateTextScore": null
+        },
+        {
+          "trackId": 3,
+          "globalId": 3,
+          "classId": 2,
+          "label": "car",
+          "identityLabel": "car",
+          "score": 0.9,
+          "box": {
+            "x": 2020.0,
+            "y": 740.0,
+            "width": 160.0,
+            "height": 120.0
+          },
+          "hits": 12,
+          "counted": false,
+          "reidCount": 0,
+          "speedPxS": 1250.0,
+          "plates": [
+            {
+              "box": {
+                "x": 2068.0,
+                "y": 818.0,
+                "width": 64.0,
+                "height": 18.0
+              },
+              "score": 0.71,
+              "text": null,
+              "textScore": null,
+              "stale": true
+            }
+          ],
+          "plateText": null,
+          "plateTextScore": null
         }
       ]
     }
@@ -936,7 +1340,9 @@
       "plateText": "AB-123-CD",
       "plateTextScore": 0.93,
       "plateUnreadReason": null,
-      "plateBestWidthPx": 64.0
+      "plateBestWidthPx": 64.0,
+      "plateBestGuess": null,
+      "plateBestGuessScore": null
     },
     {
       "globalId": 2,
@@ -958,13 +1364,33 @@
       "plateText": null,
       "plateTextScore": null,
       "plateUnreadReason": "too_blurry",
-      "plateBestWidthPx": 64.0
+      "plateBestWidthPx": 64.0,
+      "plateBestGuess": null,
+      "plateBestGuessScore": null
+    },
+    {
+      "globalId": 3,
+      "label": "car",
+      "firstSeenMs": 0.0,
+      "lastSeenMs": 440.0,
+      "crossedLines": [],
+      "zonesVisited": [],
+      "reidCount": 0,
+      "avgSpeedPxS": 1250.0,
+      "avgSpeedKmh": null,
+      "bestPlateScore": 0.71,
+      "plateText": null,
+      "plateTextScore": 0.93,
+      "plateUnreadReason": "no_consensus",
+      "plateBestWidthPx": 64.0,
+      "plateBestGuess": "AB-123-CD",
+      "plateBestGuessScore": 0.93
     }
   ],
   "stats": {
-    "uniqueVehicles": 2,
+    "uniqueVehicles": 3,
     "uniqueByClass": {
-      "car": 1,
+      "car": 2,
       "truck": 1
     },
     "crossings": 2,
@@ -988,7 +1414,7 @@
     "byZone": {},
     "reidHits": 0,
     "vehiclesPerMinute": 0.0,
-    "activeTracks": 2,
+    "activeTracks": 3,
     "elapsedMs": 440.0,
     "analysedSceneMs": 440.0,
     "diagnostics": {
@@ -996,7 +1422,7 @@
       "lowDetections": 0,
       "maskedOut": 0,
       "containedOut": 0,
-      "confirmedTracks": 2,
+      "confirmedTracks": 3,
       "tentativeTracks": 0,
       "rescuedByLowScore": 0
     }

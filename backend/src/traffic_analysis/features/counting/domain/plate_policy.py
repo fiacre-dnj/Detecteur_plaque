@@ -248,6 +248,29 @@ class PlateDetectOptions:
     #: rectangle qui ne décrit plus rien. Ne rien dessiner est alors plus honnête.
     max_anchor_age: int = 4
 
+    #: Nombre d'échecs consécutifs (détection soumise, aucune plaque trouvée)
+    #: au-delà duquel une piste sans ancre retombe sur la cadence normale au lieu
+    #: d'être retentée à chaque image analysée.
+    #:
+    #: **Le trou que l'ancre ne bouche pas.** « Aucune ancre à reprojeter → on
+    #: préfère payer » est correct pour une piste qui vient d'apparaître ou dont la
+    #: plaque est passée hors champ un instant. Il devient un gouffre pour une piste
+    #: dont la plaque n'est **structurellement** jamais visible — mauvais angle,
+    #: trop loin, plaque absente de l'image : cette piste n'a jamais d'ancre à
+    #: aucun moment de sa vie, donc la garde « pas d'ancre → toujours vrai » la
+    #: retente à *chaque* image analysée, sans jamais bénéficier de
+    #: l'étranglement. Mesuré sur une vraie vidéo : des pistes de ce type vivent 6
+    #: à 8 s sans jamais produire de plaque, chacune payant ~800 ms par image
+    #: analysée pendant toute leur vie.
+    #:
+    #: Après `max_consecutive_misses` échecs, continuer à payer n'achète plus rien
+    #: de nouveau : le détecteur vient de répondre « rien » plusieurs fois de
+    #: suite sur la même piste. Retomber sur la cadence économise sans changer le
+    #: contrat visible — une piste sans ancre ne dessine toujours rien pendant les
+    #: images sautées (`_project_anchor` rend `()` sans ancre), donc rien ne se met
+    #: à clignoter : il n'y avait rien à faire clignoter.
+    max_consecutive_misses: int = 3
+
 
 @dataclass(slots=True)
 class PlateDetectPolicy:
@@ -260,6 +283,10 @@ class PlateDetectPolicy:
     options: PlateDetectOptions
     #: Identité → ordinal de la dernière détection réellement soumise.
     last_ordinal: dict[int, int] = field(default_factory=dict)
+    #: Identité → nombre d'échecs consécutifs (détection soumise, rien trouvé).
+    #: Remis à zéro par tout succès ; absent tant qu'aucune détection n'a été
+    #: soumise.
+    misses: dict[int, int] = field(default_factory=dict)
 
     def should_detect(
         self,
@@ -299,8 +326,10 @@ class PlateDetectPolicy:
 
         # 3. Aucune ancre à reprojeter : sauter cette image ne produirait **rien**
         #    du tout, c'est-à-dire précisément le clignotement que l'ancre existe
-        #    pour supprimer. On préfère payer.
-        if not has_anchor:
+        #    pour supprimer. On préfère payer — mais seulement tant que les
+        #    tentatives récentes ont pu échouer par hasard plutôt que
+        #    structurellement (voir `max_consecutive_misses`).
+        if not has_anchor and self.misses.get(global_id, 0) < self.options.max_consecutive_misses:
             return True
 
         # 4. Cadence, décalée par identité pour que la charge reste plate.
@@ -309,6 +338,16 @@ class PlateDetectPolicy:
             return (ordinal - global_id) % every == 0
         return ordinal - last >= every
 
-    def record(self, global_id: int, ordinal: int) -> None:
-        """Note qu'une détection a été soumise pour cette identité."""
+    def record(self, global_id: int, ordinal: int, *, found: bool = True) -> None:
+        """Note qu'une détection a été soumise pour cette identité.
+
+        `found` distingue une détection qui a localisé une plaque de celle qui
+        n'a rien trouvé — c'est ce compte d'échecs **consécutifs** qui permet à une
+        piste structurellement sans plaque de retomber sur la cadence normale au
+        lieu d'être retentée à chaque image (voir `max_consecutive_misses`).
+        """
         self.last_ordinal[global_id] = ordinal
+        if found:
+            self.misses[global_id] = 0
+        else:
+            self.misses[global_id] = self.misses.get(global_id, 0) + 1

@@ -163,3 +163,54 @@ class TestGardesDEconomie:
         assert not policy.should_detect(
             99, ordinal=0, vehicle=etroit, vote_is_confident=False, has_anchor=False
         )
+
+
+class TestEchecsConsecutifs:
+    """Le trou que l'ancre ne bouche pas.
+
+    Une piste dont la plaque n'est structurellement jamais visible n'a jamais
+    d'ancre : sans cette garde, elle serait retentée à chaque image analysée
+    pendant toute sa vie, payant le goulot sans jamais rien obtenir de nouveau.
+    """
+
+    def test_une_piste_sans_plaque_finit_par_retomber_sur_la_cadence(self) -> None:
+        """Rejoue la vraie boucle : décider, puis enregistrer, image après image."""
+        policy = _policy(every_n_frames=3, stagger=False, max_consecutive_misses=3)
+
+        # Les trois premiers échecs sont payés — comportement inchangé.
+        for ordinal in range(3):
+            assert policy.should_detect(
+                7, ordinal=ordinal, vehicle=VEHICLE, vote_is_confident=False, has_anchor=False
+            )
+            policy.record(7, ordinal=ordinal, found=False)
+
+        # Le quatrième échec consécutif atteint le plafond : la piste retombe sur
+        # la cadence, comme si elle avait une ancre.
+        assert not policy.should_detect(
+            7, ordinal=3, vehicle=VEHICLE, vote_is_confident=False, has_anchor=False
+        )
+
+    def test_un_succes_reinitialise_le_compte_d_echecs(self) -> None:
+        """Une piste qui retrouve sa plaque une fois n'est pas punie pour ses
+        échecs passés : elle doit pouvoir en enchaîner `max_consecutive_misses`
+        nouveaux avant de retomber sur la cadence."""
+        policy = _policy(every_n_frames=3, stagger=False, max_consecutive_misses=1)
+        policy.record(7, ordinal=0, found=False)
+        policy.record(7, ordinal=1, found=True)
+
+        assert policy.should_detect(
+            7, ordinal=2, vehicle=VEHICLE, vote_is_confident=False, has_anchor=False
+        )
+
+    def test_le_plafond_par_defaut_est_trois(self) -> None:
+        options = PlateDetectOptions()
+
+        assert options.max_consecutive_misses == 3
+
+    def test_record_par_defaut_compte_un_succes(self) -> None:
+        """Les appelants historiques de `record(global_id, ordinal)`, sans le
+        paramètre `found`, ne doivent pas se retrouver traités comme des échecs."""
+        policy = _policy(every_n_frames=3, stagger=False, max_consecutive_misses=1)
+        policy.record(7, ordinal=0)
+
+        assert policy.misses.get(7, 0) == 0

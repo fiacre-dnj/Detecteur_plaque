@@ -387,6 +387,17 @@ export interface VehicleRecord {
    * resserrer le plan, là où « non détectée » dit tout autre chose.
    */
   plateBestWidthPx: number | null;
+  /**
+   * Le meilleur candidat lu même **sans** consensus — un indice, jamais un vote.
+   *
+   * `null` sauf quand `plateUnreadReason === "no_consensus"` : dans les autres
+   * raisons de silence, aucune lecture n'a eu lieu. Ne remplace jamais `plateText` :
+   * afficher ce candidat à sa place republierait la lecture la plus favorable,
+   * exactement ce que le vote sur la vie du véhicule interdit.
+   */
+  plateBestGuess: string | null;
+  /** Confiance moyenne de `plateBestGuess`. `null` ssi lui-même l'est. */
+  plateBestGuessScore: number | null;
 }
 
 /**

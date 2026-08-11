@@ -84,6 +84,21 @@ export function plateUnreadMessage(
   }
 }
 
+/**
+ * L'infobulle quand un candidat non confirmé existe (`no_consensus` avec
+ * `plateBestGuess`) : la même explication que `plateUnreadMessage`, plus le
+ * candidat rapporté, pour que l'utilisateur comprenne *ce qu'il voit* dans la
+ * cellule plutôt que seulement *pourquoi elle n'est pas plus affirmative*.
+ */
+export function plateBestGuessMessage(bestGuess: string, bestGuessScore: number | null): string {
+  const confidence =
+    bestGuessScore === null ? "" : ` (confiance ${Math.round(bestGuessScore * 100)} %)`;
+  return (
+    `Plusieurs lectures ont été tentées, aucune ne fait majorité. La plus vue est ` +
+    `« ${bestGuess} »${confidence} — un indice, pas une plaque confirmée.`
+  );
+}
+
 function formatWidth(widthPx: number | null): string {
   return widthPx === null ? "une largeur inconnue" : `${Math.round(widthPx)} px`;
 }

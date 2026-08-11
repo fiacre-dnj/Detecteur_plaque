@@ -142,6 +142,52 @@ class TestScore:
         assert vote.score == 0.75
 
 
+class TestBestGuess:
+    """Le candidat qu'on rapporte **sans** y souscrire — jamais à la place de `text`."""
+
+    def test_un_vote_neuf_n_a_aucun_candidat(self) -> None:
+        vote = PlateTextVote()
+        assert vote.best_guess is None
+
+    def test_une_lecture_unique_est_quand_meme_un_candidat(self) -> None:
+        """`text` refuse de publier ; `best_guess` n'a pas ce filtre — c'est
+        précisément ce qui le rend utile là où `text` reste `None`."""
+        vote = PlateTextVote()
+        vote.observe("AB123CD", 0.66)
+
+        assert vote.text is None
+        assert vote.best_guess == ("AB123CD", 0.66)
+
+    def test_des_hesitations_concordantes_restent_un_candidat_sans_texte(self) -> None:
+        """Même scénario que `test_deux_lectures_concordantes_hesitantes_ne_publient_pas` :
+        `text` reste `None`, `best_guess` rapporte ce qui a été vu."""
+        vote = PlateTextVote()
+        vote.observe("AB123CD", 0.45)
+        vote.observe("AB123CD", 0.45)
+
+        assert vote.text is None
+        assert vote.best_guess == ("AB123CD", 0.45)
+
+    def test_une_quasi_egalite_rapporte_le_meneur_pas_le_consensus(self) -> None:
+        """`best_guess` est le `leader` — la chaîne entière la plus probable — et non
+        le consensus par caractère : les deux peuvent différer légitimement."""
+        vote = PlateTextVote()
+        vote.observe("AB123CD", 0.55)
+        vote.observe("AB123CO", 0.55)
+
+        assert vote.best_guess == ("AB123CD", 0.55)
+
+    def test_ne_publie_jamais_a_la_place_de_text(self) -> None:
+        """Dès que le vote atteint le consensus, `best_guess` cesse d'être le seul
+        indice disponible — mais il continue de rapporter le même candidat."""
+        vote = PlateTextVote()
+        vote.observe("AB123CD", 0.90)
+        vote.observe("AB123CD", 0.90)
+
+        assert vote.text == "AB123CD"
+        assert vote.best_guess == ("AB123CD", 0.90)
+
+
 class TestIsConfident:
     def test_deux_lectures_ne_suffisent_pas_a_arreter_l_ocr(self) -> None:
         """Publier et cesser de vérifier sont deux décisions différentes.

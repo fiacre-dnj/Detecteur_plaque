@@ -214,3 +214,38 @@ class TestBoutEnBout:
         for record in result.vehicles:
             assert record.plate_text == "AB-123-CD"
             assert record.plate_unread_reason is None
+
+    def test_des_lectures_discordantes_donnent_no_consensus_et_un_candidat(self) -> None:
+        """Le registre dit *pourquoi* le silence, et rapporte quand même le meilleur
+        candidat vu — sans jamais le confondre avec un texte publié.
+
+        Trois graphies de **longueurs différentes**, et non de même longueur : à
+        longueur égale, le consensus par caractère peut trancher là où le vote par
+        chaîne entière refuse — c'est son rôle sur une quasi-égalité (voir
+        `test_plate_vote.py`). Des longueurs distinctes empêchent les deux voies de
+        publier, ce qui isole vraiment le cas que ce test vérifie.
+        """
+        rotation = ["ab-123-cd", "xy-78-zw", "mn-4567-op"]
+        calls = iter(range(1_000))
+        result = _run(
+            reader=FakePlateReader(text_for=lambda _box: rotation[next(calls) % len(rotation)]),
+            plate_width_ratio=0.6,
+        )
+
+        assert result.vehicles
+        for record in result.vehicles:
+            assert record.plate_text is None
+            assert record.plate_unread_reason == "no_consensus"
+            assert record.plate_best_guess is not None
+            assert record.plate_best_guess_score is not None
+
+    def test_un_silence_autre_que_no_consensus_ne_rapporte_aucun_candidat(self) -> None:
+        """`plate_best_guess` n'a de sens que sur `no_consensus` : dans les autres
+        raisons de silence, aucune lecture n'a eu lieu."""
+        result = _run(reader=FakePlateReader(), plate_width_ratio=0.3)
+
+        assert result.vehicles
+        for record in result.vehicles:
+            assert record.plate_unread_reason == "too_small"
+            assert record.plate_best_guess is None
+            assert record.plate_best_guess_score is None

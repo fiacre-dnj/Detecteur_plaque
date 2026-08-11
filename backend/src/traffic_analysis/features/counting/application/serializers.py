@@ -185,6 +185,12 @@ def serialise_vehicle(record: VehicleRecord) -> dict[str, Any]:
         # Le chiffre qui rend la raison actionnable : « vue à 48 px » dit de
         # resserrer le plan, « non détectée » dit tout autre chose.
         "plateBestWidthPx": _optional_pixel(record.plate_best_width_px),
+        # Le candidat sans consensus : un indice, jamais un vote. `null` dans tous
+        # les cas sauf `plateUnreadReason == "no_consensus"`.
+        "plateBestGuess": record.plate_best_guess,
+        "plateBestGuessScore": None
+        if record.plate_best_guess_score is None
+        else _score(record.plate_best_guess_score),
     }
 
 

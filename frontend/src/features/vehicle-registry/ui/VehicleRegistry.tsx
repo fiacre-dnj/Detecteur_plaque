@@ -32,7 +32,7 @@ import {
   vehiclesCsv,
 } from "../model/exportCsv";
 import { filterByPlate } from "../model/filterPlate";
-import { plateUnreadLabel, plateUnreadMessage } from "../model/plateUnread";
+import { plateBestGuessMessage, plateUnreadLabel, plateUnreadMessage } from "../model/plateUnread";
 import { INITIAL_ROWS, ROW_HEIGHT, shouldVirtualise, visibleWindow } from "../model/virtualise";
 
 interface VehicleRegistryProps {
@@ -177,9 +177,17 @@ export function VehicleRegistry({
             </Td>
             <Td
               // Le texte lu est de l'information de premier plan ; « illisible » et
-              // « — » sont des états, donc atténués. C'est la couleur qui dit « ceci
-              // est une lecture » sans ajouter un mot dans la cellule.
-              className={vehicle.plateText === null ? "text-ink-dim" : "tabular text-ink"}
+              // « — » sont des états, donc atténués. Le candidat non confirmé n'est
+              // ni l'un ni l'autre : ce n'est pas une absence, c'est une valeur qui
+              // reste à vérifier — d'où `text-warning`, plutôt que la même
+              // atténuation que « rien à voir ».
+              className={
+                vehicle.plateText !== null
+                  ? "tabular text-ink"
+                  : vehicle.plateBestGuess !== null
+                    ? "tabular text-warning"
+                    : "text-ink-dim"
+              }
             >
               {/* Jamais une cellule vide : « rien » se lirait « pas de plaque » alors
                   que `bestPlateScore` prouve le contraire.
@@ -190,24 +198,31 @@ export function VehicleRegistry({
                   complète avec la largeur mesurée. C'est ce qui distingue « la
                   chaîne refuse d'inventer » d'une panne du service — et
                   l'étranglement du détecteur comme le plancher de lecture rendent
-                  ce silence plus fréquent, pas moins. */}
+                  ce silence plus fréquent, pas moins.
+
+                  Sous `no_consensus`, un candidat non confirmé remplace le libellé
+                  générique « lecture incertaine » : c'est un indice, jamais une
+                  publication — il ne se substitue donc jamais à `plateText`, il ne
+                  fait qu'occuper la place où le silence, sinon, ne dirait rien de
+                  plus qu'une raison. */}
               <span
                 title={
-                  vehicle.plateText === null && vehicle.plateUnreadReason !== null
-                    ? plateUnreadMessage(
-                        vehicle.plateUnreadReason,
-                        vehicle.plateBestWidthPx,
-                      )
-                    : plateTitle(
-                        vehicle.plateText,
-                        vehicle.plateTextScore,
-                        vehicle.bestPlateScore,
-                      )
+                  vehicle.plateText !== null
+                    ? plateTitle(vehicle.plateText, vehicle.plateTextScore, vehicle.bestPlateScore)
+                    : vehicle.plateBestGuess !== null
+                      ? plateBestGuessMessage(vehicle.plateBestGuess, vehicle.plateBestGuessScore)
+                      : vehicle.plateUnreadReason !== null
+                        ? plateUnreadMessage(vehicle.plateUnreadReason, vehicle.plateBestWidthPx)
+                        : undefined
                 }
               >
-                {vehicle.plateText === null && vehicle.plateUnreadReason !== null
-                  ? plateUnreadLabel(vehicle.plateUnreadReason)
-                  : plateCell(vehicle.plateText, vehicle.bestPlateScore)}
+                {vehicle.plateText !== null
+                  ? plateCell(vehicle.plateText, vehicle.bestPlateScore)
+                  : vehicle.plateBestGuess !== null
+                    ? `${vehicle.plateBestGuess} ?`
+                    : vehicle.plateUnreadReason !== null
+                      ? plateUnreadLabel(vehicle.plateUnreadReason)
+                      : plateCell(vehicle.plateText, vehicle.bestPlateScore)}
               </span>
             </Td>
             <Td className="tabular">{formatScore(vehicle.plateTextScore)}</Td>

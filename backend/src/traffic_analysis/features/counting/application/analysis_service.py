@@ -371,7 +371,7 @@ class AnalysisService:
             # savoir — s'il empaquette ou non.
             batch = detector.detect_many(image, [track.box for track in wanted], confidence)
             for track, plates in zip(wanted, batch, strict=True):
-                detect_policy.record(track.global_id, ordinal)
+                detect_policy.record(track.global_id, ordinal, found=bool(plates))
                 measured[track.global_id] = tuple(plates)
 
         for track in tracks:

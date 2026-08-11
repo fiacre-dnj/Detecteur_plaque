@@ -169,6 +169,8 @@ class TestSerialiseVehicle:
             "globalId",
             "label",
             "lastSeenMs",
+            "plateBestGuess",
+            "plateBestGuessScore",
             "plateBestWidthPx",
             "plateText",
             "plateTextScore",

@@ -70,6 +70,32 @@ class Settings(BaseSettings):
     weights_dir: Path = Path("./.weights")
     device: str = "auto"  # auto | cpu | 0 | cuda:0
     half: bool = True  # ignoré hors GPU : en fp16 sur CPU, l'inférence ralentit
+    #: Budget de threads d'inférence **CPU**. `0` laisse chaque bibliothèque décider,
+    #: c'est-à-dire prendre tous les cœurs.
+    #:
+    #: Ce défaut est le bon sur une machine dédiée au service, et le mauvais dès que
+    #: le navigateur tourne sur la même machine — le cas du développement local. Le
+    #: symptôme n'est pas une erreur : c'est la **vidéo qui saccade** pendant
+    #: l'analyse, y compris à vitesse normale, parce qu'il ne reste aucun cœur pour
+    #: décoder et composer l'image. Le diagnostic naturel est « le lecteur est
+    #: mauvais » ; la cause est que le serveur a tout pris.
+    #:
+    #: Poser un à deux cœurs de moins que la machine rend la lecture fluide, contre
+    #: une part de cadence d'analyse. **L'échange se mesure**, il ne se suppose pas :
+    #: le banc le chiffre sur ses propres vidéos.
+    #:
+    #: **Ce qu'il borne, et ce qu'il ne borne pas — mesuré.** Il atteint torch (donc
+    #: le détecteur et le suivi des véhicules, qui tournent à *chaque* image) et
+    #: l'OCR, dont on a vu la vignette passer de 66 à 85 ms en la ramenant à trois
+    #: threads. Il **n'atteint pas le détecteur de plaques** : celui-ci est un
+    #: `.onnx` chargé par Ultralytics, qui construit sa session sans jamais passer de
+    #: `SessionOptions` (`ultralytics/nn/backends/onnx.py`), donc onnxruntime y garde
+    #: son défaut — tous les cœurs. Vérifié plutôt que supposé : à trois threads, la
+    #: détection reste à 656 ms contre 702 sans budget, soit l'écart de deux mesures
+    #: identiques. Le levier du détecteur n'est pas là : c'est son étranglement.
+    #:
+    #: Sans effet sur GPU, où l'inférence ne vit pas sur ces threads.
+    inference_threads: int = Field(0, ge=0, le=64)
     default_model_id: str = "yolov8n"
     #: Préchauffe le modèle par défaut au démarrage, **si son poids est déjà sur le
     #: disque**. Le premier appel d'un modèle paie son chargement et sa fusion de
@@ -112,6 +138,49 @@ class Settings(BaseSettings):
     #: images du même véhicule. `3` ne se justifie que sur des plans serrés où les
     #: véhicules sont grands.
     plate_mosaic_side: int = Field(1, ge=1, le=3)
+
+    # ── Étranglement du détecteur de plaques (ADR 0010) ──────────────────────
+    # **Le vrai goulot, et de loin.** Mesuré sur cette machine (i5-8350U, sans GPU) :
+    # 702 ms par inférence de détection contre 66 ms par vignette d'OCR, soit un
+    # rapport de 10,7 à 1. Optimiser l'OCR ne rendrait donc rien de perceptible.
+    #
+    # Ces trois réglages existaient dans `PlateDetectOptions` sans que personne
+    # puisse les atteindre : le conteneur ne passait que `every_n_frames`, repris de
+    # celui de l'OCR. Les exposer est ce qui rend l'arbitrage débit/fraîcheur
+    # réglable sans recompiler.
+    #: Une image analysée sur N par piste. `None` = suit la cadence de l'OCR, ce qui
+    #: était le comportement câblé en dur.
+    plate_detect_every_n_frames: int | None = Field(None, ge=1, le=30)
+    #: Sous cette largeur de **véhicule**, la plaque fera au mieux quelques pixels :
+    #: l'inférence coûterait 702 ms sans rien pouvoir trouver d'exploitable.
+    #:
+    #: Distinct de `plate_ocr_min_width_px`, qui porte sur la plaque. Le rapport
+    #: entre les deux dépend de la scène et **ne se déduit pas** : mesuré ici, une
+    #: plaque vaut 0,5 à 0,9 de la largeur du véhicule sur un plan serré, et 0,05 à
+    #: 0,25 sur une vue de circulation. C'est pourquoi ce seuil est un réglage et non
+    #: une fonction de l'autre — à calibrer au banc, sur ses propres vidéos.
+    plate_detect_min_vehicle_width_px: float = Field(96.0, ge=0.0, le=4096.0)
+    #: Au-delà de cet âge, en images analysées, une ancre n'est plus reprojetée.
+    #:
+    #: **Lié à `plate_detect_every_n_frames`, et le lien est vérifié au démarrage** :
+    #: entre deux détections espacées de N images, les images sautées portent des
+    #: ancres d'âge 1 à N−1. Un `max_anchor_age` inférieur à N−1 laisse donc des
+    #: images sans rectangle, c'est-à-dire le clignotement qu'ADR 0010 existe pour
+    #: supprimer. Monter la cadence sans monter l'âge est le piège de ce couple.
+    plate_detect_max_anchor_age: int = Field(4, ge=1, le=60)
+    #: Échecs consécutifs (détection soumise, aucune plaque trouvée) au-delà
+    #: duquel une piste sans ancre retombe sur la cadence normale.
+    #:
+    #: **Le trou que l'ancre ne bouche pas.** Une piste dont la plaque n'est
+    #: structurellement jamais visible — mauvais angle, trop loin, absente de
+    #: l'image — n'a jamais d'ancre, donc la garde « pas d'ancre → toujours
+    #: détecter » la retente à *chaque* image analysée sur toute sa vie. Mesuré sur
+    #: une vraie vidéo (9 à 13 véhicules simultanés, caméra de circulation) : 24
+    #: pistes sur 36 n'ont jamais produit de plaque, certaines pendant 6 à 8 s —
+    #: chacune payant ~800 ms par image analysée sans jamais bénéficier de
+    #: l'étranglement. Résultat : 1,42 image/s traitée, contre 11 sans ANPR.
+    plate_detect_max_consecutive_misses: int = Field(3, ge=1, le=30)
+
     # Utilisés par scripts/fetch_plate_model.py uniquement. Le service ne
     # télécharge jamais de lui-même : un démarrage ne doit pas dépendre du réseau.
     plate_model_url: str | None = None
@@ -273,6 +342,29 @@ class Settings(BaseSettings):
         ne se déduit pas d'une configuration vide.
         """
         return self.plate_model_path or self.weights_dir / "license-plate.onnx"
+
+    @property
+    def resolved_plate_detect_every_n_frames(self) -> int:
+        """Cadence effective du **détecteur** de plaques.
+
+        Le repli sur la cadence de l'OCR n'est pas un défaut arbitraire : détecter
+        plus souvent qu'on ne lit produirait des boîtes que personne ne consomme,
+        puisque c'est la lecture qui décide du texte publié. C'est le comportement
+        qui était câblé en dur dans le conteneur ; il devient le repli.
+        """
+        return self.plate_detect_every_n_frames or self.plate_ocr_every_n_frames
+
+    @property
+    def resolved_plate_ocr_intra_op_threads(self) -> int:
+        """Threads intra-op d'onnxruntime pour l'OCR.
+
+        Repli sur le budget global : un opérateur qui pose `TRAFFIC_INFERENCE_THREADS`
+        veut borner **toute** l'inférence, pas seulement torch. Le réglage spécifique
+        reste prioritaire, parce qu'il existe un cas où les deux diffèrent
+        légitimement — plusieurs analyses concurrentes, où chaque pool intra-op doit
+        être plus étroit que le budget de la machine.
+        """
+        return self.plate_ocr_intra_op_threads or self.inference_threads
 
     @property
     def resolved_plate_ocr_model_path(self) -> Path:
@@ -439,6 +531,35 @@ class Settings(BaseSettings):
             msg = (
                 "TRAFFIC_CORS_ALLOW_CREDENTIALS=true exige une liste d'origines "
                 "explicite ou une regex ancrée."
+            )
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _require_anchor_to_outlive_the_detector_gap(self) -> Self:
+        """L'ancre doit survivre jusqu'à la détection suivante. Refusé au démarrage.
+
+        Entre deux détections espacées de N images analysées, les images sautées
+        portent des ancres d'âge 1 à N−1 ; `_project_anchor` cesse de reprojeter
+        au-delà de `max_anchor_age`. Un âge trop court laisse donc des images **sans
+        aucun rectangle**, ce qui est exactement le clignotement qu'ADR 0010 a
+        supprimé et la raison pour laquelle `plate_policy` interdisait jusque-là
+        d'étrangler le détecteur.
+
+        Refusé, et non simplement signalé : la panne est purement visuelle, elle
+        n'écrit rien dans les journaux et ne change aucun chiffre. Elle se lit comme
+        un défaut de détection, jamais comme un défaut de configuration — donc elle
+        se cherche là où elle n'est pas. Le message dit les deux issues.
+        """
+        gap = self.resolved_plate_detect_every_n_frames - 1
+        if self.plate_detect_max_anchor_age < gap:
+            msg = (
+                f"TRAFFIC_PLATE_DETECT_MAX_ANCHOR_AGE={self.plate_detect_max_anchor_age} "
+                f"est trop court pour une détection une image sur "
+                f"{self.resolved_plate_detect_every_n_frames} : les images sautées "
+                f"portent des ancres d'âge 1 à {gap}, donc les rectangles de plaque "
+                f"clignoteraient. Posez au moins {gap}, ou baissez la cadence de "
+                "détection (voir ADR 0010)."
             )
             raise ValueError(msg)
         return self

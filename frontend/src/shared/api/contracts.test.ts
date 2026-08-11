@@ -130,14 +130,21 @@ describe("contrat d'une piste", () => {
     }
   });
 
-  it("le texte voté d'une piste est celui du registre pour la même identité", () => {
-    // Le vote agrège sous `globalId` (invariant 4). Un désaccord ici serait
-    // structurel : la piste et le registre liraient deux agrégats différents.
+  it("le texte voté d'une piste sur sa DERNIÈRE image est celui du registre", () => {
+    // Le vote agrège sous `globalId` (invariant 4), et c'est un agrégat **vivant** :
+    // une lecture ultérieure discordante peut faire revenir un texte publié à
+    // `null` (`no_consensus`). Comparer sur une image intermédiaire supposerait à
+    // tort que le vote ne fait que se renforcer ; seule la dernière image d'une
+    // piste doit porter exactement l'état final du registre — un désaccord là
+    // serait structurel, la piste et le registre lisant deux agrégats différents.
     const byId = new Map(result.vehicles.map((vehicle) => [vehicle.globalId, vehicle]));
-
+    const lastSeen = new Map<number, TrackSnapshot>();
     for (const candidate of result.timeline.flatMap((row) => row.tracks)) {
-      if (candidate.plateText === null) continue;
-      expect(byId.get(candidate.globalId)?.plateText).toBe(candidate.plateText);
+      lastSeen.set(candidate.globalId, candidate);
+    }
+
+    for (const [globalId, candidate] of lastSeen) {
+      expect(byId.get(globalId)?.plateText).toBe(candidate.plateText);
     }
   });
 
@@ -300,6 +307,11 @@ describe("contrat du registre des véhicules", () => {
       "globalId",
       "label",
       "lastSeenMs",
+      // Le candidat rapporté sans y souscrire, sous `no_consensus` seulement — un
+      // indice, jamais un vote : afficher ce candidat à la place de `plateText`
+      // republierait la lecture la plus favorable.
+      "plateBestGuess",
+      "plateBestGuessScore",
       // Le couple qui remplace une case vide par une cause : « vue à 48 px » dit
       // de resserrer le plan, « non détectée » dit tout autre chose. Sans lui, le
       // silence se lit comme une panne du service.

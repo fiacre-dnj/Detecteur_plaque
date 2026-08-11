@@ -72,6 +72,39 @@
       ],
       "plateText": null,
       "plateTextScore": null
+    },
+    {
+      "trackId": 3,
+      "globalId": 3,
+      "classId": 2,
+      "label": "car",
+      "identityLabel": "car",
+      "score": 0.9,
+      "box": {
+        "x": 2020.0,
+        "y": 490.0,
+        "width": 160.0,
+        "height": 120.0
+      },
+      "hits": 7,
+      "counted": false,
+      "reidCount": 0,
+      "speedPxS": 1250.0,
+      "plates": [
+        {
+          "box": {
+            "x": 2068.0,
+            "y": 568.0,
+            "width": 64.0,
+            "height": 18.0
+          },
+          "score": 0.71,
+          "text": "AB-123-CD",
+          "textScore": 0.93
+        }
+      ],
+      "plateText": null,
+      "plateTextScore": null
     }
   ],
   "crossings": [
@@ -89,9 +122,9 @@
   ],
   "zoneEvents": [],
   "stats": {
-    "uniqueVehicles": 2,
+    "uniqueVehicles": 3,
     "uniqueByClass": {
-      "car": 1,
+      "car": 2,
       "truck": 1
     },
     "crossings": 2,
@@ -115,7 +148,7 @@
     "byZone": {},
     "reidHits": 0,
     "vehiclesPerMinute": 0.0,
-    "activeTracks": 2,
+    "activeTracks": 3,
     "elapsedMs": 440.0,
     "analysedSceneMs": 440.0,
     "diagnostics": {
@@ -123,7 +156,7 @@
       "lowDetections": 0,
       "maskedOut": 0,
       "containedOut": 0,
-      "confirmedTracks": 2,
+      "confirmedTracks": 3,
       "tentativeTracks": 0,
       "rescuedByLowScore": 0
     }

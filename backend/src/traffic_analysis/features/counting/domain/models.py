@@ -460,6 +460,17 @@ class VehicleRecord:
     #: chose. Sans lui, `too_small` laisse l'utilisateur sans repère sur l'ampleur
     #: de l'écart.
     plate_best_width_px: float | None = None
+    #: Le meilleur candidat lu même **sans** consensus, ou `None`. N'engage pas le
+    #: serveur : contrairement à `plate_text`, ce n'est pas un vote qui a passé les
+    #: seuils de publication, seulement le candidat en tête au moment où le vote a
+    #: cessé de progresser.
+    #:
+    #: Rempli seulement quand `plate_unread_reason == "no_consensus"` — dans tous
+    #: les autres cas de silence (plaque non détectée, trop petite, trop floue,
+    #: OCR désactivé), aucune lecture n'a eu lieu et il n'y a rien à rapporter.
+    plate_best_guess: str | None = None
+    #: Confiance moyenne du candidat ci-dessus. `None` ssi `plate_best_guess` l'est.
+    plate_best_guess_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

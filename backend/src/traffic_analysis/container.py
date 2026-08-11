@@ -148,7 +148,7 @@ def build_container(
         settings.resolved_plate_ocr_model_path,
         settings.resolved_plate_ocr_charset_path,
         min_score=settings.plate_ocr_min_text_score,
-        intra_op_threads=settings.plate_ocr_intra_op_threads,
+        intra_op_threads=settings.resolved_plate_ocr_intra_op_threads,
         variants=settings.plate_ocr_variants,
         dynamic_width=settings.plate_ocr_dynamic_width,
     )
@@ -177,9 +177,18 @@ def build_container(
             min_sharpness=settings.plate_ocr_min_sharpness,
             quality_improvement=settings.plate_ocr_quality_improvement,
         ),
-        # L'étranglement du détecteur suit la **cadence de l'OCR** : détecter plus
-        # souvent qu'on ne lit produirait des boîtes que personne ne consomme.
-        PlateDetectOptions(every_n_frames=settings.plate_ocr_every_n_frames),
+        # L'étranglement du détecteur — **le vrai goulot**, 702 ms par inférence
+        # contre 66 ms par vignette d'OCR sur cette machine. Les trois champs
+        # existaient et aucun n'était atteignable : seul `every_n_frames` était
+        # passé, et il valait forcément celui de l'OCR. Le repli conserve ce
+        # comportement (`resolved_plate_detect_every_n_frames`), mais il devient
+        # un repli et non une fatalité.
+        PlateDetectOptions(
+            every_n_frames=settings.resolved_plate_detect_every_n_frames,
+            min_vehicle_width_px=settings.plate_detect_min_vehicle_width_px,
+            max_anchor_age=settings.plate_detect_max_anchor_age,
+            max_consecutive_misses=settings.plate_detect_max_consecutive_misses,
+        ),
     )
     realtime_service = RealtimeSessionService(
         resolved_engine, max_sessions=settings.max_realtime_sessions

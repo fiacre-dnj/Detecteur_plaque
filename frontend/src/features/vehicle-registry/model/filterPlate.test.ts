@@ -33,6 +33,8 @@ function vehicle(globalId: number, plateText: string | null): VehicleRecord {
     // remplace la case vide que l'utilisateur lisait comme une panne.
     plateUnreadReason: plateText === null ? "no_consensus" : null,
     plateBestWidthPx: plateText === null ? null : 96,
+    plateBestGuess: null,
+    plateBestGuessScore: null,
   };
 }
 

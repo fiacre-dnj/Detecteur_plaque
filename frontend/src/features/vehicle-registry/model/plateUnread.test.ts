@@ -13,6 +13,7 @@ import type { PlateUnreadReason } from "@/shared/api/contracts";
 
 import {
   READING_FLOOR_PX,
+  plateBestGuessMessage,
   plateSilenceSummary,
   plateUnreadLabel,
   plateUnreadMessage,
@@ -70,6 +71,24 @@ describe("plateUnreadMessage", () => {
 
   it("ne dit rien quand une plaque est publiée", () => {
     expect(plateUnreadMessage(null, 120)).toBe("");
+  });
+});
+
+describe("plateBestGuessMessage", () => {
+  it("cite le candidat et sa confiance", () => {
+    const message = plateBestGuessMessage("AB-123-CD", 0.66);
+
+    expect(message).toContain("AB-123-CD");
+    expect(message).toContain("66 %");
+  });
+
+  it("dit explicitement que ce n'est pas une plaque confirmée", () => {
+    // Le seul rempart contre la confusion avec `plateText` : le mot doit être là.
+    expect(plateBestGuessMessage("AB-123-CD", 0.66)).toContain("pas une plaque confirmée");
+  });
+
+  it("survit à une confiance inconnue sans afficher « null »", () => {
+    expect(plateBestGuessMessage("AB-123-CD", null)).not.toContain("null");
   });
 });
 

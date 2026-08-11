@@ -256,6 +256,7 @@ class FakePlateReader:
         score: float = 0.93,
         is_readable: Callable[[BoundingBox], bool] | None = None,
         bad_length: bool = False,
+        text_for: Callable[[BoundingBox], str] | None = None,
     ) -> None:
         self._available = available
         self._text = text
@@ -267,6 +268,15 @@ class FakePlateReader:
         #: Simule un lecteur qui viole le contrat d'alignement positionnel du port.
         #: Le service doit alors renoncer au texte de la frame, pas échouer.
         self._bad_length = bad_length
+        #: Décide le texte **à partir de la boîte**, au lieu du seul `text` fixe.
+        #: C'est ce qui permet de simuler des lectures discordantes pour une même
+        #: piste — donc un vote qui n'atteint jamais le consensus — sans quoi cette
+        #: doublure ne peut produire que « jamais lu » ou « toujours la même chaîne ».
+        #: Une rotation par **compteur global** ne le ferait pas : plusieurs pistes
+        #: lisibles partageant un même appel `read()` recevraient chacune toujours
+        #: la même valeur, jamais un désaccord en leur sein.
+        #: `None` garde le comportement historique : `text` pour toute lecture réussie.
+        self._text_for = text_for
         self.calls = 0
         self.crops = 0
         #: Les boîtes **réellement lues**, dans l'ordre.
@@ -294,7 +304,10 @@ class FakePlateReader:
         if self._bad_length:
             return ()
         return tuple(
-            PlateText(text=self._text, score=self._score)
+            PlateText(
+                text=self._text_for(box) if self._text_for is not None else self._text,
+                score=self._score,
+            )
             if self._is_readable is None or self._is_readable(box)
             else None
             for box in boxes

@@ -689,6 +689,21 @@ class AnalysisSession:
         for global_id in sorted(self._aggregates):
             aggregate = self._aggregates[global_id]
             average = self._speed.average_px_s(global_id)
+            reason = (
+                None
+                if aggregate.plate_vote.text
+                else unread_reason(
+                    ocr_enabled=self._config.plate_ocr_enabled,
+                    plate_seen=aggregate.best_plate_score is not None,
+                    best_width_px=aggregate.best_plate_width_px,
+                    read_attempted=aggregate.plate_read_attempted,
+                    min_width_px=self._config.plate_ocr_min_width_px,
+                )
+            )
+            # Le candidat sans consensus n'a de sens que dans **ce** cas précis :
+            # dans toute autre raison de silence, aucune lecture n'a eu lieu et il
+            # n'y a rien à rapporter en plus de la raison elle-même.
+            best_guess = aggregate.plate_vote.best_guess if reason == "no_consensus" else None
             records.append(
                 VehicleRecord(
                     global_id=global_id,
@@ -709,18 +724,10 @@ class AnalysisSession:
                     # **Dérivée à la fin**, jamais accumulée : l'état final donne la
                     # cause sans ambiguïté, là où accumuler obligerait à décider
                     # laquelle gagne quand deux causes se succèdent.
-                    plate_unread_reason=(
-                        None
-                        if aggregate.plate_vote.text
-                        else unread_reason(
-                            ocr_enabled=self._config.plate_ocr_enabled,
-                            plate_seen=aggregate.best_plate_score is not None,
-                            best_width_px=aggregate.best_plate_width_px,
-                            read_attempted=aggregate.plate_read_attempted,
-                            min_width_px=self._config.plate_ocr_min_width_px,
-                        )
-                    ),
+                    plate_unread_reason=reason,
                     plate_best_width_px=aggregate.best_plate_width_px,
+                    plate_best_guess=best_guess[0] if best_guess else None,
+                    plate_best_guess_score=best_guess[1] if best_guess else None,
                 )
             )
         return tuple(records)

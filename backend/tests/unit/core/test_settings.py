@@ -304,3 +304,86 @@ def test_la_configuration_est_immuable() -> None:
 
     with pytest.raises(ValidationError):
         settings.port = 9000  # type: ignore[misc]
+
+
+# ── Étranglement du détecteur de plaques (ADR 0010) ──────────────────────────
+
+
+def test_la_cadence_du_detecteur_suit_celle_de_l_ocr_par_defaut() -> None:
+    """C'était le comportement câblé en dur dans le conteneur ; il devient un repli.
+
+    Détecter plus souvent qu'on ne lit produirait des boîtes que personne ne
+    consomme, puisque c'est la lecture qui décide du texte publié.
+    """
+    settings = _settings(plate_ocr_every_n_frames=5, plate_detect_max_anchor_age=4)
+
+    assert settings.resolved_plate_detect_every_n_frames == 5
+
+
+def test_la_cadence_du_detecteur_peut_se_desolidariser_de_celle_de_l_ocr() -> None:
+    settings = _settings(plate_ocr_every_n_frames=3, plate_detect_every_n_frames=2)
+
+    assert settings.resolved_plate_detect_every_n_frames == 2
+
+
+def test_une_ancre_trop_courte_pour_la_cadence_est_refusee_au_demarrage() -> None:
+    """La panne évitée est purement visuelle : elle n'écrit rien et ne change
+    aucun chiffre.
+
+    Entre deux détections espacées de 8 images, les images sautées portent des
+    ancres d'âge 1 à 7 ; un `max_anchor_age` de 4 en laisse trois sans rectangle.
+    C'est exactement le clignotement qu'ADR 0010 a supprimé, et il se lit comme un
+    défaut de détection — donc il se cherche là où il n'est pas.
+    """
+    with pytest.raises(ValidationError, match="clignoteraient"):
+        _settings(plate_detect_every_n_frames=8, plate_detect_max_anchor_age=4)
+
+
+def test_l_ancre_juste_assez_longue_est_acceptee() -> None:
+    """La borne est `every - 1` et non `every` : l'image de la détection suivante
+    est mesurée, elle ne reprojette rien."""
+    settings = _settings(plate_detect_every_n_frames=5, plate_detect_max_anchor_age=4)
+
+    assert settings.plate_detect_max_anchor_age == 4
+
+
+def test_les_defauts_du_detecteur_de_plaques_sont_coherents_entre_eux() -> None:
+    """Le couple par défaut ne doit pas dépendre du garde-fou pour être juste."""
+    settings = _settings()
+
+    assert settings.plate_detect_max_anchor_age >= settings.resolved_plate_detect_every_n_frames - 1
+
+
+def test_le_plafond_d_echecs_consecutifs_a_un_defaut_de_trois() -> None:
+    """Le trou que l'ancre ne bouche pas : une piste sans plaque structurellement
+    visible ne doit pas être retentée à chaque image analysée indéfiniment."""
+    settings = _settings()
+
+    assert settings.plate_detect_max_consecutive_misses == 3
+
+
+# ── Budget de threads d'inférence ────────────────────────────────────────────
+
+
+def test_l_ocr_herite_du_budget_global_de_threads() -> None:
+    """Qui borne l'inférence veut la borner **toute**, pas seulement torch."""
+    settings = _settings(inference_threads=3)
+
+    assert settings.resolved_plate_ocr_intra_op_threads == 3
+
+
+def test_le_reglage_specifique_de_l_ocr_reste_prioritaire() -> None:
+    """Plusieurs analyses concurrentes : chaque pool intra-op doit être plus
+    étroit que le budget de la machine."""
+    settings = _settings(inference_threads=8, plate_ocr_intra_op_threads=2)
+
+    assert settings.resolved_plate_ocr_intra_op_threads == 2
+
+
+def test_sans_budget_personne_ne_borne_rien() -> None:
+    """Le défaut `0` laisse chaque bibliothèque décider — le bon choix sur une
+    machine dédiée au service."""
+    settings = _settings()
+
+    assert settings.inference_threads == 0
+    assert settings.resolved_plate_ocr_intra_op_threads == 0
