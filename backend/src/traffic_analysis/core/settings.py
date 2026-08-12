@@ -70,6 +70,26 @@ class Settings(BaseSettings):
     weights_dir: Path = Path("./.weights")
     device: str = "auto"  # auto | cpu | 0 | cuda:0
     half: bool = True  # ignoré hors GPU : en fp16 sur CPU, l'inférence ralentit
+    #: Compensation de mouvement de caméra du tracker (BoT-SORT).
+    #:
+    #: **Le poste le plus cher du pipeline, et il ne servait à rien ici.** Mesuré
+    #: par `scripts/pipeline_bench.py` sur trois vidéos 720p réelles : `sparseOptFlow`
+    #: coûte **20,2 ms par image**, soit 39 % du budget total et davantage que
+    #: l'inférence GPU elle-même (17,8 ms). Le passer à `none` fait passer l'analyse
+    #: de 19,4 à 34,8 images/s — **1,75×, à comptage identique** sur les trois.
+    #:
+    #: `none` par défaut parce que la cible du projet est une caméra **fixe** de
+    #: circulation : il n'y a alors aucun mouvement global à compenser, et on payait
+    #: un flux optique dense pour corriger un déplacement qui n'existe pas.
+    #:
+    #: **À remettre à `sparseOptFlow` dès que la caméra bouge** — plan embarqué,
+    #: drone, mât mal haubané par grand vent. Sans compensation, un mouvement global
+    #: se lit comme un mouvement des véhicules : les prédictions de Kalman partent à
+    #: côté, les associations se cassent, et les identités se multiplient. Le symptôme
+    #: n'est pas une erreur mais un `unique_vehicles` qui gonfle.
+    #:
+    #: Voir docs/adr/0013-le-cout-du-pipeline-de-comptage.md.
+    tracker_gmc: Literal["none", "sparseOptFlow", "orb", "sift", "ecc"] = "none"
     #: Budget de threads d'inférence **CPU**. `0` laisse chaque bibliothèque décider,
     #: c'est-à-dire prendre tous les cœurs.
     #:

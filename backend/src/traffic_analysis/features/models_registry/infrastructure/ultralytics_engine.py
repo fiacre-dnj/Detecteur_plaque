@@ -10,6 +10,9 @@ d'un coup les débits, les vitesses et les gates de ré-identification.
 
 from __future__ import annotations
 
+import os
+import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -47,13 +50,65 @@ CONFIG_DIR = Path(__file__).resolve().parents[5] / "config"
 TRACKER_CONFIG = CONFIG_DIR / "botsort_reid.yaml"
 
 
+@lru_cache(maxsize=8)
+def resolved_tracker_config(gmc_method: str) -> Path:
+    """Chemin du tracker à utiliser, compensation de mouvement imposée.
+
+    Ultralytics ne prend sa configuration de suivi **que** sous forme de chemin de
+    fichier : il n'existe aucune façon de lui passer un réglage en mémoire. Rendre
+    `gmc_method` réglable demande donc d'écrire un fichier dérivé — c'est ce que
+    fait cette fonction, et c'est tout ce qu'elle fait.
+
+    Quand le réglage et le fichier de base disent déjà la même chose, **le fichier
+    de base est rendu tel quel** : pas de copie, pas de fichier temporaire, et le
+    chemin journalisé reste celui que le dépôt versionne. C'est le cas courant.
+
+    L'écriture est atomique (fichier temporaire puis `replace`) parce que deux
+    processus peuvent démarrer en même temps — un rechargement `--reload` en
+    développement suffit — et qu'un fichier YAML lu à moitié écrit ferait échouer
+    une analyse avec un message parlant de syntaxe, très loin de la cause.
+
+    `lru_cache` : le fichier est écrit une fois par valeur et par processus. La
+    valeur ne change pas en cours d'exécution, `Settings` étant `frozen`.
+    """
+    import yaml
+
+    base: dict[str, Any] = yaml.safe_load(TRACKER_CONFIG.read_text(encoding="utf-8"))
+    if base.get("gmc_method") == gmc_method:
+        return TRACKER_CONFIG
+
+    target = Path(tempfile.gettempdir()) / "traffic-analysis" / f"botsort-gmc-{gmc_method}.yaml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    staging.write_text(
+        yaml.safe_dump({**base, "gmc_method": gmc_method}, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    staging.replace(target)
+    return target
+
+
 class UltralyticsEngine:
     """Détection et suivi par Ultralytics, derrière le port du domaine."""
 
-    __slots__ = ("_registry",)
+    __slots__ = ("_registry", "_tracker_config")
 
-    def __init__(self, registry: ModelRegistry) -> None:
+    def __init__(self, registry: ModelRegistry, *, gmc_method: str | None = None) -> None:
+        """`gmc_method` à `None` garde ce que dit le fichier de configuration.
+
+        Le chemin retenu est journalisé au démarrage : c'est la seule trace qui
+        distingue « le réglage a été pris en compte » de « le fichier de base
+        tourne toujours », et les deux produisent des analyses qui fonctionnent.
+        """
         self._registry = registry
+        self._tracker_config = (
+            TRACKER_CONFIG if gmc_method is None else resolved_tracker_config(gmc_method)
+        )
+        logger.info(
+            "tracker résolu",
+            gmc=gmc_method or "fichier de base",
+            config=str(self._tracker_config),
+        )
 
     def probe(self, video_path: Path) -> VideoInfo:
         """Dimensions, cadence et nombre d'images — et validation de format.
@@ -93,7 +148,7 @@ class UltralyticsEngine:
             results = model.track(
                 source=str(video_path),
                 stream=True,
-                tracker=str(TRACKER_CONFIG),
+                tracker=str(self._tracker_config),
                 conf=spec.confidence,
                 iou=spec.iou,
                 classes=list(spec.class_ids),
@@ -127,17 +182,21 @@ class UltralyticsEngine:
         Le bail reste ouvert jusqu'à `close()` : c'est ce qui fait d'une suite
         d'images un **flux** plutôt que des frames indépendantes.
         """
-        return UltralyticsStream(self._registry, spec)
+        return UltralyticsStream(self._registry, spec, self._tracker_config)
 
 
 class UltralyticsStream:
     """Suivi image par image, avec état persistant entre les appels."""
 
-    __slots__ = ("_lease", "_model", "_registry", "_spec")
+    __slots__ = ("_lease", "_model", "_registry", "_spec", "_tracker_config")
 
-    def __init__(self, registry: ModelRegistry, spec: EngineSpec) -> None:
+    def __init__(self, registry: ModelRegistry, spec: EngineSpec, tracker_config: Path) -> None:
         self._registry = registry
         self._spec = spec
+        # Le même fichier qu'en différé, et c'est le point : les deux modes doivent
+        # suivre avec la même configuration, sinon un même tracé ne donne pas les
+        # mêmes chiffres selon qu'on rejoue un fichier ou qu'on filme.
+        self._tracker_config = tracker_config
         # Le gestionnaire de contexte est conservé et fermé à la main : le bail
         # doit survivre à l'appel qui l'ouvre, contrairement à `iter_video`.
         self._lease = registry.lease(spec.model_id)
@@ -154,7 +213,7 @@ class UltralyticsStream:
             # lui, chaque frame repartirait avec des identifiants neufs et rien
             # ne serait jamais suivi.
             persist=True,
-            tracker=str(TRACKER_CONFIG),
+            tracker=str(self._tracker_config),
             conf=self._spec.confidence,
             iou=self._spec.iou,
             classes=list(self._spec.class_ids),

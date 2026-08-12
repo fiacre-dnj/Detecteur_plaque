@@ -136,7 +136,7 @@ def build_container(
         device=settings.device,
         half=settings.half,
     )
-    resolved_engine = engine or UltralyticsEngine(registry)
+    resolved_engine = engine or UltralyticsEngine(registry, gmc_method=settings.tracker_gmc)
     resolved_plates = plate_detector or OnnxPlateDetector(
         settings.resolved_plate_model_path,
         settings.plate_confidence,

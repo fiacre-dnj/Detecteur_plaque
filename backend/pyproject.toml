@@ -37,6 +37,12 @@ dependencies = [
     # première analyse ANPR, et un échec pur et simple dans un conteneur sans
     # réseau — deux raisons de le déclarer ici plutôt que de le subir.
     "onnx>=1.16",
+    # `pyyaml` arrive de toute façon avec ultralytics, mais l'adaptateur l'importe
+    # **lui-même** pour dériver la configuration du tracker (`resolved_tracker_config`,
+    # ADR 0013). Même règle que pour `onnx` ci-dessus : ce qu'on importe se déclare,
+    # sinon une mise à jour d'ultralytics qui s'en passerait casserait le service
+    # avec un `ModuleNotFoundError` sans rapport visible avec elle.
+    "pyyaml>=6",
     # ── Persistance ──────────────────────────────────────────────────────────
     "sqlalchemy>=2.0",
     "aiosqlite>=0.20",
