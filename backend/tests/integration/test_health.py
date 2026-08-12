@@ -67,9 +67,11 @@ async def test_health_expose_le_diagnostic_complet(client: AsyncClient) -> None:
     assert body["status"] == "ok"
     assert body["version"] == __version__
     assert body["environment"] == "test"
-    # Aucun GPU sur cette machine : le device est résolu, et half suit.
+    # La fixture fixe le device : ce test vérifie que le badge rend un diagnostic
+    # cohérent, pas ce que la machine de test a sous le capot. Les cinq raisons
+    # possibles sont couvertes en unitaire (`TestDiagnosticMateriel`).
     assert body["device"] == "cpu"
-    assert body["deviceReason"] == "aucun GPU CUDA détecté"
+    assert body["deviceReason"] == "configuré explicitement"
     assert body["gpuName"] is None
     assert body["half"] is False
     assert body["ultralyticsVersion"]

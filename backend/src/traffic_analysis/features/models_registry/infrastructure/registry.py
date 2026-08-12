@@ -185,19 +185,69 @@ class ModelRegistry:
         try:
             import torch
 
-            index = int(device) if device.isdigit() else 0
-            return str(torch.cuda.get_device_name(index))
+            return str(torch.cuda.get_device_name(self._device_index()))
         except Exception:
             return None
 
-    def half(self) -> bool:
-        """fp16 **seulement sur GPU**.
+    def _device_index(self) -> int:
+        """Index CUDA du device retenu. `« cuda:0 »` comme `« 0 »` donnent 0.
 
-        Sur CPU, `half=True` ne va pas plus vite : il ralentit, parce que les
-        noyaux fp16 n'y sont pas optimisés (piège 30 de prompt/13).
+        Toute forme non numérique retombe sur 0 : un device qu'on n'arrive pas à
+        décomposer est le premier GPU dans tous les cas rencontrés, et les deux
+        appelants (`gpu_name`, `_fp16_is_slow`) traitent déjà l'échec sans lever.
+        """
+        device = self.device()
+        if device.isdigit():
+            return int(device)
+        _, _, suffix = device.partition(":")
+        return int(suffix) if suffix.isdigit() else 0
+
+    def _fp16_is_slow(self) -> bool:
+        """Vrai **seulement si** le GPU retenu est connu pour calculer mal le fp16.
+
+        Avant Volta (capability < 7.0), il n'y a pas de cœurs tensoriels et le fp16
+        est calculé à une fraction du débit fp32 : mesuré sur une Quadro P1000
+        (6.1, Pascal), yolov8n passe de **38,9 ms à 48,9 ms par image** en demi-
+        précision — le réglage censé accélérer coûte 26 %.
+
+        La question n'est donc pas « suis-je sur GPU » mais « ce GPU-ci calcule-t-il
+        le fp16 vite », et c'est ce que `half()` demande désormais.
+
+        **L'inconnu ne vaut pas un refus.** Si la capability n'est pas lisible —
+        torch absent, device explicite sur une machine sans pilote — on rend `False`
+        et le réglage de l'opérateur passe. Contredire un `half=True` explicite sur
+        la foi d'une sonde qui vient d'échouer serait la même faute que le repli
+        silencieux qu'`ADR 0011` interdit : on ne désactive que ce qu'on a mesuré.
+        """
+        try:
+            import torch
+
+            major, minor = torch.cuda.get_device_capability(self._device_index())
+        except Exception:
+            return False
+        if major >= 7:
+            return False
+        logger.info(
+            "fp16 désactivé : ce GPU le calcule plus lentement que le fp32",
+            capability=f"{major}.{minor}",
+            gpu=self.gpu_name(),
+        )
+        return True
+
+    def half(self) -> bool:
+        """fp16 **seulement sur un GPU qui le calcule vite**.
+
+        Deux conditions, et il a fallu les deux :
+
+        1. pas sur CPU. `half=True` n'y va pas plus vite, il ralentit, parce que
+           les noyaux fp16 n'y sont pas optimisés (piège 30 de prompt/13) ;
+        2. pas sur un GPU d'avant Volta. La même erreur s'y répète pour une autre
+           raison matérielle — voir `_fp16_is_slow`.
         """
         if self._half is None:
-            self._half = self._configured_half and self.device() != "cpu"
+            self._half = (
+                self._configured_half and self.device() != "cpu" and not self._fp16_is_slow()
+            )
         return self._half
 
     def _fall_back_to_cpu(self, reason: str) -> None:

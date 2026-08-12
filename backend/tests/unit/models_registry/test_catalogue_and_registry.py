@@ -306,11 +306,67 @@ class TestMateriel:
         assert registry.device() == "cpu"
         assert registry.half() is False
 
-    def test_un_device_explicite_n_est_pas_redecouvert(self, tmp_path: Path) -> None:
+    def test_un_device_explicite_n_est_pas_redecouvert(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _capability(monkeypatch, (8, 6))
         registry = ModelRegistry(tmp_path, max_loaded=2, device="cuda:0", half=True)
 
         assert registry.device() == "cuda:0"
         assert registry.half() is True
+
+    def test_half_est_faux_sur_un_gpu_d_avant_volta(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pascal (6.1) calcule le fp16 plus lentement que le fp32.
+
+        Mesuré sur une Quadro P1000 : yolov8n passe de 38,9 ms à 48,9 ms par image
+        en demi-précision. « Sur GPU » ne suffit donc pas à justifier le fp16 —
+        c'est la même erreur que sur CPU, pour une autre raison matérielle.
+        """
+        _capability(monkeypatch, (6, 1))
+        registry = ModelRegistry(tmp_path, max_loaded=2, device="cuda:0", half=True)
+
+        assert registry.half() is False
+
+    def test_half_reste_vrai_a_partir_de_volta(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """7.0 est le seuil exact : c'est là qu'apparaissent les cœurs tensoriels."""
+        _capability(monkeypatch, (7, 0))
+        registry = ModelRegistry(tmp_path, max_loaded=2, device="cuda:0", half=True)
+
+        assert registry.half() is True
+
+    def test_une_capability_illisible_ne_contredit_pas_le_reglage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On ne désactive que ce qu'on a mesuré.
+
+        Si la sonde échoue, le `half=True` de l'opérateur passe : le contredire sur
+        la foi d'un appel qui vient d'échouer désactiverait le fp16 sur des GPU
+        parfaitement capables, sans que rien ne le dise.
+        """
+        import torch
+
+        def _boom(_index: int = 0) -> tuple[int, int]:
+            raise RuntimeError("aucun pilote")
+
+        monkeypatch.setattr(torch.cuda, "get_device_capability", _boom)
+        registry = ModelRegistry(tmp_path, max_loaded=2, device="cuda:0", half=True)
+
+        assert registry.half() is True
+
+
+def _capability(monkeypatch: pytest.MonkeyPatch, value: tuple[int, int]) -> None:
+    """Fixe la capability CUDA vue par le registre.
+
+    Sans ce stub, le verdict de `half()` dépendrait du GPU de la machine qui lance
+    les tests : verts sur une machine sans GPU, rouges sur une Pascal.
+    """
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda _index=0: value)
 
 
 class TestDiagnosticMateriel:
@@ -366,6 +422,21 @@ class TestDiagnosticMateriel:
 
         assert registry.device() == "cpu"
         assert registry.device_reason() == "torch indisponible"
+
+    def test_le_nom_est_lu_sur_le_bon_index(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`« cuda:1 »` interroge bien le second GPU, pas le premier.
+
+        Sur une machine à deux cartes, lire l'index 0 quoi qu'il arrive
+        afficherait le nom d'un GPU que le service n'utilise pas.
+        """
+        import torch
+
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda index=0: f"GPU {index}")
+        registry = ModelRegistry(tmp_path, max_loaded=2, device="cuda:1", half=False)
+
+        assert registry.gpu_name() == "GPU 1"
 
     def test_gpu_name_est_none_sur_cpu(self, tmp_path: Path) -> None:
         registry = ModelRegistry(tmp_path, max_loaded=2, device="cpu", half=False)

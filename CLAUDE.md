@@ -60,7 +60,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1193 tests
+uv run pytest                                                            # 1227 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -81,8 +81,12 @@ uvx pre-commit run --all-files
 ```
 
 **Il n'y a pas d'extra `gpu`.** `pyproject.toml` déclare
-`[tool.uv] torch-backend = "auto"` : `uv sync` prend la roue CPU ici et la roue
-CUDA sur une machine NVIDIA. Pour forcer : `UV_TORCH_BACKEND=cpu uv sync`.
+`[tool.uv] torch-backend = "auto"` **et** une source explicite : sur Windows,
+`torch` et `torchvision` viennent de l'index **cu126**. `auto` seul ne suffisait
+pas — il joue à la résolution, et le lockfile committé fige son verdict, donc une
+machine NVIDIA recevait la roue CPU en silence
+([ADR 0012](docs/adr/0012-torch-cuda-sur-windows.md)). Pour forcer une variante —
+poste Windows sans GPU, build reproductible : `UV_TORCH_BACKEND=cpu uv sync`.
 
 ## Architecture
 
@@ -363,8 +367,25 @@ produit, ce qui retire la seule propriété qu'on lui demandait.
   et n'a été trouvé qu'en installant les vrais poids — troisième cas où une doublure
   ne pouvait pas voir. 95 lignes + espace de `use_space_char` + blanc CTC = 97.
   Voir [ADR 0007](docs/adr/0007-lecture-du-texte-de-plaque.md), « Effet de bord ».
-- **Aucun GPU.** `TRAFFIC_HALF=false`, et les mesures de benchmark sont des mesures
-  CPU — à interpréter comme telles.
+- **Un GPU depuis le 2026-08-12 : Quadro P1000 (Pascal, `sm_61`, 4 Go).** Trois
+  conséquences qui ne se devinent pas :
+  - **la roue torch doit être cu126**, épinglée par marqueur `win32` dans
+    `pyproject.toml`. C'est la dernière ligne qui embarque `sm_61` : CUDA 13 a
+    supprimé Pascal, et le pilote annonce pourtant CUDA 13.0, donc une détection
+    automatique choisit une roue qui s'installe, répond `is_available() == True`,
+    puis échoue à la première inférence ;
+  - **`half` reste faux sur cette carte**, et le code le décide seul depuis
+    ADR 0012 (capability < 7.0). Avant Volta le fp16 est *plus lent* que le fp32 :
+    38,9 ms → 48,9 ms mesurées. Ne pas « réactiver » `TRAFFIC_HALF` en croyant
+    optimiser ;
+  - **les mesures de benchmark antérieures au 2026-08-12 sont des mesures CPU**,
+    et les chiffres des ADR 0007, 0008 et 0010 n'ont pas été rejoués sur GPU.
+    Les comparer à une mesure GPU sans le dire serait trompeur — c'est pourquoi un
+    run persisté porte son `device`.
+
+  Repère : `yolov8n` sur une image 1280×720 coûte 147,8 ms sur CPU et 38,9 ms sur
+  ce GPU. Le conteneur, lui, n'a toujours pas de GPU.
+  [ADR 0012](docs/adr/0012-torch-cuda-sur-windows.md).
 - Le frontend est passé de pnpm à **bun** ; `bun.lock` est le lockfile committé.
   La version est épinglée en **trois** endroits qui doivent rester d'accord :
   `frontend/package.json` (`packageManager`), l'image `oven/bun` des deux
@@ -386,7 +407,7 @@ produit, ce qui retire la seule propriété qu'on lui demandait.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1193 (1 skip) | 471 |
+| Nombre | 1227 (1 skip) | 471 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

@@ -1,7 +1,15 @@
 # ADR 0005 — `torch` dans la variante de la machine
 
-- **Statut** : accepté, **amendé le 2026-08-06** (voir « Amendement » en fin)
+- **Statut** : accepté, **amendé le 2026-08-06**, puis **corrigé le 2026-08-12**
+  par [ADR 0012](0012-torch-cuda-sur-windows.md)
 - **Date** : 2026-08-05
+
+> **Une phrase de l'amendement ci-dessous est fausse** : « Le lockfile porte les
+> deux univers. » Il n'en portait qu'un — celui de la machine qui a locké, sans
+> GPU. `torch-backend = "auto"` joue à la **résolution**, pas à l'installation,
+> donc `uv sync` reposait la roue CPU sur une machine NVIDIA sans qu'aucun
+> message ne le dise. Lire [ADR 0012](0012-torch-cuda-sur-windows.md) avant de
+> se fier à cette page.
 
 ## Contexte
 

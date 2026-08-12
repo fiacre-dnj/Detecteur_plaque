@@ -59,6 +59,15 @@ def settings(tmp_path: Path) -> Settings:
 
     `_env_file=None` empêche pydantic-settings de lire un `.env` présent sur la
     machine du développeur : sinon un test passe chez l'un et échoue chez l'autre.
+
+    `device="cpu"` ferme la même porte pour le matériel. En `"auto"`, le device
+    résolu — et `half` avec lui — dépend du GPU de la machine qui lance la suite :
+    plusieurs tests d'intégration affirmaient `device == "cpu"`, et ne passaient
+    que parce qu'aucune machine du projet n'avait de GPU. L'installation d'une
+    Quadro P1000 les a fait tomber d'un coup. Le moteur d'inférence est factice
+    ici : aucun test d'intégration n'a d'opinion légitime sur le matériel, et la
+    détection automatique est couverte là où elle vit, en test unitaire du
+    registre.
     """
     return Settings(
         _env_file=None,  # type: ignore[call-arg]
@@ -66,6 +75,7 @@ def settings(tmp_path: Path) -> Settings:
         data_dir=tmp_path / "data",
         weights_dir=tmp_path / "weights",
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'traffic.db'}",
+        device="cpu",
         warmup=False,
         docs_enabled=True,
         max_upload_mb=5,

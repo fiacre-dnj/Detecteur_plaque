@@ -133,7 +133,13 @@ l'application, ou une contrainte d'environnement qui a fait perdre du temps.
 29. **Plafond de modèles résidents.** Dix sessions résidentes épuisent la mémoire :
     c'est la leçon du benchmark de la version précédente, qui libérait chaque
     modèle après mesure sauf celui utilisé. Le benchmark serveur doit faire pareil.
-30. **fp16 seulement sur GPU** : sur CPU, `half=True` ralentit.
+30. **fp16 seulement sur un GPU qui le calcule vite** : sur CPU, `half=True`
+    ralentit — et **avant Volta aussi**. Sans cœurs tensoriels (capability < 7.0),
+    le fp16 tourne à une fraction du débit fp32 : mesuré sur la Quadro P1000
+    (6.1) du poste de développement, yolov8n passe de **38,9 à 48,9 ms par image**
+    en demi-précision. « Sur GPU » ne suffit donc pas à justifier le réglage, et
+    l'erreur est silencieuse — le service reste 3× plus rapide que le CPU, donc
+    rien n'a l'air cassé.
 31. **Le premier appel d'un modèle inclut son téléchargement** (jusqu'à 137 Mo) et
     sa fusion : sans préchauffage ni indication dans l'UI, ça se lit comme un
     blocage. Écarter aussi ce premier run de toute moyenne de latence.
