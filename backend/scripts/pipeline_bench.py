@@ -415,6 +415,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Compensation de mouvement. Par défaut : le réglage TRAFFIC_TRACKER_GMC.",
     )
     parser.add_argument("--batch", type=int, default=None, help="Images par inférence.")
+    parser.add_argument(
+        "--no-cudnn",
+        action="store_true",
+        help="Mesure sans l'autotune cuDNN, pour chiffrer ce qu'il apporte.",
+    )
     parser.add_argument("--json", type=Path, help="Écrit le rapport complet à ce chemin.")
     parser.add_argument("--compare", type=Path, help="Rapport JSON antérieur à comparer.")
     return parser
@@ -444,7 +449,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     # passer par la ligne de commande servirait à comparer deux valeurs sans toucher
     # à l'environnement ; à `None` près, c'est le service qu'on mesure.
     gmc = args.gmc if args.gmc is not None else settings.tracker_gmc
-    engine = UltralyticsEngine(registry, gmc_method=gmc)
+    imgsz = args.imgsz if args.imgsz is not None else settings.inference_imgsz
+    batch = args.batch if args.batch is not None else settings.inference_batch
+    # Le service pose aussi l'autotune cuDNN dans son `lifespan`, avant toute
+    # inférence : sans lui, le banc mesurerait des algorithmes de convolution que
+    # le service n'utilise pas. `--no-cudnn` existe pour **chiffrer** ce que
+    # l'autotune apporte, pas pour proposer un mode dégradé.
+    if not args.no_cudnn:
+        registry.enable_cudnn_autotune()
+    engine = UltralyticsEngine(registry, gmc_method=gmc, imgsz=imgsz, batch=batch)
     model_id = args.model or settings.default_model_id
 
     report: dict[str, Any] = {
@@ -456,8 +469,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "modelId": model_id,
             "ultralyticsVersion": registry.ultralytics_version(),
             "settings": {
-                "imgsz": args.imgsz if args.imgsz is not None else "défaut (640)",
-                "batch": args.batch if args.batch is not None else "défaut (1)",
+                "imgsz": imgsz,
+                "batch": batch,
                 "stride": args.stride,
                 "frames": args.frames,
                 "warmup": args.warmup,

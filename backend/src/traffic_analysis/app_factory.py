@@ -376,6 +376,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             container.model_registry.apply_thread_budget, settings.inference_threads
         )
 
+    # Même fenêtre et même raison que le budget de threads : avant la première
+    # inférence. Sans GPU, l'appel rend la main sans importer torch — le moteur
+    # factice des tests n'est donc pas touché.
+    await anyio.to_thread.run_sync(container.model_registry.enable_cudnn_autotune)
+
     background: set[asyncio.Task[None]] = set()
     cleanup = asyncio.create_task(_cleanup_loop(app), name="cleanup")
     background.add(cleanup)

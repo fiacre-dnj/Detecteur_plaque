@@ -297,6 +297,35 @@ class ModelRegistry:
         except Exception as exc:
             logger.warning("budget de threads non appliqué", error=str(exc))
 
+    def enable_cudnn_autotune(self) -> None:
+        """Laisse cuDNN choisir ses algorithmes de convolution par la mesure.
+
+        **Appelée une fois au démarrage, avant toute inférence**, comme
+        `apply_thread_budget` et pour la même raison : le choix est mémorisé par
+        forme d'entrée, et le déclencher au milieu d'une analyse ferait payer
+        l'étalonnage à une image en plein vol.
+
+        L'échange est explicite : les premières images d'une **nouvelle forme**
+        d'entrée coûtent plus cher, parce que cuDNN essaie plusieurs algorithmes
+        avant de garder le meilleur. Notre forme est fixe pour une vidéo donnée —
+        `imgsz` est un réglage, la résolution ne change pas en cours de route —
+        donc l'étalonnage est amorti dès les premières images et le préchauffage en
+        absorbe l'essentiel.
+
+        Sans effet hors GPU, et sans effet si torch est absent. Ne lève jamais :
+        c'est une optimisation, et un service qui refuserait de démarrer parce
+        qu'il n'a pas pu l'activer échangerait de la vitesse contre une panne.
+        """
+        if self.device() == "cpu":
+            return
+        try:
+            import torch
+
+            torch.backends.cudnn.benchmark = True
+            logger.info("autotune cuDNN activé")
+        except Exception as exc:
+            logger.warning("autotune cuDNN non activé", error=str(exc))
+
     def loaded_ids(self) -> list[str]:
         with self._lock:
             return list(self._residents)

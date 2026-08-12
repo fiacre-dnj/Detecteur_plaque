@@ -90,6 +90,43 @@ class Settings(BaseSettings):
     #:
     #: Voir docs/adr/0013-le-cout-du-pipeline-de-comptage.md.
     tracker_gmc: Literal["none", "sparseOptFlow", "orb", "sift", "ecc"] = "none"
+    #: Côté de l'entrée du réseau, en pixels. **Multiple de 32 obligatoire.**
+    #:
+    #: Le coût de l'inférence varie à peu près comme le carré de cette valeur, et
+    #: c'est le levier de débit le plus direct qui reste sur cette carte. Il se paie
+    #: sur les véhicules **petits et lointains** : ce qui décide qu'un objet est
+    #: détecté n'est pas sa taille dans la vidéo mais sa taille **dans l'entrée du
+    #: réseau**.
+    #:
+    #: 640 par défaut, c'est-à-dire la valeur qu'Ultralytics appliquait déjà sans
+    #: que personne ne l'écrive. Le rendre explicite ne change donc aucun chiffre —
+    #: il rend seulement réglable et mesurable ce qui était subi.
+    #:
+    #: **L'entrée n'est pas carrée** : `rect=True` est actif en prédiction, donc une
+    #: image 16:9 entre en 640×384 et non 640×640. Les gains attendus se calculent
+    #: sur cette base.
+    #:
+    #: À calibrer au banc (`scripts/pipeline_bench.py --imgsz …`), sur ses propres
+    #: vidéos, en regardant **débit et comptage** : c'est le seul réglage de cette
+    #: section qui peut faire disparaître des véhicules.
+    inference_imgsz: int = Field(640, ge=64, le=1920)
+    #: Images par inférence en **différé**. Sans effet en direct, où les images
+    #: arrivent une par une.
+    #:
+    #: Un lot amortit le lancement des noyaux et remplit mieux un GPU que le
+    #: modèle nano laisse à moitié inoccupé. Le suivi n'en souffre pas : le
+    #: chargeur d'Ultralytics remplit un lot d'images **consécutives** de la même
+    #: vidéo, et le tracker leur est appliqué une par une, dans l'ordre.
+    #:
+    #: Mesuré au banc sur 720p, yolov8n, à comptage **strictement identique** :
+    #: 1 → 4 gagne 1,16× à 1,37×, et 4 → 8 seulement 1,04× à 1,09×. D'où **4** : le
+    #: quatrième doublement ne rapporte presque plus rien et coûte de la mémoire.
+    #:
+    #: **À redescendre sur les paliers large et xlarge** si la carte n'a que 4 Go :
+    #: quatre images d'un yolov8x en vol tiennent moins bien que quatre d'un nano.
+    #: L'échec est franc — une erreur CUDA de mémoire, pas une dégradation
+    #: silencieuse — mais il fait échouer le job.
+    inference_batch: int = Field(4, ge=1, le=32)
     #: Budget de threads d'inférence **CPU**. `0` laisse chaque bibliothèque décider,
     #: c'est-à-dire prendre tous les cœurs.
     #:
@@ -451,6 +488,26 @@ class Settings(BaseSettings):
         if not trimmed or trimmed.startswith("#"):
             return None
         return trimmed
+
+    @field_validator("inference_imgsz")
+    @classmethod
+    def _require_stride_multiple(cls, value: int) -> int:
+        """Le côté doit être un multiple de 32, le pas du réseau.
+
+        Refusé plutôt qu'arrondi. Ultralytics, lui, arrondit **en silence** vers le
+        haut et poursuit : un opérateur qui pose 500 pour gagner du temps mesurerait
+        en réalité 512, comparerait deux courses en croyant les avoir séparées, et
+        le rapport du banc afficherait une valeur que l'inférence n'a pas utilisée.
+        Une erreur au démarrage coûte dix secondes ; une mesure fausse peut coûter
+        une décision.
+        """
+        if value % 32:
+            msg = (
+                f"TRAFFIC_INFERENCE_IMGSZ={value} n'est pas un multiple de 32, le pas "
+                f"du réseau. Prenez {value // 32 * 32} ou {(value // 32 + 1) * 32}."
+            )
+            raise ValueError(msg)
+        return value
 
     @field_validator("weights_dir", "data_dir")
     @classmethod
