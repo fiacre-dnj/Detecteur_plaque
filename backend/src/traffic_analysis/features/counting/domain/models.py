@@ -55,6 +55,71 @@ type PlateUnreadReason = Literal[
 # appels de `ultralytics_engine.py`, qui traite réellement le cas.
 VEHICLE_CLASS_IDS: tuple[int, ...] = (2, 3, 5, 7)
 
+#: Catégorie d'un objet compté. **Les catégories ne se mélangent jamais dans un
+#: total affiché** : une personne qui traverse n'est pas un véhicule de plus.
+type CountCategory = Literal["vehicle", "person"]
+
+
+@dataclass(frozen=True, slots=True)
+class DetectableClass:
+    """Une classe que l'utilisateur peut cocher pour la détecter et la compter.
+
+    `coco_name` est le nom que **le modèle** rend (`result.names`), et c'est donc
+    la clé sous laquelle les tallies s'accumulent. `label` est ce que l'interface
+    affiche. Les deux sont séparés parce que traduire à l'affichage est un choix de
+    présentation, alors que le nom du modèle est un contrat : le confondre avec sa
+    traduction ferait rater toutes les correspondances de `by_class`.
+
+    **Ne rien déduire d'un nom de fichier ni d'un identifiant** (invariant 10) : la
+    catégorie est portée ici, explicitement, et non calculée depuis l'indice COCO.
+    """
+
+    id: int
+    coco_name: str
+    label: str
+    category: CountCategory
+
+
+#: Les classes proposées à la sélection, dans l'ordre d'affichage.
+#:
+#: **Ce sont exactement celles que les modèles du catalogue savent reconnaître.**
+#: Ils sont tous entraînés sur COCO ; une classe absente de COCO — une charrette,
+#: par exemple — ne s'ajoute pas ici, elle demande un autre modèle. Écrire la ligne
+#: sans le modèle donnerait une case à cocher qui ne détecte jamais rien, ce qui se
+#: lit comme une panne.
+#:
+#: L'ordre est celui de la circulation la plus fréquente vers la plus rare, parce
+#: que c'est l'ordre dans lequel on coche.
+DETECTABLE_CLASSES: tuple[DetectableClass, ...] = (
+    DetectableClass(2, "car", "Voiture", "vehicle"),
+    DetectableClass(3, "motorcycle", "Moto", "vehicle"),
+    DetectableClass(5, "bus", "Bus", "vehicle"),
+    DetectableClass(7, "truck", "Camion", "vehicle"),
+    DetectableClass(1, "bicycle", "Vélo", "vehicle"),
+    DetectableClass(0, "person", "Personne", "person"),
+    DetectableClass(6, "train", "Train", "vehicle"),
+)
+
+#: `coco_name` → catégorie. Construit une fois : `stats()` l'interroge par classe
+#: comptée et à chaque publication d'aperçu.
+CATEGORY_OF_CLASS: dict[str, CountCategory] = {
+    entry.coco_name: entry.category for entry in DETECTABLE_CLASSES
+}
+
+#: Identifiants sélectionnables, pour la validation de la requête.
+DETECTABLE_CLASS_IDS: frozenset[int] = frozenset(entry.id for entry in DETECTABLE_CLASSES)
+
+
+def category_of(label: str) -> CountCategory:
+    """Catégorie d'un label de classe. Inconnu ⇒ `vehicle`.
+
+    Le repli ne masque rien d'important : un label inconnu ne peut venir que d'un
+    modèle entraîné sur autre chose que COCO, et le compter comme véhicule vaut
+    mieux que de le faire disparaître d'un total. La somme des catégories reste
+    donc égale au total des franchissements, ce qui est l'invariant qui compte.
+    """
+    return CATEGORY_OF_CLASS.get(label, "vehicle")
+
 
 @dataclass(frozen=True, slots=True)
 class BoundingBox:
@@ -277,6 +342,19 @@ class CrossingEvent:
     #: fin, et c'est lui l'autorité. Voir ADR 0007.
     plate_text: str | None = None
     plate_text_score: float | None = None
+
+    @property
+    def category(self) -> CountCategory:
+        """Véhicule ou personne, dérivé de `label`.
+
+        Portée par l'événement plutôt que recalculée par ses lecteurs : la relecture
+        côté navigateur ventile les franchissements par catégorie au fil de la tête
+        de lecture, et lui faire deviner la catégorie depuis un libellé la
+        forcerait à recopier la politique du serveur. Deux copies d'une règle de
+        classement finissent par diverger, et c'est un franchissement qui change de
+        colonne selon l'écran qui le montre.
+        """
+        return category_of(self.label)
 
 
 @dataclass(frozen=True, slots=True)
@@ -517,6 +595,28 @@ class AnalysisStats:
     elapsed_ms: float
     analysed_scene_ms: float
     diagnostics: Diagnostics = field(default_factory=Diagnostics)
+
+    @property
+    def by_category(self) -> dict[str, int]:
+        """Franchissements par **catégorie** : les véhicules d'un côté, les
+        personnes de l'autre.
+
+        **Une propriété et non un champ**, précisément parce que c'est un dérivé :
+        stocker cette ventilation à côté de `by_class` créerait un second compteur
+        du même fait, et deux compteurs du même fait finissent toujours par se
+        contredire — c'est l'invariant 3, celui qui a déjà coûté un bug ici. Calculée
+        depuis `by_class`, sa somme **est** `crossings` par construction, sans
+        qu'aucun test n'ait à le surveiller.
+
+        C'est ce qui permet d'afficher « 42 véhicules, 7 personnes » sans jamais les
+        additionner : un piéton n'est pas un véhicule de plus, et les mélanger
+        rendrait le total inutilisable pour les deux usages.
+        """
+        totals: dict[str, int] = {}
+        for label, count in self.by_class.items():
+            key = category_of(label)
+            totals[key] = totals.get(key, 0) + count
+        return totals
 
 
 @dataclass(frozen=True, slots=True)

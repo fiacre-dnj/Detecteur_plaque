@@ -18,6 +18,7 @@ function crossing(lineId: string, direction = 1, globalId = 1): CrossingEvent {
     globalId,
     trackId: globalId,
     label: "car",
+    category: "vehicle" as const,
     direction,
     timestampMs: 1000,
     frameIndex: 25,

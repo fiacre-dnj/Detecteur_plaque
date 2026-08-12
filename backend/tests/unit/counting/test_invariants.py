@@ -16,6 +16,8 @@ Les quatre égalités :
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -40,8 +42,17 @@ def _scene() -> np.ndarray:
     return image
 
 
-def _play(scenario: Scenario) -> AnalysisStats:
-    session = AnalysisSession(scenario.config, FRAME_WIDTH, FRAME_HEIGHT)
+def _play(scenario: Scenario, *, dedupe: bool = False) -> AnalysisStats:
+    """Joue un scénario et rend ses statistiques finales.
+
+    `dedupe` demande le mode d'ADR 0009 — un véhicule compte une fois. Le défaut est
+    le mode du produit : on compte des passages (ADR 0014). Les quatre invariants
+    comptables tiennent dans les **deux** modes, ce qui est justement ce qui en fait
+    des invariants ; seul le plafond de franchissements dépend du mode.
+    """
+    session = AnalysisSession(
+        replace(scenario.config, dedupe_by_identity=dedupe), FRAME_WIDTH, FRAME_HEIGHT
+    )
     image = _scene()
     for index, observations in enumerate(scenario.frames):
         session.feed(index, index * FRAME_MS, image, observations)
@@ -112,20 +123,38 @@ def test_aucun_compteur_n_est_negatif(scenario: Scenario) -> None:
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=str)
-def test_les_passages_ne_depassent_jamais_le_nombre_de_generations(scenario: Scenario) -> None:
+def test_en_deduplication_les_passages_ne_depassent_pas_les_generations(
+    scenario: Scenario,
+) -> None:
     """Un franchissement de plus que possible signalerait un garde en défaut.
 
-    Chaque identité compte **une fois par génération** (ADR 0009), et une
-    génération naît soit à l'admission, soit d'une ré-identification. Le plafond
-    exact est donc `uniques + ré-identifications` — ni la ligne ni le sens n'y
-    entrent, contrairement à l'ancienne règle.
+    **Ce plafond est celui du mode déduplication, pas du défaut du produit.** Chaque
+    identité y compte une fois par génération (ADR 0009), et une génération naît soit
+    à l'admission, soit d'une ré-identification : le plafond exact est donc
+    `uniques + ré-identifications`.
 
-    Ce plafond est serré, et c'est ce qui fait sa valeur : l'ancien
-    (`uniques × lignes × 2`) restait vrai même avec le garde débranché.
+    Il est serré, et c'est ce qui fait sa valeur : l'ancien plafond
+    (`uniques × lignes × 2`) restait vrai même avec le garde débranché. Le garder
+    ici, sur le mode devenu optionnel, est ce qui garantit que le garde fonctionne
+    toujours le jour où on le rallume.
+    """
+    stats = _play(scenario, dedupe=True)
+
+    assert stats.crossings <= stats.unique_vehicles + stats.reid_hits
+
+
+@pytest.mark.parametrize("scenario", SCENARIOS, ids=str)
+def test_la_ventilation_par_categorie_somme_aux_franchissements(scenario: Scenario) -> None:
+    """Véhicules et personnes séparés, sans qu'un franchissement se perde.
+
+    La ventilation est une **propriété dérivée** de `by_class` : cette égalité tient
+    donc par construction, et ce test existe pour le cas où quelqu'un la
+    transformerait en champ accumulé — ce qui rouvrirait exactement le bug que
+    l'invariant 3 a déjà coûté.
     """
     stats = _play(scenario)
 
-    assert stats.crossings <= stats.unique_vehicles + stats.reid_hits
+    assert sum(stats.by_category.values()) == stats.crossings
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=str)

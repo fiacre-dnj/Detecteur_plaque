@@ -16,13 +16,19 @@ import { ChevronDown } from "lucide-react";
 import { useId, useState } from "react";
 
 import { ModelPicker } from "@/features/model-picker";
-import type { Diagnostics, VehicleModel } from "@/shared/api/contracts";
+import type { DetectableClass, Diagnostics, VehicleModel } from "@/shared/api/contracts";
 
 import { BOUNDS, DEFAULT_CONFIDENCE, type AnalysisSettings } from "../model/settings";
 
 interface SettingsPanelsProps {
   settings: AnalysisSettings;
   models: readonly VehicleModel[];
+  /**
+   * Le catalogue **du serveur** (`GET /api/v1/models/classes`), jamais une liste
+   * écrite ici. Vide tant que la requête n'a pas répondu : le groupe de cases
+   * n'est alors pas affiché, plutôt que d'afficher des cases devinées.
+   */
+  detectableClasses: readonly DetectableClass[];
   /** Faux quand le serveur signale le modèle de **détection** de plaques absent. */
   plateAvailable: boolean;
   /**
@@ -44,6 +50,7 @@ interface SettingsPanelsProps {
 export function SettingsPanels({
   settings,
   models,
+  detectableClasses,
   plateAvailable,
   plateOcrAvailable,
   hasZones,
@@ -86,6 +93,13 @@ export function SettingsPanels({
               ? undefined
               : () => onChange({ confidenceThreshold: null })
           }
+        />
+
+        <ClassPicker
+          classes={detectableClasses}
+          selected={settings.classIds}
+          disabled={disabled}
+          onChange={(classIds) => onChange({ classIds })}
         />
 
         {/* Piloté par `plateAvailable` **seul** : la détection reste utile sans OCR,
@@ -410,6 +424,78 @@ interface ToggleProps {
   disabled: boolean;
   hint?: string | undefined;
   onChange: (checked: boolean) => void;
+}
+
+interface ClassPickerProps {
+  classes: readonly DetectableClass[];
+  selected: readonly number[];
+  disabled: boolean;
+  onChange: (classIds: number[]) => void;
+}
+
+/**
+ * Les classes à détecter et à compter.
+ *
+ * **La liste vient du serveur.** Une case écrite en dur ici pourrait être refusée
+ * à l'envoi — ou, pire, une classe détectable ne serait cochable par personne.
+ * Tant que le catalogue n'a pas répondu, on n'affiche rien plutôt que des cases
+ * devinées.
+ *
+ * **Tout décocher n'est pas interdit à l'écran**, mais le serveur refuse une
+ * sélection vide (elle compterait les 80 classes de COCO). L'avertissement dit ce
+ * qui se passera, et `toRequest` retombe sur les véhicules : l'utilisateur n'est
+ * jamais bloqué par un 422 sur un écran qui paraissait valide.
+ */
+function ClassPicker({ classes, selected, disabled, onChange }: ClassPickerProps) {
+  if (classes.length === 0) return null;
+
+  const chosen = new Set(selected);
+  const toggle = (id: number, next: boolean) => {
+    // L'ordre du catalogue est conservé plutôt que l'ordre des clics : c'est celui
+    // de l'affichage, et une liste qui se réordonne à chaque clic rendrait deux
+    // configurations identiques visuellement différentes à la relecture.
+    const wanted = new Set(chosen);
+    if (next) wanted.add(id);
+    else wanted.delete(id);
+    onChange(classes.filter((entry) => wanted.has(entry.id)).map((entry) => entry.id));
+  };
+
+  const people = classes.filter((entry) => entry.category === "person");
+
+  return (
+    <fieldset className="min-w-0">
+      <legend className="label-micro mb-2">Objets à compter</legend>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+        {classes.map((entry) => (
+          <label
+            key={entry.id}
+            className="flex items-center gap-2 text-small text-ink-muted"
+            title={`Classe COCO « ${entry.cocoName} »`}
+          >
+            <input
+              type="checkbox"
+              checked={chosen.has(entry.id)}
+              disabled={disabled}
+              onChange={(event) => toggle(entry.id, event.target.checked)}
+              className="accent-accent disabled:opacity-50"
+            />
+            {entry.label}
+          </label>
+        ))}
+      </div>
+      {chosen.size === 0 ? (
+        <p className="mt-1 text-micro text-ink-dim">
+          Aucune classe cochée : l'analyse repartira sur les véhicules.
+        </p>
+      ) : (
+        people.some((entry) => chosen.has(entry.id)) && (
+          <p className="mt-1 text-micro text-ink-dim">
+            Les personnes sont comptées <strong>à part</strong> des véhicules.
+          </p>
+        )
+      )}
+    </fieldset>
+  );
 }
 
 function Toggle({ label, checked, disabled, hint, onChange }: ToggleProps) {

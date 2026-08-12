@@ -182,12 +182,18 @@ Chacun est un bug déjà payé.
    jamais la lecture de la frame — sinon deux relectures du même clip donnent deux
    plaques.
 5. **Le badge ✓ dérive du tally**, jamais de la comptabilité interne d'une piste.
-6. **Un véhicule compte une fois, la ré-identification ré-arme.** La
-   déduplication porte sur `(identité, génération)` — jamais sur la piste,
-   détruite à chaque occlusion longue. Ni la ligne ni le sens n'entrent dans la
-   clé : deux lignes en travers de la même voie ne doublent pas le total (c'est la
-   **première** franchie qui le porte), et un aller-retour compte 1. La génération
-   est `reid_count`, que la galerie n'incrémente que sur une réapparition réelle.
+6. **On compte des passages, plus des véhicules** — depuis le 2026-08-12, et c'est
+   l'inverse de ce que cet invariant disait. Chaque franchissement observé compte :
+   un aller-retour compte **2**, deux lignes en travers de la même voie comptent
+   **2**, une occlusion qui coupe une piste en deux compte **2**. La
+   ré-identification sort du périmètre produit.
+   Le garde d'ADR 0009 n'est pas effacé, il est **débranché** :
+   `SessionConfig.dedupe_by_identity=True` le rallume, et ses tests le vérifient
+   toujours. La galerie, elle, continue de tourner — 0,6 ms par image — pour le vote
+   de classe et le vote de plaque, qui n'ont rien à voir avec la déduplication.
+   **Un résultat archivé avant cette date se lit sous ADR 0009** : les chiffres
+   d'avant et d'après ne sont pas comparables.
+   [ADR 0014](docs/adr/0014-compter-des-passages.md), qui abroge
    [ADR 0009](docs/adr/0009-un-comptage-par-vehicule.md).
 7. **`_release_lost` avant `_resolve_identities`.** Mesuré avec le mauvais ordre :
    2 véhicules uniques et 0 ré-identification ; avec le bon : 1 et 1.
@@ -263,11 +269,19 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
    vitesse (côté 2 : 3,4× pour −16 % de rappel ; côté 3 : 6,6× pour −44 %), et ce
    n'est pas un arbitrage à faire en silence.
    [ADR 0008](docs/adr/0008-precision-de-l-anpr.md).
-10. **Un véhicule compte une fois, toutes lignes et tous sens confondus** ; seule
-    une vraie ré-identification lui redonne droit à un franchissement. Plusieurs
-    lignes servent à *situer* un passage, pas à le multiplier. C'est un changement
-    de spécification par rapport à `prompt/03`, qui décrivait un garde
-    `(ligne, identité, sens)`. [ADR 0009](docs/adr/0009-un-comptage-par-vehicule.md).
+10. **On compte des passages, les personnes à part, et l'utilisateur choisit les
+    classes.** Chaque franchissement observé compte : la déduplication par identité
+    d'ADR 0009 est débranchée (le drapeau reste). Les franchissements sont ventilés
+    en `vehicle` / `person` par une propriété **dérivée** de `by_class` — jamais un
+    second compteur. Les classes cochables sont servies par
+    `GET /api/v1/models/classes`, pas recopiées dans l'interface, et le défaut reste
+    les quatre véhicules.
+    **Aucun modèle du catalogue ne sait détecter une charrette** : COCO n'a pas
+    cette classe, et l'ajouter au catalogue donnerait une case qui ne détecte jamais
+    rien. Les deux vraies voies — vocabulaire ouvert (YOLO-World/YOLOE) ou
+    entraînement dédié — sont décrites dans l'ADR.
+    [ADR 0014](docs/adr/0014-compter-des-passages.md), qui abroge
+    [ADR 0009](docs/adr/0009-un-comptage-par-vehicule.md).
 11. **Le détecteur de plaques est étranglé, et une ancre rend l'étranglement
     invisible.** Il tournait une inférence 640×640 par piste et par image :
     **823 ms/image mesurées**, soit près de dix minutes pour 30 s de vidéo. Les

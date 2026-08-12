@@ -136,6 +136,7 @@ class TestSerialiseTrack:
 class TestSerialiseCrossing:
     def test_le_jeu_de_cles_d_un_franchissement(self) -> None:
         assert sorted(serialise_crossing(_crossing())) == [
+            "category",
             "direction",
             "frameIndex",
             "globalId",
@@ -146,6 +147,17 @@ class TestSerialiseCrossing:
             "timestampMs",
             "trackId",
         ]
+
+    def test_un_franchissement_porte_sa_categorie(self) -> None:
+        """Véhicule ou personne, décidé **par le serveur** et transporté.
+
+        C'est ce qui permet à la relecture côté navigateur de ventiler les
+        franchissements par catégorie sans recopier la table des classes : deux
+        copies d'une règle de classement finissent par diverger, et un
+        franchissement changerait de colonne selon l'écran qui le montre.
+        """
+        assert serialise_crossing(_crossing())["category"] == "vehicle"
+        assert serialise_crossing(_crossing(label="person"))["category"] == "person"
 
     def test_un_franchissement_sans_plaque_rend_deux_null(self) -> None:
         payload = serialise_crossing(_crossing())

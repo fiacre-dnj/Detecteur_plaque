@@ -125,6 +125,10 @@ def serialise_crossing(event: CrossingEvent) -> dict[str, Any]:
         "globalId": event.global_id,
         "trackId": event.track_id,
         "label": event.label,
+        # La catégorie voyage avec l'événement : la relecture côté navigateur
+        # ventile par catégorie au fil de la tête de lecture, et la lui faire
+        # deviner depuis le libellé lui ferait recopier la politique du serveur.
+        "category": event.category,
         "direction": event.direction,
         "timestampMs": _pixel(event.timestamp_ms),
         "frameIndex": event.frame_index,
@@ -216,6 +220,9 @@ def serialise_stats(stats: AnalysisStats) -> dict[str, Any]:
         "uniqueByClass": dict(stats.unique_by_class),
         "crossings": stats.crossings,
         "byClass": dict(stats.by_class),
+        # Véhicules et personnes séparés. Somme garantie égale à `crossings` :
+        # la ventilation est dérivée du même `by_class`, jamais comptée à part.
+        "byCategory": dict(stats.by_category),
         "byLine": {
             line_id: {
                 "total": tally.total,

@@ -22,6 +22,9 @@ from pydantic import Field, field_validator, model_validator
 
 from traffic_analysis.core.schemas import CamelModel
 from traffic_analysis.features.counting.application.dto import (
+    DETECTABLE_CLASS_IDS,
+    DETECTABLE_CLASSES,
+    VEHICLE_CLASS_IDS,
     AnalysisJobConfig,
     CountingLineDef,
     Point,
@@ -104,8 +107,53 @@ class AnalysisRequestSchema(CamelModel):
         description="Échelle de la scène. Sans elle, les vitesses restent en px/s.",
         examples=[12.5],
     )
+    class_ids: list[int] = Field(
+        default_factory=lambda: list(VEHICLE_CLASS_IDS),
+        description=(
+            "Classes à détecter et à compter, par identifiant COCO. Le catalogue "
+            "cochable est publié par `GET /api/v1/models/classes`. Le défaut est "
+            "les quatre véhicules, c'est-à-dire le comportement historique."
+        ),
+        examples=[[2, 3, 5, 7]],
+    )
     lines: list[LineSchema] = Field(default_factory=list)
     zones: list[ZoneSchema] = Field(default_factory=list)
+
+    @field_validator("class_ids")
+    @classmethod
+    def _selectable_classes(cls, value: list[int]) -> list[int]:
+        """Refuser une classe qu'aucun modèle du catalogue ne sait reconnaître.
+
+        Le mode de défaillance évité est muet : une classe hors COCO — une
+        charrette, un `tuk-tuk` — passerait la validation, serait transmise telle
+        quelle à `classes=` d'Ultralytics, et **ne détecterait jamais rien**. Aucune
+        erreur, aucun journal : juste un compteur à zéro qui se lit comme une panne
+        de détection alors que c'est une demande impossible.
+
+        Une liste vide est refusée pour la même raison : elle rendrait les 80 classes
+        de COCO côté Ultralytics (`classes=[]` n'est pas un filtre vide), donc des
+        piétons, des feux et des panneaux comptés comme des véhicules.
+
+        Les doublons sont écartés en gardant l'ordre : `[2, 2, 3]` est une intention
+        claire, pas une erreur qui mérite un refus.
+        """
+        unknown = sorted(set(value) - DETECTABLE_CLASS_IDS)
+        if unknown:
+            catalogue = ", ".join(f"{entry.id} ({entry.label})" for entry in DETECTABLE_CLASSES)
+            msg = (
+                f"Classes inconnues : {unknown}. Les modèles du catalogue sont "
+                f"entraînés sur COCO et ne savent reconnaître que : {catalogue}. "
+                "Une classe absente de cette liste demande un autre modèle, pas un "
+                "autre réglage."
+            )
+            raise ValueError(msg)
+        if not value:
+            msg = (
+                "Sélectionnez au moins une classe à compter : une liste vide ne "
+                "restreindrait rien et compterait les 80 classes de COCO."
+            )
+            raise ValueError(msg)
+        return list(dict.fromkeys(value))
 
     @field_validator("model_id")
     @classmethod
@@ -181,4 +229,5 @@ class AnalysisRequestSchema(CamelModel):
             max_lost_ms=self.max_lost_ms,
             lines=tuple(line.to_domain() for line in self.lines),
             zones=tuple(zone.to_domain() for zone in self.zones),
+            class_ids=tuple(self.class_ids),
         )

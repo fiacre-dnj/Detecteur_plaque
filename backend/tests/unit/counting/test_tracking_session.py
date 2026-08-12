@@ -361,13 +361,20 @@ class TestStatistiques:
             session.feed(index, index * FRAME_MS, image, (observation,))
 
         stats = session.stats()
+        # L'invariant 3, celui qui ne bouge pas : le total est **dérivé** du détail
+        # par ligne, jamais accumulé à côté.
         assert stats.crossings == sum(tally.total for tally in stats.by_line.values())
         assert sum(stats.by_class.values()) == stats.crossings
-        # Le véhicule traverse les deux lignes, mais ne compte qu'une fois (ADR
-        # 0009) : c'est la première ligne franchie qui porte le total.
-        assert stats.crossings == 1
+        # Le véhicule traverse les deux lignes, et compte donc **deux passages**
+        # (ADR 0014). C'était 1 sous ADR 0009, où la première ligne franchie portait
+        # seule le total.
+        assert stats.crossings == 2
         assert stats.by_line["haute"].total == 1
-        assert stats.by_line["basse"].total == 0
+        assert stats.by_line["basse"].total == 1
+        # La ventilation par catégorie est dérivée du même `by_class` : sa somme est
+        # le total, par construction.
+        assert stats.by_category == {"vehicle": 2}
+        assert sum(stats.by_category.values()) == stats.crossings
 
     def test_le_debit_est_nul_sous_trois_secondes_de_flux(self) -> None:
         """En dessous de 3 s, l'extrapolation oscille trop pour être publiable.

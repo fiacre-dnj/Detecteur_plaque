@@ -59,15 +59,32 @@ export function ResultsDashboard({
           Synthèse
         </h3>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {/* Les deux cartes de tête sont les catégories, jamais leur somme : un
+              piéton n'est pas un véhicule de plus. La somme des deux **est**
+              « Franchissements », que le serveur garantit égale (ADR 0014). */}
           <MetricCard
-            label="Véhicules uniques"
-            value={stats.uniqueVehicles.toString()}
-            hint="Tous types confondus"
+            label="Passages de véhicules"
+            value={(stats.byCategory.vehicle ?? 0).toString()}
+            hint="Voitures, motos, bus, camions, vélos"
+          />
+          <MetricCard
+            label="Passages de personnes"
+            value={(stats.byCategory.person ?? 0).toString()}
+            hint="Comptées à part des véhicules"
           />
           <MetricCard
             label="Franchissements"
             value={stats.crossings.toString()}
-            hint="Somme des deux sens"
+            // Ce que le chiffre compte **vraiment** depuis ADR 0014 : des
+            // passages. Un aller-retour en vaut deux, et deux lignes en travers
+            // de la même voie en valent deux. Le dire ici évite qu'on le
+            // découvre en comparant deux tableaux.
+            hint="Passages observés, tous sens — un aller-retour compte 2"
+          />
+          <MetricCard
+            label="Objets uniques"
+            value={stats.uniqueVehicles.toString()}
+            hint="Identités suivies, pas le total compté"
           />
           <MetricCard
             label="Ré-identifications"

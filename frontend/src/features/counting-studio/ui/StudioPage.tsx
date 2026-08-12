@@ -28,12 +28,13 @@ import {
   hasGeometry,
   type Selection,
 } from "@/entities/geometry";
-import { preloadModel, useModels } from "@/entities/model";
+import { preloadModel, useDetectableClasses, useModels } from "@/entities/model";
 import { CrossingLog, JobProgressBar, useFollowAnalysis } from "@/features/analysis-job";
 import {
   SettingsPanels,
   downloadNotice,
   loadSettings,
+  sanitiseClassIds,
   saveSettings,
   toRequest,
   type AnalysisSettings,
@@ -99,6 +100,7 @@ export function StudioPage() {
   const serverReady = health != null;
 
   const { data: catalogue } = useModels();
+  const { data: detectableClasses } = useDetectableClasses();
   const location = useLocation();
   const media = useMediaSource();
   const [geometry, dispatch] = useReducer(geometryReducer, EMPTY_GEOMETRY);
@@ -177,6 +179,24 @@ export function StudioPage() {
       if (fallback !== undefined) updateSettings({ modelId: fallback.id });
     }
   }, [catalogue, settings.modelId, updateSettings]);
+
+  /**
+   * Même recalage pour les classes cochées, et pour la même raison.
+   *
+   * Une sélection persistée peut citer une classe que le serveur ne propose plus —
+   * version antérieure, catalogue changé. Sans ce nettoyage, l'envoi partirait avec
+   * un identifiant refusé et l'utilisateur verrait un 422 sur un écran dont toutes
+   * les cases paraissent valides. La comparaison porte sur le **contenu** : recaler
+   * sur une nouvelle référence de tableau à chaque rendu relancerait l'effet en
+   * boucle.
+   */
+  useEffect(() => {
+    if (detectableClasses === null || detectableClasses === undefined) return;
+    const cleaned = sanitiseClassIds(settings.classIds, detectableClasses);
+    if (cleaned.join(",") !== settings.classIds.join(",")) {
+      updateSettings({ classIds: cleaned });
+    }
+  }, [detectableClasses, settings.classIds, updateSettings]);
 
   const video = useRef<HTMLVideoElement>(null);
   const session = useAnalysisSession();
@@ -663,6 +683,9 @@ export function StudioPage() {
           <SettingsPanels
             settings={settings}
             models={catalogue?.models ?? []}
+            // Le catalogue de classes vient du serveur, jamais d'une liste écrite
+            // côté interface : c'est lui qui valide `classIds` à l'envoi.
+            detectableClasses={detectableClasses ?? []}
             // Faux si le serveur n'a pas le modèle de plaques : l'option est alors
             // désactivée **avec sa raison**, plutôt que de produire une analyse
             // sans plaques que rien n'expliquerait.

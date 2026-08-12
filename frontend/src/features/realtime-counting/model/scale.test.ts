@@ -57,6 +57,7 @@ const REQUEST: AnalysisRequest = {
   reidMinSimilarity: 0.8,
   maskOutsideZones: true,
   frameStride: 1,
+  classIds: [2, 3, 5, 7],
   detectPlates: false,
   plateConfidence: null,
   readPlateText: false,

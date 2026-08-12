@@ -75,21 +75,31 @@ class LineCrossingCounter:
     identique : un franchissement, puis plus rien.
     """
 
-    __slots__ = ("_lines", "_min_hits", "_state", "_tallied", "_zones", "by_line")
+    __slots__ = ("_dedupe", "_lines", "_min_hits", "_state", "_tallied", "_zones", "by_line")
 
     def __init__(
         self,
         lines: Sequence[CountingLineDef],
         zones: Sequence[ZoneDef],
         min_hits: int,
+        *,
+        dedupe_by_identity: bool = False,
     ) -> None:
         self._lines = tuple(lines)
         self._zones = {zone.id: zone for zone in zones}
         self._min_hits = min_hits
+        self._dedupe = dedupe_by_identity
         self._state: dict[tuple[int, str], _LineState] = {}
-        # Le garde de comptage. Clé : (identité, génération). Ni la ligne ni le
-        # sens n'y figurent : un véhicule compte une fois, où qu'il franchisse et
-        # dans quelque sens que ce soit, jusqu'à sa prochaine ré-identification.
+        # Ce que le compteur a déjà compté. Clé : (identité, génération). Ni la
+        # ligne ni le sens n'y figurent.
+        #
+        # **Deux rôles, et un seul dépend du réglage.** Quand `dedupe_by_identity`
+        # est vrai, c'est le garde : un véhicule compte une fois, où qu'il
+        # franchisse et dans quelque sens que ce soit. Quand il est faux — le cas
+        # par défaut, on compte des passages — l'ensemble continue d'être **rempli**
+        # sans refuser personne, parce qu'il reste la source du badge ✓
+        # (`counted_identities`). Cesser de le remplir ferait disparaître le ✓ de
+        # l'overlay, ce qui se lirait comme une panne de comptage.
         self._tallied: set[tuple[int, int]] = set()
         # Chaque ligne a son compteur dès le départ : une ligne sans
         # franchissement doit s'afficher à zéro, pas manquer du tableau.
@@ -212,10 +222,11 @@ class LineCrossingCounter:
     ) -> CrossingEvent | None:
         """Comptabilise un franchissement, ou refuse et rend `None`.
 
-        Un seul refus : cette identité a déjà compté pour sa génération courante.
-        Peu importe que ce soit sur une autre ligne, dans l'autre sens, ou sous
-        une piste depuis longtemps détruite — c'est le même véhicule, il a déjà
-        été compté, et il ne le sera plus tant qu'il ne sera pas réapparu.
+        **Un seul refus possible, et il est désormais désactivé par défaut** :
+        `dedupe_by_identity` faisait qu'une identité ne comptait qu'une fois par
+        génération, peu importe la ligne, le sens, ou la piste — c'était la décision
+        d'ADR 0009. Le produit compte maintenant des **passages** : chaque
+        franchissement observé compte, donc un aller-retour compte 2.
 
         `track.reid_count` est lu et non recalculé : la session l'a arrêté pour
         cette frame dans `_resolve_identities`, juste avant `observe`. Le
@@ -224,7 +235,7 @@ class LineCrossingCounter:
         Rendre `None` plutôt qu'un événement est ce qui garde le badge ✓ honnête.
         """
         key = (track.global_id, track.reid_count)
-        if key in self._tallied:
+        if self._dedupe and key in self._tallied:
             return None
         self._tallied.add(key)
 

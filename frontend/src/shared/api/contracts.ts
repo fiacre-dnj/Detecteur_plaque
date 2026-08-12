@@ -228,8 +228,33 @@ export interface AnalysisRequest {
   readPlateText: boolean;
   /** `null` ⇒ les vitesses restent en px/s au lieu d'être converties à tort. */
   pixelsPerMeter: number | null;
+  /**
+   * Classes à détecter **et** à compter, par identifiant COCO.
+   *
+   * Le catalogue cochable vient de `GET /api/v1/models/classes` : il n'est jamais
+   * recopié ici, sinon une case cochable dans le navigateur pourrait être refusée
+   * à l'envoi. Une liste vide est refusée par le serveur — elle ne restreindrait
+   * rien et compterait les 80 classes de COCO.
+   */
+  classIds: number[];
   lines: CountingLine[];
   zones: Zone[];
+}
+
+/**
+ * Une classe cochable, servie par `GET /api/v1/models/classes`.
+ *
+ * Miroir de `DetectableClassSchema`. `cocoName` est la clé des `byClass` du
+ * résultat ; `label` est ce qu'on affiche. Ne jamais confondre les deux : une
+ * correspondance faite sur le libellé traduit ne trouverait jamais rien.
+ */
+export interface DetectableClass {
+  id: number;
+  cocoName: string;
+  label: string;
+  category: CountCategory;
+  /** Coché à l'ouverture : les quatre véhicules, le comportement historique. */
+  defaultSelected: boolean;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -334,6 +359,15 @@ export interface CrossingEvent {
   globalId: number;
   trackId: number;
   label: string;
+  /**
+   * Véhicule ou personne, **décidé par le serveur**.
+   *
+   * Transporté plutôt que déduit de `label` : la relecture ventile les
+   * franchissements par catégorie au fil de la tête de lecture, et lui faire
+   * recopier la table des classes ferait vivre la même règle à deux endroits. Un
+   * franchissement changerait alors de colonne selon l'écran qui le montre.
+   */
+  category: CountCategory;
   /** Signe du côté d'arrivée par rapport à la ligne orientée A→B : `+1` ou `-1`. */
   direction: number;
   timestampMs: number;
@@ -470,17 +504,32 @@ export interface Diagnostics {
   rescuedByLowScore: number;
 }
 
+/** Catégorie d'un objet compté. Les totaux ne mélangent jamais les deux. */
+export type CountCategory = 'vehicle' | 'person';
+
 /**
  * Statistiques d'une analyse.
  *
  * Deux invariants que le frontend ne doit jamais recalculer autrement :
  * `crossings === Σ byLine[*].total` et `total === positive + negative`.
+ *
+ * `crossings` compte des **passages** depuis ADR 0014 : un aller-retour en vaut
+ * deux, et deux lignes en travers de la même voie en valent deux. `uniqueVehicles`
+ * reste servi mais ne décrit plus ce que l'écran compte — c'est une information de
+ * suivi, pas le total.
  */
 export interface AnalysisStats {
   uniqueVehicles: number;
   uniqueByClass: Record<string, number>;
   crossings: number;
   byClass: Record<string, number>;
+  /**
+   * Passages ventilés en véhicules et personnes. Somme garantie égale à
+   * `crossings` : le serveur la dérive de `byClass`, il ne la compte pas à part.
+   *
+   * Une catégorie absente signifie zéro passage — jamais « pas d'information ».
+   */
+  byCategory: Partial<Record<CountCategory, number>>;
   byLine: Record<string, LineTally>;
   byZone: Record<string, ZoneTally>;
   reidHits: number;

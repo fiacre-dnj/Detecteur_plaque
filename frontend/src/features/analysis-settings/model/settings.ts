@@ -57,6 +57,19 @@ export interface AnalysisSettings {
   readPlateText: boolean;
   /** `null` = échelle non définie : les vitesses restent en px/s. */
   pixelsPerMeter: number | null;
+  /**
+   * Classes à détecter et à compter, par identifiant COCO.
+   *
+   * Le **catalogue** vient du serveur (`GET /api/v1/models/classes`) ; seule la
+   * sélection vit ici. Ne jamais recopier le catalogue dans ce module : une case
+   * cochable que le serveur refuse à l'envoi est le mode de panne exact que la
+   * publication du catalogue existe pour empêcher.
+   *
+   * Une sélection persistée peut contenir un identifiant que le serveur ne propose
+   * plus. `sanitiseClassIds` s'en charge à la lecture — plutôt que de laisser un
+   * 422 arriver sur un réglage que l'écran affiche comme valide.
+   */
+  classIds: number[];
   showTrails: boolean;
 }
 
@@ -76,8 +89,37 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   // un cran de confidentialité qui doit être choisi, pas hérité.
   readPlateText: false,
   pixelsPerMeter: null,
+  // Les quatre véhicules de COCO : voiture, moto, bus, camion. C'est le
+  // comportement historique de l'application, donc qui ne touche à rien retrouve
+  // exactement ses chiffres d'avant. Les personnes se cochent quand on les veut.
+  classIds: [2, 3, 5, 7],
   showTrails: true,
 };
+
+/**
+ * Nettoie une sélection de classes contre le catalogue **du serveur**.
+ *
+ * Trois cas réels, et aucun ne doit produire un 422 :
+ *
+ * - un identifiant que le serveur ne propose plus — réglage persisté par une
+ *   version antérieure — est écarté ;
+ * - les doublons sont écartés en gardant l'ordre du catalogue, qui est celui de
+ *   l'affichage ;
+ * - une sélection **vide** retombe sur les cases par défaut. Le serveur la
+ *   refuserait, et à raison : elle ne restreindrait rien et compterait les 80
+ *   classes de COCO. Retomber sur le défaut vaut mieux qu'un message d'erreur sur
+ *   un écran où l'utilisateur a simplement tout décoché.
+ */
+export function sanitiseClassIds(
+  selected: readonly number[],
+  catalogue: readonly { id: number; defaultSelected: boolean }[],
+): number[] {
+  if (catalogue.length === 0) return [...selected];
+  const wanted = new Set(selected);
+  const kept = catalogue.filter((entry) => wanted.has(entry.id)).map((entry) => entry.id);
+  if (kept.length > 0) return kept;
+  return catalogue.filter((entry) => entry.defaultSelected).map((entry) => entry.id);
+}
 
 /** Confiance effective quand l'utilisateur suit le défaut. */
 export const DEFAULT_CONFIDENCE = 0.35;
@@ -129,6 +171,10 @@ export function toRequest(
       settings.pixelsPerMeter !== null && settings.pixelsPerMeter > 0
         ? settings.pixelsPerMeter
         : null,
+    // Jamais vide : le serveur refuse une liste vide, et il a raison. Le repli sur
+    // les quatre véhicules est le même que celui de `sanitiseClassIds` — l'écran
+    // reste utilisable quand l'utilisateur a tout décoché.
+    classIds: settings.classIds.length > 0 ? [...settings.classIds] : [...DEFAULT_SETTINGS.classIds],
     lines: [...lines],
     zones: [...zones],
   };
@@ -197,6 +243,17 @@ function mergeSettings(source: Record<string, unknown>): AnalysisSettings {
   merged.frameStride = boundedNumber(source.frameStride, merged.frameStride, BOUNDS.frameStride);
   merged.plateConfidence = nullableNumber(source.plateConfidence, merged.plateConfidence);
   merged.pixelsPerMeter = nullableNumber(source.pixelsPerMeter, merged.pixelsPerMeter);
+
+  // Les identifiants non numériques sont écartés un par un plutôt que de faire
+  // tomber toute la liste : un `localStorage` bricolé à la main ne doit pas coûter
+  // la sélection entière. La confrontation au catalogue du serveur, elle, a lieu
+  // dans `sanitiseClassIds` — ce module ne connaît pas le catalogue.
+  if (Array.isArray(source.classIds)) {
+    const ids = source.classIds.filter(
+      (value): value is number => typeof value === "number" && Number.isInteger(value),
+    );
+    if (ids.length > 0) merged.classIds = [...new Set(ids)];
+  }
 
   if (typeof source.maskOutsideZones === "boolean") merged.maskOutsideZones = source.maskOutsideZones;
   if (typeof source.detectPlates === "boolean") merged.detectPlates = source.detectPlates;

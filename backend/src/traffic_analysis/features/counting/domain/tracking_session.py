@@ -86,6 +86,18 @@ class SessionConfig:
     max_lost_ms: float = 2500.0
     pixels_per_meter: float | None = None
     reid: ReidOptions = field(default_factory=ReidOptions)
+    #: Un véhicule ne compte-t-il **qu'une fois**, toutes lignes et tous sens
+    #: confondus ?
+    #:
+    #: `False` désormais, et c'est un changement de ce que les chiffres veulent
+    #: dire : on compte des **passages**, plus des véhicules. Un aller-retour compte
+    #: donc 2, et deux lignes en travers de la même voie comptent chacune. C'est le
+    #: comportement demandé — la ré-identification sort du périmètre du produit —
+    #: mais il abroge la décision d'ADR 0009, qui existait pour l'inverse.
+    #:
+    #: Le drapeau reste plutôt que d'effacer le garde : le rallumer est un mot, et
+    #: la mécanique de déduplication garde ses tests. Voir ADR 0014.
+    dedupe_by_identity: bool = False
     #: La lecture du texte de plaque tourne-t-elle réellement ?
     #:
     #: Ce que le service a **résolu**, et non ce que la requête a demandé : le
@@ -169,7 +181,12 @@ class AnalysisSession:
     def __init__(self, config: SessionConfig, frame_width: int, frame_height: int) -> None:
         self._config = config
         self._frame_diagonal = (frame_width**2 + frame_height**2) ** 0.5
-        self._counter = LineCrossingCounter(config.lines, config.zones, config.min_hits)
+        self._counter = LineCrossingCounter(
+            config.lines,
+            config.zones,
+            config.min_hits,
+            dedupe_by_identity=config.dedupe_by_identity,
+        )
         self._zones = ZonePresenceCounter(config.zones, config.min_hits)
         self._gallery = IdentityGallery(config.reid)
         self._speed = SpeedEstimator()

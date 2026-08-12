@@ -1,9 +1,18 @@
 """Comptage de franchissements — les scénarios normatifs de prompt/03 §3.
 
-La règle centrale est celle d'[ADR 0009](docs/adr/0009-un-comptage-par-vehicule.md) :
-**un véhicule compte une fois**, quelle que soit la ligne et quel que soit le
-sens, jusqu'à sa prochaine ré-identification. `TestDeduplication` en décrit le
-garde, `TestReArmementParReidentification` la seule chose qui le lève.
+**Deux modes, et le défaut a changé.** Le compteur comptait des *véhicules* : un
+véhicule comptait une fois, quelle que soit la ligne et quel que soit le sens
+([ADR 0009](docs/adr/0009-un-comptage-par-vehicule.md)). Il compte désormais des
+**passages** : chaque franchissement observé compte, donc un aller-retour compte 2
+([ADR 0014](docs/adr/0014-compter-des-passages.md)).
+
+La déduplication n'a pas été effacée, elle est devenue optionnelle
+(`dedupe_by_identity`). Les deux modes sont donc décrits ici :
+
+- `TestComptageDesPassages` — le **défaut** : ce que compte le produit aujourd'hui ;
+- `TestDeduplication` et `TestReArmementParReidentification` — le mode d'ADR 0009,
+  construit par `_deduping`. Ils restent parce que le garde existe toujours et
+  qu'un mécanisme non testé est un mécanisme cassé.
 
 Trois tests valent d'être lus en premier, parce qu'ils tiennent chacun un bug
 réellement survenu :
@@ -31,12 +40,32 @@ from tests.support.builders import (
 )
 from traffic_analysis.features.counting.domain.geometry import Point
 from traffic_analysis.features.counting.domain.line_counter import LineCrossingCounter
-from traffic_analysis.features.counting.domain.models import CrossingEvent, SessionTrack
+from traffic_analysis.features.counting.domain.models import (
+    CountingLineDef,
+    CrossingEvent,
+    SessionTrack,
+    ZoneDef,
+)
 
 # Ligne horizontale à y = 500. Descendre (y croissant) traverse dans le sens +1.
 LINE = make_line("l1")
 DESCENDING = +1
 ASCENDING = -1
+
+
+def _deduping(
+    lines: tuple[CountingLineDef, ...],
+    zones: tuple[ZoneDef, ...] = (),
+    *,
+    min_hits: int = 2,
+) -> LineCrossingCounter:
+    """Un compteur en mode **déduplication par identité** — celui d'ADR 0009.
+
+    Ce n'est plus le défaut : le produit compte des passages. Les tests qui
+    décrivent le garde le demandent donc explicitement, ce qui a l'avantage de
+    rendre visible, à la lecture, lequel des deux modes chaque test décrit.
+    """
+    return LineCrossingCounter(lines, zones, min_hits=min_hits, dedupe_by_identity=True)
 
 
 def _advance(track: SessionTrack, centre: tuple[float, float]) -> None:
@@ -156,6 +185,65 @@ class TestFranchissementsRefuses:
         assert events == []
 
 
+class TestComptageDesPassages:
+    """Le **défaut** : chaque franchissement observé compte (ADR 0014).
+
+    Ces trois scénarios sont exactement ceux que `TestDeduplication` refuse de
+    compter deux fois. Les avoir en double, un par mode, est voulu : c'est la seule
+    façon de rendre visible ce que le changement de décision a changé, et de le
+    remarquer si quelqu'un rebasculait le défaut sans le dire.
+    """
+
+    def test_un_aller_retour_compte_deux_fois(self) -> None:
+        """Deux franchissements observés, deux passages — un dans chaque sens."""
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        aller = straight_line((900.0, 300.0), (900.0, 700.0), steps=6)
+        retour = straight_line((900.0, 700.0), (900.0, 300.0), steps=6)
+        track = session_track(track_path(1, CAR, aller)[0], hits=5)
+
+        events = _run(counter, track, [*aller, *retour])
+
+        assert len(events) == 2
+        tally = counter.by_line["l1"]
+        assert tally.total == 2
+        # Le sens reste distingué : c'est ce qui permet de lire « 1 montant,
+        # 1 descendant » plutôt qu'un « 2 » qui ne dit pas de quoi il est fait.
+        assert tally.positive == 1
+        assert tally.negative == 1
+
+    def test_deux_pistes_de_la_meme_identite_comptent_chacune(self) -> None:
+        """Une occlusion longue coupe la piste : les deux moitiés comptent.
+
+        C'est la contrepartie assumée de l'abandon du garde. Le véhicule est le
+        même, mais on ne compte plus des véhicules — on compte des passages, et
+        deux passages ont été observés.
+        """
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        path = straight_line((900.0, 300.0), (900.0, 700.0), steps=6)
+
+        for track_id in (1, 7):
+            track = session_track(track_path(track_id, CAR, path)[0], hits=5, global_id=42)
+            _run(counter, track, path, start_ms=1000.0 * track_id)
+
+        assert counter.by_line["l1"].total == 2
+
+    def test_le_badge_reste_alimente_sans_deduplication(self) -> None:
+        """`counted_identities()` doit continuer de rendre les identités comptées.
+
+        Le garde et le badge partagent le même ensemble. En supprimant le refus, il
+        aurait été facile de cesser de le remplir : le ✓ aurait alors disparu de
+        l'overlay alors que les compteurs, eux, montaient — ce qui se lit comme une
+        panne de comptage et non comme un effet de bord d'optimisation.
+        """
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        path = straight_line((900.0, 300.0), (900.0, 700.0), steps=6)
+        track = session_track(track_path(1, CAR, path)[0], hits=5, global_id=42)
+
+        _run(counter, track, path)
+
+        assert counter.counted_identities() == {42}
+
+
 class TestDeduplication:
     def test_un_va_et_vient_ne_compte_qu_une_fois(self) -> None:
         """Le sens ne ré-arme pas le comptage (ADR 0009).
@@ -165,7 +253,7 @@ class TestDeduplication:
         ré-identification — le véhicule a disparu du champ puis a été reconnu —
         redonne droit à un comptage.
         """
-        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        counter = _deduping((LINE,))
         aller = straight_line((900.0, 300.0), (900.0, 700.0), steps=6)
         retour = straight_line((900.0, 700.0), (900.0, 300.0), steps=6)
         track = session_track(track_path(1, CAR, aller)[0], hits=5)
@@ -181,7 +269,7 @@ class TestDeduplication:
 
     def test_un_tremblement_sur_la_ligne_ne_compte_qu_une_fois(self) -> None:
         """Une boîte qui vacille autour de la ligne dans le même sens."""
-        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        counter = _deduping((LINE,))
         path = [
             (900.0, 480.0),
             (900.0, 520.0),  # franchit +1
@@ -205,7 +293,7 @@ class TestDeduplication:
         un véhicule qui franchit, disparaît 15 frames et revient avec une boîte
         qui tremble sur la ligne comptait **2**.
         """
-        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        counter = _deduping((LINE,))
         premier_passage = straight_line((900.0, 300.0), (900.0, 700.0), steps=6)
         second_passage = straight_line((900.0, 300.0), (900.0, 700.0), steps=6)
 
@@ -223,7 +311,7 @@ class TestDeduplication:
 
     def test_deux_identites_differentes_comptent_chacune(self) -> None:
         """Garde-fou du test précédent : ne pas dédupliquer ce qui est distinct."""
-        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        counter = _deduping((LINE,))
         path = straight_line((900.0, 300.0), (900.0, 700.0), steps=6)
 
         for track_id, global_id in ((1, 10), (2, 20)):
@@ -240,7 +328,7 @@ class TestDeduplication:
         l'overlay affirme qu'un véhicule est compté alors que le total n'a pas
         bougé.
         """
-        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        counter = _deduping((LINE,))
         path = straight_line((900.0, 300.0), (900.0, 700.0), steps=6)
         track = session_track(track_path(1, CAR, path)[0], hits=5, global_id=42)
 
@@ -274,13 +362,11 @@ class TestReArmementParReidentification:
 
     def test_apres_re_armement_la_ligne_suivante_ne_recompte_pas(self) -> None:
         """Le ré-armement redonne droit à **un** franchissement, pas à un par ligne."""
-        counter = LineCrossingCounter(
+        counter = _deduping(
             (
                 make_line("haute", a=(0.0, 400.0), b=(1920.0, 400.0)),
                 make_line("basse", a=(0.0, 600.0), b=(1920.0, 600.0)),
-            ),
-            (),
-            min_hits=2,
+            )
         )
         path = straight_line((900.0, 300.0), (900.0, 700.0), steps=12)
 
@@ -473,12 +559,37 @@ class TestInvariantsComptables:
 
 
 class TestPlusieursLignes:
-    def test_une_piste_qui_traverse_deux_lignes_ne_compte_que_sur_la_premiere(self) -> None:
+    def test_en_deduplication_seule_la_premiere_ligne_compte(self) -> None:
         """Première ligne servie, les suivantes restent à zéro (ADR 0009).
 
-        C'est la règle métier : plusieurs lignes en travers d'une même voie
+        La règle du mode déduplication : plusieurs lignes en travers d'une même voie
         servent à *situer* le passage, pas à le multiplier. Le total global reste
         la somme du détail par ligne — un seul des deux compteurs a bougé.
+        """
+        counter = _deduping(
+            (
+                make_line("haute", a=(0.0, 400.0), b=(1920.0, 400.0)),
+                make_line("basse", a=(0.0, 600.0), b=(1920.0, 600.0)),
+            )
+        )
+        path = straight_line((900.0, 300.0), (900.0, 700.0), steps=12)
+        track = session_track(track_path(1, CAR, path)[0], hits=5)
+
+        events = _run(counter, track, path)
+
+        assert len(events) == 1
+        assert events[0].line_id == "haute"  # type: ignore[attr-defined]
+        assert counter.by_line["haute"].total == 1
+        assert counter.by_line["basse"].total == 0
+
+    def test_en_passages_chaque_ligne_franchie_compte(self) -> None:
+        """Le **défaut** : deux lignes traversées, deux passages.
+
+        C'est l'autre face de la décision d'ADR 0014, et elle mérite d'être écrite
+        noir sur blanc : deux lignes en travers de la même voie **doublent**
+        désormais le total. Qui trace deux lignes pour *situer* un passage doit donc
+        savoir qu'il en compte deux — c'est la conséquence la plus facile à subir
+        sans l'avoir voulue.
         """
         counter = LineCrossingCounter(
             (
@@ -493,10 +604,9 @@ class TestPlusieursLignes:
 
         events = _run(counter, track, path)
 
-        assert len(events) == 1
-        assert events[0].line_id == "haute"  # type: ignore[attr-defined]
+        assert [event.line_id for event in events] == ["haute", "basse"]  # type: ignore[attr-defined]
         assert counter.by_line["haute"].total == 1
-        assert counter.by_line["basse"].total == 0
+        assert counter.by_line["basse"].total == 1
 
     def test_la_premiere_frame_sans_centroide_precedent_ne_leve_pas(self) -> None:
         """`previous_centroid` est `None` à la naissance d'une piste.

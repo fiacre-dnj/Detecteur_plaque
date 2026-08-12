@@ -213,3 +213,24 @@ l'application, ou une contrainte d'environnement qui a fait perdre du temps.
     deux étages.
 56. **Le coût de l'ANPR croît avec le nombre de pistes** (une inférence par piste
     et par frame ; ~880 ms mesuré avec 3 pistes). Le dire dans l'UI.
+57. **`persist=True` fait aussi persister le tracker entre deux analyses.**
+    `register_tracker` d'Ultralytics **sort immédiatement** quand des trackers
+    existent déjà, et le registre garde l'instance de modèle d'un job à l'autre.
+    La deuxième analyse hérite donc des pistes, du filtre de Kalman et du compteur
+    d'images de la première. Mesuré sur un même fichier **octet pour octet**,
+    analysé quatre fois de suite dans le même processus : **19, 26, 33** véhicules
+    uniques. Rien n'échoue, rien n'est journalisé, les chiffres restent plausibles
+    et dérivent toujours **vers le haut**. `reset_trackers(model)` au début de
+    chaque `iter_video` et de chaque flux temps réel est la correction.
+58. **La compensation de mouvement du tracker peut coûter plus cher que
+    l'inférence.** `gmc_method: sparseOptFlow` recalcule un flux optique épars sur
+    CPU à chaque image : **20,2 ms mesurées** sur du 720p, contre 17,8 ms pour
+    l'inférence GPU — 39 % du budget pour corriger un mouvement de caméra qui
+    n'existe pas sur une caméra fixe. Le mettre à `none` double la cadence à
+    comptage identique. Ne le rallumer que si la caméra bouge réellement.
+59. **Un banc lancé pendant une autre charge ne mesure rien.** Une mesure prise
+    pendant les tests unitaires a affiché 1,40× là où le protocole propre donne
+    1,93×. L'anomalie ne s'est vue que parce que le banc chiffre *tous* les
+    postes : l'inférence GPU, que le changement testé ne pouvait pas ralentir,
+    avait bougé de 17,0 à 19,9 ms. Toujours des courses **appariées**, enchaînées,
+    machine au repos — cette machine varie de ±20 % selon son état thermique.

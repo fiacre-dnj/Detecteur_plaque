@@ -1300,6 +1300,7 @@
       "globalId": 1,
       "trackId": 1,
       "label": "car",
+      "category": "vehicle",
       "direction": 1,
       "timestampMs": 240.0,
       "frameIndex": 6,
@@ -1311,6 +1312,7 @@
       "globalId": 2,
       "trackId": 2,
       "label": "truck",
+      "category": "vehicle",
       "direction": -1,
       "timestampMs": 280.0,
       "frameIndex": 7,
@@ -1397,6 +1399,9 @@
     "byClass": {
       "car": 1,
       "truck": 1
+    },
+    "byCategory": {
+      "vehicle": 2
     },
     "byLine": {
       "l1": {

@@ -6,6 +6,7 @@ export {
   DEFAULT_SETTINGS,
   SETTINGS_SCHEMA_VERSION,
   loadSettings,
+  sanitiseClassIds,
   saveSettings,
   toRequest,
   type AnalysisSettings,

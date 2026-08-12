@@ -23,9 +23,12 @@ from traffic_analysis.features.counting.application.ports import (
 )
 from traffic_analysis.features.counting.domain.geometry import Point
 from traffic_analysis.features.counting.domain.models import (
+    DETECTABLE_CLASS_IDS,
+    DETECTABLE_CLASSES,
     VEHICLE_CLASS_IDS,
     BoundingBox,
     CountingLineDef,
+    DetectableClass,
     PlateDetection,
     TrackObservation,
     VideoInfo,
@@ -61,6 +64,12 @@ if TYPE_CHECKING:
 # une analyse. Une feature qui a besoin d'autre chose du domaine du comptage a
 # besoin d'un nouveau port, pas d'un import direct.
 __all__ = [
+    # Le catalogue des classes cochables et sa validation. Publiés parce que
+    # `models_registry` les expose par HTTP et que le schéma de requête valide
+    # contre eux : les deux ont besoin de la **même** liste, sinon une case cochable
+    # côté interface serait refusée à l'envoi.
+    "DETECTABLE_CLASSES",
+    "DETECTABLE_CLASS_IDS",
     "TIMELINE_WARNING_THRESHOLD",
     # Réexporté pour le benchmark : il mesure sur **les mêmes classes** qu'une
     # analyse. Mesurer sur les 80 classes de COCO gonflerait le post-traitement, et
@@ -76,6 +85,7 @@ __all__ = [
     "AnalysisSession",
     "BoundingBox",
     "CountingLineDef",
+    "DetectableClass",
     "EngineFrame",
     "EngineSpec",
     # Réexportés pour le conteneur et le banc de mesure. `PlateGeometry` en
@@ -152,6 +162,23 @@ class AnalysisJobConfig:
     max_lost_ms: float = 2500.0
     lines: tuple[CountingLineDef, ...] = ()
     zones: tuple[ZoneDef, ...] = ()
+    #: Classes à détecter **et** à compter, choisies par l'utilisateur.
+    #:
+    #: Elles voyagent par requête, contrairement aux réglages de débit du moteur :
+    #: c'est une question que seul l'utilisateur peut trancher devant sa scène —
+    #: compte-t-on les piétons de ce carrefour, les vélos de cette piste ?
+    #:
+    #: Le défaut est le comportement historique, les quatre véhicules : qui ne
+    #: touche à rien obtient ce que l'application faisait avant.
+    #:
+    #: **Restreindre les classes ne suffit pas à éviter les doublons** : le NMS
+    #: d'Ultralytics est *class-aware*, et c'est `agnostic_nms=True` posé dans
+    #: l'adaptateur qui empêche une camionnette de survivre en `car` **et** en
+    #: `truck` (piège 5 de prompt/13).
+    class_ids: tuple[int, ...] = VEHICLE_CLASS_IDS
+    #: Un véhicule ne compte-t-il qu'une fois ? `False` : on compte des passages.
+    #: Voir `SessionConfig.dedupe_by_identity` et ADR 0014.
+    dedupe_by_identity: bool = False
 
     def engine_spec(self) -> EngineSpec:
         """Ce que le moteur doit savoir : les seuils **vivants** de la requête."""
@@ -159,7 +186,7 @@ class AnalysisJobConfig:
             model_id=self.model_id,
             confidence=self.confidence_threshold,
             iou=self.iou_threshold,
-            class_ids=VEHICLE_CLASS_IDS,
+            class_ids=self.class_ids,
             frame_stride=self.frame_stride,
         )
 
@@ -173,6 +200,7 @@ class AnalysisJobConfig:
             max_lost_ms=self.max_lost_ms,
             pixels_per_meter=self.pixels_per_meter,
             reid=ReidOptions(min_similarity=self.reid_min_similarity),
+            dedupe_by_identity=self.dedupe_by_identity,
         )
 
 

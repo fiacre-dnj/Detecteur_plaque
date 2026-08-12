@@ -125,6 +125,7 @@ export function statsAt(result: AnalysisResult, timeMs: number): AnalysisStats {
 
   const byLine: Record<string, LineTally> = {};
   const byClass: Record<string, number> = {};
+  const byCategory: AnalysisStats["byCategory"] = {};
   const seenIdentities = new Set<number>();
   const uniqueByClass: Record<string, number> = {};
   let crossings = 0;
@@ -133,6 +134,9 @@ export function statsAt(result: AnalysisResult, timeMs: number): AnalysisStats {
     if (event.timestampMs > timeMs) continue;
     crossings += 1;
     byClass[event.label] = (byClass[event.label] ?? 0) + 1;
+    // La catégorie est **lue** sur l'événement, jamais déduite du libellé : c'est le
+    // serveur qui classe, et le rejeu ne fait que sommer ce qu'il a décidé.
+    byCategory[event.category] = (byCategory[event.category] ?? 0) + 1;
     tallyLine(byLine, event);
   }
 
@@ -165,6 +169,7 @@ export function statsAt(result: AnalysisResult, timeMs: number): AnalysisStats {
     uniqueByClass,
     crossings,
     byClass,
+    byCategory,
     byLine,
     byZone,
     reidHits,

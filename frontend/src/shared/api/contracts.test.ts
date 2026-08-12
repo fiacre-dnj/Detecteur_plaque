@@ -260,6 +260,10 @@ describe("invariants que l'affichage ne doit jamais contredire", () => {
     if (crossing === undefined) return;
 
     expect(Object.keys(crossing).sort()).toEqual([
+      // La catégorie est **servie**, pas déduite du libellé : c'est ce qui permet à
+      // la relecture de ventiler véhicules et personnes sans recopier la table des
+      // classes du serveur.
+      "category",
       "direction",
       "frameIndex",
       "globalId",

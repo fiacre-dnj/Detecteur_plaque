@@ -16,6 +16,7 @@ import {
   DEFAULT_SETTINGS,
   SETTINGS_SCHEMA_VERSION,
   loadSettings,
+  sanitiseClassIds,
   saveSettings,
   toRequest,
   type AnalysisSettings,
@@ -250,5 +251,72 @@ describe("défauts alignés sur le serveur", () => {
     expect(DEFAULT_SETTINGS.reidMinSimilarity).toBe(0.8);
     expect(DEFAULT_SETTINGS.frameStride).toBe(1);
     expect(DEFAULT_CONFIDENCE).toBe(0.35);
+  });
+});
+
+describe("sanitiseClassIds — la sélection recalée sur le catalogue du serveur", () => {
+  const CATALOGUE = [
+    { id: 2, defaultSelected: true },
+    { id: 3, defaultSelected: true },
+    { id: 5, defaultSelected: true },
+    { id: 7, defaultSelected: true },
+    { id: 1, defaultSelected: false },
+    { id: 0, defaultSelected: false },
+  ];
+
+  it("garde l'ordre du catalogue, pas celui des clics", () => {
+    // Deux configurations identiques doivent se relire identiques : une liste
+    // ordonnée par l'ordre des clics rendrait la comparaison instable.
+    expect(sanitiseClassIds([0, 2], CATALOGUE)).toEqual([2, 0]);
+  });
+
+  it("écarte un identifiant que le serveur ne propose plus", () => {
+    // Le cas réel : un réglage persisté par une version antérieure. Sans ce
+    // nettoyage, l'envoi partirait en 422 sur un écran dont les cases paraissent
+    // toutes valides.
+    expect(sanitiseClassIds([2, 99], CATALOGUE)).toEqual([2]);
+  });
+
+  it("écarte les doublons", () => {
+    expect(sanitiseClassIds([2, 2, 3], CATALOGUE)).toEqual([2, 3]);
+  });
+
+  it("**retombe sur les cases par défaut quand tout est décoché**", () => {
+    // Le serveur refuse une liste vide, et il a raison : elle ne restreindrait rien
+    // et compterait les 80 classes de COCO. Retomber sur le défaut vaut mieux qu'un
+    // message d'erreur là où l'utilisateur a simplement tout décoché.
+    expect(sanitiseClassIds([], CATALOGUE)).toEqual([2, 3, 5, 7]);
+    expect(sanitiseClassIds([99], CATALOGUE)).toEqual([2, 3, 5, 7]);
+  });
+
+  it("rend la sélection intacte tant que le catalogue n'a pas répondu", () => {
+    // Nettoyer contre une liste vide effacerait la sélection de l'utilisateur le
+    // temps d'un aller-retour réseau, et l'écran se réinitialiserait sous ses yeux.
+    expect(sanitiseClassIds([2, 99], [])).toEqual([2, 99]);
+  });
+});
+
+describe("classIds dans la requête", () => {
+  // Une ligne quelconque : `toRequest` en exige une, mais aucun de ces tests ne
+  // parle de géométrie.
+  const LINES = [
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, b: { x: 10, y: 10 } },
+  ];
+
+  it("part avec les quatre véhicules par défaut", () => {
+    expect(toRequest(DEFAULT_SETTINGS, LINES, []).classIds).toEqual([2, 3, 5, 7]);
+  });
+
+  it("ne part jamais vide", () => {
+    // Le serveur refuserait la requête ; le repli garde l'écran utilisable.
+    const request = toRequest({ ...DEFAULT_SETTINGS, classIds: [] }, LINES, []);
+
+    expect(request.classIds).toEqual([2, 3, 5, 7]);
+  });
+
+  it("transmet une sélection contenant les personnes", () => {
+    const request = toRequest({ ...DEFAULT_SETTINGS, classIds: [2, 0] }, LINES, []);
+
+    expect(request.classIds).toEqual([2, 0]);
   });
 });

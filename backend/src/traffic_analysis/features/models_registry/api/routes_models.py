@@ -9,6 +9,10 @@ from fastapi import APIRouter, Depends, status
 from traffic_analysis.core.deps import ContainerDep
 from traffic_analysis.core.errors import UnavailableError
 from traffic_analysis.core.schemas import CamelModel, ProblemDetails
+from traffic_analysis.features.counting.application.dto import (
+    DETECTABLE_CLASSES,
+    VEHICLE_CLASS_IDS,
+)
 from traffic_analysis.features.models_registry.application.model_service import ModelService
 
 router = APIRouter(prefix="/models", tags=["models"])
@@ -88,6 +92,51 @@ async def list_models(service: ModelServiceDep, container: ContainerDep) -> Mode
         loaded_ids=service.loaded_ids(),
         max_loaded_models=container.settings.max_loaded_models,
     )
+
+
+class DetectableClassSchema(CamelModel):
+    """Une classe cochable, telle que l'interface doit l'afficher."""
+
+    id: int
+    coco_name: str
+    label: str
+    category: str
+    default_selected: bool
+
+
+@router.get(
+    "/classes",
+    response_model=list[DetectableClassSchema],
+    operation_id="listDetectableClasses",
+    summary="Classes que les détecteurs savent reconnaître",
+    description=(
+        "La liste des cases à cocher, **servie par le serveur et non recopiée dans "
+        "l'interface**. Les modèles du catalogue sont tous entraînés sur COCO : une "
+        "classe absente de cette réponse ne demande pas un autre réglage mais un "
+        "autre modèle.\n\n"
+        "`category` sépare les véhicules des personnes, et les totaux ne mélangent "
+        "jamais les deux. `defaultSelected` marque les quatre véhicules, "
+        "c'est-à-dire le comportement historique de l'application."
+    ),
+)
+async def list_detectable_classes() -> list[DetectableClassSchema]:
+    """Servie sans toucher au registre : c'est une donnée, pas un état machine.
+
+    Publier cette liste plutôt que la recopier côté interface évite la panne la
+    plus bête de ce genre de fonctionnalité : une case cochable dans le navigateur
+    que le serveur refuse à l'envoi, ou l'inverse — une classe détectable que
+    personne ne peut cocher.
+    """
+    return [
+        DetectableClassSchema(
+            id=entry.id,
+            coco_name=entry.coco_name,
+            label=entry.label,
+            category=entry.category,
+            default_selected=entry.id in VEHICLE_CLASS_IDS,
+        )
+        for entry in DETECTABLE_CLASSES
+    ]
 
 
 @router.post(
