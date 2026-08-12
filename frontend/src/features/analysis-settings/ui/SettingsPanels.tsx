@@ -1,5 +1,5 @@
 /**
- * Les trois panneaux de réglages, et le **diagnostic live**.
+ * La barre de réglages du studio, et le **diagnostic live**.
  *
  * Le diagnostic n'est pas décoratif, et c'est la raison d'être de ce fichier :
  * « le compte est faux » n'est diagnosticable que si l'on peut voir **laquelle** des
@@ -10,15 +10,34 @@
  *
  * Chaque réglage porte l'énoncé de son compromis. Un curseur sans explication est un
  * curseur qu'on ne touche pas — ou qu'on tourne à fond, ce qui est pire.
+ *
+ * **Une barre au-dessus de la vidéo, plus une colonne à côté.** Les trois panneaux
+ * étaient trois accordéons empilés dans un `<aside>` de 20 rem : ils occupaient en
+ * permanence le quart de l'écran pour des réglages qu'on touche une fois avant de
+ * lancer, et repoussaient les résultats — ce qu'on regarde vraiment — sous la ligne
+ * de flottaison. Ils s'ouvrent maintenant en **tiroir pleine largeur**, ce qui leur
+ * donne trois colonnes au lieu d'une, et rend la place à la scène et aux compteurs.
+ *
+ * Un seul tiroir ouvert à la fois, et **fermé par défaut** : l'écran d'arrivée doit
+ * montrer la vidéo, pas un formulaire.
  */
 
 import { ChevronDown } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 
 import { ModelPicker } from "@/features/model-picker";
 import type { DetectableClass, Diagnostics, VehicleModel } from "@/shared/api/contracts";
 
 import { BOUNDS, DEFAULT_CONFIDENCE, type AnalysisSettings } from "../model/settings";
+
+/** Identifiants des tiroirs — l'ordre est celui de la barre. */
+const PANELS = [
+  { id: "detection", label: "Détection" },
+  { id: "comptage", label: "Comptage" },
+  { id: "affichage", label: "Affichage & analyse" },
+] as const;
+
+type PanelId = (typeof PANELS)[number]["id"];
 
 interface SettingsPanelsProps {
   settings: AnalysisSettings;
@@ -45,6 +64,15 @@ interface SettingsPanelsProps {
   diagnostics: Diagnostics | null;
   disabled: boolean;
   onChange: (patch: Partial<AnalysisSettings>) => void;
+  /**
+   * Contenu placé **avant** les onglets, sur la même ligne.
+   *
+   * C'est là que le studio pose le bouton d'import. Un emplacement plutôt qu'un
+   * import direct : `analysis-settings` n'a pas à connaître `media-source`, et le
+   * câblage entre deux features passe par `StudioPage` — la même règle qui donne à
+   * `GeometryPanel` un `onOpenPresets` plutôt que la modale elle-même.
+   */
+  leading?: ReactNode | undefined;
 }
 
 export function SettingsPanels({
@@ -57,10 +85,15 @@ export function SettingsPanels({
   diagnostics,
   disabled,
   onChange,
+  leading,
 }: SettingsPanelsProps) {
-  return (
-    <>
-      <Section title="Détection" defaultOpen>
+  /** `null` = tout fermé, l'état d'arrivée. */
+  const [open, setOpen] = useState<PanelId | null>(null);
+  const base = useId();
+
+  const panels: Record<PanelId, ReactNode> = {
+    detection: (
+      <PanelGrid>
         {/* `canPreload={!disabled}` : le préchargement prend un bail sur le
             modèle, donc le lancer pendant une analyse ferait attendre la fin de
             celle-ci sans que rien à l'écran ne l'explique. `disabled` vaut
@@ -143,9 +176,10 @@ export function SettingsPanels({
             onChange={(readPlateText) => onChange({ readPlateText })}
           />
         )}
-      </Section>
-
-      <Section title="Comptage">
+      </PanelGrid>
+    ),
+    comptage: (
+      <PanelGrid>
         <Slider
           label="Images avant comptage"
           value={settings.minHits}
@@ -166,15 +200,16 @@ export function SettingsPanels({
           onChange={(maxLostMs) => onChange({ maxLostMs })}
         />
 
-        <Slider
-          label="Similarité de ré-identification"
-          value={settings.reidMinSimilarity}
-          bounds={BOUNDS.reidMinSimilarity}
-          disabled={disabled}
-          format={(value) => `${Math.round(value * 100)} %`}
-          hint="Plus haut = moins de fusions abusives, mais des véhicules réapparus comptés deux fois."
-          onChange={(reidMinSimilarity) => onChange({ reidMinSimilarity })}
-        />
+        {/* Le curseur « Similarité de ré-identification » a été retiré d'ici.
+            La ré-identification est **sortie du périmètre produit** (ADR 0014) : on
+            compte des passages, chaque franchissement observé compte, et la galerie
+            ne sert plus qu'au vote de classe et au vote de plaque — deux mécanismes
+            internes que l'utilisateur n'arbitre pas devant sa scène.
+
+            Le réglage reste dans `AnalysisSettings` et voyage toujours dans la
+            requête : le retirer du contrat casserait les configurations enregistrées
+            et l'historique, pour aucun gain. C'est l'interface qui cesse de le
+            proposer, pas le serveur qui cesse de l'accepter. */}
 
         <Slider
           label="Seuil IoU"
@@ -187,9 +222,10 @@ export function SettingsPanels({
         />
 
         {diagnostics !== null && <DiagnosticsPanel diagnostics={diagnostics} />}
-      </Section>
-
-      <Section title="Affichage & analyse">
+      </PanelGrid>
+    ),
+    affichage: (
+      <PanelGrid>
         <Toggle
           label="Trajectoires"
           checked={settings.showTrails}
@@ -231,8 +267,72 @@ export function SettingsPanels({
           hint="Sans échelle, les vitesses restent en pixels par seconde au lieu d'être converties en km/h."
           onChange={(value) => onChange({ pixelsPerMeter: value === 0 ? null : value })}
         />
-      </Section>
-    </>
+      </PanelGrid>
+    ),
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        {leading}
+        {PANELS.map((panel) => {
+          const active = open === panel.id;
+          return (
+            <button
+              key={panel.id}
+              type="button"
+              // `aria-expanded` + `aria-controls` : l'accordéon d'origine n'avait ni
+              // l'un ni l'autre, donc un lecteur d'écran annonçait un bouton sans
+              // dire qu'il ouvre quelque chose, ni quoi.
+              aria-expanded={active}
+              aria-controls={`${base}-${panel.id}`}
+              // Re-cliquer referme : c'est le geste attendu d'un tiroir, et cela
+              // évite d'avoir à chercher une croix de fermeture.
+              onClick={() => setOpen(active ? null : panel.id)}
+              className={[
+                "label-caps inline-flex h-10 items-center gap-2 rounded-pill px-4",
+                "transition-colors",
+                active
+                  ? "bg-elevated text-ink shadow-card"
+                  : "bg-surface text-ink-muted hover:bg-surface-2 hover:text-ink",
+              ].join(" ")}
+            >
+              {panel.label}
+              <ChevronDown
+                aria-hidden="true"
+                className={`size-4 text-ink-dim transition-transform ${active ? "rotate-180" : ""}`}
+              />
+            </button>
+          );
+        })}
+      </div>
+
+      {open !== null && (
+        <section
+          id={`${base}-${open}`}
+          // `region` + le nom du panneau : le tiroir devient un point de repère
+          // atteignable directement, au lieu d'un bloc anonyme.
+          role="region"
+          aria-label={PANELS.find((panel) => panel.id === open)?.label}
+          className="rounded-section bg-surface p-4 shadow-card"
+        >
+          {panels[open]}
+        </section>
+      )}
+    </div>
+  );
+}
+
+/**
+ * La grille du tiroir : une colonne sur mobile, deux puis trois en largeur.
+ *
+ * `items-start` est nécessaire : sans lui, les cellules d'une même rangée s'étirent
+ * à la hauteur de la plus grande, et un curseur se retrouve centré dans le vide en
+ * face du sélecteur de modèle.
+ */
+function PanelGrid({ children }: { children: ReactNode }) {
+  return (
+    <div className="grid items-start gap-x-6 gap-y-4 md:grid-cols-2 xl:grid-cols-3">{children}</div>
   );
 }
 
@@ -323,36 +423,6 @@ function DiagnosticsPanel({ diagnostics }: { diagnostics: Diagnostics }) {
 }
 
 /* ── Primitives ─────────────────────────────────────────────────────────── */
-
-function Section({
-  title,
-  defaultOpen = false,
-  children,
-}: {
-  title: string;
-  defaultOpen?: boolean;
-  children: React.ReactNode;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-
-  return (
-    <div className="rounded-section bg-surface shadow-card">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        className="flex w-full items-center justify-between p-4 text-start"
-      >
-        <span className="label-micro">{title}</span>
-        <ChevronDown
-          aria-hidden="true"
-          className={`size-4 text-ink-dim transition-transform ${open ? "rotate-180" : ""}`}
-        />
-      </button>
-      {open && <div className="space-y-4 px-4 pb-4">{children}</div>}
-    </div>
-  );
-}
 
 interface SliderProps {
   label: string;

@@ -221,6 +221,35 @@ class JobManager:
             )
         return path
 
+    async def input_video_path(self, job_id: str) -> Path:
+        """Chemin de la vidéo analysée, ou une erreur qui dit **pourquoi** elle manque.
+
+        Sert à rejouer une analyse depuis l'historique. Les compteurs, le registre et
+        l'histogramme se rejouent depuis le seul `result.json.gz` ; l'incrustation
+        des boîtes et le déplacement dans la timeline ont besoin de la vidéo.
+
+        **Le refus est distinct de celui du résultat**, et ce n'est pas du zèle : une
+        vidéo purgée n'appelle pas « relancez l'analyse » — le résultat, lui, est
+        intact et parfaitement affichable. Elle appelle « redéposez le fichier ».
+        Réutiliser `result_missing` enverrait l'utilisateur refaire un calcul qui n'a
+        pas besoin d'être refait.
+        """
+        record = await self.get(job_id)
+        if record.status != "done":
+            raise ConflictError(
+                f"La vidéo n'est pas disponible : le job est « {record.status} ».",
+                code="job_not_finished",
+            )
+        path = self._result_store.input_path_for(job_id)
+        if path is None:
+            raise ConflictError(
+                "La vidéo analysée a été purgée — elle est effacée plus tôt que le "
+                "résultat. Les chiffres restent affichables ; redéposez le fichier "
+                "pour revoir les boîtes sur l'image.",
+                code="input_missing",
+            )
+        return path
+
     # ── Suspension et reprise ────────────────────────────────────────────────
 
     async def pause(self, job_id: str) -> JobRecord:
@@ -602,6 +631,11 @@ class JobManager:
             "fileName": record.file_name,
             "createdAt": record.created_at.isoformat(),
             "finishedAt": record.finished_at.isoformat() if record.finished_at else None,
+            # Les agrégats dénormalisés, pour que l'historique dise ce qu'une analyse
+            # a trouvé sans ouvrir son `result.json.gz`. Zéro tant qu'elle tourne :
+            # ils sont écrits en une fois à la fin.
+            "uniqueVehicles": record.unique_vehicles,
+            "crossingsTotal": record.crossings_total,
         }
 
     @staticmethod

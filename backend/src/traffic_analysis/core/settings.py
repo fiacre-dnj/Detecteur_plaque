@@ -141,15 +141,19 @@ class Settings(BaseSettings):
     #: une part de cadence d'analyse. **L'échange se mesure**, il ne se suppose pas :
     #: le banc le chiffre sur ses propres vidéos.
     #:
-    #: **Ce qu'il borne, et ce qu'il ne borne pas — mesuré.** Il atteint torch (donc
-    #: le détecteur et le suivi des véhicules, qui tournent à *chaque* image) et
-    #: l'OCR, dont on a vu la vignette passer de 66 à 85 ms en la ramenant à trois
-    #: threads. Il **n'atteint pas le détecteur de plaques** : celui-ci est un
-    #: `.onnx` chargé par Ultralytics, qui construit sa session sans jamais passer de
-    #: `SessionOptions` (`ultralytics/nn/backends/onnx.py`), donc onnxruntime y garde
-    #: son défaut — tous les cœurs. Vérifié plutôt que supposé : à trois threads, la
-    #: détection reste à 656 ms contre 702 sans budget, soit l'écart de deux mesures
-    #: identiques. Le levier du détecteur n'est pas là : c'est son étranglement.
+    #: **Ce qu'il borne, et ce qu'il ne borne pas.** Il atteint tout ce qui passe par
+    #: torch : le détecteur et le suivi des véhicules, qui tournent à *chaque* image,
+    #: et **désormais le détecteur de plaques** — depuis son passage en `.pt`
+    #: ([ADR 0015](../../../docs/adr/0015-le-detecteur-de-plaques-en-pt.md)), il vit
+    #: sur les mêmes threads que le reste. Ce n'était pas le cas de l'export `.onnx`
+    #: qu'il remplace : Ultralytics construisait sa session onnxruntime sans jamais
+    #: passer de `SessionOptions`, donc ce budget lui était invisible — mesuré à
+    #: l'époque, 656 ms à trois threads contre 702 sans budget, soit deux fois la
+    #: même chose.
+    #:
+    #: Il atteint aussi l'OCR, dont on a vu la vignette passer de 66 à 85 ms en la
+    #: ramenant à trois threads. L'OCR, elle, reste en onnxruntime, mais son
+    #: adaptateur passe ses `SessionOptions` explicitement (`plate_reader.py`).
     #:
     #: Sans effet sur GPU, où l'inférence ne vit pas sur ces threads.
     inference_threads: int = Field(0, ge=0, le=64)
@@ -164,7 +168,7 @@ class Settings(BaseSettings):
     #: jamais dépendre du réseau pour démarrer.
     warmup: bool = True
     max_loaded_models: int = Field(2, ge=1, le=8)
-    plate_model_path: Path | None = None  # vide = <weights_dir>/license-plate.onnx
+    plate_model_path: Path | None = None  # vide = <weights_dir>/license-plate.pt
     plate_confidence: float = Field(0.25, ge=0.05, le=0.95)
     #: IoU de la suppression des non-maxima du modèle de plaques. Le défaut
     #: d'Ultralytics (0,70) est calibré pour une scène COCO encombrée ; sur une
@@ -350,9 +354,21 @@ class Settings(BaseSettings):
     #: flux et le travail du navigateur — se mesure en secondes.
     preview_interval_ms: int = Field(200, ge=0, le=5000)
     job_ttl_minutes: int = Field(1440, ge=1)
-    # La vidéo d'entrée est la donnée la plus lourde et la plus sensible, et elle
-    # n'est plus nécessaire une fois le résultat produit : elle part plus tôt.
-    input_ttl_minutes: int = Field(60, ge=1)
+    #: Durée de vie de la **vidéo déposée**, distincte de celle du job.
+    #:
+    #: Elle valait 60 minutes, au motif que « la vidéo n'est plus nécessaire une fois
+    #: le résultat produit ». Ce motif a cessé d'être vrai le jour où l'historique a
+    #: su rejouer une analyse : rouvrir un résultat redessine les boîtes sur l'image
+    #: et déplace la lecture depuis la timeline, et les deux demandent la vidéo. Une
+    #: purge à 60 minutes rendait donc la fonction inutilisable au bout d'une heure,
+    #: sur des résultats gardés 24.
+    #:
+    #: **Reste un réglage à part, et c'est délibéré.** La vidéo est la donnée la plus
+    #: lourde et la plus sensible du service — une scène de trafic contient des
+    #: plaques réelles et des visages, là où un résultat ne porte que des boîtes et
+    #: des compteurs. Un déploiement qui veut une rétention courte la baisse ici sans
+    #: toucher à celle des résultats ; il perd le rejeu sur image, pas les chiffres.
+    input_ttl_minutes: int = Field(1440, ge=1)
 
     # ── Limitation de débit, par adresse IP ──────────────────────────────────
     #: Limite globale. `0` la désactive entièrement — utile pour un déploiement
@@ -397,8 +413,17 @@ class Settings(BaseSettings):
         Vide dans l'environnement signifie « à l'emplacement par défaut », pas
         « pas de modèle » : l'absence du fichier se constate au chargement, elle
         ne se déduit pas d'une configuration vide.
+
+        **Le suffixe `.pt` fait partie du contrat, pas de la décoration.**
+        Ultralytics choisit son backend d'après le suffixe du fichier
+        (`ultralytics/nn/autobackend.py`, `_model_type()`), et rien ne vérifie
+        que le contenu correspond. Un `.pt` déposé sous un nom en `.onnx` est
+        donc lu par le backend onnxruntime, qui échoue — mais après que
+        `plate_available` a déjà répondu « oui », puisque le fichier existe.
+        Le résultat est un drapeau vert et zéro plaque à chaque image.
+        Voir [ADR 0015](../../../docs/adr/0015-le-detecteur-de-plaques-en-pt.md).
         """
-        return self.plate_model_path or self.weights_dir / "license-plate.onnx"
+        return self.plate_model_path or self.weights_dir / "license-plate.pt"
 
     @property
     def resolved_plate_detect_every_n_frames(self) -> int:
@@ -469,7 +494,7 @@ class Settings(BaseSettings):
           `Path("")`, c'est-à-dire `Path(".")`, qui est **vrai** : le repli
           « vide ⇒ défaut » ne se déclenche jamais et le service sert le
           répertoire courant au lieu de rien ;
-        - `TRAFFIC_PLATE_MODEL_PATH=  # vide = <weights>/license-plate.onnx` —
+        - `TRAFFIC_PLATE_MODEL_PATH=  # vide = <weights>/license-plate.pt` —
           un commentaire en fin de ligne après une valeur vide. Il **devient** la
           valeur, et le service cherche alors son modèle de plaques à un chemin
           nommé « # vide = … ». C'est exactement ce qui est arrivé ici : l'ANPR
@@ -518,7 +543,7 @@ class Settings(BaseSettings):
         commentaire en fin de ligne du `.env` : lancer `uvicorn` depuis la racine
         du dépôt plutôt que depuis `backend/` faisait résoudre `./.weights` en
         `<racine>/.weights`, un dossier qui n'existe pas. **Tous** les poids
-        paraissaient alors absents — `license-plate.onnx` et les deux fichiers
+        paraissaient alors absents — `license-plate.pt` et les deux fichiers
         d'OCR compris — donc l'ANPR devenait indisponible sans qu'aucun message ne
         mentionne le répertoire de lancement. Le service démarre, le catalogue
         répond, et rien n'a l'air cassé.

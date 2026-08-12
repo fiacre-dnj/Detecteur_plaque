@@ -31,17 +31,17 @@ from traffic_analysis.features.models_registry.infrastructure.plate_detector imp
     MOSAIC_GUTTER_PX,
     NET_SIZE,
     PAD_VALUE,
-    OnnxPlateDetector,
     PlateGeometry,
+    UltralyticsPlateDetector,
 )
 
 _MISSING = "modele-absent.onnx"
 
 
-def _detector(**kwargs: object) -> OnnxPlateDetector:
+def _detector(**kwargs: object) -> UltralyticsPlateDetector:
     from pathlib import Path
 
-    return OnnxPlateDetector(Path(_MISSING), 0.25, **kwargs)  # type: ignore[arg-type]
+    return UltralyticsPlateDetector(Path(_MISSING), 0.25, **kwargs)  # type: ignore[arg-type]
 
 
 def _crop(width: int, height: int, fill: int = 200) -> np.ndarray:
@@ -250,7 +250,7 @@ class TestAllerRetourDeCoordonnees:
 
 class TestPlausibilite:
     @staticmethod
-    def _placement(detector: OnnxPlateDetector, width: int = 200, height: int = 160):  # noqa: ANN205
+    def _placement(detector: UltralyticsPlateDetector, width: int = 200, height: int = 160):  # noqa: ANN205
         _, placements = detector._pack([(0, _crop(width, height), 0, 0)])
         return placements[0]
 

@@ -15,4 +15,4 @@ export {
   type VehicleClass,
 } from "./model/labels";
 
-export { ResultsDashboard } from "./ui/ResultsDashboard";
+export { ClassBreakdown, LineAndZoneDetail, ResultsDashboard } from "./ui/ResultsDashboard";

@@ -20,6 +20,23 @@ export async function fetchResult(jobId: string): Promise<AnalysisResult> {
 }
 
 /**
+ * URL de la vidéo analysée, à poser sur `video.src`.
+ *
+ * Une URL et non un téléchargement : la balise `<video>` la lit **par plages**
+ * (`Accept-Ranges`), ce qui rend le déplacement dans la timeline immédiat au lieu de
+ * retélécharger des centaines de mégaoctets à chaque clic. La charger par `fetch`
+ * puis en faire un blob annulerait exactement cette propriété.
+ *
+ * Peut répondre 409 `input_missing` : la vidéo est purgée plus tôt que le résultat.
+ * Ce n'est pas une panne — les chiffres restent affichables, c'est l'incrustation sur
+ * l'image qui demande de redéposer le fichier. L'erreur remonte par l'événement
+ * `error` de la balise, pas par une exception ici.
+ */
+export function inputVideoUrl(jobId: string): string {
+  return `/api/v1/jobs/${jobId}/input`;
+}
+
+/**
  * Annule un job en cours, ou purge un job terminé.
  *
  * Une seule route pour les deux gestes côté serveur : du point de vue de

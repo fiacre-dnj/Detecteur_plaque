@@ -15,11 +15,24 @@ export const VEHICLE_CLASSES = ["car", "motorcycle", "bus", "truck"] as const;
 
 export type VehicleClass = (typeof VEHICLE_CLASSES)[number];
 
+/**
+ * Libellés français des classes détectables, dans les mêmes termes que le serveur
+ * (`DETECTABLE_CLASSES`).
+ *
+ * Recopiés et non lus depuis `GET /models/classes`, et c'est un compromis assumé :
+ * la répartition doit s'afficher sur un résultat archivé, y compris hors ligne ou
+ * lorsque le catalogue n'a pas encore répondu. Le repli sur le libellé brut
+ * ci-dessous fait que l'oubli d'une classe se voit — « bicycle » au lieu de
+ * « Vélo » — au lieu de faire disparaître une ligne.
+ */
 const LABELS: Readonly<Record<string, string>> = {
   car: "Voiture",
   motorcycle: "Moto",
   bus: "Bus",
   truck: "Camion",
+  bicycle: "Vélo",
+  person: "Personne",
+  train: "Train",
 };
 
 /**
@@ -93,32 +106,40 @@ export function formatFrameLatency(processingFps: number): string {
  * Part des véhicules détectés qui ont franchi au moins une ligne.
  *
  * **Le chiffre qui juge le tracé, pas le modèle.** Un écart franc entre les
- * véhicules uniques et les franchissements ne dit rien de la détection : il dit
+ * véhicules uniques et ceux qui franchissent ne dit rien de la détection : il dit
  * que la ligne n'est pas sur le passage du trafic, ou qu'elle ne couvre qu'une
  * voie. C'est l'information que ni « 48 uniques » ni « 5 franchissements » ne
  * donnent séparément, et qu'on ne calcule jamais de tête devant un écran.
  *
- * Le chiffre se lit littéralement depuis l'ADR 0009 : un véhicule compte une
- * fois, toutes lignes confondues, donc le rapport est vraiment « combien des
- * véhicules vus sont passés par la ligne ». Avec l'ancien garde par ligne et par
- * sens, un second tracé suffisait à faire doubler le taux sans qu'un véhicule de
- * plus soit passé.
+ * **Le numérateur est un nombre de véhicules, pas de franchissements**, et cette
+ * précision est tout ce qui sépare la version d'aujourd'hui d'un chiffre faux.
+ * Jusqu'à ADR 0014 les deux étaient interchangeables — un véhicule comptait une
+ * fois, toutes lignes confondues. Depuis, on compte des **passages** : un
+ * aller-retour en vaut 2, deux lignes en travers de la même voie en valent 2. Le
+ * rapport `crossings / uniqueVehicles` mélangeait donc deux unités, dépassait
+ * 100 % sans rien signaler, et ne répondait plus à la question écrite ci-dessus.
+ *
+ * D'où `crossedUnique` : le nombre de `globalId` **distincts** apparaissant dans
+ * les franchissements. Il reste **dérivé** des événements (invariant 3), jamais
+ * accumulé à côté, et il est borné par `uniqueVehicles` par construction.
  *
  * Rendu `null` sans véhicule : afficher « 0 % » quand rien n'a encore été détecté
  * se lirait comme un comptage en échec, alors que l'analyse commence à peine.
  */
-export function crossingRate(uniqueVehicles: number, crossings: number): number | null {
+export function crossingRate(uniqueVehicles: number, crossedUnique: number): number | null {
   if (uniqueVehicles <= 0) return null;
-  return crossings / uniqueVehicles;
+  return crossedUnique / uniqueVehicles;
 }
 
 /**
  * Le taux, en pourcentage.
  *
- * Non borné à 100 %, et pour une seule raison depuis l'ADR 0009 : un véhicule
- * disparu puis reconnu à son retour recompte. Une caméra qui voit passer la même
- * navette plusieurs fois dépasse donc légitimement 100 %, et écrêter masquerait
- * précisément ce cas.
+ * **Borné à 100 % par construction, plus par écrêtage** : le numérateur est un
+ * sous-ensemble du dénominateur — des véhicules qui ont franchi, parmi les
+ * véhicules vus. Il n'y a donc plus rien à écrêter, et c'est le signe que le
+ * calcul est le bon. La version d'avant ADR 0014 documentait explicitement
+ * qu'elle ne bornait pas, et c'est ce commentaire qui trahissait le mélange
+ * d'unités.
  */
 export function formatCrossingRate(rate: number | null): string {
   return rate === null ? "—" : `${Math.round(rate * 100)} %`;

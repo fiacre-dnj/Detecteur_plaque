@@ -31,6 +31,26 @@ interface ResultsDashboardProps {
   /** Vrai en relecture : l'occupation de zone n'est alors pas calculable. */
   replaying: boolean;
   /**
+   * Disposition des cartes.
+   *
+   * - `wide` — quatre colonnes en pleine largeur. Le direct et l'analyse en cours,
+   *   où le tableau de bord occupe toute la page ;
+   * - `column` — deux colonnes serrées, pour la colonne latérale du studio, où les
+   *   chiffres se lisent **à côté** de la scène plutôt qu'en dessous.
+   *
+   * Une prop plutôt qu'un second composant : c'est le même code qui sert le direct et
+   * le différé, et c'est précisément ce qui garantit que les deux modes affichent les
+   * mêmes chiffres. Dupliquer la grille dupliquerait tôt ou tard une carte.
+   */
+  layout?: "wide" | "column";
+  /**
+   * N'affiche que les cartes de synthèse.
+   *
+   * La répartition, le détail par ligne et le détail par zone vivent désormais dans
+   * les onglets sous la vidéo : les rendre ici aussi les afficherait deux fois.
+   */
+  cardsOnly?: boolean;
+  /**
    * Contenu inséré **entre la répartition par type et le détail par ligne**.
    *
    * Un emplacement et non une place libre en bas : ce qui vient s'y loger — le
@@ -48,6 +68,8 @@ export function ResultsDashboard({
   zones,
   processingFps,
   replaying,
+  layout = "wide",
+  cardsOnly = false,
   children,
 }: ResultsDashboardProps) {
   const rateAvailable = stats.elapsedMs >= 3_000;
@@ -56,9 +78,15 @@ export function ResultsDashboard({
     <div className="space-y-6">
       <section aria-labelledby="cards-title">
         <h3 id="cards-title" className="label-micro mb-3">
-          Synthèse
+          Résultats
         </h3>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div
+          className={
+            layout === "column"
+              ? "grid grid-cols-2 gap-2"
+              : "grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
+          }
+        >
           {/* Les deux cartes de tête sont les catégories, jamais leur somme : un
               piéton n'est pas un véhicule de plus. La somme des deux **est**
               « Franchissements », que le serveur garantit égale (ADR 0014). */}
@@ -86,11 +114,12 @@ export function ResultsDashboard({
             value={stats.uniqueVehicles.toString()}
             hint="Identités suivies, pas le total compté"
           />
-          <MetricCard
-            label="Ré-identifications"
-            value={stats.reidHits.toString()}
-            hint="Retours après occlusion"
-          />
+          {/* La carte « Ré-identifications » a été retirée. La ré-identification est
+              **sortie du périmètre produit** (ADR 0014) : on compte des passages, et
+              `reidHits` ne décrit plus rien que l'utilisateur arbitre. Le champ reste
+              dans le contrat — la galerie tourne toujours pour le vote de classe et
+              le vote de plaque — mais l'afficher invitait à interpréter un rouage
+              interne comme un résultat. */}
           <MetricCard
             label="Débit estimé"
             value={rateAvailable ? `${stats.vehiclesPerMinute}` : "—"}
@@ -120,10 +149,14 @@ export function ResultsDashboard({
           />
           <MetricCard
             label="Taux de franchissement"
-            value={formatCrossingRate(crossingRate(stats.uniqueVehicles, stats.crossings))}
-            // Ce que ni « uniques » ni « franchissements » ne disent seuls : la
-            // ligne est-elle posée là où le trafic passe ?
-            hint="Véhicules détectés qui franchissent une ligne"
+            value={formatCrossingRate(crossingRate(stats.uniqueVehicles, stats.crossedUnique))}
+            // Ce que ni « uniques » ni « passages » ne disent seuls : la ligne
+            // est-elle posée là où le trafic passe ?
+            //
+            // `crossedUnique` et non `crossings` : depuis ADR 0014 les passages sont
+            // une autre unité que les véhicules, et les diviser l'un par l'autre
+            // faisait dépasser 100 % dès le premier aller-retour.
+            hint="Part des véhicules vus qui franchissent une ligne"
           />
         </div>
         <p className="mt-2 text-small text-ink-dim">
@@ -132,30 +165,67 @@ export function ResultsDashboard({
         </p>
       </section>
 
-      <section aria-labelledby="classes-title">
-        <h3 id="classes-title" className="label-micro mb-3">
-          Répartition par type
-        </h3>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {VEHICLE_CLASSES.map((klass) => (
-            <div key={klass} className="rounded-card bg-surface p-3 shadow-card">
-              <p className="text-caption font-bold text-ink">{classLabel(klass)}</p>
-              <p className="mt-1 text-small text-ink-muted tabular">
-                {stats.uniqueByClass[klass] ?? 0} uniques · {stats.byClass[klass] ?? 0} passages
-              </p>
-            </div>
-          ))}
-        </div>
-        {/* La règle de l'invariant 4, énoncée à l'utilisateur : on compte sous
-            l'identité votée, pas sous la lecture de la frame courante. */}
-        <p className="mt-2 text-small text-ink-dim">
-          Le type retenu pour un véhicule est celui que le détecteur lui a donné le
-          plus souvent, pas celui de la dernière image.
-        </p>
-      </section>
+      {cardsOnly ? null : (
+        <>
+          <ClassBreakdown stats={stats} />
+          {children}
+          <LineAndZoneDetail stats={stats} lines={lines} zones={zones} replaying={replaying} />
+        </>
+      )}
+    </div>
+  );
+}
 
-      {children}
+/**
+ * La répartition par type — véhicules **et** personnes.
+ *
+ * Extraite pour être posée dans un onglet sous la vidéo, et corrigée au passage :
+ * elle n'itérait que les quatre classes de véhicules. Les personnes sont comptées
+ * depuis ADR 0014, s'affichent dans les cartes de synthèse, et n'apparaissaient
+ * nulle part ici — un total visible en haut sans aucune ligne correspondante en bas
+ * se lit comme une incohérence du comptage.
+ */
+export function ClassBreakdown({ stats }: { stats: AnalysisStats }) {
+  // `person` en dernier : les véhicules d'abord, parce que c'est ce que
+  // l'application compte par défaut, et la catégorie à part ensuite.
+  const rows = [...VEHICLE_CLASSES, "person"] as const;
 
+  return (
+    <section aria-labelledby="classes-title">
+      <h3 id="classes-title" className="label-micro mb-3">
+        Répartition par type
+      </h3>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        {rows.map((klass) => (
+          <div key={klass} className="rounded-card bg-surface p-3 shadow-card">
+            <p className="text-caption font-bold text-ink">{classLabel(klass)}</p>
+            <p className="mt-1 text-small text-ink-muted tabular">
+              {stats.uniqueByClass[klass] ?? 0} uniques · {stats.byClass[klass] ?? 0} passages
+            </p>
+          </div>
+        ))}
+      </div>
+      {/* La règle de l'invariant 4, énoncée à l'utilisateur : on compte sous
+          l'identité votée, pas sous la lecture de la frame courante. */}
+      <p className="mt-2 text-small text-ink-dim">
+        Le type retenu pour un véhicule est celui que le détecteur lui a donné le plus
+        souvent, pas celui de la dernière image.
+      </p>
+    </section>
+  );
+}
+
+interface DetailProps {
+  stats: AnalysisStats;
+  lines: readonly CountingLine[];
+  zones: readonly Zone[];
+  replaying: boolean;
+}
+
+/** Le détail par ligne et par zone — extrait pour tenir dans un onglet. */
+export function LineAndZoneDetail({ stats, lines, zones, replaying }: DetailProps) {
+  return (
+    <div className="space-y-6">
       {lines.length > 0 && (
         <section aria-labelledby="lines-title">
           <h3 id="lines-title" className="label-micro mb-3">

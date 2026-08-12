@@ -1,6 +1,6 @@
 /** `features/analysis-job` — déposer une vidéo, suivre l'analyse, récupérer le résultat. */
 
-export { cancelJob, fetchResult, pauseJob, resumeJob } from "./model/fetchResult";
+export { cancelJob, fetchResult, inputVideoUrl, pauseJob, resumeJob } from "./model/fetchResult";
 export {
   PROGRESS_MIN_INTERVAL_MS,
   PROGRESS_MIN_STEP,

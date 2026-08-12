@@ -68,6 +68,19 @@ class HealthSchema(CamelModel):
             "Ne dit rien de la lecture du texte, voir `plateOcrAvailable`."
         )
     )
+    plate_loadable: bool | None = Field(
+        default=None,
+        description=(
+            "Le détecteur de plaques a-t-il passé son auto-test au démarrage — "
+            "chargement réel puis une inférence à vide ? `null` = pas encore testé "
+            "(préchauffage désactivé ou toujours en cours). **`false` avec un "
+            "`plateAvailable: true` est l'état à surveiller** : les poids sont là et "
+            "ne se chargent pas, donc l'ANPR est muette alors que tout paraît vert. "
+            "C'est typiquement un fichier corrompu, tronqué, ou dont le suffixe "
+            "contredit le format — Ultralytics choisit son backend d'après le "
+            "suffixe."
+        ),
+    )
     plate_ocr_available: bool = Field(
         description=(
             "Le modèle de **lecture** du texte de plaque **et** son dictionnaire de "

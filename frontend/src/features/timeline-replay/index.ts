@@ -23,4 +23,8 @@ export {
   vehiclesAt,
 } from "./model/replay";
 
+export { activeCrossingIndex, formatTimecode } from "./model/timeline";
+
 export { useReplay, type ReplayState } from "./model/useReplay";
+
+export { CrossingTimeline } from "./ui/CrossingTimeline";

@@ -26,6 +26,8 @@ function job(status: JobStatus, overrides: Partial<Job> = {}): Job {
     preparing: false,
     modelId: "yolov8n",
     fileName: "carrefour.mp4",
+    uniqueVehicles: 12,
+    crossingsTotal: 17,
     createdAt: "2026-08-05T10:00:00+00:00",
     finishedAt: "2026-08-05T10:01:00+00:00",
     ...overrides,

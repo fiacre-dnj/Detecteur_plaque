@@ -1,7 +1,7 @@
 """Le filtre qui sépare une plaque d'un pare-chocs.
 
 **Ces tests n'existaient pas, et ne pouvaient pas exister.** Le filtre vivait dans
-`OnnxPlateDetector`, donc derrière `ultralytics`, donc jamais traversé par une CI
+`UltralyticsPlateDetector`, donc derrière `ultralytics`, donc jamais traversé par une CI
 qui tourne sans GPU, sans poids et sans ultralytics. Le cas qui a motivé l'ADR
 0008 — une boîte « véhicule entier » à 0,87 de confiance, inatteignable par un
 seuil — n'était vérifié par rien.

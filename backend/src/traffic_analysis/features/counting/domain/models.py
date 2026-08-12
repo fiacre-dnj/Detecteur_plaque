@@ -586,6 +586,23 @@ class AnalysisStats:
     unique_vehicles: int
     unique_by_class: dict[str, int]
     crossings: int
+    #: Combien de véhicules **distincts** ont franchi au moins une ligne.
+    #:
+    #: Ni `crossings` en double, ni un sous-produit : c'est une autre unité. Depuis
+    #: ADR 0014 `crossings` compte des **passages** — un aller-retour en vaut 2 —
+    #: alors que celui-ci compte des **véhicules**, et il est donc borné par
+    #: `unique_vehicles`.
+    #:
+    #: Un champ et non une propriété, contrairement à `by_category` : la distinction
+    #: ne se lit pas dans `by_class`, qui a déjà additionné les passages. Il faut
+    #: l'ensemble des identités ayant fait bouger un compteur, et seul
+    #: `LineCounter.counted_identities()` le connaît. Il reste **dérivé** de cet
+    #: ensemble unique, jamais incrémenté à côté (invariant 3).
+    #:
+    #: Sert le « taux de franchissement » de l'interface, dont le rapport
+    #: `crossings / unique_vehicles` mélangeait deux unités et pouvait dépasser
+    #: 100 % sans rien signaler.
+    crossed_unique: int
     by_class: dict[str, int]
     by_line: dict[str, LineTally]
     by_zone: dict[str, ZoneTally]

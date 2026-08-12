@@ -16,4 +16,5 @@ export {
   type VideoTransport,
 } from "./model/useVideoTransport";
 
+export { PlaybackFpsBadge } from "./ui/PlaybackFpsBadge";
 export { TransportBar } from "./ui/TransportBar";

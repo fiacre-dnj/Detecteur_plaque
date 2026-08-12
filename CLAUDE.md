@@ -60,7 +60,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1227 tests
+uv run pytest                                                            # 1285 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -73,7 +73,7 @@ uv run python scripts/fetch_plate_ocr_model.py       # modèle OCR + son diction
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 471 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 495 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -148,7 +148,36 @@ app → features → entities → shared
 
 Une feature n'importe **jamais** une autre feature. Quand deux en ont besoin, le
 câblage passe par `StudioPage` — c'est pourquoi `GeometryPanel` reçoit un
-`onOpenPresets` plutôt que la modale elle-même.
+`onOpenPresets` plutôt que la modale elle-même, et pourquoi `SettingsPanels` reçoit
+un emplacement `leading` où le studio pose le bouton d'import.
+
+#### La disposition du studio, depuis le 2026-08-12
+
+```
+[⇧ Importer]  [Détection ▾] [Comptage ▾] [Affichage & analyse ▾]   ← barre
+└─ tiroir pleine largeur du panneau ouvert, en 2-3 colonnes (fermé par défaut)
+┌──────────────────────────────┬──────────────────┐
+│ vidéo + canvas + HUD          │ RÉSULTATS         │  aside 24 rem
+│ TransportBar                  │ KPI en 2 colonnes │
+├──────────────────────────────┴──────────────────┤
+│ CHRONOLOGIE — cliquable, déplace la vidéo         │  toujours visible
+│ [Répartition][Par ligne & zone][Flux][Registre]   │  onglets
+└──────────────────────────────────────────────────┘
+```
+
+Elle est l'inverse de la précédente, où les réglages tenaient la colonne de droite
+et les résultats vivaient sous la grille. Trois conséquences à connaître :
+
+- **le direct n'a plus de porte d'entrée.** Les cartes « démonstration » et
+  « caméra » sont retirées de l'écran — elles étaient désactivées depuis longtemps.
+  `realtime-counting`, `RealtimePanel`, `media.selectCamera` et `isCamera` sont
+  **intacts** : rouvrir la porte est un `useCallback` et un bouton dans la barre ;
+- **la chronologie n'est pas dans les onglets**, délibérément : c'est un outil de
+  navigation, et l'enfouir obligerait à changer d'onglet pour se déplacer ;
+- **`Tabs` est une primitive partagée** (`shared/ui/Tabs.tsx`), avec le clavier du
+  motif ARIA — flèches, Home/Fin, un seul onglet dans l'ordre de tabulation.
+  L'accordéon maison qu'elle remplace n'avait ni `role`, ni `aria-controls`, ni
+  gestion des flèches.
 
 ### Le contrat, pas un build
 
@@ -176,6 +205,13 @@ Chacun est un bug déjà payé.
    modèle, jamais en pixels CSS. Les conversions se font aux frontières.
 3. **Un compteur affiché est dérivé, jamais accumulé en double.**
    `crossings == Σ by_line[*].total` et `total == positive + negative`.
+   **Et surtout : ne jamais diviser un compteur de passages par un compteur de
+   véhicules.** Les deux unités ont divergé au 2026-08-12 (ADR 0014) et le « taux de
+   franchissement » l'a payé — il affichait 200 % dès le premier aller-retour, en le
+   documentant comme voulu. Le numérateur est `crossed_unique`, le nombre de
+   véhicules **distincts** ayant franchi, dérivé de
+   `LineCounter.counted_identities()` — la même source que le badge ✓, pour que les
+   deux ne puissent pas se contredire.
 4. **On compte sous `identity_label`** (vote majoritaire de la galerie), jamais
    sous la lecture de la frame courante. **Le texte de plaque suit la même règle** :
    ce qui est publié est le vote de `PlateTextVote` sur toute la vie du véhicule,
@@ -239,9 +275,9 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
 2. **Python 3.12 épinglé**, borne haute `<3.13`.
    [ADR 0001](docs/adr/0001-python-312.md).
 3. **Aucun poids dans git.** [ADR 0002](docs/adr/0002-pas-de-poids-dans-git.md).
-   Le dossier `yolo/` contient des `.onnx` d'une version antérieure :
-   **inutilisables** (un export ONNX ne porte pas le pipeline BoT-SORT + ReID +
-   GMC) et ignorés par le code.
+   Le dossier `yolo/` que les versions antérieures de ce fichier décrivaient
+   **n'existe plus** : ne pas le chercher. Tous les poids vivent dans
+   `backend/.weights/`, tous en `.pt`, tous récupérés par script.
 4. **`torch` en variante automatique** selon le matériel, pas d'extra.
    [ADR 0005](docs/adr/0005-torch-cpu-par-defaut.md).
 5. **Persistance SQLite + SQLAlchemy async + Alembic.** Sept tables. La timeline
@@ -291,12 +327,22 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     (2,9×). Deux règles absolues : **l'OCR ne lit jamais une boîte reprojetée**, et
     une reprojection ne nourrit aucun agrégat.
     [ADR 0010](docs/adr/0010-etranglement-du-detecteur-de-plaques.md).
-12. **Le plancher de lecture est mesuré, pas supposé : ~64 px.** L'échelle de
-    vérité terrain rend 8/8 lectures justes à 320 px, 4/8 à 64 px et **0/8 à
-    48 px** — rejouable par `scripts/anpr_bench.py --truth-ladder`. `min_width_px`
-    vaut donc 64 (et non 32, cinq fois trop permissif, ni 150, qui supprimerait
-    toute lecture). L'OCR relit une identité seulement si la nouvelle vignette bat
-    la meilleure déjà lue de 25 % en **qualité = largeur × netteté**.
+12. **Le plancher de lecture est mesuré, pas supposé — et il y en a _deux_.** Ne
+    pas les confondre, c'est ce qui faisait dire à ce fichier « ~64 px » ici et
+    « ~150 px » plus bas, les deux étant vrais :
+    - **64 px, le seuil de tentative** (`min_width_px`) — en dessous, l'OCR
+      n'essaie même pas. Ni 32 (cinq fois trop permissif) ni 150 (qui
+      supprimerait toute lecture) ;
+    - **~150 px, le seuil de fiabilité** — en dessous, elle essaie et se trompe
+      souvent.
+
+    L'échelle de vérité terrain : 8/8 lectures justes à 320 px, 4/8 à 64 px,
+    **0/8 à 48 px** — rejouable par `scripts/anpr_bench.py --truth-ladder`.
+    Entre 64 et 150 px, l'OCR travaille mais son vote est incertain, et c'est
+    précisément là que `PlateTextVote` gagne sa place.
+
+    L'OCR relit une identité seulement si la nouvelle vignette bat la meilleure
+    déjà lue de 25 % en **qualité = largeur × netteté**.
 13. **Un échec porte son message et son code.** Une `AppError` fait traverser
     `detail` et `code` jusqu'à l'écran ; tout le reste garde la phrase générique,
     parce qu'un `RuntimeError` porte des chemins serveur. Le modèle est **chargé
@@ -307,6 +353,16 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     appellent cinq gestes différents, avec la largeur de la meilleure plaque vue.
     Ce n'est pas un confort : l'étranglement et le plancher de lecture rendent le
     silence plus fréquent, et un silence non expliqué se lit comme une panne.
+15. **Le détecteur de plaques est un `.pt` sur GPU ; l'OCR reste un `.onnx` sur
+    CPU.** Ce n'est pas une incohérence, c'est une mesure : `onnxruntime` n'a pas de
+    provider CUDA ici, donc tout ONNX est cloué au CPU — mais PP-OCRv3 rec est un
+    modèle CTC qu'Ultralytics ne sait pas charger, et son seul équivalent `.pt`
+    imposerait PaddlePaddle (600 Mo, refusé en ADR 0007). L'arbitrage penche
+    franchement : l'OCR coûte 66 ms par vignette contre 702 pour l'ancien détecteur,
+    rapport 10,7 à 1 — **optimiser l'OCR ne rend rien de perceptible.** Les poids
+    véhicules, eux, étaient déjà des `.pt` par nécessité (`track()` a besoin de
+    BoT-SORT + ReID + GMC).
+    [ADR 0015](docs/adr/0015-le-detecteur-de-plaques-en-pt.md).
 
 ## Mesurer avant d'optimiser l'ANPR
 
@@ -347,10 +403,23 @@ produit, ce qui retire la seule propriété qu'on lui demandait.
   mentionne la cause**. Ce piège a tenu l'ANPR hors service pendant tout le
   projet, avec le bon fichier au bon endroit. Le commentaire va au-dessus de la
   clé ; `Settings._blank_means_unset` neutralise en plus les `.env` déjà écrits.
-- Le modèle de plaques vit dans `backend/.weights/license-plate.onnx` (copié
-  depuis `yolo/`, git-ignoré des deux côtés). Contrairement aux `.onnx` de
-  véhicules du dossier `yolo/`, **celui-là est utilisable** : la passe ANPR est
-  une simple détection, elle ne demande ni tracker ni ReID.
+- Le modèle de plaques vit dans **`backend/.weights/license-plate.pt`**, récupéré
+  par `scripts/fetch_plate_model.py` depuis l'URL documentée dans `.env.example`.
+  Un `.pt` et non un `.onnx` : `onnxruntime` n'a **pas de provider CUDA** ici
+  (vérifié : `['AzureExecutionProvider', 'CPUExecutionProvider']`), donc un ONNX
+  reste sur le CPU quel que soit le GPU. Mesuré, même modèle, même image : 45,2 ms
+  sur GPU contre 183,9 ms sur CPU
+  ([ADR 0015](docs/adr/0015-le-detecteur-de-plaques-en-pt.md)).
+- **Le suffixe du fichier de plaques fait partie du contrat.** Ultralytics choisit
+  son backend d'après le *nom*, jamais d'après le contenu. Un `.pt` déposé sous un
+  nom en `.onnx` rend `plateAvailable: true` puis ne détecte **jamais rien** —
+  quatrième exemplaire de la panne silencieuse de cette section. Le script de
+  récupération refuse désormais ce désaccord avant d'écrire.
+- **`plateAvailable` ne dit que « le fichier est là ».** `plateLoadable` dit « il se
+  charge » : un auto-test au démarrage (une inférence à vide, accroché au `warmup`,
+  donc désactivé par `TRAFFIC_WARMUP=false`). `plateAvailable: true` +
+  `plateLoadable: false` est **l'état à surveiller** — poids présents, ANPR muette,
+  tout vert par ailleurs. `null` = pas encore testé, ce n'est pas un échec.
 - **`weights_dir` relatif est ancré sur `backend/`, plus sur le répertoire de
   lancement.** Avant ce correctif, lancer `uvicorn` depuis la racine du dépôt
   faisait paraître *tous* les poids absents et rendait l'ANPR indisponible sans
@@ -358,15 +427,20 @@ produit, ce qui retire la seule propriété qu'on lui demandait.
   chemin résolu est journalisé au démarrage et exposé dans `/health`
   (`weightsDir`) : en cas de doute, le regarder avant de chercher ailleurs. Un
   chemin **enraciné** (`/opt/poids`, `C:\poids`) traverse inchangé.
-- **Cet export est figé à `1×3×640×640` et sa grille d'ancres est une constante.**
-  Vérifié par chirurgie de graphe : rendre le lot ou la résolution dynamiques fait
-  échouer le `Reshape` du DFL. Ni résolution adaptative ni lot sans ré-export, et
-  le `.pt` d'origine n'est pas dans le dépôt. C'est ce qui force la mosaïque comme
-  seul levier de débit ([ADR 0008](docs/adr/0008-precision-de-l-anpr.md)).
-- **L'OCR a un plancher de résolution, mesuré : ~150 px de large.** En dessous elle
-  décroche (80 px → 3/8, 48 px → 0/8), et sur les vidéos de `D:\TesteIA\Video` les
-  plaques font 27 à 88 px : elle n'y lira rien, quel que soit le prétraitement. Elle
-  se tait au lieu d'inventer, ce qui est voulu — mais ne pas conclure à une panne.
+- **La contrainte `1×3×640×640` n'existe plus** — elle était celle de l'ancien
+  export ONNX, dont la grille d'ancres était gravée dans le graphe (vérifié par
+  chirurgie de graphe : toute autre forme faisait échouer le `Reshape` du DFL).
+  C'était la raison d'être de la mosaïque comme seul levier de débit d'ADR 0008. En
+  `.pt`, lot et résolution sont libres. `NET_SIZE` reste néanmoins à **640**, qui est
+  la résolution d'entraînement du modèle, et la mosaïque reste **désactivée par
+  défaut** : son arbitrage rappel/vitesse garde sa valeur sans GPU, et ne se change
+  pas en silence.
+- **L'OCR a un plancher de fiabilité, mesuré : ~150 px de large.** En dessous elle
+  décroche (80 px → 3/8, 48 px → 0/8) ; en dessous de 64 px elle n'essaie même pas
+  (invariant 12). Sur des plaques de 27 à 88 px, elle ne lira quasiment rien, quel
+  que soit le prétraitement. Elle se tait au lieu d'inventer, ce qui est voulu — mais
+  ne pas conclure à une panne. **ADR 0015 accélère la détection, pas la lecture** :
+  ne pas lire ce gain de vitesse comme un gain de justesse.
 - L'OCR demande **deux** fichiers dans `backend/.weights/` :
   `license-plate-ocr.onnx` (`en_PP-OCRv3_rec`, 97 classes) et
   `license-plate-ocr.charset.txt` (`en_dict.txt`, 95 lignes), récupérés ensemble par
@@ -421,7 +495,7 @@ produit, ce qui retire la seule propriété qu'on lui demandait.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1227 (1 skip) | 471 |
+| Nombre | 1285 (1 skip) | 495 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

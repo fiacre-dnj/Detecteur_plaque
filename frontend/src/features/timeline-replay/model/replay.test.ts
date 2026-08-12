@@ -157,6 +157,57 @@ describe("statsAt — les compteurs suivent la tête de lecture", () => {
     // information utile au diagnostic d'un comptage douteux.
     expect(statsAt(result, 0).diagnostics).toEqual(result.stats.diagnostics);
   });
+
+  it("borne crossedUnique par uniqueVehicles à tout instant", () => {
+    // L'inégalité qui fait du taux de franchissement un pourcentage : on ne peut
+    // pas avoir franchi sans avoir été vu. Elle ne tenait **pas** avec `crossings`
+    // au numérateur — un aller-retour donnait 200 %.
+    for (let timeMs = 0; timeMs <= result.video.durationMs; timeMs += 80) {
+      const stats = statsAt(result, timeMs);
+      expect(stats.crossedUnique, `t=${timeMs}`).toBeLessThanOrEqual(stats.uniqueVehicles);
+      expect(stats.crossedUnique, `t=${timeMs}`).toBeLessThanOrEqual(stats.crossings);
+    }
+  });
+
+  it("compte un véhicule une seule fois même s'il franchit plusieurs fois", () => {
+    // Deux passages du même `globalId` : 2 en `crossings`, 1 en `crossedUnique`.
+    // C'est toute la distinction, et c'est celle qui manquait.
+    const repeated = result.crossings[0];
+    if (repeated === undefined) throw new Error("la fixture doit porter un franchissement");
+    const doubled: AnalysisResult = {
+      ...result,
+      crossings: [
+        repeated,
+        // Le sens opposé — `direction` est un signe, pas un libellé : c'est bien un
+        // aller-retour du même véhicule, le cas exact qui cassait le taux.
+        { ...repeated, timestampMs: repeated.timestampMs + 10, direction: -repeated.direction },
+      ],
+    };
+
+    const stats = statsAt(doubled, doubled.video.durationMs);
+
+    expect(stats.crossings).toBe(2);
+    expect(stats.crossedUnique).toBe(1);
+  });
+
+  it("lit une catégorie absente comme « vehicle » — les résultats archivés", () => {
+    // Les `result.json.gz` écrits avant le 2026-08-12 n'ont pas de `category` sur
+    // leurs franchissements. Sans repli, la clé serait `undefined` et les deux
+    // cartes de passages afficheraient 0 à côté d'un `crossings` non nul : le
+    // symptôme se lirait comme une panne de comptage, sur des données justes.
+    const archived: AnalysisResult = {
+      ...result,
+      crossings: result.crossings.map((event) => {
+        const { category: _dropped, ...rest } = event;
+        return rest as typeof event;
+      }),
+    };
+
+    const stats = statsAt(archived, archived.video.durationMs);
+
+    expect(stats.byCategory.vehicle).toBe(stats.crossings);
+    expect(Object.values(stats.byCategory).reduce((sum, n) => sum + n, 0)).toBe(stats.crossings);
+  });
 });
 
 describe("trailsAt — trajectoires reconstituées côté client", () => {

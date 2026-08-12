@@ -76,19 +76,19 @@ class TestValeursVidesEtCommentaires:
         assert settings.plate_model_path is None
         # Le repli documenté fonctionne : sans cela, `Path("")` vaut `Path(".")`,
         # qui est **vrai**, et le repli ne se déclencherait jamais.
-        assert settings.resolved_plate_model_path == settings.weights_dir / "license-plate.onnx"
+        assert settings.resolved_plate_model_path == settings.weights_dir / "license-plate.pt"
 
     def test_un_commentaire_en_fin_de_ligne_ne_devient_pas_un_chemin(self, tmp_path: Path) -> None:
         env_file = tmp_path / ".env"
         env_file.write_text(
-            "TRAFFIC_PLATE_MODEL_PATH=              # vide = <weights>/license-plate.onnx\n",
+            "TRAFFIC_PLATE_MODEL_PATH=              # vide = <weights>/license-plate.pt\n",
             encoding="utf-8",
         )
 
         settings = Settings(_env_file=env_file)  # type: ignore[call-arg]
 
         assert settings.plate_model_path is None
-        assert settings.resolved_plate_model_path.name == "license-plate.onnx"
+        assert settings.resolved_plate_model_path.name == "license-plate.pt"
 
     def test_un_repertoire_statique_vide_ne_sert_pas_le_repertoire_courant(self) -> None:
         # `Path("")` vaut `Path(".")` : sans garde, un `TRAFFIC_STATIC_DIR=` vide
@@ -184,7 +184,7 @@ def test_le_chemin_du_modele_de_plaques_a_un_defaut_derive() -> None:
     """
     settings = _settings(weights_dir=Path("/tmp/w"))  # noqa: S108
 
-    assert settings.resolved_plate_model_path == Path("/tmp/w/license-plate.onnx")  # noqa: S108
+    assert settings.resolved_plate_model_path == Path("/tmp/w/license-plate.pt")  # noqa: S108
 
 
 def test_un_chemin_de_poids_relatif_ne_depend_pas_du_repertoire_de_lancement(
@@ -194,7 +194,7 @@ def test_un_chemin_de_poids_relatif_ne_depend_pas_du_repertoire_de_lancement(
 
     `Path("./.weights")` résolu depuis le répertoire d'exécution faisait paraître
     *tous* les poids absents dès qu'on lançait `uvicorn` ailleurs que dans
-    `backend/` — `license-plate.onnx` et les deux fichiers d'OCR compris. L'ANPR
+    `backend/` — `license-plate.pt` et les deux fichiers d'OCR compris. L'ANPR
     devenait indisponible sans qu'aucun message ne mentionne la cause : le service
     démarre, le catalogue répond, et rien n'a l'air cassé.
 

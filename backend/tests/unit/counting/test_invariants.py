@@ -158,6 +158,47 @@ def test_la_ventilation_par_categorie_somme_aux_franchissements(scenario: Scenar
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=str)
+def test_les_vehicules_ayant_franchi_ne_depassent_jamais_les_vehicules_vus(
+    scenario: Scenario,
+) -> None:
+    """`crossed_unique <= unique_vehicles`, sur **tous** les scénarios.
+
+    C'est l'inégalité qui fait du taux de franchissement un pourcentage. Elle tient
+    par nature — on ne peut pas avoir franchi sans avoir été vu — mais elle ne
+    tenait *pas* avec `crossings` au numérateur : depuis ADR 0014 un aller-retour
+    compte 2 passages pour 1 véhicule, et le taux affichait 200 %.
+
+    Le test porte donc sur le remplaçant, et il couvre aussi le cas dégénéré :
+    aucun franchissement doit donner 0, jamais un négatif ni un `None`.
+    """
+    stats = _play(scenario)
+
+    assert 0 <= stats.crossed_unique <= stats.unique_vehicles
+    # Et jamais plus de véhicules distincts que de passages : chaque véhicule
+    # compté a fait bouger un compteur au moins une fois.
+    assert stats.crossed_unique <= stats.crossings
+
+
+def test_un_aller_retour_compte_deux_passages_mais_un_seul_vehicule() -> None:
+    """**Le cas exact qui cassait le taux de franchissement.**
+
+    Un véhicule qui franchit puis revient produit 2 passages sous ADR 0014. Avec
+    `crossings / unique_vehicles`, le taux valait 200 % — un pourcentage impossible
+    affiché sans le moindre avertissement, et documenté à l'époque comme voulu.
+
+    Ce test fixe les deux chiffres séparément, pour que personne ne « corrige »
+    l'un en croyant réparer l'autre : les 2 passages sont justes, c'est le
+    dénominateur qui était mal choisi.
+    """
+    scenario = next(s for s in SCENARIOS if "aller" in str(s).lower())
+    stats = _play(scenario)
+
+    assert stats.crossings >= 2
+    assert stats.crossed_unique == 1
+    assert stats.crossed_unique / stats.unique_vehicles <= 1.0
+
+
+@pytest.mark.parametrize("scenario", SCENARIOS, ids=str)
 def test_le_registre_est_coherent_avec_les_statistiques(scenario: Scenario) -> None:
     """Les cartes disent *combien*, le registre dit *lesquels* — sur les mêmes faits.
 

@@ -671,6 +671,12 @@ class AnalysisSession:
             unique_vehicles=self._gallery.size,
             unique_by_class=self._gallery.count_by_class(),
             crossings=crossings,
+            # La **même** source que le badge ✓ de l'overlay, et c'est voulu : le
+            # taux de franchissement et le badge répondent à la même question — « ce
+            # véhicule est-il passé ? ». Les faire dériver de deux endroits
+            # différents finirait par afficher un ✓ sur un véhicule que le taux ne
+            # compte pas.
+            crossed_unique=len(self._counter.counted_identities()),
             by_class=by_class,
             by_line={line_id: _copy_line_tally(tally) for line_id, tally in by_line.items()},
             by_zone={

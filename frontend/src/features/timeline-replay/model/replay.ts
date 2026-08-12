@@ -127,16 +127,26 @@ export function statsAt(result: AnalysisResult, timeMs: number): AnalysisStats {
   const byClass: Record<string, number> = {};
   const byCategory: AnalysisStats["byCategory"] = {};
   const seenIdentities = new Set<number>();
+  // Les identités **ayant franchi**, distinctes. Un `Set` dans la boucle qui existe
+  // déjà : aucun parcours supplémentaire, et le chiffre reste dérivé des événements
+  // plutôt que compté à côté (invariant 3).
+  const crossedIdentities = new Set<number>();
   const uniqueByClass: Record<string, number> = {};
   let crossings = 0;
 
   for (const event of result.crossings) {
     if (event.timestampMs > timeMs) continue;
     crossings += 1;
+    crossedIdentities.add(event.globalId);
     byClass[event.label] = (byClass[event.label] ?? 0) + 1;
     // La catégorie est **lue** sur l'événement, jamais déduite du libellé : c'est le
     // serveur qui classe, et le rejeu ne fait que sommer ce qu'il a décidé.
-    byCategory[event.category] = (byCategory[event.category] ?? 0) + 1;
+    //
+    // `?? "vehicle"` : les résultats archivés avant le 2026-08-12 n'ont pas ce champ.
+    // Sans ce repli, la clé serait `undefined` et les deux cartes de passages
+    // afficheraient 0 à côté d'un `crossings` non nul — voir ADR 0014.
+    byCategory[event.category ?? "vehicle"] =
+      (byCategory[event.category ?? "vehicle"] ?? 0) + 1;
     tallyLine(byLine, event);
   }
 
@@ -168,6 +178,7 @@ export function statsAt(result: AnalysisResult, timeMs: number): AnalysisStats {
     uniqueVehicles: seenIdentities.size,
     uniqueByClass,
     crossings,
+    crossedUnique: crossedIdentities.size,
     byClass,
     byCategory,
     byLine,

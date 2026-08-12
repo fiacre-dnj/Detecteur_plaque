@@ -129,6 +129,9 @@ def _result(job_id: str = "job-1", *, vehicles: int = 3, crossings: int = 5) -> 
         unique_vehicles=vehicles,
         unique_by_class={"car": vehicles},
         crossings=crossings,
+        # Des véhicules, pas des passages : borné par `unique_vehicles`. Ici tous
+        # les franchissements viennent d'identités distinctes, au plafond près.
+        crossed_unique=min(crossings, vehicles),
         by_class={"car": crossings},
         by_line={
             "l1": LineTally(total=crossings, by_class={"car": crossings}, positive=3, negative=2)

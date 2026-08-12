@@ -129,6 +129,7 @@
       "truck": 1
     },
     "crossings": 2,
+    "crossedUnique": 2,
     "byClass": {
       "car": 1,
       "truck": 1

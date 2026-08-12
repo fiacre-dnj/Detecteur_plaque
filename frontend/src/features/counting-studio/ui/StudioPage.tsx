@@ -1,9 +1,23 @@
 /**
  * Le Studio — l'écran unique de comptage.
  *
- * Disposition : la scène à gauche, les réglages à droite, les résultats en pleine
- * largeur dessous. Cette proportion rend l'édition de géométrie confortable : le
- * canvas a besoin de largeur, les curseurs n'en ont pas besoin.
+ * **Disposition** : une barre en haut (importer, puis les trois tiroirs de réglages),
+ * la scène à gauche, les résultats à droite, la chronologie et les détails en
+ * onglets dessous.
+ *
+ * Elle a été inversée. Les réglages occupaient la colonne de droite en permanence —
+ * trois accordéons dans 20 rem — et les résultats vivaient en pleine largeur sous la
+ * grille. Cela donnait le meilleur emplacement de l'écran à ce qu'on règle une fois
+ * avant de lancer, et repoussait sous la ligne de flottaison ce qu'on regarde
+ * pendant et après. Désormais :
+ *
+ * - les réglages s'ouvrent en **tiroir pleine largeur** sous la barre, ce qui leur
+ *   donne trois colonnes au lieu d'une et rend la place quand ils sont fermés ;
+ * - les **chiffres montent** dans la colonne, à hauteur de la scène qui les produit ;
+ * - la **chronologie** reste toujours visible sous la vidéo — c'est un outil de
+ *   navigation, l'enfouir dans un onglet obligerait à en changer pour se déplacer ;
+ * - la répartition, le détail par ligne, le flux et le registre passent en
+ *   **onglets** : quatre sections empilées devenaient une page à faire défiler.
  *
  * **Ce que ce composant fait, et ne fait pas.** Il câble les features entre elles et
  * détient l'état partagé — la source, la géométrie, les dimensions de la scène, la
@@ -29,7 +43,12 @@ import {
   type Selection,
 } from "@/entities/geometry";
 import { preloadModel, useDetectableClasses, useModels } from "@/entities/model";
-import { CrossingLog, JobProgressBar, useFollowAnalysis } from "@/features/analysis-job";
+import {
+  CrossingLog,
+  JobProgressBar,
+  inputVideoUrl,
+  useFollowAnalysis,
+} from "@/features/analysis-job";
 import {
   SettingsPanels,
   downloadNotice,
@@ -40,26 +59,31 @@ import {
   type AnalysisSettings,
 } from "@/features/analysis-settings";
 import { GeometryCanvas, GeometryPanel, useLineFlashes } from "@/features/geometry-editor";
-import { SourcePicker, VideoScene, useMediaSource } from "@/features/media-source";
+import { DropZone, SourcePicker, VideoScene, useMediaSource } from "@/features/media-source";
 import {
   RealtimePanel,
   scaledSize,
   unscaleTracks,
   useRealtimeSession,
 } from "@/features/realtime-counting";
-import { ResultsDashboard } from "@/features/results-dashboard";
 import {
+  ClassBreakdown,
+  LineAndZoneDetail,
+  ResultsDashboard,
+} from "@/features/results-dashboard";
+import {
+  CrossingTimeline,
   chooseBucketMs,
-  crossingsUpTo,
   flowBuckets,
   useReplay,
   vehiclesAt,
 } from "@/features/timeline-replay";
 import { VehicleRegistry } from "@/features/vehicle-registry";
-import { TransportBar } from "@/features/video-transport";
+import { PlaybackFpsBadge, TransportBar } from "@/features/video-transport";
 import type { CrossingEvent, Point, Preset } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
 import { Button } from "@/shared/ui/Button";
+import { Tabs } from "@/shared/ui/Tabs";
 import { MetricCard } from "@/shared/ui/MetricCard";
 
 import { useAnalysisSession } from "../model/useAnalysisSession";
@@ -105,6 +129,24 @@ export function StudioPage() {
   const media = useMediaSource();
   const [geometry, dispatch] = useReducer(geometryReducer, EMPTY_GEOMETRY);
   const [scene, setScene] = useState<SceneSize | null>(null);
+  /**
+   * Une vidéo est-elle **réellement chargée** ?
+   *
+   * Distinct de `scene`, qui peut être amorcé depuis les dimensions du résultat sur
+   * une analyse rouverte dont la vidéo a été purgée. Là, la géométrie s'affiche —
+   * c'est voulu — mais il n'y a nulle part où déplacer la lecture, et une
+   * chronologie cliquable qui ne déplace rien serait pire qu'une chronologie inerte
+   * qui dit pourquoi.
+   */
+  const [videoLoaded, setVideoLoaded] = useState(false);
+  /**
+   * Onglet de détail ouvert sous la vidéo.
+   *
+   * Non persisté, et par défaut la répartition : c'est la lecture la plus courante
+   * d'un résultat, et retrouver l'écran sur « Registre » après un rechargement
+   * obligerait à revenir en arrière à chaque fois.
+   */
+  const [detailTab, setDetailTab] = useState("repartition");
   const [ended, setEnded] = useState(false);
   const [presetsOpen, setPresetsOpen] = useState(false);
   /**
@@ -201,6 +243,36 @@ export function StudioPage() {
   const video = useRef<HTMLVideoElement>(null);
   const session = useAnalysisSession();
 
+  /**
+   * « Ouvrir » depuis l'historique : rejouer une analyse archivée.
+   *
+   * **C'est ici que « Ouvrir » et « Relancer » cessent d'être le même bouton.** Les
+   * deux drapeaux voyageaient déjà dans l'état de navigation ; personne ne les
+   * lisait, donc les deux gestes rechargeaient la géométrie et rien d'autre, et
+   * l'infobulle « recharge le résultat et sa géométrie » promettait la moitié de ce
+   * qu'elle faisait.
+   *
+   * Un effet séparé de celui qui applique la configuration, et **placé après**
+   * `session` : il en dépend, et le déclarer plus haut le mettrait dans la zone
+   * morte temporelle de la constante.
+   *
+   * L'ordre des deux appels est **obligatoire**. `resetForNewSource` vide la session
+   * à tout changement de source ; poser la vidéo après l'adoption effacerait donc le
+   * résultat qu'on vient d'aller chercher. La source d'abord, le résultat ensuite.
+   */
+  const adopted = useRef(false);
+  useEffect(() => {
+    if (adopted.current) return;
+    const state = location.state as { jobId?: unknown; replay?: unknown; fileName?: unknown } | null;
+    if (state?.replay !== true || typeof state.jobId !== "string") return;
+    adopted.current = true;
+
+    const jobId = state.jobId;
+    const label = typeof state.fileName === "string" ? state.fileName : "Analyse archivée";
+    media.selectArchived(inputVideoUrl(jobId), label);
+    session.adopt(jobId);
+  }, [location.state, media, session]);
+
   const handleEnded = useCallback(() => setEnded(true), []);
 
   /**
@@ -219,13 +291,62 @@ export function StudioPage() {
     void element.play().catch(() => undefined);
   }, []);
 
-  const replay = useReplay(video.current, session.result);
+  /**
+   * Déplacer la lecture à un instant précis — ce que la chronologie déclenche.
+   *
+   * **Une écriture directe sur la balise, exactement comme `replayFromStart`.**
+   * Remonter l'état de `useVideoTransport` jusqu'ici pour obtenir un `seek()` ferait
+   * re-rendre tout l'écran, `GeometryCanvas` compris, soixante fois par seconde
+   * pendant la lecture : c'est le bug de performance corrigé par `f9a4da1`, et il
+   * serait rouvert pour un geste qui n'a besoin d'aucun état. La boucle rAF de
+   * `useReplay` voit le déplacement à l'image suivante et met les compteurs à jour.
+   *
+   * Ne fait rien sans vidéo jouable : sur une analyse rouverte dont la vidéo a été
+   * purgée, `duration` vaut `NaN` et écrire `currentTime` serait sans effet — mais
+   * la chronologie est de toute façon rendue inerte dans ce cas.
+   */
+  const seekTo = useCallback((timestampMs: number) => {
+    const element = video.current;
+    if (element === null || !Number.isFinite(element.duration)) return;
+    element.pause();
+    element.currentTime = Math.max(0, timestampMs / 1000);
+    setEnded(false);
+  }, []);
+
+  // La **référence**, pas `video.current` : ce dernier était lu au rendu, donc le
+  // hook pouvait s'abonner à `null` et ne jamais se réabonner — la relecture restait
+  // alors figée sur les chiffres finaux, justes et immobiles.
+  const replay = useReplay(video, session.result);
   const live = useRealtimeSession(video.current);
+
+  /**
+   * Amorce la scène depuis les dimensions du **résultat**, faute de vidéo.
+   *
+   * `scene` ne venait que de `loadedmetadata`, et le canvas comme l'incrustation y
+   * sont conditionnés. Sur une analyse rouverte dont la vidéo a été purgée, on avait
+   * donc tous les chiffres et aucune géométrie visible — les lignes qui ont produit
+   * ces chiffres restaient invisibles, ce qui est précisément ce qu'on vient
+   * regarder.
+   *
+   * Ne fait rien quand la vidéo a déjà parlé : `loadedmetadata` est la source de
+   * vérité dès qu'elle existe, et l'écraser rouvrirait le désaccord de repère que
+   * l'avertissement d'aperçu existe pour signaler.
+   */
+  useEffect(() => {
+    if (scene !== null || session.result === null) return;
+    const { width, height } = session.result.video;
+    if (width > 0 && height > 0) setScene({ width, height });
+  }, [scene, session.result]);
 
   const handleMetadata = useCallback(
     (size: SceneSize) => {
       if (size.width === 0 || size.height === 0) return;
       setScene(size);
+      // Distinct de `scene`, qui peut désormais être amorcé depuis le résultat sans
+      // qu'aucune vidéo n'existe. Ce drapeau-ci dit « une vidéo est réellement
+      // chargée », donc « on peut s'y déplacer » — la question que pose la
+      // chronologie.
+      setVideoLoaded(true);
       // Un écran sans ligne ne compte rien, et l'utilisateur qui obtient zéro ne
       // devine pas que c'est parce qu'il n'a rien tracé.
       if (!hasGeometry(geometry)) {
@@ -249,6 +370,7 @@ export function StudioPage() {
     live.stop();
     dispatch({ type: "clear" });
     setScene(null);
+    setVideoLoaded(false);
     setEnded(false);
     session.reset();
   }, [session, live]);
@@ -261,15 +383,17 @@ export function StudioPage() {
     [media, resetForNewSource],
   );
 
-  const handleDemo = useCallback(() => {
-    resetForNewSource();
-    media.selectDemo();
-  }, [media, resetForNewSource]);
+  /* Les points d'entrée « démonstration » et « caméra » ont été retirés de l'écran
+     avec leurs cartes : elles étaient désactivées, et occupaient les deux tiers d'un
+     bandeau permanent pour annoncer « indisponible ».
 
-  const handleCamera = useCallback(() => {
-    resetForNewSource();
-    void media.selectCamera();
-  }, [media, resetForNewSource]);
+     **Rien d'autre n'a été supprimé.** `media.selectDemo` et `media.selectCamera`
+     existent toujours, `isCamera` gouverne toujours `RealtimePanel`, et toute la
+     feature `realtime-counting` — WebSocket, cadence, mise à l'échelle d'envoi,
+     garde de résolution — reste en place et testée. Rouvrir la porte est un
+     `useCallback` de trois lignes et un bouton dans la barre, pas une
+     réimplémentation. C'est écrit ici pour que la prochaine lecture ne conclue pas
+     que le direct a disparu du produit. */
 
   const handleClose = useCallback(() => {
     resetForNewSource();
@@ -321,6 +445,20 @@ export function StudioPage() {
   const isCamera = media.source?.kind === "camera";
   const analysing = session.job !== null && !isTerminal(session.job.status);
   const busy = analysing || session.starting || live.active;
+
+  /**
+   * La chronologie peut-elle déplacer la lecture ?
+   *
+   * Trois conditions, chacune pour une raison distincte :
+   *
+   * - **une vidéo chargée**, sinon il n'y a rien à déplacer ;
+   * - **pas une caméra** : un flux direct n'a pas de position dans le temps ;
+   * - **analyse terminée**, comme demandé — et ce n'est pas qu'une règle produit.
+   *   Pendant une analyse suivie, `useFollowAnalysis` cale la vidéo sur l'image
+   *   analysée à chaque aperçu : un clic dans la chronologie serait annulé une
+   *   fraction de seconde plus tard, ce qui se lirait comme un bouton cassé.
+   */
+  const canSeekTimeline = videoLoaded && !isCamera && !busy;
   /**
    * L'analyse a échoué — **et le dire ne dépend plus de `busy`**.
    *
@@ -423,6 +561,37 @@ export function StudioPage() {
   const liveStats = live.active ? live.stats : (preview?.stats ?? replay.stats);
 
   /**
+   * Le bloc de résultats à afficher, et **d'où vient sa cadence**.
+   *
+   * Les trois situations donnaient déjà trois `ResultsDashboard` dans une ternaire à
+   * quatre branches, chacune avec sa propre `processingFps`. Les réunir ici sert la
+   * réorganisation : les cartes montent dans la colonne, les détails descendent dans
+   * les onglets, et les deux endroits doivent afficher **la même** source sans que la
+   * sélection soit écrite deux fois.
+   *
+   * `null` avant toute analyse : l'écran montre alors son état vide, jamais des zéros
+   * qui se liraient comme un comptage à blanc.
+   */
+  const resultStats =
+    live.active && live.stats !== null
+      ? {
+          stats: live.stats,
+          // En direct, la cadence du serveur se déduit de la latence aller-retour :
+          // la seule mesure de performance honnête dont on dispose ici.
+          processingFps: live.pacing.latencyMs === null ? 0 : 1000 / live.pacing.latencyMs,
+          replaying: false,
+        }
+      : preview !== null
+        ? { stats: preview.stats, processingFps: session.job?.processingFps ?? 0, replaying: false }
+        : replay.stats !== null && session.result !== null
+          ? {
+              stats: replay.stats,
+              processingFps: session.result.processingFps,
+              replaying: true,
+            }
+          : null;
+
+  /**
    * Les franchissements qui viennent d'être comptés — ceux qui font clignoter leur
    * ligne. La **dernière salve**, jamais le cumul : rallumer toutes les lignes à
    * chaque image ferait d'un signal un bruit de fond.
@@ -456,14 +625,36 @@ export function StudioPage() {
   }, [isCamera, serverReady, scene, geometry, analysing, session.starting]);
 
   return (
-    <div className="space-y-6">
-      <SourcePicker
-        activeKind={media.source?.kind ?? null}
+    <div className="space-y-4">
+      {/* ── La barre : importer, puis régler ───────────────────────────────
+          Les réglages sont passés au-dessus de la vidéo, au même niveau que
+          l'import. Ils occupaient auparavant une colonne permanente de 20 rem
+          pour des panneaux qu'on ouvre une fois avant de lancer, et repoussaient
+          les résultats sous la ligne de flottaison. `leading` est l'emplacement
+          que `SettingsPanels` réserve : la feature des réglages n'a pas à
+          connaître celle de la source, c'est le studio qui les met côte à côte. */}
+      <SettingsPanels
+        leading={
+          <SourcePicker
+            activeLabel={media.source?.label ?? null}
+            disabled={busy}
+            onFile={handleFile}
+          />
+        }
+        settings={settings}
+        models={catalogue?.models ?? []}
+        detectableClasses={detectableClasses ?? []}
+        plateAvailable={catalogue?.plateAvailable ?? false}
+        plateOcrAvailable={catalogue?.plateOcrAvailable ?? false}
+        hasZones={geometry.zones.length > 0}
+        // Le diagnostic **vivant** pendant l'analyse, celui de la dernière sinon :
+        // comprendre pendant que ça tourne pourquoi un véhicule n'est pas compté —
+        // masqué, pas confirmé, écarté — au lieu de l'apprendre à la fin. `null`
+        // avant toute analyse, plutôt que six zéros qui se liraient comme un
+        // résultat.
+        diagnostics={liveStats?.diagnostics ?? session.result?.stats.diagnostics ?? null}
         disabled={busy}
-        requestingCamera={media.requestingCamera}
-        onFile={handleFile}
-        onDemo={handleDemo}
-        onCamera={handleCamera}
+        onChange={updateSettings}
       />
 
       {media.error !== null && (
@@ -490,8 +681,13 @@ export function StudioPage() {
         </div>
       )}
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
+      {/* La colonne de droite porte désormais les **résultats**, pas les réglages :
+          les chiffres se lisent à côté de la scène qui les produit, au lieu d'être
+          repoussés sous elle. 24 rem plutôt que 20 : neuf cartes en deux colonnes y
+          tiennent sans que les libellés se coupent. */}
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_24rem]">
         <div className="space-y-3">
+          <DropZone disabled={busy} onFile={handleFile}>
           <VideoScene source={media.source} onMetadata={handleMetadata} videoRef={video}>
             {scene !== null && (
               <GeometryCanvas
@@ -541,6 +737,14 @@ export function StudioPage() {
                 <p className="rounded-badge bg-base/80 px-2 py-1 text-micro text-ink-muted tabular">
                   {scene.width}×{scene.height}
                 </p>
+                {/* La cadence **réellement affichée**, à côté de la cadence serveur
+                    du tableau de bord. L'écart entre les deux est ce qui explique
+                    une relecture saccadée : le décodage et l'inférence se battent
+                    pour les mêmes cœurs.
+
+                    Composant autonome, qui tient son propre état : mesurée ici, la
+                    cadence re-rendrait `GeometryCanvas` à chaque image. */}
+                <PlaybackFpsBadge videoRef={video} />
                 {/* En direct, les dimensions **d'envoi** en plus de celles de la
                     scène : c'est le repère dans lequel le serveur compte, et le voir
                     à côté de la source rend la réduction évidente. */}
@@ -565,6 +769,7 @@ export function StudioPage() {
               </div>
             )}
           </VideoScene>
+          </DropZone>
 
           {/* `busy && follow` et non `busy` seul : le gel de la vidéo est **voulu**
               — `useFollowAnalysis` la cale sur l'image analysée — mais il n'est
@@ -635,7 +840,23 @@ export function StudioPage() {
           )}
         </div>
 
-        <aside aria-label="Réglages" className="space-y-4">
+        <aside aria-label="Résultats et géométrie" className="space-y-4">
+          {/* Les chiffres **en tête de colonne**, à hauteur de la scène.
+              C'est ce que l'utilisateur vient lire, et c'était en bas de page.
+              `cardsOnly` : la répartition et les détails vivent dans les onglets
+              sous la vidéo, les rendre ici aussi les afficherait deux fois. */}
+          {resultStats !== null && (
+            <ResultsDashboard
+              stats={resultStats.stats}
+              lines={geometry.lines}
+              zones={geometry.zones}
+              processingFps={resultStats.processingFps}
+              replaying={resultStats.replaying}
+              layout="column"
+              cardsOnly
+            />
+          )}
+
           <GeometryPanel
             lines={geometry.lines}
             zones={geometry.zones}
@@ -680,31 +901,6 @@ export function StudioPage() {
             />
           )}
 
-          <SettingsPanels
-            settings={settings}
-            models={catalogue?.models ?? []}
-            // Le catalogue de classes vient du serveur, jamais d'une liste écrite
-            // côté interface : c'est lui qui valide `classIds` à l'envoi.
-            detectableClasses={detectableClasses ?? []}
-            // Faux si le serveur n'a pas le modèle de plaques : l'option est alors
-            // désactivée **avec sa raison**, plutôt que de produire une analyse
-            // sans plaques que rien n'expliquerait.
-            plateAvailable={catalogue?.plateAvailable ?? false}
-            plateOcrAvailable={catalogue?.plateOcrAvailable ?? false}
-            hasZones={geometry.zones.length > 0}
-            // Le diagnostic **vivant** pendant l'analyse, celui de la dernière
-            // sinon. C'est ce qui permet de comprendre pendant que ça tourne
-            // pourquoi un véhicule n'est pas compté — masqué, pas confirmé,
-            // écarté comme doublon — au lieu de l'apprendre à la fin.
-            // `null` avant toute analyse : le panneau ne montre alors rien plutôt
-            // que six zéros, qui se liraient comme un résultat.
-            diagnostics={
-              liveStats?.diagnostics ?? session.result?.stats.diagnostics ?? null
-            }
-            disabled={busy}
-            onChange={updateSettings}
-          />
-
           {!serverReady && (
             <p className="text-small text-ink-dim">
               Le serveur est injoignable : l'analyse est indisponible.
@@ -738,81 +934,122 @@ export function StudioPage() {
         </aside>
       </div>
 
-      {/* Le direct affiche le tableau de bord **sans** histogramme ni registre : ces
-          deux-là dérivent de la timeline complète, qui n'existe qu'en différé. Montrer
-          un histogramme vide se lirait comme « aucun véhicule ». */}
-      {live.active && live.stats !== null ? (
-        <ResultsDashboard
-          stats={live.stats}
-          lines={geometry.lines}
-          zones={geometry.zones}
-          // Le débit d'analyse en direct est celui du serveur, déduit de la latence
-          // aller-retour : la seule mesure de performance honnête dont on dispose ici.
-          processingFps={live.pacing.latencyMs === null ? 0 : 1000 / live.pacing.latencyMs}
-          replaying={false}
-        />
-      ) : preview !== null ? (
-        // Pendant l'analyse : les compteurs montent en direct, sans histogramme ni
-        // registre — les deux dérivent de la timeline complète, qui n'existe qu'à
-        // la fin. Un histogramme vide se lirait comme « aucun véhicule ».
-        <ResultsDashboard
-          stats={preview.stats}
-          lines={geometry.lines}
-          zones={geometry.zones}
-          // La cadence du serveur, telle que la progression la rapporte.
-          processingFps={session.job?.processingFps ?? 0}
-          replaying={false}
-        >
-          {/* Le journal juste après la répartition : c'est lui qui rend le total
-              vérifiable événement par événement, au moment où il est compté. Il
-              se lit donc à côté des chiffres qu'il détaille, et non sous la
-              vidéo, où il éloignait la scène de ses résultats. */}
+      {/* ── Sous la vidéo : la chronologie, puis les détails en onglets ──────
+          La chronologie reste **toujours visible** parce que c'est un outil de
+          navigation : l'enfouir dans un onglet obligerait à en changer pour se
+          déplacer, puis à revenir pour lire ce qu'on cherchait. Le reste — qui se
+          consulte, ne se pilote pas — passe en onglets, ce qui remplace une page de
+          quatre sections empilées par une seule zone de lecture. */}
+      {session.result !== null && replay.stats !== null && (
+        <>
+          <CrossingTimeline
+            events={session.result.crossings}
+            lineNames={lineNames}
+            currentTimeMs={replay.timeMs}
+            // Toute la liste, et non `crossingsUpTo` : c'est un moyen de navigation,
+            // donc masquer ce qui suit la tête de lecture empêcherait précisément
+            // d'y aller. La position se lit à la mise en évidence, pas à la
+            // troncature.
+            //
+            // Inerte sans vidéo jouable : une analyse rouverte dont la vidéo a été
+            // purgée garde tous ses chiffres, mais il n'y a rien à déplacer.
+            onSeek={canSeekTimeline ? seekTo : undefined}
+            inertReason={
+              canSeekTimeline
+                ? "Le déplacement s'active une fois l'analyse terminée, avec sa vidéo."
+                : undefined
+            }
+          />
+
+          <Tabs
+            label="Détail des résultats"
+            activeId={detailTab}
+            onSelect={setDetailTab}
+            tabs={[
+              {
+                id: "repartition",
+                label: "Répartition",
+                content: <ClassBreakdown stats={replay.stats} />,
+              },
+              {
+                id: "geometrie",
+                label: "Par ligne & zone",
+                badge: geometry.lines.length + geometry.zones.length,
+                content: (
+                  <LineAndZoneDetail
+                    stats={replay.stats}
+                    lines={geometry.lines}
+                    zones={geometry.zones}
+                    replaying
+                  />
+                ),
+              },
+              {
+                id: "flux",
+                label: "Flux",
+                content: (
+                  <Suspense fallback={<div className="h-24 rounded-card bg-surface" />}>
+                    <FlowHistogram
+                      buckets={buckets}
+                      bucketMs={chooseBucketMs(session.result.video.durationMs)}
+                      // Le même geste que la chronologie, sur l'autre lecture des
+                      // mêmes événements : le pic d'activité est justement là où
+                      // l'on veut aller.
+                      onSeek={canSeekTimeline ? seekTo : undefined}
+                    />
+                  </Suspense>
+                ),
+              },
+              {
+                id: "registre",
+                label: "Registre",
+                badge: session.result.vehicles.length,
+                content: (
+                  <VehicleRegistry
+                    result={session.result}
+                    vehicles={vehiclesAt(session.result, replay.timeMs)}
+                    lineNames={lineNames}
+                    // Suit le réglage réel : la note expliquant les px/s ne doit
+                    // apparaître que quand l'échelle manque **effectivement**.
+                    hasScale={settings.pixelsPerMeter !== null && settings.pixelsPerMeter > 0}
+                  />
+                ),
+              },
+            ]}
+          />
+        </>
+      )}
+
+      {/* Pendant l'analyse et en direct : le journal, sans onglets. Ni histogramme
+          ni registre — les deux dérivent de la timeline complète, qui n'existe qu'à
+          la fin, et un histogramme vide se lirait comme « aucun véhicule ». */}
+      {session.result === null && resultStats !== null && (
+        <>
+          <ClassBreakdown stats={resultStats.stats} />
           <CrossingLog events={session.events} lineNames={lineNames} />
-        </ResultsDashboard>
-      ) : replay.stats !== null && session.result !== null ? (
-        <div className="space-y-6">
-          <ResultsDashboard
-            stats={replay.stats}
+          <LineAndZoneDetail
+            stats={resultStats.stats}
             lines={geometry.lines}
             zones={geometry.zones}
-            processingFps={session.result.processingFps}
-            replaying
-          >
-            {/* Le journal survit à la fin de l'analyse, calé sur la tête de lecture.
-                Sans lui, la plaque au moment du comptage disparaissait avec l'aperçu :
-                le registre dit *lesquels*, le journal dit *quand*. */}
-            <CrossingLog
-              events={crossingsUpTo(session.result, replay.timeMs)}
-              lineNames={lineNames}
-              title="Franchissements jusqu'ici"
-            />
-          </ResultsDashboard>
-
-          <Suspense fallback={<div className="h-24 rounded-card bg-surface" />}>
-            <FlowHistogram
-              buckets={buckets}
-              bucketMs={chooseBucketMs(session.result.video.durationMs)}
-            />
-          </Suspense>
-
-          <VehicleRegistry
-            result={session.result}
-            vehicles={vehiclesAt(session.result, replay.timeMs)}
-            lineNames={lineNames}
-            // Suit le réglage réel : la note de bas de tableau expliquant les px/s
-            // ne doit apparaître que quand l'échelle manque **effectivement**.
-            hasScale={settings.pixelsPerMeter !== null && settings.pixelsPerMeter > 0}
+            replaying={resultStats.replaying}
           />
-        </div>
-      ) : (
+        </>
+      )}
+
+      {resultStats === null && (
         <section aria-labelledby="results-title">
           <h2 id="results-title" className="label-micro mb-3">
             Résultats
           </h2>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <MetricCard label="Véhicules uniques" value="—" hint="Tous types confondus" />
-            <MetricCard label="Franchissements" value="—" hint="Somme des deux sens" />
-            <MetricCard label="Ré-identifications" value="—" hint="Retours après occlusion" />
+            {/* Les mêmes libellés que le tableau de bord réel : l'état vide
+                annonçait encore « Véhicules uniques » et « Ré-identifications »,
+                deux cartes qui n'existent plus depuis ADR 0014. Un écran vide qui
+                promet des chiffres qu'on ne verra jamais est pire que pas d'écran
+                vide du tout. */}
+            <MetricCard label="Passages de véhicules" value="—" hint="Voitures, motos, bus, camions" />
+            <MetricCard label="Passages de personnes" value="—" hint="Comptées à part" />
+            <MetricCard label="Franchissements" value="—" hint="Passages observés, tous sens" />
             <MetricCard
               label="Débit estimé"
               value="—"

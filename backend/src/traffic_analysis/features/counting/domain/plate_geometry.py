@@ -1,7 +1,7 @@
 """Ce qu'une boîte doit vérifier pour être la plaque d'un véhicule donné.
 
 **Pourquoi ce module est dans le domaine et pas dans l'adaptateur.** Le filtre
-vivait dans `OnnxPlateDetector`, donc derrière `ultralytics`, donc **jamais
+vivait dans `UltralyticsPlateDetector`, donc derrière `ultralytics`, donc **jamais
 traversé par la CI** — qui tourne sans GPU, sans poids et sans ultralytics. La
 conséquence était concrète : aucun test ne pouvait prouver qu'une boîte
 « véhicule entier » n'atteint pas l'OCR, alors que c'est exactement le défaut qui

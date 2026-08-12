@@ -52,6 +52,18 @@ export interface Health {
    */
   plateAvailable: boolean;
   /**
+   * Le détecteur de plaques a-t-il passé son auto-test au démarrage — chargement
+   * réel, puis une inférence à vide ?
+   *
+   * `null` = pas encore testé (préchauffage désactivé, ou toujours en cours).
+   *
+   * **`false` avec un `plateAvailable: true` est l'état à montrer** : les poids sont
+   * présents et ne se chargent pas, donc l'ANPR est muette alors que tout paraît
+   * vert. `plateAvailable` ne peut pas le voir — ce n'est qu'un test de présence de
+   * fichier, délibérément, parce que l'interface interroge `/health` en permanence.
+   */
+  plateLoadable: boolean | null;
+  /**
    * Le modèle de **lecture** et son dictionnaire de caractères sont présents.
    *
    * Distinct de `plateAvailable` : deux artefacts, récupérés par deux scripts, et
@@ -152,6 +164,33 @@ export interface Job {
   fileName: string;
   createdAt: string;
   finishedAt: string | null;
+  /**
+   * Ce que l'analyse a trouvé, dénormalisé en base **pour cette liste**.
+   *
+   * `0` tant que le job n'est pas terminé, jamais `null` : les agrégats sont écrits
+   * en une fois, à la fin. Sur une trame SSE de progression ils valent donc zéro, et
+   * c'est exact — rien n'est encore consolidé.
+   *
+   * Un résultat archivé **avant le 2026-08-12** compte des véhicules là où les
+   * suivants comptent des passages : les deux ne sont pas comparables (ADR 0014).
+   */
+  uniqueVehicles: number;
+  crossingsTotal: number;
+}
+
+/**
+ * Un job **et la configuration qui l'a produit**.
+ *
+ * Servi par `GET /jobs/{id}/config` et par lui seul : `configJson` porte la géométrie
+ * complète, et la faire voyager sur chaque trame SSE de progression — plusieurs fois
+ * par seconde, pour une valeur qui ne change jamais — serait du gaspillage pur.
+ *
+ * Le type existe parce que sa forme était **inlinée** au point d'appel
+ * (`Job & { configJson: AnalysisRequest }`), seul endroit du code qui échappait à la
+ * règle « `contracts.ts` est le miroir unique des schémas pydantic ».
+ */
+export interface JobDetail extends Job {
+  configJson: AnalysisRequest;
 }
 
 export interface Page<T> {
@@ -522,6 +561,18 @@ export interface AnalysisStats {
   uniqueVehicles: number;
   uniqueByClass: Record<string, number>;
   crossings: number;
+  /**
+   * Combien de véhicules **distincts** ont franchi au moins une ligne.
+   *
+   * Une autre unité que `crossings`, pas un doublon : celui-ci compte des passages
+   * — un aller-retour en vaut deux — alors que celui-ci compte des véhicules, et
+   * il est donc borné par `uniqueVehicles`.
+   *
+   * C'est le numérateur du « taux de franchissement ». Avec `crossings` au
+   * numérateur, le taux mélangeait deux unités et pouvait dépasser 100 % sans que
+   * rien ne le signale.
+   */
+  crossedUnique: number;
   byClass: Record<string, number>;
   /**
    * Passages ventilés en véhicules et personnes. Somme garantie égale à

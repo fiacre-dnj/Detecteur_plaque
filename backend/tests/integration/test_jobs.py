@@ -233,6 +233,89 @@ class TestExecutionEtResultat:
         assert stored.read_bytes()[:2] == b"\x1f\x8b", "le résultat n'est pas gzippé sur disque"
         assert json.loads(gzip.decompress(stored.read_bytes()))["jobId"] == job_id
 
+    async def test_l_historique_porte_les_compteurs_sans_ouvrir_le_resultat(
+        self, client: AsyncClient
+    ) -> None:
+        """La liste dit ce qu'une analyse a trouvé, pas seulement quand elle a tourné.
+
+        Les colonnes sont dénormalisées en base **pour cet usage** et n'étaient
+        exposées nulle part : l'historique affichait date, fichier, modèle et durée,
+        donc rien qui aide à choisir laquelle rouvrir. Les lire ici évite d'ouvrir un
+        `result.json.gz` de plusieurs centaines de mégaoctets par ligne de tableau.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+        final = await _wait_until_done(client, job_id)
+
+        assert "uniqueVehicles" in final
+        assert "crossingsTotal" in final
+
+        listed = (await client.get("/api/v1/jobs")).json()
+        row = next(item for item in listed["items"] if item["jobId"] == job_id)
+        # La liste et le détail parlent des mêmes chiffres : deux sources qui
+        # diffèrent seraient pires que pas de chiffres du tout.
+        assert row["uniqueVehicles"] == final["uniqueVehicles"]
+        assert row["crossingsTotal"] == final["crossingsTotal"]
+
+
+class TestVideoAnalysee:
+    """La vidéo resservie, pour rejouer une analyse archivée.
+
+    Les compteurs, le registre et l'histogramme se rejouent depuis le seul résultat.
+    L'incrustation des boîtes et le déplacement dans la timeline, eux, ont besoin de
+    la vidéo — et aucune route ne la servait.
+    """
+
+    async def test_la_video_analysee_est_resservie(self, client: AsyncClient) -> None:
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+        await _wait_until_done(client, job_id)
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/input")
+
+        assert response.status_code == 200
+        assert len(response.content) > 0
+        # `Accept-Ranges` est ce qui rend le déplacement praticable : sans lui, le
+        # navigateur retélécharge tout depuis le début à chaque clic de timeline.
+        assert response.headers["accept-ranges"] == "bytes"
+        assert "immutable" in response.headers["cache-control"]
+        # `private` : une scène de trafic contient des plaques réelles et des
+        # visages, aucun proxy partagé ne doit la garder.
+        assert "private" in response.headers["cache-control"]
+        # Un type deviné, jamais `application/octet-stream` : le navigateur refuse
+        # de lire un flux binaire dans une balise `<video>`.
+        assert response.headers["content-type"].startswith("video/")
+
+    async def test_une_video_purgee_le_dit_sans_demander_de_relancer(
+        self, client: AsyncClient, settings: Settings
+    ) -> None:
+        """**Le refus qui compte**, et pourquoi il n'est pas `result_missing`.
+
+        La vidéo est purgée plus tôt que le résultat, délibérément. Quand elle
+        manque, le résultat est intact et parfaitement affichable : envoyer
+        l'utilisateur « relancer l'analyse » lui ferait refaire un calcul inutile.
+        Le code doit donc être distinct, et le message dire « redéposez le fichier ».
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+        await _wait_until_done(client, job_id)
+
+        for candidate in (settings.data_dir / "jobs" / job_id).glob("input.*"):
+            candidate.unlink()
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/input")
+
+        assert response.status_code == 409
+        assert response.json()["code"] == "input_missing"
+        # Le résultat, lui, répond toujours : c'est tout l'intérêt de séparer les deux.
+        assert (await client.get(f"/api/v1/jobs/{job_id}/result")).status_code == 200
+
+    async def test_un_job_inconnu_rend_404(self, client: AsyncClient) -> None:
+        response = await client.get("/api/v1/jobs/inexistant/input")
+
+        assert response.status_code == 404
+        assert response.json()["code"] == "job_not_found"
+
 
 class TestSse:
     async def test_le_flux_envoie_l_etat_courant_en_premier(self, client: AsyncClient) -> None:

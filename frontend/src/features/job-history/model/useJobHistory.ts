@@ -13,7 +13,7 @@ import { useCallback, useState } from "react";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import type { AnalysisRequest, Job, JobStatus, Page } from "@/shared/api/contracts";
+import type { AnalysisRequest, Job, JobDetail, JobStatus, Page } from "@/shared/api/contracts";
 import { request } from "@/shared/api/httpClient";
 import { queryKeys } from "@/shared/api/queryKeys";
 
@@ -92,9 +92,7 @@ export function useJobConfig(): JobConfigResult {
       // interrogée toutes les 3 s pendant une analyse, et elle ne porte **pas** la
       // configuration — délibérément, pour ne pas faire voyager la géométrie des
       // centaines de fois. Un test backend garantit cette séparation.
-      const detail = await request<Job & { configJson: AnalysisRequest }>(
-        `/api/v1/jobs/${jobId}/config`,
-      );
+      const detail = await request<JobDetail>(`/api/v1/jobs/${jobId}/config`);
       const loaded = detail.configJson;
       setConfig(loaded);
       return loaded;

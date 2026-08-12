@@ -219,6 +219,10 @@ def serialise_stats(stats: AnalysisStats) -> dict[str, Any]:
         "uniqueVehicles": stats.unique_vehicles,
         "uniqueByClass": dict(stats.unique_by_class),
         "crossings": stats.crossings,
+        # Des **véhicules**, pas des passages : borné par `uniqueVehicles`. C'est le
+        # numérateur du taux de franchissement, qui divisait des passages par des
+        # véhicules depuis ADR 0014 et pouvait donc dépasser 100 %.
+        "crossedUnique": stats.crossed_unique,
         "byClass": dict(stats.by_class),
         # Véhicules et personnes séparés. Somme garantie égale à `crossings` :
         # la ventilation est dérivée du même `by_class`, jamais comptée à part.

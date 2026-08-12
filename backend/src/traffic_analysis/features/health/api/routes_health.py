@@ -98,6 +98,7 @@ async def readiness(settings: SettingsDep) -> ReadinessSchema:
                         "loadedModels": ["yolov8n"],
                         "maxLoadedModels": 2,
                         "plateAvailable": False,
+                        "plateLoadable": None,
                         "plateOcrAvailable": False,
                         "defaultModelId": "yolov8n",
                         "weightsDir": "/app/.weights",
@@ -121,6 +122,7 @@ async def health(settings: SettingsDep, container: ContainerDep) -> HealthSchema
         loaded_models=service.loaded_ids() if service else [],
         max_loaded_models=settings.max_loaded_models,
         plate_available=service.plate_available() if service else False,
+        plate_loadable=service.plate_loadable() if service else None,
         plate_ocr_available=service.plate_ocr_available() if service else False,
         default_model_id=settings.default_model_id,
         # Le chemin **résolu**, jamais celui de la configuration : c'est
