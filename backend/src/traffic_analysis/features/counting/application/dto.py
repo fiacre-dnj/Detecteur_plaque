@@ -193,6 +193,18 @@ class AnalysisJobConfig:
     #: **Sans effet en direct**, où le client cadence lui-même son envoi. Comme
     #: `frame_stride`, ce champ ne concerne que la lecture d'un fichier.
     analysis_speed: float | None = None
+    #: Plafond **absolu** de cadence, en images analysées par seconde réelle.
+    #: `None` — le défaut — n'impose aucune borne.
+    #:
+    #: Indépendant d'`analysis_speed` : celui-ci borne la vitesse *relative* à la
+    #: scène (« pas plus vite que la vidéo »), celui-ci borne le débit *absolu* du
+    #: serveur (« jamais plus de N images par seconde », quelle que soit la
+    #: cadence de la source). Les deux peuvent être posés ensemble — le plus
+    #: restrictif des deux s'applique — et chacun peut s'appliquer même quand
+    #: l'autre est `None` (`domain/pacing.py`).
+    #:
+    #: **Sans effet en direct**, comme `analysis_speed`.
+    max_analysis_fps: float | None = None
 
     def engine_spec(self) -> EngineSpec:
         """Ce que le moteur doit savoir : les seuils **vivants** de la requête."""

@@ -327,6 +327,19 @@ export interface AnalysisRequest {
    * cadence son envoi.
    */
   analysisSpeed: number | null;
+  /**
+   * Plafond **absolu** de l'analyse, en images analysées par seconde réelle —
+   * indépendant de la cadence de la source.
+   *
+   * `null` — le défaut — n'impose aucune borne. Distinct d'`analysisSpeed`, qui
+   * borne une vitesse *relative* au temps de la scène : les deux peuvent être
+   * posés ensemble, et c'est le plus restrictif des deux qui s'applique. Utile
+   * pour brider le débit du serveur lui-même plutôt que la vitesse de lecture —
+   * deux caméras à cadences différentes partageant la même machine, par exemple.
+   *
+   * Borné à [1 ; 240] par le serveur. Sans effet en direct.
+   */
+  maxAnalysisFps: number | null;
   lines: CountingLine[];
   zones: Zone[];
 }

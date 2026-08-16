@@ -421,10 +421,11 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     borné.** L'aperçu live *cale* la vidéo du client sur l'image analysée, il ne la
     lit pas : le curseur avance donc de `fps_analyse / fps_vidéo` seconde de scène
     par seconde réelle, soit **1,70× mesuré** sur cette machine. `analysisSpeed`
-    borne la cadence — `null` par défaut, donc débit inchangé pour qui n'y touche
-    pas ; `1` rend 0,99× et fait durer l'analyse la durée de la vidéo. C'est une
-    cadence **maximale** : `2` rend 1,82× parce que le travail par image approche la
-    période.
+    borne la cadence — **`1` (temps réel) par défaut depuis ADR 0019**, pour que la
+    lecture locale reste à vitesse normale sans réglage à toucher ; `null`
+    (« Illimitée ») reste un choix explicite pour qui veut ses chiffres au plus vite.
+    `1` rend 0,99× et fait durer l'analyse la durée de la vidéo. C'est une cadence
+    **maximale** : `2` rend 1,82× parce que le travail par image approche la période.
     Le piège est dans le cadenceur, pas dans le réglage : **interdire tout
     rattrapage servait 0,82× en annonçant 1×**. Le coût d'une image est irrégulier —
     60 images sur 240 dépassent leur période — et chaque dépassement était perdu
@@ -434,7 +435,15 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     que ce soit — les deux ont été mesurés et écartés.
     **`processing_fps` d'un run bridé mesure le bridage, pas la machine** : l'attente
     n'est pas retranchée, contrairement au temps de pause.
-    [ADR 0017](docs/adr/0017-brider-l-analyse-sur-le-temps-de-la-scene.md).
+    `maxAnalysisFps` (ADR 0020) est un **second** bridage, indépendant : un plafond
+    **absolu** en images par seconde réelle (30 ou 60), qui ignore la cadence de la
+    source et `frame_stride`. Les deux se composent — c'est la période la plus
+    longue des deux qui gagne — et chacun agit même quand l'autre vaut `null`.
+    [ADR 0017](docs/adr/0017-brider-l-analyse-sur-le-temps-de-la-scene.md), dont
+    [ADR 0019](docs/adr/0019-la-lecture-locale-reste-a-vitesse-normale.md) change le
+    défaut sans toucher au mécanisme, et qu'
+    [ADR 0020](docs/adr/0020-un-plafond-absolu-de-cadence.md) complète d'un second
+    axe de bridage.
 
 ## Mesurer avant d'optimiser l'ANPR
 

@@ -329,10 +329,11 @@ describe("analysisSpeed — la cadence d'analyse", () => {
     { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
   ];
 
-  it("part sans borne par défaut", () => {
-    // Le comportement historique : qui ne touche à rien garde son débit.
-    expect(DEFAULT_SETTINGS.analysisSpeed).toBeNull();
-    expect(toRequest(DEFAULT_SETTINGS, LINES, []).analysisSpeed).toBeNull();
+  it("part en temps réel par défaut", () => {
+    // Depuis ADR 0019 : sans borne, la lecture locale calée sur l'aperçu paraît
+    // accélérée ou ralentie selon la charge du serveur.
+    expect(DEFAULT_SETTINGS.analysisSpeed).toBe(1);
+    expect(toRequest(DEFAULT_SETTINGS, LINES, []).analysisSpeed).toBe(1);
   });
 
   it("transmet une cadence choisie", () => {
@@ -370,13 +371,14 @@ describe("analysisSpeed — la cadence d'analyse", () => {
   it("**écarte une cadence persistée hors bornes au lieu de la borner**", () => {
     // Bornée à 8×, elle afficherait « Illimitée » tout en bridant : un réglage que
     // l'écran contredirait. C'est ce qui la distingue des curseurs, dont une valeur
-    // hors bornes vient d'un intervalle qui a changé entre deux versions.
+    // hors bornes vient d'un intervalle qui a changé entre deux versions. Le repli
+    // est le défaut du module (`1`, temps réel, depuis ADR 0019).
     const stored = JSON.stringify({
       version: SETTINGS_SCHEMA_VERSION,
       settings: { analysisSpeed: 42 },
     });
 
-    expect(loadSettings(fakeStorage(stored)).analysisSpeed).toBeNull();
+    expect(loadSettings(fakeStorage(stored)).analysisSpeed).toBe(1);
   });
 
   it("ignore une cadence d'un type faux", () => {
@@ -385,6 +387,70 @@ describe("analysisSpeed — la cadence d'analyse", () => {
       settings: { analysisSpeed: "temps réel" },
     });
 
-    expect(loadSettings(fakeStorage(stored)).analysisSpeed).toBeNull();
+    expect(loadSettings(fakeStorage(stored)).analysisSpeed).toBe(1);
+  });
+});
+
+describe("maxAnalysisFps — le plafond absolu de cadence", () => {
+  const LINES = [
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
+  ];
+
+  it("part sans plafond par défaut", () => {
+    // La vitesse de lecture normale est déjà assurée par `analysisSpeed` ; ce
+    // plafond est un choix supplémentaire, pas un correctif.
+    expect(DEFAULT_SETTINGS.maxAnalysisFps).toBeNull();
+    expect(toRequest(DEFAULT_SETTINGS, LINES, []).maxAnalysisFps).toBeNull();
+  });
+
+  it("transmet un plafond choisi", () => {
+    const request = toRequest({ ...DEFAULT_SETTINGS, maxAnalysisFps: 30 }, LINES, []);
+
+    expect(request.maxAnalysisFps).toBe(30);
+  });
+
+  it("**n'envoie jamais un plafond hors bornes**", () => {
+    expect(
+      toRequest({ ...DEFAULT_SETTINGS, maxAnalysisFps: 999 }, LINES, []).maxAnalysisFps,
+    ).toBeNull();
+    expect(
+      toRequest({ ...DEFAULT_SETTINGS, maxAnalysisFps: 0 }, LINES, []).maxAnalysisFps,
+    ).toBeNull();
+  });
+
+  it("relit un plafond persisté", () => {
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { maxAnalysisFps: 60 },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBe(60);
+  });
+
+  it("relit `null` comme « aucun plafond », et non comme « absent »", () => {
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { maxAnalysisFps: null },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBeNull();
+  });
+
+  it("**écarte un plafond persisté hors bornes au lieu de le borner**", () => {
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { maxAnalysisFps: 999 },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBeNull();
+  });
+
+  it("ignore un plafond d'un type faux", () => {
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { maxAnalysisFps: "30 img/s" },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBeNull();
   });
 });

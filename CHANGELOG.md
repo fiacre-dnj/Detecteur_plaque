@@ -100,6 +100,11 @@ plus deux fois dans le même sens » si.
   l'ouverture.
 - **`docker compose up` sert l'application complète** sur une seule adresse. Les
   analyses, la base et les poids téléchargés survivent à un redémarrage.
+- **La lecture locale d'une analyse en cours reste à vitesse normale par
+  défaut.** Sans plus toucher à rien, la vidéo ne défile plus tantôt accélérée,
+  tantôt ralentie selon la charge du serveur. Un plafond **absolu**, en 30 ou
+  60 images par seconde, reste disponible en plus pour brider le débit du
+  serveur lui-même, indépendamment de la cadence de la vidéo.
 
 ### Corrigé
 

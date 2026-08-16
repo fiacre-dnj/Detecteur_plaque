@@ -31,7 +31,12 @@ from traffic_analysis.features.counting.application.dto import (
     Point,
     ZoneDef,
 )
-from traffic_analysis.features.counting.domain.pacing import MAX_SPEED, MIN_SPEED
+from traffic_analysis.features.counting.domain.pacing import (
+    MAX_FPS_CAP,
+    MAX_SPEED,
+    MIN_FPS_CAP,
+    MIN_SPEED,
+)
 from traffic_analysis.features.models_registry.application.catalogue_access import (
     is_known_model,
     known_model_ids,
@@ -150,6 +155,19 @@ class AnalysisRequestSchema(CamelModel):
         ),
         examples=[1],
     )
+    max_analysis_fps: float | None = Field(
+        None,
+        ge=MIN_FPS_CAP,
+        le=MAX_FPS_CAP,
+        description=(
+            "Plafond absolu de l'analyse, en images analysées par seconde réelle — "
+            "indépendant de la cadence de la source. `null` (le défaut) n'impose "
+            "aucune borne. Distinct de `analysisSpeed`, qui borne une vitesse "
+            "*relative* au temps de la scène : les deux peuvent être posés "
+            "ensemble, et le plus restrictif s'applique. Sans effet en direct."
+        ),
+        examples=[30],
+    )
     lines: list[LineSchema] = Field(default_factory=list)
     zones: list[ZoneSchema] = Field(default_factory=list)
 
@@ -264,4 +282,5 @@ class AnalysisRequestSchema(CamelModel):
             zones=tuple(zone.to_domain() for zone in self.zones),
             class_ids=tuple(self.class_ids),
             analysis_speed=self.analysis_speed,
+            max_analysis_fps=self.max_analysis_fps,
         )

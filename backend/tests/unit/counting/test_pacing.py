@@ -61,12 +61,15 @@ def _engine(*, fps: float = FAST_FPS) -> FakeEngine:
     )
 
 
-def _config(speed: float | None, *, frame_stride: int = 1) -> AnalysisJobConfig:
+def _config(
+    speed: float | None, *, frame_stride: int = 1, max_fps: float | None = None
+) -> AnalysisJobConfig:
     return AnalysisJobConfig(
         model_id="yolov8n",
         lines=(make_line(),),
         analysis_speed=speed,
         frame_stride=frame_stride,
+        max_analysis_fps=max_fps,
     )
 
 
@@ -126,6 +129,44 @@ class TestScenePacer:
     def test_l_attente_n_est_jamais_negative(self) -> None:
         pacer = ScenePacer(period_s=0.04)
         assert pacer.wait_s(10.0) == 0.0
+
+
+class TestPlafondAbsolu:
+    """`max_fps` — un débit, pas une vitesse relative à la scène.
+
+    Indépendant de `speed` : il ne connaît ni la cadence de la source ni
+    `frame_stride`, seulement le nombre d'images analysées par seconde réelle.
+    """
+
+    def test_un_plafond_seul_bride_sans_connaitre_la_source(self) -> None:
+        # `fps = 0.0` — une source qui ne déclare pas sa cadence — n'empêche pas
+        # le plafond absolu, contrairement à `speed`.
+        pacer = ScenePacer.for_video(0.0, 1, None, 30.0)
+        assert pacer is not None
+        assert pacer.period_s == pytest.approx(1.0 / 30.0)
+
+    def test_le_plafond_ignore_le_pas_d_analyse(self) -> None:
+        """Il compte des images analysées, pas du temps de scène couvert."""
+        pacer = ScenePacer.for_video(25.0, 3, None, 30.0)
+        assert pacer is not None
+        assert pacer.period_s == pytest.approx(1.0 / 30.0)
+
+    def test_le_plus_restrictif_des_deux_bridages_l_emporte(self) -> None:
+        # Cadence relative : 1× à 25 fps → période 0,04 s (25 img/s).
+        # Plafond absolu à 60 img/s → période plus courte (0,0167 s) : ne
+        # contraint rien de plus que la cadence relative.
+        pacer = ScenePacer.for_video(25.0, 1, 1.0, 60.0)
+        assert pacer is not None
+        assert pacer.period_s == pytest.approx(0.04)
+
+        # Plafond absolu à 10 img/s → période plus longue (0,1 s) : c'est lui qui
+        # gagne, même si la cadence relative demandait 25 img/s.
+        pacer = ScenePacer.for_video(25.0, 1, 1.0, 10.0)
+        assert pacer is not None
+        assert pacer.period_s == pytest.approx(0.1)
+
+    def test_aucun_des_deux_ne_bride(self) -> None:
+        assert ScenePacer.for_video(25.0, 1, None, None) is None
 
 
 #: Une période de 40 ms — 25 images par seconde bridées à 1×.
@@ -216,6 +257,17 @@ class TestBridageDeLAnalyse:
         # Une période de tolérance : la dernière image est suivie d'une attente, mais
         # la première ne l'est pas précédée.
         assert elapsed >= SCENE_S - 1.0 / FAST_FPS
+
+    def test_un_plafond_absolu_bride_meme_sans_cadence_relative(self, video: Path) -> None:
+        """`max_analysis_fps` seul bride, sans passer par `analysis_speed`."""
+        max_fps = 50.0
+        period = 1.0 / max_fps
+        service = AnalysisService(_engine())
+        started = perf_counter()
+        service.run_video("job-1", video, _config(None, max_fps=max_fps))
+        elapsed = perf_counter() - started
+
+        assert elapsed >= (STEPS - 1) * period
 
     def test_une_cadence_double_bride_deux_fois_moins(self, video: Path) -> None:
         service = AnalysisService(_engine())

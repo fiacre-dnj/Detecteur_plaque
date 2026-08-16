@@ -29,6 +29,7 @@ import { ModelPicker } from "@/features/model-picker";
 import type { DetectableClass, Diagnostics, VehicleModel } from "@/shared/api/contracts";
 
 import {
+  ANALYSIS_FPS_CAPS,
   ANALYSIS_SPEEDS,
   BOUNDS,
   DEFAULT_CONFIDENCE,
@@ -271,6 +272,23 @@ export function SettingsPanels({
               : "Une cadence maximale : l'analyse attend entre deux images, sans jamais dépasser cette vitesse — ni l'atteindre si la machine ne suit pas. Les compteurs sont identiques."
           }
           onChange={(analysisSpeed) => onChange({ analysisSpeed })}
+        />
+
+        {/* Distinct de la cadence ci-dessus : celle-ci borne une vitesse
+            relative à la scène, celle-ci borne le débit absolu du serveur —
+            utile pour partager la machine entre plusieurs sources sans se
+            soucier de la vitesse de lecture de chacune. */}
+        <Choice
+          label="Cadence serveur maximale"
+          options={ANALYSIS_FPS_CAPS}
+          value={settings.maxAnalysisFps}
+          disabled={disabled}
+          hint={
+            settings.maxAnalysisFps === null
+              ? "Aucun plafond : le serveur analyse aussi vite qu'il peut, dans la limite de la cadence ci-dessus."
+              : "Le serveur n'analyse jamais plus vite que cette cadence, quelle que soit celle de la vidéo — combiné au réglage précédent, le plus restrictif des deux s'applique."
+          }
+          onChange={(maxAnalysisFps) => onChange({ maxAnalysisFps })}
         />
 
         <Slider

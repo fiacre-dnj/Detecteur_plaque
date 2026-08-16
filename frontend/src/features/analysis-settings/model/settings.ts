@@ -79,10 +79,24 @@ export interface AnalysisSettings {
    * est calé sur le temps de scène analysé, pas lu.
    *
    * Pas d'incrément de `SETTINGS_SCHEMA_VERSION` : la fusion est champ par champ,
-   * donc un `localStorage` antérieur reprend simplement le défaut, et ce défaut est
-   * le comportement historique.
+   * donc un `localStorage` antérieur reprend simplement le défaut ci-dessous
+   * (ADR 0019).
    */
   analysisSpeed: number | null;
+  /**
+   * Plafond **absolu** de l'analyse, en images analysées par seconde réelle —
+   * `null` = aucune borne.
+   *
+   * Indépendant d'`analysisSpeed` : celui-ci borne une vitesse *relative* au
+   * temps de la scène (« pas plus vite que la vidéo »), celui-ci borne le débit
+   * *absolu* du serveur (« jamais plus de N images par seconde », quelle que
+   * soit la cadence de la source). Les deux peuvent être réglés ensemble — le
+   * plus restrictif s'applique — et chacun agit même quand l'autre vaut `null`.
+   *
+   * Pas d'incrément de `SETTINGS_SCHEMA_VERSION` : la fusion est champ par
+   * champ, donc un `localStorage` antérieur reprend simplement le défaut.
+   */
+  maxAnalysisFps: number | null;
   showTrails: boolean;
 }
 
@@ -105,10 +119,16 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   // comportement historique de l'application, donc qui ne touche à rien retrouve
   // exactement ses chiffres d'avant. Les personnes se cochent quand on les veut.
   classIds: [2, 3, 5, 7],
-  // Aucune borne par défaut : le débit est ce qu'on attend d'abord d'une analyse en
-  // différé, et brider la fait durer la durée de la vidéo. C'est un choix qui se
-  // fait, pas qui se subit.
-  analysisSpeed: null,
+  // Temps réel par défaut, depuis ADR 0019 : sans borne, l'aperçu défile à la
+  // vitesse de l'analyse (jusqu'à 1,7× mesuré) et la lecture locale, calée dessus,
+  // paraît accélérée ou ralentie selon la charge du serveur — un défaut qui
+  // surprend plutôt qu'un choix. `1` fait durer l'analyse la durée de la vidéo ;
+  // « Illimitée » reste un choix explicite pour qui veut ses chiffres au plus vite.
+  analysisSpeed: 1,
+  // Aucun plafond absolu par défaut : la vitesse de lecture normale est déjà
+  // assurée par `analysisSpeed`. Ce réglage est un choix supplémentaire, pas un
+  // correctif — celui qui veut brider le débit du serveur lui-même le choisit.
+  maxAnalysisFps: null,
   showTrails: true,
 };
 
@@ -123,6 +143,19 @@ export const ANALYSIS_SPEEDS: readonly { value: number | null; label: string }[]
   { value: null, label: "Illimitée" },
   { value: 1, label: "Temps réel" },
   { value: 2, label: "2×" },
+];
+
+/**
+ * Les plafonds absolus proposés, en images par seconde.
+ *
+ * Deux valeurs seulement, comme pour `ANALYSIS_SPEEDS` et pour la même raison :
+ * ce sont les deux cadences vidéo courantes (30 et 60 fps), pas un curseur
+ * continu qui inviterait à régler un chiffre arbitraire.
+ */
+export const ANALYSIS_FPS_CAPS: readonly { value: number | null; label: string }[] = [
+  { value: null, label: "Illimité" },
+  { value: 30, label: "30 img/s" },
+  { value: 60, label: "60 img/s" },
 ];
 
 /**
@@ -206,6 +239,8 @@ export function toRequest(
     // relue d'un `localStorage` bricolé — vaudrait un 422 sur un écran qui paraît
     // valide. Hors bornes ⇒ aucune borne, qui est le défaut.
     analysisSpeed: isSupportedSpeed(settings.analysisSpeed) ? settings.analysisSpeed : null,
+    // Même logique que pour `analysisSpeed` : hors bornes ⇒ aucun plafond.
+    maxAnalysisFps: isSupportedFpsCap(settings.maxAnalysisFps) ? settings.maxAnalysisFps : null,
     lines: [...lines],
     zones: [...zones],
   };
@@ -219,9 +254,17 @@ export function toRequest(
  */
 export const SPEED_BOUNDS = { min: 0.25, max: 8 } as const;
 
+/** Bornes du plafond absolu côté serveur — les dépasser produirait un 422. */
+export const FPS_CAP_BOUNDS = { min: 1, max: 240 } as const;
+
 function isSupportedSpeed(value: number | null): boolean {
   if (value === null) return true;
   return Number.isFinite(value) && value >= SPEED_BOUNDS.min && value <= SPEED_BOUNDS.max;
+}
+
+function isSupportedFpsCap(value: number | null): boolean {
+  if (value === null) return true;
+  return Number.isFinite(value) && value >= FPS_CAP_BOUNDS.min && value <= FPS_CAP_BOUNDS.max;
 }
 
 /**
@@ -287,6 +330,8 @@ function mergeSettings(source: Record<string, unknown>): AnalysisSettings {
   // « Illimitée » tout en bridant — un réglage que l'écran contredirait.
   const speed = nullableNumber(source.analysisSpeed, merged.analysisSpeed);
   merged.analysisSpeed = isSupportedSpeed(speed) ? speed : merged.analysisSpeed;
+  const fpsCap = nullableNumber(source.maxAnalysisFps, merged.maxAnalysisFps);
+  merged.maxAnalysisFps = isSupportedFpsCap(fpsCap) ? fpsCap : merged.maxAnalysisFps;
   merged.pixelsPerMeter = nullableNumber(source.pixelsPerMeter, merged.pixelsPerMeter);
 
   // Les identifiants non numériques sont écartés un par un plutôt que de faire

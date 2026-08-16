@@ -156,11 +156,13 @@ class AnalysisService:
         sans lui, rien de visuel ne quitte le serveur avant la fin. Un intervalle
         nul publie chaque frame, ce dont seuls les tests ont l'usage.
 
-        `config.analysis_speed` **bride** la boucle : elle attend entre deux images
-        pour que le temps de scène n'avance jamais plus vite que le multiple
-        demandé du temps réel. C'est ce qui rend l'aperçu regardable, au prix d'une
-        analyse qui dure la durée de la vidéo (`domain/pacing.py`). Une analyse
-        bridée resserre aussi son intervalle d'aperçu à
+        `config.analysis_speed` et `config.max_analysis_fps` **brident** la
+        boucle : elle attend entre deux images pour que le temps de scène
+        n'avance jamais plus vite que le multiple demandé du temps réel, et que
+        le serveur n'analyse jamais plus vite que le plafond absolu — le plus
+        restrictif des deux s'applique. C'est ce qui rend l'aperçu regardable, au
+        prix d'une analyse qui dure plus longtemps (`domain/pacing.py`). Une
+        analyse bridée resserre aussi son intervalle d'aperçu à
         `paced_preview_interval_s`, sans jamais l'élargir.
 
         **`processing_fps` d'une analyse bridée mesure le bridage, pas la
@@ -215,7 +217,9 @@ class AnalysisService:
 
         # `None` = pleine vitesse, le défaut. Construit ici parce que la cadence de
         # la source ne se connaît qu'après `probe()`.
-        pacer = ScenePacer.for_video(info.fps, config.frame_stride, config.analysis_speed)
+        pacer = ScenePacer.for_video(
+            info.fps, config.frame_stride, config.analysis_speed, config.max_analysis_fps
+        )
         if pacer is not None:
             # `> 0` : zéro signifie « ne pas resserrer », pas « publier chaque
             # image ». La seule valeur qui décide de l'existence de l'aperçu reste
@@ -227,16 +231,18 @@ class AnalysisService:
                 "analyse bridée sur le temps de la scène",
                 job_id=job_id,
                 analysis_speed=config.analysis_speed,
+                max_analysis_fps=config.max_analysis_fps,
                 video_fps=round(info.fps, 2),
                 frame_period_ms=round(pacer.period_s * 1000, 1),
             )
         elif config.analysis_speed is not None:
-            # Le seul cas où le bridage est demandé et refusé : une source qui ne
-            # dit pas sa cadence. Le dire, plutôt que d'analyser à pleine vitesse en
-            # laissant croire au bridage — l'aperçu défilerait vite et le réglage
-            # paraîtrait sans effet.
+            # Le seul cas où un bridage relatif est demandé et refusé : une source
+            # qui ne dit pas sa cadence. `max_analysis_fps`, lui, ne dépend jamais
+            # de `fps` — s'il était seul demandé, `pacer` ne serait pas `None` ici.
+            # Le dire, plutôt que d'analyser à pleine vitesse en laissant croire au
+            # bridage — l'aperçu défilerait vite et le réglage paraîtrait sans effet.
             logger.warning(
-                "bridage impossible : la source ne déclare pas de cadence",
+                "bridage relatif impossible : la source ne déclare pas de cadence",
                 job_id=job_id,
                 video_fps=info.fps,
             )

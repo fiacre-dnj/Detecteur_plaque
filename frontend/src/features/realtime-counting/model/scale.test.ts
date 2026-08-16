@@ -68,6 +68,7 @@ const REQUEST: AnalysisRequest = {
   // Sans dimension, donc rejouée telle quelle par la mise à l'échelle — et sans
   // effet en direct de toute façon : c'est le client qui cadence son envoi.
   analysisSpeed: null,
+  maxAnalysisFps: null,
   lines: [LINE],
   zones: [ZONE],
 };

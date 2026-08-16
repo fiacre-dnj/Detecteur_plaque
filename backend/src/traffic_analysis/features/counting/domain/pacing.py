@@ -40,6 +40,16 @@ MIN_SPEED = 0.25
 #: nulle et le bridage un mensonge à l'écran.
 MAX_SPEED = 8.0
 
+#: Bornes du plafond absolu de cadence, en images analysées par seconde réelle.
+#:
+#: Distinct de `MIN_SPEED`/`MAX_SPEED` : ce plafond ne regarde pas la cadence de la
+#: source, il borne directement le débit du serveur. `1` en dessous ferait d'une
+#: analyse de trente secondes une analyse de plusieurs minutes ; `240` au-delà
+#: n'est atteint par aucune machine sur une source réaliste, donc le plafond
+#: deviendrait un mensonge à l'écran, comme `MAX_SPEED`.
+MIN_FPS_CAP = 1.0
+MAX_FPS_CAP = 240.0
+
 #: Retard, en périodes, au-delà duquel on renonce à rattraper.
 #:
 #: **Trois, et c'est une valeur mesurée.** Le coût d'une image varie beaucoup —
@@ -84,32 +94,47 @@ class ScenePacer:
         self._due_s = self.period_s
 
     @staticmethod
-    def for_video(fps: float, frame_stride: int, speed: float | None) -> ScenePacer | None:
+    def for_video(
+        fps: float,
+        frame_stride: int,
+        speed: float | None,
+        max_fps: float | None = None,
+    ) -> ScenePacer | None:
         """Le cadenceur d'une vidéo, ou `None` s'il n'y a rien à brider.
 
-        Trois refus, tous rendus par `None` plutôt que par une exception : aucun
-        n'est une erreur de l'utilisateur, et aucun ne justifie de renoncer à
-        compter.
+        Deux bridages **indépendants** peuvent s'appliquer, et c'est le plus
+        restrictif des deux qui gagne :
 
-        - `speed is None` — le défaut : personne n'a demandé de bridage ;
-        - `fps <= 0` — un conteneur mal formé ne dit pas sa cadence, donc on ne
-          sait pas ce que « temps réel » voudrait dire pour lui. Défensif : le
-          `probe()` de l'adaptateur réel retombe sur sa cadence de repli avant
-          d'en arriver là, mais `VideoInfo` autorise la valeur et `duration_ms`
-          s'en protège de la même façon ;
-        - une cadence hors bornes, ramenée dans l'intervalle par le schéma
-          d'entrée bien avant d'arriver ici.
+        - `speed` — relatif au temps de la scène, voir la docstring du module ;
+        - `max_fps` — un plafond **absolu**, en images par seconde réelle, qui ne
+          regarde ni la cadence de la source ni `frame_stride`. Il existe pour
+          brider le débit du serveur lui-même — deux caméras 30 et 60 fps
+          partageant la même machine, par exemple — plutôt que la vitesse de
+          lecture d'une vidéo. Contrairement à `speed`, il n'a pas besoin de
+          connaître `fps` : une source qui ne déclare pas sa cadence peut donc
+          quand même être plafonnée.
 
-        `frame_stride` entre dans le calcul : avec un pas de 3, chaque image
-        analysée fait avancer la scène de trois images. Cadencer sur le nombre
-        d'images analysées et non sur le temps de scène qu'elles couvrent
-        brimerait l'analyse au tiers de la vitesse demandée.
+        Aucun refus ne lève : ni une cadence non demandée, ni une source qui ne
+        déclare pas sa cadence (`fps <= 0`, défensif — `probe()` de l'adaptateur
+        réel retombe sur sa cadence de repli avant d'en arriver là) ne sont des
+        erreurs de l'utilisateur, et aucune ne justifie de renoncer à compter. Une
+        cadence hors bornes est ramenée dans l'intervalle par le schéma d'entrée
+        bien avant d'arriver ici.
+
+        `frame_stride` n'entre que dans le calcul de `speed` : avec un pas de 3,
+        chaque image analysée fait avancer la scène de trois images, et cadencer
+        sur le nombre d'images analysées brimerait l'analyse au tiers de la
+        vitesse demandée. `max_fps` compte des images analysées, pas du temps de
+        scène : le pas n'y intervient pas.
         """
-        if speed is None or speed <= 0.0:
+        periods: list[float] = []
+        if speed is not None and speed > 0.0 and fps > 0.0:
+            periods.append(frame_stride / (fps * speed))
+        if max_fps is not None and max_fps > 0.0:
+            periods.append(1.0 / max_fps)
+        if not periods:
             return None
-        if fps <= 0.0:
-            return None
-        return ScenePacer(period_s=frame_stride / (fps * speed))
+        return ScenePacer(period_s=max(periods))
 
     def wait_s(self, elapsed_s: float) -> float:
         """Temps à attendre avant l'image suivante, en secondes.
