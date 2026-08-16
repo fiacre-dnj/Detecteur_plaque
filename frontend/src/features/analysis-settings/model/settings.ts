@@ -38,7 +38,6 @@ export interface AnalysisSettings {
   iouThreshold: number;
   minHits: number;
   maxLostMs: number;
-  reidMinSimilarity: number;
   maskOutsideZones: boolean;
   frameStride: number;
   detectPlates: boolean;
@@ -70,6 +69,20 @@ export interface AnalysisSettings {
    * 422 arriver sur un réglage que l'écran affiche comme valide.
    */
   classIds: number[];
+  /**
+   * Cadence maximale de l'analyse, en multiples de la vitesse réelle de la scène.
+   * `null` = aucune borne.
+   *
+   * Le seul réglage d'analyse qui ne change **aucun** chiffre : il ne décide que de
+   * la vitesse à laquelle l'aperçu défile. Sans borne, un serveur à 55 images par
+   * seconde sur une source à 25 fps montre un aperçu 2,2× trop rapide — le curseur
+   * est calé sur le temps de scène analysé, pas lu.
+   *
+   * Pas d'incrément de `SETTINGS_SCHEMA_VERSION` : la fusion est champ par champ,
+   * donc un `localStorage` antérieur reprend simplement le défaut, et ce défaut est
+   * le comportement historique.
+   */
+  analysisSpeed: number | null;
   showTrails: boolean;
 }
 
@@ -80,7 +93,6 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   iouThreshold: 0.45,
   minHits: 2,
   maxLostMs: 2_500,
-  reidMinSimilarity: 0.8,
   maskOutsideZones: false,
   frameStride: 1,
   detectPlates: false,
@@ -93,8 +105,25 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   // comportement historique de l'application, donc qui ne touche à rien retrouve
   // exactement ses chiffres d'avant. Les personnes se cochent quand on les veut.
   classIds: [2, 3, 5, 7],
+  // Aucune borne par défaut : le débit est ce qu'on attend d'abord d'une analyse en
+  // différé, et brider la fait durer la durée de la vidéo. C'est un choix qui se
+  // fait, pas qui se subit.
+  analysisSpeed: null,
   showTrails: true,
 };
+
+/**
+ * Les cadences proposées, et **pourquoi il n'y en a que trois**.
+ *
+ * Un curseur continu inviterait à régler 1,37× — un chiffre qui ne répond à aucune
+ * question. Les seules cadences qui en répondent une sont : « le plus vite
+ * possible », « je regarde » et « je regarde, mais pressé ».
+ */
+export const ANALYSIS_SPEEDS: readonly { value: number | null; label: string }[] = [
+  { value: null, label: "Illimitée" },
+  { value: 1, label: "Temps réel" },
+  { value: 2, label: "2×" },
+];
 
 /**
  * Nettoie une sélection de classes contre le catalogue **du serveur**.
@@ -130,7 +159,6 @@ export const BOUNDS = {
   iouThreshold: { min: 0.05, max: 0.95, step: 0.05 },
   minHits: { min: 1, max: 10, step: 1 },
   maxLostMs: { min: 200, max: 15_000, step: 100 },
-  reidMinSimilarity: { min: 0.5, max: 0.99, step: 0.01 },
   frameStride: { min: 1, max: 5, step: 1 },
   plateConfidence: { min: 0.05, max: 0.95, step: 0.05 },
   pixelsPerMeter: { min: 0, max: 500, step: 0.5 },
@@ -158,7 +186,6 @@ export function toRequest(
     iouThreshold: settings.iouThreshold,
     minHits: settings.minHits,
     maxLostMs: settings.maxLostMs,
-    reidMinSimilarity: settings.reidMinSimilarity,
     maskOutsideZones: settings.maskOutsideZones && zones.length > 0,
     frameStride: settings.frameStride,
     detectPlates: settings.detectPlates,
@@ -175,9 +202,26 @@ export function toRequest(
     // les quatre véhicules est le même que celui de `sanitiseClassIds` — l'écran
     // reste utilisable quand l'utilisateur a tout décoché.
     classIds: settings.classIds.length > 0 ? [...settings.classIds] : [...DEFAULT_SETTINGS.classIds],
+    // Borné aux cadences que le serveur accepte : une valeur hors de [0,25 ; 8] —
+    // relue d'un `localStorage` bricolé — vaudrait un 422 sur un écran qui paraît
+    // valide. Hors bornes ⇒ aucune borne, qui est le défaut.
+    analysisSpeed: isSupportedSpeed(settings.analysisSpeed) ? settings.analysisSpeed : null,
     lines: [...lines],
     zones: [...zones],
   };
+}
+
+/**
+ * Bornes du bridage côté serveur — les dépasser produirait un 422.
+ *
+ * Elles ne sont pas dans `BOUNDS` : ce n'est pas un curseur, et les afficher comme
+ * un intervalle continu suggérerait des cadences que l'écran ne propose pas.
+ */
+export const SPEED_BOUNDS = { min: 0.25, max: 8 } as const;
+
+function isSupportedSpeed(value: number | null): boolean {
+  if (value === null) return true;
+  return Number.isFinite(value) && value >= SPEED_BOUNDS.min && value <= SPEED_BOUNDS.max;
 }
 
 /**
@@ -235,13 +279,14 @@ function mergeSettings(source: Record<string, unknown>): AnalysisSettings {
   merged.iouThreshold = boundedNumber(source.iouThreshold, merged.iouThreshold, BOUNDS.iouThreshold);
   merged.minHits = boundedNumber(source.minHits, merged.minHits, BOUNDS.minHits);
   merged.maxLostMs = boundedNumber(source.maxLostMs, merged.maxLostMs, BOUNDS.maxLostMs);
-  merged.reidMinSimilarity = boundedNumber(
-    source.reidMinSimilarity,
-    merged.reidMinSimilarity,
-    BOUNDS.reidMinSimilarity,
-  );
   merged.frameStride = boundedNumber(source.frameStride, merged.frameStride, BOUNDS.frameStride);
   merged.plateConfidence = nullableNumber(source.plateConfidence, merged.plateConfidence);
+  // Écarté plutôt que borné, contrairement aux curseurs : une cadence hors bornes
+  // n'est pas un intervalle qui a changé entre deux versions, c'est une valeur qui
+  // ne correspond à aucun des trois choix de l'écran. La ramener à 8× afficherait
+  // « Illimitée » tout en bridant — un réglage que l'écran contredirait.
+  const speed = nullableNumber(source.analysisSpeed, merged.analysisSpeed);
+  merged.analysisSpeed = isSupportedSpeed(speed) ? speed : merged.analysisSpeed;
   merged.pixelsPerMeter = nullableNumber(source.pixelsPerMeter, merged.pixelsPerMeter);
 
   // Les identifiants non numériques sont écartés un par un plutôt que de faire

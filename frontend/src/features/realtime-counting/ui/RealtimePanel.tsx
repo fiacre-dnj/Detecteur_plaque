@@ -151,11 +151,15 @@ export function RealtimePanel(props: RealtimePanelProps) {
 
       {stats !== null && (
         <dl className="mt-3 space-y-2 border-t border-line pt-3 text-caption">
-          <Row term="Véhicules uniques" value={String(stats.uniqueVehicles)} />
+          <Row
+            term="Véhicules détectés"
+            value={String(stats.trackedVehicles)}
+            hint="Un objet suivi = un véhicule, ligne franchie ou non"
+          />
           <Row
             term="Franchissements"
             value={String(stats.crossings)}
-            hint="Somme des deux sens, sous l'identité votée"
+            hint="Passages observés, tous sens — un aller-retour compte 2"
           />
         </dl>
       )}

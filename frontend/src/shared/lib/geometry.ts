@@ -125,6 +125,42 @@ export function positiveNormal(a: Point, b: Point): Point {
   return { x: -dy / length, y: dx / length };
 }
 
+/**
+ * Libellés de sens **par défaut**, déduits de l'orientation du tracé.
+ *
+ * Ce sont des `placeholder`, pas des valeurs : le contrat garde `''` tant que
+ * l'utilisateur n'a rien tapé, et cette fonction est appelée à l'affichage. C'est
+ * ce qui permet aux libellés de suivre la ligne quand on la fait pivoter — écrire
+ * un défaut dans le champ le figerait à l'orientation du moment.
+ *
+ * Le vocabulaire est celui de l'**image**, pas celui d'une boussole : « vers le
+ * haut » est vérifiable à l'écran, « vers le nord » demanderait de connaître
+ * l'orientation de la caméra, que rien ne nous dit. L'utilisateur qui veut du
+ * cardinal l'écrit lui-même, et c'est précisément à quoi servent les champs.
+ *
+ * Le sens positif est celui de `positiveNormal`, dont le signe est verrouillé par un
+ * test contre `sideOfLine` : une inversion ici ferait lire des sens faux sous des
+ * totaux justes, le pire mode de défaillance parce qu'il est silencieux.
+ */
+export function defaultDirectionNames(a: Point, b: Point): { positive: string; negative: string } {
+  const normal = positiveNormal(a, b);
+  // Segment dégénéré : aucune orientation n'a de sens. On rend les libellés
+  // neutres de la convention serveur plutôt qu'un axe choisi au hasard.
+  if (normal.x === 0 && normal.y === 0) return { positive: "Sens A→B", negative: "Sens B→A" };
+
+  // L'axe dominant du **normal**, donc du déplacement qui traverse la ligne : une
+  // ligne horizontale se franchit verticalement, et inversement.
+  if (Math.abs(normal.x) >= Math.abs(normal.y)) {
+    return normal.x > 0
+      ? { positive: "Vers la droite", negative: "Vers la gauche" }
+      : { positive: "Vers la gauche", negative: "Vers la droite" };
+  }
+  // `y` croît **vers le bas** dans le repère du canvas et de la vidéo.
+  return normal.y > 0
+    ? { positive: "Vers le bas", negative: "Vers le haut" }
+    : { positive: "Vers le haut", negative: "Vers le bas" };
+}
+
 /** Borne un point au rectangle de la vidéo source. */
 export function clampToSource(p: Point, width: number, height: number): Point {
   return {

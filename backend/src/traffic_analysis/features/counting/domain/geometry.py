@@ -122,3 +122,48 @@ def point_in_polygon(point: Point, polygon: tuple[Point, ...]) -> bool:
 def distance(a: Point, b: Point) -> float:
     """Distance euclidienne, en pixels source."""
     return math.hypot(b.x - a.x, b.y - a.y)
+
+
+def signed_line_offset(a: Point, b: Point, p: Point) -> float:
+    """Distance **signée** de `p` à la droite `a`→`b`, en pixels.
+
+    `side_of_line` en est le signe, et rien d'autre : les deux fonctions décrivent
+    la même quantité, l'une en n'en gardant que l'orientation. Le côté seul suffit
+    à décider d'un franchissement, mais pas à décider qu'un franchissement est
+    **crédible** — pour cela il faut savoir de combien, et c'est ce que rend cette
+    fonction.
+
+    Une ligne dégénérée rend `0.0` : sans direction, il n'y a pas de côté.
+    """
+    dx = b.x - a.x
+    dy = b.y - a.y
+    length = math.hypot(dx, dy)
+    if length <= 0.0:
+        return 0.0
+    return (dx * (p.y - a.y) - dy * (p.x - a.x)) / length
+
+
+def point_segment_distance(p: Point, a: Point, b: Point) -> float:
+    """Distance de `p` au **segment** `[a,b]`, et non à la droite infinie.
+
+    La distinction est celle qui sépare `side_of_line` de `segments_intersect`, et
+    elle compte autant ici : un véhicule qui s'arrête à trois mètres au-delà de
+    l'extrémité d'une ligne est **loin du segment** tout en étant à quelques pixels
+    de sa droite support. Mesurer contre la droite le dirait « à portée » et
+    fabriquerait un quasi-franchissement là où il n'y a que du hors-champ.
+
+    Un segment de longueur nulle — deux clics au même endroit, refusé plus haut
+    mais pas impossible dans une configuration ancienne — rend la distance au
+    point `a` plutôt que de diviser par zéro.
+    """
+    dx = b.x - a.x
+    dy = b.y - a.y
+    length_squared = dx * dx + dy * dy
+    if length_squared <= 0.0:
+        return distance(p, a)
+
+    # Projection de `ap` sur `ab`, bornée à [0, 1] : c'est le bornage qui fait la
+    # différence entre le segment et sa droite.
+    t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / length_squared
+    t = max(0.0, min(1.0, t))
+    return math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy))

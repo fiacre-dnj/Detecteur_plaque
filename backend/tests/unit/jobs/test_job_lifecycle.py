@@ -197,7 +197,7 @@ class TestExecution:
         await _await_status(manager, "job-1")
 
         record = await manager.get("job-1")
-        assert record.unique_vehicles == 1
+        assert record.tracked_vehicles == 1
         assert record.crossings_total == 1
         assert record.stats_json is not None
         assert record.result_path == "jobs/job-1/result.json.gz"
@@ -452,7 +452,7 @@ class TestSuspensionEtReprise:
         await _await_status(manager, "job-1")
 
         record = await manager.get("job-1")
-        assert record.unique_vehicles == 1
+        assert record.tracked_vehicles == 1
         assert record.crossings_total == 1
 
     async def test_annuler_un_job_suspendu_le_termine_sans_le_reprendre(

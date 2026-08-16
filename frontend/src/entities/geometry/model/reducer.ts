@@ -11,7 +11,13 @@
  * Toutes les coordonnées sont en **pixels de la vidéo source**.
  */
 
-import type { CountingLine, Point, Zone } from "@/shared/api/contracts";
+import type {
+  CountingLine,
+  DirectionRole,
+  DirectionSign,
+  Point,
+  Zone,
+} from "@/shared/api/contracts";
 import { nextGeometryColor } from "@/shared/config/palettes";
 import { clampToSource } from "@/shared/lib/geometry";
 
@@ -24,6 +30,8 @@ export type GeometryAction =
   | { type: "moveZone"; id: string; points: Point[] }
   | { type: "renameLine"; id: string; name: string }
   | { type: "renameZone"; id: string; name: string }
+  | { type: "renameDirection"; id: string; sign: DirectionSign; name: string }
+  | { type: "setDirectionRole"; id: string; sign: DirectionSign; role: DirectionRole }
   | { type: "setLineZone"; id: string; zoneId: string | null }
   | { type: "removeLine"; id: string }
   | { type: "removeZone"; id: string }
@@ -52,6 +60,32 @@ export function defaultLine(width: number, height: number, index: number): Count
     zoneId: null,
     a: { x: width * 0.08, y },
     b: { x: width * 0.92, y },
+    // **Vides à dessein.** L'interface pose son défaut géométrique à l'affichage
+    // (`defaultDirectionNames`), recalculé quand la ligne pivote. Écrire un libellé
+    // ici le figerait à l'orientation de la création.
+    positiveName: "",
+    negativeName: "",
+    positiveRole: "neutral",
+    negativeRole: "neutral",
+  };
+}
+
+/**
+ * Complète une ligne venue d'ailleurs avec les défauts des champs de sens.
+ *
+ * Un preset enregistré ou un `configJson` archivé **avant** les sens nommés ne les
+ * porte pas. Sans ce complément, `line.positiveRole` vaudrait `undefined` là où le
+ * type promet un `DirectionRole`, et les agrégations d'entrées/sorties compareraient
+ * silencieusement contre rien — un total qui reste à zéro sans qu'aucune erreur ne
+ * l'explique.
+ */
+export function withDirectionDefaults(line: CountingLine): CountingLine {
+  return {
+    ...line,
+    positiveName: line.positiveName ?? "",
+    negativeName: line.negativeName ?? "",
+    positiveRole: line.positiveRole ?? "neutral",
+    negativeRole: line.negativeRole ?? "neutral",
   };
 }
 
@@ -122,6 +156,26 @@ export function geometryReducer(state: GeometryState, action: GeometryAction): G
         ),
       };
 
+    case "renameDirection":
+      return {
+        ...state,
+        lines: state.lines.map((line) =>
+          line.id === action.id
+            ? { ...line, [`${action.sign}Name`]: action.name }
+            : line,
+        ),
+      };
+
+    case "setDirectionRole":
+      return {
+        ...state,
+        lines: state.lines.map((line) =>
+          line.id === action.id
+            ? { ...line, [`${action.sign}Role`]: action.role }
+            : line,
+        ),
+      };
+
     case "setLineZone":
       return {
         ...state,
@@ -165,9 +219,13 @@ export function geometryReducer(state: GeometryState, action: GeometryAction): G
     case "replace":
       // Chargement d'un preset ou d'un job de l'historique. La sélection est
       // remise à zéro : elle pointerait sur des identifiants disparus.
+      //
+      // **C'est le seul point d'entrée de lignes que nous n'avons pas fabriquées**,
+      // donc le seul endroit où compléter les champs de sens d'une configuration
+      // enregistrée avant qu'ils existent.
       return {
         ...state,
-        lines: action.lines,
+        lines: action.lines.map(withDirectionDefaults),
         zones: action.zones,
         selection: NO_SELECTION,
         drawingZone: false,

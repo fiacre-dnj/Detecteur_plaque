@@ -171,17 +171,27 @@ Classe `LineCrossingCounter(lines, zones, min_hits)`. Elle **détecte et
 déduplique au même endroit**, et `observe()` ne rend que les événements qui ont
 réellement atteint un compteur.
 
-> **Amendé par [ADR 0009](../docs/adr/0009-un-comptage-par-vehicule.md).** Le
-> garde décrit ici comme `(ligne, identité, sens)` porte désormais sur
-> `(identité, génération)` : **un véhicule compte une fois**, quelle que soit la
-> ligne et quel que soit le sens, jusqu'à sa prochaine ré-identification. Les
-> passages ci-dessous en tiennent compte ; l'ADR dit pourquoi.
+> **Abrogé par [ADR 0016](../docs/adr/0016-compter-les-objets-suivis.md) :
+> il n'y a plus aucun garde de déduplication.** Le garde décrit ici comme
+> `(ligne, identité, sens)` était devenu `(identité, génération)` sous
+> [ADR 0009](../docs/adr/0009-un-comptage-par-vehicule.md), puis débranché par
+> [ADR 0014](../docs/adr/0014-compter-des-passages.md), puis **supprimé** avec
+> `reid_count` qui lui servait de clé.
+>
+> Ce qui vaut aujourd'hui : **chaque franchissement observé compte**. Un aller-retour
+> compte 2, deux lignes en travers d'une même voie comptent 2, une occlusion qui coupe
+> une piste compte 2. Le seul garde restant est **géométrique** : l'intersection de
+> segments.
+>
+> `_tallied` existe encore, mais comme `set[int]` de numéros de véhicule et pour une
+> seule raison : alimenter `counted_identities()`, source du badge ✓ et de
+> `crossed_unique`.
 
 État interne :
 - `_state: dict[(track_id, line_id), _LineState]` où
   `_LineState(side: int = 0, pending_direction: int | None = None)` — de la
   géométrie seule, aucune comptabilité ;
-- `_tallied: set[(global_id, reid_count)]` — **le garde de comptage** ;
+- `_tallied: set[global_id]` — **plus un garde** : la source du badge ✓ ;
 - `by_line: dict[str, LineTally]`.
 
 ### Algorithme de `observe(tracks, timestamp_ms, frame_index)`
@@ -245,16 +255,16 @@ recroiser.
 | Piste traversant le segment, confirmée | 1 événement, `direction` correct |
 | Piste passant au-delà des extrémités (ligne infinie franchie) | 0 |
 | Piste apparaissant déjà de l'autre côté | 0 |
-| Aller-retour complet | 1 (le sens ne ré-arme pas) |
-| Tremblement sur la ligne dans le même sens | 1 |
+| Aller-retour complet | **2** — un par sens (ADR 0016) |
+| Tremblement sur la ligne dans le même sens | **2** — deux franchissements observés |
 | Franchissement pendant `hits < min_hits`, piste ensuite confirmée | 1, émis à la confirmation |
 | Idem mais piste qui meurt avant confirmation | 0 |
-| Deux pistes successives, même `global_id`, même sens | 1 |
-| Une piste qui traverse deux lignes successives | 1, sur la **première** franchie ; la seconde reste à 0 |
-| Identité ré-identifiée (`reid_count` incrémenté) qui recroise | 1 de plus, et **un seul** même si elle retraverse plusieurs lignes |
+| Deux pistes successives au même endroit | **2** — on compte des passages |
+| Une piste qui traverse deux lignes successives | **2**, une sur chaque ligne |
 | Ligne liée à une zone, franchissement hors zone | 0, **et** `state.side` mis à jour (le franchissement suivant dans l'autre sens compte correctement) |
-| `crossings` = Σ `by_line[*].total` et `total = positive + negative` | toujours vrai |
-| `crossings` ≤ `unique_vehicles + reid_hits` | toujours vrai |
+| `crossings` = Σ `by_line[*].total`, et `total` = `positive.total + negative.total` | toujours vrai, désormais **par construction** (propriétés dérivées) |
+| Chaque `global_id` compté figure au registre | toujours vrai — remplace l'ancien plafond `unique_vehicles + reid_hits`, disparu avec `reid_hits` |
+| `by_class` et `first_ms`/`last_ms` **par sens** | ventilés séparément, la matrice type × sens |
 
 ---
 
@@ -285,7 +295,24 @@ occupation qui varie) ; piste non confirmée qui entre puis se confirme
 
 ---
 
-## 5. `domain/reid.py` — ré-identification longue durée
+## 5. ~~`domain/reid.py` — ré-identification longue durée~~ — **ABROGÉ**
+
+> **Cette section entière est abrogée par
+> [ADR 0016](../docs/adr/0016-compter-les-objets-suivis.md).** `domain/reid.py` est
+> supprimé : plus de descripteur d'apparence, plus d'appariement, plus de budget de
+> déplacement, plus de `ReidOptions`.
+>
+> Il est remplacé par `domain/track_numbering.py`, qui fait deux choses et rien
+> d'autre : **numéroter** les pistes du tracker (numéro local à la session, jamais
+> réattribué — voir le piège 60 pour la raison) et **voter la classe** (vote majoritaire
+> sur la vie du véhicule, à égalité duquel le tenant garde la place). Le vote est
+> **repris tel quel** de `IdentityGallery.vote` ci-dessous : la règle était juste, c'est
+> la ré-identification autour qui ne l'était pas.
+>
+> Le reste de cette section est conservé pour l'histoire — il explique ce que la galerie
+> faisait, ce dont on aurait besoin avant de la réintroduire.
+
+## 5 (historique). `domain/reid.py` — ré-identification longue durée
 
 BoT-SORT maintient l'identité à travers les occlusions **courtes**
 (`track_buffer`). Au-delà, l'id de piste change et le véhicule serait compté

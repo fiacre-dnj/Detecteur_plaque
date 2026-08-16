@@ -34,7 +34,7 @@ VEHICLE_HEADERS = (
     "Vu jusqu'à (s)",
     "Lignes franchies",
     "Zones visitées",
-    "Ré-identifications",
+    "Franchissements",
     "Vitesse moyenne (px/s)",
     "Vitesse moyenne (km/h)",
     # Les deux colonnes de plaque sont voisines, et dans cet ordre : le texte lu
@@ -125,7 +125,7 @@ def vehicles_csv(vehicles: Sequence[dict[str, Any]]) -> str:
                 for crossing in vehicle.get("crossedLines", ())
             ),
             " | ".join(vehicle.get("zonesVisited", ())),
-            str(vehicle["reidCount"]),
+            str(len(vehicle.get("crossedLines", ()))),
             _decimal(vehicle.get("avgSpeedPxS")),
             _decimal(vehicle.get("avgSpeedKmh")),
             # Case **vide** et non « illisible » : un CSV n'est pas une vue, et un

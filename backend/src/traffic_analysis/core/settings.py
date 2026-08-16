@@ -86,7 +86,7 @@ class Settings(BaseSettings):
     #: drone, mât mal haubané par grand vent. Sans compensation, un mouvement global
     #: se lit comme un mouvement des véhicules : les prédictions de Kalman partent à
     #: côté, les associations se cassent, et les identités se multiplient. Le symptôme
-    #: n'est pas une erreur mais un `unique_vehicles` qui gonfle.
+    #: n'est pas une erreur mais un `tracked_vehicles` qui gonfle.
     #:
     #: Voir docs/adr/0013-le-cout-du-pipeline-de-comptage.md.
     tracker_gmc: Literal["none", "sparseOptFlow", "orb", "sift", "ecc"] = "none"
@@ -353,6 +353,18 @@ class Settings(BaseSettings):
     #: facteur dix entre un CPU et un GPU, alors que ce qu'on borne — le débit du
     #: flux et le travail du navigateur — se mesure en secondes.
     preview_interval_ms: int = Field(200, ge=0, le=5000)
+    #: Intervalle d'aperçu quand l'analyse est **bridée sur le temps de la scène**
+    #: (`analysisSpeed` dans la requête), en millisecondes.
+    #:
+    #: Plus serré que le régime normal, parce que le bridage change ce qu'on attend
+    #: de l'aperçu : à 1×, 200 ms d'intervalle ne montrent que cinq images de scène
+    #: par seconde — la vitesse est juste, l'aperçu reste un diaporama. Brider *est*
+    #: la décision de regarder l'analyse, donc celle d'accepter plus de trames sur
+    #: le flux ; elles ne portent que des boîtes et des compteurs, jamais de pixels.
+    #:
+    #: **N'élargit jamais** `preview_interval_ms` : le minimum des deux est retenu.
+    #: Un déploiement qui a délibérément desserré l'aperçu garde son arbitrage.
+    preview_interval_paced_ms: int = Field(100, ge=0, le=5000)
     job_ttl_minutes: int = Field(1440, ge=1)
     #: Durée de vie de la **vidéo déposée**, distincte de celle du job.
     #:

@@ -7,12 +7,19 @@
  * qu'une touche Suppr après un glisser accidentel oui).
  *
  * Le sélecteur « portée » de chaque ligne est ici et pas sur le canvas : c'est une
- * relation entre deux objets, pas une propriété spatiale.
+ * relation entre deux objets, pas une propriété spatiale. Le **nommage des sens** suit
+ * le même raisonnement : le canvas montre où va chaque sens, mais taper un libellé et
+ * déclarer un rôle ne sont pas des gestes de pointage.
+ *
+ * Le bloc des sens ne s'ouvre que sur la ligne **sélectionnée**, et c'est délibéré :
+ * six lignes dépliées feraient douze champs de texte dans une colonne de 24 rem, où on
+ * ne retrouverait plus la ligne qu'on cherchait.
  */
 
 import { Bookmark, Plus, Square, Trash2 } from "lucide-react";
 
-import type { CountingLine, Zone } from "@/shared/api/contracts";
+import type { CountingLine, DirectionRole, DirectionSign, Zone } from "@/shared/api/contracts";
+import { directionName } from "@/shared/lib/directions";
 import type { Selection } from "@/entities/geometry";
 
 interface GeometryPanelProps {
@@ -34,6 +41,8 @@ interface GeometryPanelProps {
   onSelect: (selection: Selection) => void;
   onRenameLine: (id: string, name: string) => void;
   onRenameZone: (id: string, name: string) => void;
+  onRenameDirection: (id: string, sign: DirectionSign, name: string) => void;
+  onSetDirectionRole: (id: string, sign: DirectionSign, role: DirectionRole) => void;
   onSetLineZone: (id: string, zoneId: string | null) => void;
   onRemoveLine: (id: string) => void;
   onRemoveZone: (id: string) => void;
@@ -169,6 +178,14 @@ export function GeometryPanel(props: GeometryPanelProps) {
                   onClick={() => props.onRemoveLine(line.id)}
                 />
               </div>
+
+              {selection.kind === "line" && selection.id === line.id && (
+                <DirectionFields
+                  line={line}
+                  onRenameDirection={props.onRenameDirection}
+                  onSetDirectionRole={props.onSetDirectionRole}
+                />
+              )}
             </li>
           ))}
         </ul>
@@ -211,6 +228,112 @@ export function GeometryPanel(props: GeometryPanelProps) {
         </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * Les deux sens de la ligne sélectionnée : leur nom, et leur rôle.
+ *
+ * Le `placeholder` porte le défaut géométrique et **suit la ligne** quand on la fait
+ * pivoter — c'est pour cela que le champ reste vide plutôt que prérempli. Un libellé
+ * écrit dans le champ à la création se figerait à l'orientation de ce moment-là, et
+ * dirait « Vers la droite » sur une ligne devenue horizontale.
+ */
+function DirectionFields({
+  line,
+  onRenameDirection,
+  onSetDirectionRole,
+}: {
+  line: CountingLine;
+  onRenameDirection: (id: string, sign: DirectionSign, name: string) => void;
+  onSetDirectionRole: (id: string, sign: DirectionSign, role: DirectionRole) => void;
+}) {
+  return (
+    <ul className="mt-1 ms-5 space-y-1 border-s border-line ps-2">
+      {(["positive", "negative"] as const).map((sign) => (
+        <li key={sign} className="flex flex-wrap items-center gap-1">
+          {/* La flèche dit **quel** sens dans la convention du canvas — la même que
+              celle dessinée sur le trait. Sans elle, l'utilisateur ne saurait pas
+              lequel des deux champs correspond à quel côté. */}
+          <span
+            aria-hidden="true"
+            className="w-3 shrink-0 text-center text-micro"
+            style={{ color: line.color }}
+          >
+            {sign === "positive" ? "↑" : "↓"}
+          </span>
+          <input
+            value={sign === "positive" ? line.positiveName : line.negativeName}
+            placeholder={directionName(line, sign)}
+            onChange={(event) => onRenameDirection(line.id, sign, event.target.value)}
+            aria-label={`Nom du sens ${sign === "positive" ? "A vers B" : "B vers A"} de ${line.name}`}
+            className="min-w-0 flex-1 rounded-input bg-transparent px-1 text-micro text-ink placeholder:text-ink-dim focus:bg-base"
+          />
+          <RolePicker
+            line={line}
+            sign={sign}
+            onSetDirectionRole={onSetDirectionRole}
+          />
+        </li>
+      ))}
+      <li className="text-micro text-ink-dim">
+        Marquez un sens « entrée » ou « sortie » pour obtenir le bilan du carrefour dans
+        les résultats.
+      </li>
+    </ul>
+  );
+}
+
+/** Les trois rôles d'un coup d'œil. */
+const ROLES: readonly { role: DirectionRole; short: string; label: string }[] = [
+  { role: "entry", short: "E", label: "entrée" },
+  { role: "neutral", short: "·", label: "ni entrée ni sortie" },
+  { role: "exit", short: "S", label: "sortie" },
+];
+
+/**
+ * Le rôle d'un sens, en trois boutons plutôt qu'un `<select>`.
+ *
+ * Un menu déroulant cacherait deux des trois choix derrière un clic, alors que
+ * l'arbitrage « entrée ou sortie » se fait en comparant les deux sens d'une même ligne.
+ * Trois boutons `aria-pressed` restent lisibles ensemble et tiennent dans la largeur.
+ */
+function RolePicker({
+  line,
+  sign,
+  onSetDirectionRole,
+}: {
+  line: CountingLine;
+  sign: DirectionSign;
+  onSetDirectionRole: (id: string, sign: DirectionSign, role: DirectionRole) => void;
+}) {
+  const current = (sign === "positive" ? line.positiveRole : line.negativeRole) ?? "neutral";
+
+  return (
+    <span
+      role="group"
+      aria-label={`Rôle du sens ${sign === "positive" ? "A vers B" : "B vers A"}`}
+      className="flex shrink-0 overflow-hidden rounded-input bg-surface-2"
+    >
+      {ROLES.map((entry) => (
+        <button
+          key={entry.role}
+          type="button"
+          aria-pressed={current === entry.role}
+          title={entry.label}
+          onClick={() => onSetDirectionRole(line.id, sign, entry.role)}
+          className={[
+            "w-5 py-0.5 text-center text-micro transition-colors",
+            current === entry.role
+              ? "bg-elevated-2 text-ink"
+              : "text-ink-dim hover:bg-elevated hover:text-ink",
+          ].join(" ")}
+        >
+          {entry.short}
+          <span className="sr-only"> {entry.label}</span>
+        </button>
+      ))}
+    </span>
   );
 }
 

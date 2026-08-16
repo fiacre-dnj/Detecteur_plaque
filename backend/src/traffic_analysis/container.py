@@ -263,5 +263,6 @@ def build_container(
             preparer=model_service if engine is None else None,
             max_concurrent_jobs=settings.max_concurrent_jobs,
             preview_interval_ms=settings.preview_interval_ms,
+            preview_interval_paced_ms=settings.preview_interval_paced_ms,
         ),
     )

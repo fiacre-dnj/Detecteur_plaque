@@ -56,7 +56,6 @@ def _vehicle(**overrides: object) -> VehicleRecord:
         "last_seen_ms": 480.0,
         "crossed_lines": (),
         "zones_visited": (),
-        "reid_count": 0,
         "avg_speed_px_s": None,
         "avg_speed_kmh": None,
         "best_plate_score": 0.71,
@@ -92,7 +91,6 @@ class TestSerialiseTrack:
             "plateText",
             "plateTextScore",
             "plates",
-            "reidCount",
             "score",
             "speedPxS",
             "trackId",
@@ -187,7 +185,6 @@ class TestSerialiseVehicle:
             "plateText",
             "plateTextScore",
             "plateUnreadReason",
-            "reidCount",
             "zonesVisited",
         ]
 

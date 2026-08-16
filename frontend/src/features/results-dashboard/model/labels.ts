@@ -106,7 +106,7 @@ export function formatFrameLatency(processingFps: number): string {
  * Part des véhicules détectés qui ont franchi au moins une ligne.
  *
  * **Le chiffre qui juge le tracé, pas le modèle.** Un écart franc entre les
- * véhicules uniques et ceux qui franchissent ne dit rien de la détection : il dit
+ * véhicules détectés et ceux qui franchissent ne dit rien de la détection : il dit
  * que la ligne n'est pas sur le passage du trafic, ou qu'elle ne couvre qu'une
  * voie. C'est l'information que ni « 48 uniques » ni « 5 franchissements » ne
  * donnent séparément, et qu'on ne calcule jamais de tête devant un écran.
@@ -116,19 +116,19 @@ export function formatFrameLatency(processingFps: number): string {
  * Jusqu'à ADR 0014 les deux étaient interchangeables — un véhicule comptait une
  * fois, toutes lignes confondues. Depuis, on compte des **passages** : un
  * aller-retour en vaut 2, deux lignes en travers de la même voie en valent 2. Le
- * rapport `crossings / uniqueVehicles` mélangeait donc deux unités, dépassait
- * 100 % sans rien signaler, et ne répondait plus à la question écrite ci-dessus.
+ * rapport `crossings / trackedVehicles` mélangerait donc deux unités, dépasserait
+ * 100 % sans rien signaler, et ne répondrait plus à la question écrite ci-dessus.
  *
  * D'où `crossedUnique` : le nombre de `globalId` **distincts** apparaissant dans
  * les franchissements. Il reste **dérivé** des événements (invariant 3), jamais
- * accumulé à côté, et il est borné par `uniqueVehicles` par construction.
+ * accumulé à côté, et il est borné par `trackedVehicles` par construction.
  *
  * Rendu `null` sans véhicule : afficher « 0 % » quand rien n'a encore été détecté
  * se lirait comme un comptage en échec, alors que l'analyse commence à peine.
  */
-export function crossingRate(uniqueVehicles: number, crossedUnique: number): number | null {
-  if (uniqueVehicles <= 0) return null;
-  return crossedUnique / uniqueVehicles;
+export function crossingRate(trackedVehicles: number, crossedUnique: number): number | null {
+  if (trackedVehicles <= 0) return null;
+  return crossedUnique / trackedVehicles;
 }
 
 /**

@@ -16,6 +16,10 @@ const LINE: CountingLine = {
   name: "Entrée",
   color: "#38bdf8",
   zoneId: null,
+  positiveName: "",
+  negativeName: "",
+  positiveRole: "neutral" as const,
+  negativeRole: "neutral" as const,
   a: { x: 100, y: 400 },
   b: { x: 1180, y: 400 },
 };

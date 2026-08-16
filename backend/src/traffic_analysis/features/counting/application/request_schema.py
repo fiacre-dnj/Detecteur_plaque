@@ -27,9 +27,11 @@ from traffic_analysis.features.counting.application.dto import (
     VEHICLE_CLASS_IDS,
     AnalysisJobConfig,
     CountingLineDef,
+    DirectionRole,
     Point,
     ZoneDef,
 )
+from traffic_analysis.features.counting.domain.pacing import MAX_SPEED, MIN_SPEED
 from traffic_analysis.features.models_registry.application.catalogue_access import (
     is_known_model,
     known_model_ids,
@@ -45,7 +47,12 @@ class PointSchema(CamelModel):
 
 
 class LineSchema(CamelModel):
-    """Une ligne de comptage telle que le client la dessine."""
+    """Une ligne de comptage telle que le client la dessine.
+
+    Les quatre champs de sens décrivent, ils ne comptent pas : le serveur les
+    accepte, les persiste dans la configuration du job et les rend tels quels. Un
+    total ne dépend jamais d'un mot que l'utilisateur peut corriger après coup.
+    """
 
     id: str = Field(min_length=1, max_length=64, examples=["l1"])
     name: str = Field(default="", max_length=120, examples=["Voie nord"])
@@ -56,6 +63,16 @@ class LineSchema(CamelModel):
     zone_id: str | None = Field(default=None, max_length=64)
     a: PointSchema
     b: PointSchema
+    #: Nom du sens A→B. `""` demande à l'interface de poser son défaut géométrique,
+    #: recalculé quand la ligne bouge : figer un défaut ici le collerait à
+    #: l'orientation qu'avait la ligne au moment de l'envoi.
+    #:
+    #: Plus court que `name` (60 contre 120) parce que deux de ces libellés doivent
+    #: tenir de part et d'autre d'un trait sur la vidéo, pas dans un tableau.
+    positive_name: str = Field(default="", max_length=60, examples=["Vers le centre"])
+    negative_name: str = Field(default="", max_length=60, examples=["Vers la rocade"])
+    positive_role: DirectionRole = "neutral"
+    negative_role: DirectionRole = "neutral"
 
     def to_domain(self) -> CountingLineDef:
         return CountingLineDef(
@@ -64,6 +81,10 @@ class LineSchema(CamelModel):
             a=self.a.to_domain(),
             b=self.b.to_domain(),
             zone_id=self.zone_id,
+            positive_name=self.positive_name,
+            negative_name=self.negative_name,
+            positive_role=self.positive_role,
+            negative_role=self.negative_role,
         )
 
 
@@ -87,7 +108,6 @@ class AnalysisRequestSchema(CamelModel):
     iou_threshold: float = Field(0.45, ge=0.05, le=0.95)
     min_hits: int = Field(2, ge=1, le=10)
     max_lost_ms: float = Field(2500, ge=200, le=15000)
-    reid_min_similarity: float = Field(0.80, ge=0.50, le=0.99)
     mask_outside_zones: bool = False
     frame_stride: int = Field(1, ge=1, le=10)
     detect_plates: bool = False
@@ -115,6 +135,20 @@ class AnalysisRequestSchema(CamelModel):
             "les quatre véhicules, c'est-à-dire le comportement historique."
         ),
         examples=[[2, 3, 5, 7]],
+    )
+    analysis_speed: float | None = Field(
+        None,
+        ge=MIN_SPEED,
+        le=MAX_SPEED,
+        description=(
+            "Cadence maximale de l'analyse, en multiples de la vitesse réelle de la "
+            "scène. `null` (le défaut) n'impose aucune borne : l'analyse va aussi "
+            "vite que la machine le permet. `1` la fait durer exactement le temps de "
+            "la vidéo, ce qui rend l'aperçu live regardable — sans bornage, un "
+            "serveur deux fois plus rapide que la scène produit un aperçu deux fois "
+            "trop rapide. Sans effet en direct, où le client cadence son envoi."
+        ),
+        examples=[1],
     )
     lines: list[LineSchema] = Field(default_factory=list)
     zones: list[ZoneSchema] = Field(default_factory=list)
@@ -225,9 +259,9 @@ class AnalysisRequestSchema(CamelModel):
             plate_confidence=self.plate_confidence,
             read_plate_text=self.read_plate_text,
             pixels_per_meter=self.pixels_per_meter,
-            reid_min_similarity=self.reid_min_similarity,
             max_lost_ms=self.max_lost_ms,
             lines=tuple(line.to_domain() for line in self.lines),
             zones=tuple(zone.to_domain() for zone in self.zones),
             class_ids=tuple(self.class_ids),
+            analysis_speed=self.analysis_speed,
         )

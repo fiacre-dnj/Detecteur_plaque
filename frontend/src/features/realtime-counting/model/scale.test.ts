@@ -32,6 +32,10 @@ const LINE: CountingLine = {
   name: "Entrée nord",
   color: "#38bdf8",
   zoneId: "z1",
+  positiveName: "",
+  negativeName: "",
+  positiveRole: "neutral" as const,
+  negativeRole: "neutral" as const,
   a: { x: 400, y: 200 },
   b: { x: 1200, y: 600 },
 };
@@ -54,7 +58,6 @@ const REQUEST: AnalysisRequest = {
   iouThreshold: 0.45,
   minHits: 3,
   maxLostMs: 2500,
-  reidMinSimilarity: 0.8,
   maskOutsideZones: true,
   frameStride: 1,
   classIds: [2, 3, 5, 7],
@@ -62,6 +65,9 @@ const REQUEST: AnalysisRequest = {
   plateConfidence: null,
   readPlateText: false,
   pixelsPerMeter: 20,
+  // Sans dimension, donc rejouée telle quelle par la mise à l'échelle — et sans
+  // effet en direct de toute façon : c'est le client qui cadence son envoi.
+  analysisSpeed: null,
   lines: [LINE],
   zones: [ZONE],
 };
@@ -169,7 +175,6 @@ describe("scaleRequestGeometry — facteur 0,75", () => {
   test("ne touche à aucun seuil : ils sont sans dimension", () => {
     expect(scaled.confidenceThreshold).toBe(REQUEST.confidenceThreshold);
     expect(scaled.iouThreshold).toBe(REQUEST.iouThreshold);
-    expect(scaled.reidMinSimilarity).toBe(REQUEST.reidMinSimilarity);
   });
 
   test("ne touche pas aux compteurs d'images ni aux durées", () => {

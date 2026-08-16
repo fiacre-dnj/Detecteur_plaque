@@ -107,9 +107,8 @@ class InMemoryJobRepository:
 
         self._jobs[job_id] = job.with_changes(
             stats_json=serialise_stats(data.stats),
-            unique_vehicles=data.stats.unique_vehicles,
+            tracked_vehicles=data.stats.tracked_vehicles,
             crossings_total=data.stats.crossings,
-            reid_hits=data.stats.reid_hits,
             processing_fps=data.processing_fps,
             result_path=f"jobs/{job_id}/result.json.gz",
         )

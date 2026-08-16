@@ -164,7 +164,7 @@ class SqlAlchemyJobRepository:
                 "label": record.label,
                 "first_seen_ms": record.first_seen_ms,
                 "last_seen_ms": record.last_seen_ms,
-                "reid_count": record.reid_count,
+                "crossings_count": len(record.crossed_lines),
                 "avg_speed_px_s": record.avg_speed_px_s,
                 "avg_speed_kmh": record.avg_speed_kmh,
                 "best_plate_score": record.best_plate_score,
@@ -188,9 +188,8 @@ class SqlAlchemyJobRepository:
                 .where(JobModel.id == job_id)
                 .values(
                     stats_json=serialise_stats(data.stats),
-                    unique_vehicles=data.stats.unique_vehicles,
+                    tracked_vehicles=data.stats.tracked_vehicles,
                     crossings_total=data.stats.crossings,
-                    reid_hits=data.stats.reid_hits,
                     processing_fps=data.processing_fps,
                     result_path=f"jobs/{job_id}/result.json.gz",
                 )
@@ -235,7 +234,7 @@ class SqlAlchemyJobRepository:
         page: PageParams,
         *,
         label: str | None = None,
-        min_reid: int | None = None,
+        crossed: bool | None = None,
         has_plate: bool | None = None,
         plate_text: str | None = None,
     ) -> Page[dict[str, Any]]:
@@ -251,8 +250,10 @@ class SqlAlchemyJobRepository:
         criteria = [JobVehicleModel.job_id == job_id]
         if label is not None:
             criteria.append(JobVehicleModel.label == label)
-        if min_reid is not None:
-            criteria.append(JobVehicleModel.reid_count >= min_reid)
+        if crossed is True:
+            criteria.append(JobVehicleModel.crossings_count > 0)
+        elif crossed is False:
+            criteria.append(JobVehicleModel.crossings_count == 0)
         if has_plate is True:
             criteria.append(JobVehicleModel.best_plate_score.is_not(None))
         elif has_plate is False:
@@ -391,9 +392,8 @@ def _to_record(model: JobModel) -> JobRecord:
             duration_ms=model.video_duration_ms,
         ),
         stats_json=model.stats_json,
-        unique_vehicles=model.unique_vehicles,
+        tracked_vehicles=model.tracked_vehicles,
         crossings_total=model.crossings_total,
-        reid_hits=model.reid_hits,
         result_path=model.result_path,
         started_at=model.started_at,
         finished_at=model.finished_at,
@@ -435,7 +435,6 @@ def _vehicle_payload(model: JobVehicleModel) -> dict[str, Any]:
         "lastSeenMs": model.last_seen_ms,
         "crossedLines": model.crossed_lines_json,
         "zonesVisited": model.zones_visited_json,
-        "reidCount": model.reid_count,
         "avgSpeedPxS": model.avg_speed_px_s,
         "avgSpeedKmh": model.avg_speed_kmh,
         "bestPlateScore": model.best_plate_score,

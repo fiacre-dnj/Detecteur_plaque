@@ -29,6 +29,7 @@ from traffic_analysis.features.counting.domain.models import (
     BoundingBox,
     CountingLineDef,
     DetectableClass,
+    DirectionRole,
     PlateDetection,
     TrackObservation,
     VideoInfo,
@@ -45,7 +46,6 @@ from traffic_analysis.features.counting.domain.plate_policy import (
     PlateOcrOptions,
     PlateOcrPolicy,
 )
-from traffic_analysis.features.counting.domain.reid import ReidOptions
 from traffic_analysis.features.counting.domain.tracking_session import (
     AnalysisSession,
     SessionConfig,
@@ -86,6 +86,9 @@ __all__ = [
     "BoundingBox",
     "CountingLineDef",
     "DetectableClass",
+    # Le vocabulaire des sens de ligne, publié pour le schéma de requête : c'est lui
+    # qui valide « entry | exit | neutral », et il ne doit pas recopier la liste.
+    "DirectionRole",
     "EngineFrame",
     "EngineSpec",
     # Réexportés pour le conteneur et le banc de mesure. `PlateGeometry` en
@@ -158,7 +161,6 @@ class AnalysisJobConfig:
     #: connaître, et dont il ne pourrait pas juger l'effet sur sa vidéo.
     read_plate_text: bool = False
     pixels_per_meter: float | None = None
-    reid_min_similarity: float = 0.80
     max_lost_ms: float = 2500.0
     lines: tuple[CountingLineDef, ...] = ()
     zones: tuple[ZoneDef, ...] = ()
@@ -176,9 +178,21 @@ class AnalysisJobConfig:
     #: l'adaptateur qui empêche une camionnette de survivre en `car` **et** en
     #: `truck` (piège 5 de prompt/13).
     class_ids: tuple[int, ...] = VEHICLE_CLASS_IDS
-    #: Un véhicule ne compte-t-il qu'une fois ? `False` : on compte des passages.
-    #: Voir `SessionConfig.dedupe_by_identity` et ADR 0014.
-    dedupe_by_identity: bool = False
+    #: Cadence maximale d'analyse, en multiples de la vitesse réelle de la scène.
+    #: `None` — le défaut — n'impose aucune borne.
+    #:
+    #: `1.0` fait durer l'analyse exactement le temps de la vidéo, et c'est le seul
+    #: réglage qui rend l'aperçu live regardable : le client cale sa vidéo sur le
+    #: temps de scène analysé, donc un serveur deux fois plus rapide que la scène
+    #: produit un aperçu deux fois trop rapide (voir `domain/pacing.py`).
+    #:
+    #: Voyage par requête, comme les classes et pour la même raison : c'est un
+    #: arbitrage que seul l'utilisateur devant sa vidéo peut trancher — regarder, ou
+    #: obtenir ses chiffres au plus vite. Le défaut est le comportement historique.
+    #:
+    #: **Sans effet en direct**, où le client cadence lui-même son envoi. Comme
+    #: `frame_stride`, ce champ ne concerne que la lecture d'un fichier.
+    analysis_speed: float | None = None
 
     def engine_spec(self) -> EngineSpec:
         """Ce que le moteur doit savoir : les seuils **vivants** de la requête."""
@@ -199,8 +213,6 @@ class AnalysisJobConfig:
             min_hits=self.min_hits,
             max_lost_ms=self.max_lost_ms,
             pixels_per_meter=self.pixels_per_meter,
-            reid=ReidOptions(min_similarity=self.reid_min_similarity),
-            dedupe_by_identity=self.dedupe_by_identity,
         )
 
 

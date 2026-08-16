@@ -18,8 +18,10 @@ from traffic_analysis.features.counting.domain.geometry import (
     Point,
     distance,
     point_in_polygon,
+    point_segment_distance,
     segments_intersect,
     side_of_line,
+    signed_line_offset,
 )
 
 # Ligne horizontale orientée vers la droite : A à gauche, B à droite.
@@ -192,3 +194,68 @@ class TestDistance:
 
     def test_distance_a_soi_meme_est_nulle(self) -> None:
         assert distance(Point(7.0, 7.0), Point(7.0, 7.0)) == 0.0
+
+
+class TestSignedLineOffset:
+    """La distance signée à la droite : `side_of_line` en garde le signe seul.
+
+    Le côté suffit à décider d'un franchissement ; il ne suffit pas à décider qu'un
+    franchissement est **crédible**, et c'est pour cela que la quantité complète
+    existe (ADR 0018).
+    """
+
+    def test_le_signe_est_celui_du_cote(self) -> None:
+        for point in (Point(100.0, 130.0), Point(100.0, 70.0), Point(-500.0, 130.0)):
+            offset = signed_line_offset(A, B, point)
+            sign = 0 if offset == 0.0 else (1 if offset > 0 else -1)
+            assert sign == side_of_line(A, B, point)
+
+    def test_la_valeur_est_la_distance_perpendiculaire(self) -> None:
+        assert signed_line_offset(A, B, Point(100.0, 130.0)) == pytest.approx(30.0)
+        assert signed_line_offset(A, B, Point(100.0, 70.0)) == pytest.approx(-30.0)
+
+    def test_au_dela_des_extremites_la_droite_reste_la_droite(self) -> None:
+        """Contrairement à `point_segment_distance`, la droite est infinie.
+
+        Les deux mesures répondent à deux questions et ne s'échangent pas : le côté
+        se juge sur la droite, la proximité du **trait** sur le segment.
+        """
+        assert signed_line_offset(A, B, Point(9000.0, 130.0)) == pytest.approx(30.0)
+
+    def test_une_ligne_degeneree_rend_zero(self) -> None:
+        assert signed_line_offset(A, A, Point(50.0, 50.0)) == 0.0
+
+
+class TestPointSegmentDistance:
+    """La distance au **segment**, qui n'est pas la distance à sa droite.
+
+    C'est la même distinction que celle entre `side_of_line` et
+    `segments_intersect`, et elle sert au même endroit : au-delà des extrémités
+    tracées, un point peut être à trois pixels de la droite et très loin du trait.
+    """
+
+    def test_en_face_du_segment_la_distance_est_perpendiculaire(self) -> None:
+        assert point_segment_distance(Point(100.0, 130.0), A, B) == pytest.approx(30.0)
+
+    def test_au_dela_de_l_extremite_la_distance_est_celle_du_bout(self) -> None:
+        """Le point qui compte est **l'extrémité**, pas le pied de la perpendiculaire.
+
+        Sans le bornage de la projection, ce point serait annoncé à 30 px du trait
+        alors qu'il en est à 300 : c'est ce qui fabriquerait des quasi-franchissements
+        pour des véhicules passant hors du tracé.
+        """
+        far = Point(500.0, 130.0)
+        assert point_segment_distance(far, A, B) == pytest.approx(distance(far, B))
+        assert point_segment_distance(far, A, B) > 300.0
+
+    def test_sur_le_segment_la_distance_est_nulle(self) -> None:
+        assert point_segment_distance(Point(120.0, 100.0), A, B) == pytest.approx(0.0)
+
+    def test_un_segment_degenere_rend_la_distance_a_son_point(self) -> None:
+        """Deux clics au même endroit : rendre la distance au point plutôt que lever.
+
+        Le cas est refusé à la validation de l'API, mais une configuration ancienne
+        peut y échapper — et une division par zéro dans le diagnostic ferait échouer
+        une analyse par ailleurs valable.
+        """
+        assert point_segment_distance(Point(0.0, 0.0), A, A) == pytest.approx(100.0)

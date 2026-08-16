@@ -1,6 +1,9 @@
 # ADR 0014 — Compter des passages, compter les personnes, et choisir ce qu'on compte
 
-- **Statut** : accepté
+- **Statut** : accepté, **amendé** par [ADR 0016](0016-compter-les-objets-suivis.md)
+  sur un point : le drapeau `dedupe_by_identity` n'est plus « débranché mais conservé »,
+  il est supprimé. Sa clé était `reid_count`, qui n'existe plus. Tout le reste de cet ADR
+  — passages, personnes comptées à part, choix des classes — tient.
 - **Date** : 2026-08-12
 - **Abroge** : [ADR 0009](0009-un-comptage-par-vehicule.md) comme comportement par
   défaut, et l'invariant 6 de `CLAUDE.md`

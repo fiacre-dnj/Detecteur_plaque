@@ -85,6 +85,7 @@ class JobManager:
         "_max_concurrent",
         "_pauses",
         "_preparer",
+        "_preview_interval_paced_s",
         "_preview_interval_s",
         "_repository",
         "_result_store",
@@ -103,6 +104,7 @@ class JobManager:
         preparer: ModelPreparer | None = None,
         max_concurrent_jobs: int = 1,
         preview_interval_ms: int = 200,
+        preview_interval_paced_ms: int = 100,
     ) -> None:
         self._repository = repository
         self._result_store = result_store
@@ -118,6 +120,11 @@ class JobManager:
         # En millisecondes dans la configuration, en secondes ici : `0` désactive
         # l'aperçu, et la conversion est faite une fois plutôt qu'à chaque job.
         self._preview_interval_s = preview_interval_ms / 1000.0 if preview_interval_ms > 0 else None
+        # L'intervalle des analyses bridées. Il ne décide **pas** si l'aperçu existe
+        # — c'est `_preview_interval_s` seul qui le fait, à zéro — il ne fait que le
+        # resserrer quand la cadence est bornée. `run_video` retient le minimum des
+        # deux, donc un déploiement ne peut pas desserrer l'aperçu par ce champ.
+        self._preview_interval_paced_s = preview_interval_paced_ms / 1000.0
         self._semaphore: asyncio.Semaphore | None = None
         self._cancellations: dict[str, threading.Event] = {}
         # Un événement **posé** signifie « suspendu ». Comme pour l'annulation, la
@@ -486,6 +493,7 @@ class JobManager:
                 on_progress=on_progress,
                 on_preview=None if interval is None else on_preview,
                 preview_interval_s=interval or 0.0,
+                paced_preview_interval_s=self._preview_interval_paced_s,
                 is_cancelled=cancellation.is_set,
                 wait_while_paused=wait_while_paused,
             )
@@ -634,7 +642,7 @@ class JobManager:
             # Les agrégats dénormalisés, pour que l'historique dise ce qu'une analyse
             # a trouvé sans ouvrir son `result.json.gz`. Zéro tant qu'elle tourne :
             # ils sont écrits en une fois à la fin.
-            "uniqueVehicles": record.unique_vehicles,
+            "trackedVehicles": record.tracked_vehicles,
             "crossingsTotal": record.crossings_total,
         }
 

@@ -234,3 +234,57 @@ l'application, ou une contrainte d'environnement qui a fait perdre du temps.
     postes : l'inférence GPU, que le changement testé ne pouvait pas ralentir,
     avait bougé de 17,0 à 19,9 ms. Toujours des courses **appariées**, enchaînées,
     machine au repos — cette machine varie de ±20 % selon son état thermique.
+60. **`BaseTrack._count` d'Ultralytics est un attribut de *classe*, donc partagé par
+    tout le processus.** `JobManager` borne à un job simultané et `SessionService` à
+    une session temps réel, mais ce sont **deux bornes indépendantes** : ouvrir la
+    caméra pendant qu'un fichier s'analyse appelle `reset_trackers()`, remet le
+    compteur global à zéro, et l'analyse en cours se remet à émettre des
+    identifiants de piste 1, 2, 3 — qu'elle a déjà utilisés. Publier `track_id`
+    brut comme numéro de véhicule ferait alors **fusionner deux véhicules
+    distincts**, sans exception ni journal, et le total baisserait sans que rien à
+    l'écran ne l'explique. C'est pourquoi `TrackNumbering` tient sa propre
+    correspondance `track_id → numéro`, locale à la session, et l'oublie
+    (`forget`) quand la piste est abandonnée
+    ([ADR 0016](../docs/adr/0016-compter-les-objets-suivis.md)).
+61. **Numéroter un véhicule à la *confirmation* de sa piste casse deux choses.**
+    Tenté, puis abandonné sur mesure : la première lecture de plaque n'avait plus
+    d'agrégat où voter, et `first_seen_ms` datait de la confirmation au lieu de la
+    première apparition. Le numéro est donc émis dès la **première image**, et seule
+    l'entrée dans `tracked_vehicles` attend `min_hits`. La contrepartie assumée est
+    que la suite des numéros comptés **a des trous** : un scintillement du détecteur
+    consomme un numéro sans jamais être compté. Ne pas « corriger » cela en
+    renumérotant — un même véhicule changerait de badge entre sa première et sa
+    deuxième image.
+62. **Un nom de sens ne doit jamais entrer dans `geometrySignature()`.** Les
+    libellés et les rôles entrée/sortie ne changent aucun chiffre : le serveur ne les
+    lit pas, et le bilan du carrefour est recalculé côté client à chaque rendu. Les
+    inclure ferait apparaître la bannière « résultat obsolète » sur une simple
+    correction de vocabulaire, et pousserait à relancer une analyse de trente minutes
+    pour rien.
+63. **Un ensemble de filtre vide signifie « tout », jamais « rien ».** Dans la
+    chronologie, aucune puce n'est active au premier rendu : une intersection naïve
+    afficherait donc une liste **vide** sur une analyse qui a compté, et l'utilisateur
+    conclurait à une panne du comptage. La convention est verrouillée par
+    `timelineFilters.test.ts`.
+64. **Un décalage d'étiquette en pixels fixes ne tient que sur une orientation.** Les
+    deux libellés de sens étaient posés à 30 px de part et d'autre du trait. Sur une
+    ligne horizontale les deux boîtes s'éloignent par leur petit côté — 16 px de haut,
+    donc 44 px d'air — et **se chevauchaient dès que la ligne penchait** : sur une
+    verticale, le normal est horizontal et deux boîtes de 130 px de large se croisaient
+    sur 70 px. L'encombrement d'une boîte alignée sur les axes, mesuré le long d'une
+    direction `n`, vaut `|n.x|·w/2 + |n.y|·h/2` : c'est ce terme qu'il faut ajouter au
+    dégagement pour que l'espace libre soit **constant quel que soit l'angle**.
+    `draw.test.ts` balaie 72 orientations, parce que tester 0° et 90° laissait passer
+    tout l'intervalle.
+65. **Trois étiquettes ne tiennent pas sur les deux côtés d'un trait.** Le nom de la
+    ligne était au milieu, les deux sens de part et d'autre : le nom et le sens négatif
+    se disputaient le même axe perpendiculaire et se recouvraient. Le nom vit désormais
+    près de la poignée A — même convention que les zones — et le milieu appartient aux
+    deux sens.
+66. **Une étiquette placée par sa propre ligne ne peut pas voir celles des autres.**
+    Deux lignes parallèles proches posaient le libellé « dessous » de l'une sur le
+    « dessus » de l'autre. Le placement se fait en **une passe globale**
+    (`resolveLabelCollisions`), après tous les traits — ce qui corrige au passage un
+    second défaut, les libellés qui finissaient sous le trait de la ligne suivante. Une
+    étiquette écartée fuit **le long de son propre normal**, jamais au travers : de
+    l'autre côté, elle nommerait le mauvais sens.

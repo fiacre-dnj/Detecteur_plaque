@@ -28,7 +28,12 @@ import { useId, useState, type ReactNode } from "react";
 import { ModelPicker } from "@/features/model-picker";
 import type { DetectableClass, Diagnostics, VehicleModel } from "@/shared/api/contracts";
 
-import { BOUNDS, DEFAULT_CONFIDENCE, type AnalysisSettings } from "../model/settings";
+import {
+  ANALYSIS_SPEEDS,
+  BOUNDS,
+  DEFAULT_CONFIDENCE,
+  type AnalysisSettings,
+} from "../model/settings";
 
 /** Identifiants des tiroirs — l'ordre est celui de la barre. */
 const PANELS = [
@@ -196,20 +201,15 @@ export function SettingsPanels({
           bounds={BOUNDS.maxLostMs}
           disabled={disabled}
           format={(value) => `${(value / 1000).toFixed(1)} s`}
-          hint="Durée pendant laquelle une piste sans détection reste candidate à la ré-identification."
+          hint="Silence au-delà duquel une piste est abandonnée. Un véhicule masqué plus longtemps recommence en tant que nouveau véhicule."
           onChange={(maxLostMs) => onChange({ maxLostMs })}
         />
 
-        {/* Le curseur « Similarité de ré-identification » a été retiré d'ici.
-            La ré-identification est **sortie du périmètre produit** (ADR 0014) : on
-            compte des passages, chaque franchissement observé compte, et la galerie
-            ne sert plus qu'au vote de classe et au vote de plaque — deux mécanismes
-            internes que l'utilisateur n'arbitre pas devant sa scène.
-
-            Le réglage reste dans `AnalysisSettings` et voyage toujours dans la
-            requête : le retirer du contrat casserait les configurations enregistrées
-            et l'historique, pour aucun gain. C'est l'interface qui cesse de le
-            proposer, pas le serveur qui cesse de l'accepter. */}
+        {/* Le curseur « Similarité de ré-identification » n'existe plus, et le
+            réglage non plus : ADR 0016 a supprimé la galerie d'apparence, donc il n'y
+            a plus de seuil à régler. ADR 0014 l'avait déjà retiré de l'écran en le
+            laissant dans le contrat ; le laisser plus longtemps aurait été garder un
+            réglage annoncé et sans effet, le pire état d'un réglage. */}
 
         <Slider
           label="Seuil IoU"
@@ -253,6 +253,24 @@ export function SettingsPanels({
           format={(value) => (value === 1 ? "toutes" : `1 sur ${value}`)}
           hint="« Toutes » donne le comptage le plus fiable ; augmenter le pas accélère sur une machine sans GPU, au prix de véhicules rapides manqués."
           onChange={(frameStride) => onChange({ frameStride })}
+        />
+
+        {/* Placé juste après « Pas d'analyse », dont il est l'exact opposé : l'un
+            accélère l'analyse en sautant des images, l'autre la ralentit pour qu'on
+            puisse la regarder. Les voir côte à côte évite de chercher le second
+            dans les réglages de lecture, où il n'est pas — c'est le serveur qui
+            attend, pas le lecteur. */}
+        <Choice
+          label="Cadence d'analyse"
+          options={ANALYSIS_SPEEDS}
+          value={settings.analysisSpeed}
+          disabled={disabled}
+          hint={
+            settings.analysisSpeed === null
+              ? "Sans borne, l'aperçu défile aussi vite que le serveur analyse — 1,7× la vitesse réelle sur cette machine. Bornez-la pour suivre l'analyse à l'œil."
+              : "Une cadence maximale : l'analyse attend entre deux images, sans jamais dépasser cette vitesse — ni l'atteindre si la machine ne suit pas. Les compteurs sont identiques."
+          }
+          onChange={(analysisSpeed) => onChange({ analysisSpeed })}
         />
 
         <Slider
@@ -494,6 +512,72 @@ interface ToggleProps {
   disabled: boolean;
   hint?: string | undefined;
   onChange: (checked: boolean) => void;
+}
+
+interface ChoiceProps<T> {
+  label: string;
+  options: readonly { value: T; label: string }[];
+  value: T;
+  disabled: boolean;
+  hint?: string | undefined;
+  onChange: (value: T) => void;
+}
+
+/**
+ * Un choix parmi trois ou quatre — des **vrais boutons radio**, habillés en pilules.
+ *
+ * Pas un `<select>` : les options sont courtes et se comparent d'un regard, et un
+ * menu déroulant les cacherait derrière un clic. Pas des `<button>` non plus, qui
+ * n'auraient ni le groupe annoncé par le lecteur d'écran, ni la navigation aux
+ * flèches — un groupe de radios les donne tous les deux gratuitement. L'input est
+ * masqué visuellement (`sr-only`) mais reste dans l'arbre d'accessibilité et garde
+ * le focus clavier, que `peer-focus-visible` rend visible sur la pilule.
+ */
+function Choice<T extends string | number | null>({
+  label,
+  options,
+  value,
+  disabled,
+  hint,
+  onChange,
+}: ChoiceProps<T>) {
+  const name = useId();
+
+  return (
+    <fieldset className="min-w-0">
+      <legend className="text-small text-ink-muted">{label}</legend>
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        {options.map((option) => {
+          const active = option.value === value;
+          return (
+            <label
+              key={String(option.value)}
+              className={[
+                "inline-flex cursor-pointer items-center rounded-pill px-3 py-1 text-small",
+                // `has-[:focus-visible]` et non `peer-focus-visible` : l'input est
+                // un **enfant** du label, pas son frère, donc `peer-*` ne
+                // l'atteindrait pas et l'anneau de focus ne s'afficherait jamais.
+                "transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-accent",
+                active ? "bg-elevated text-ink shadow-card" : "bg-base text-ink-dim hover:text-ink",
+                disabled ? "cursor-not-allowed opacity-50" : "",
+              ].join(" ")}
+            >
+              <input
+                type="radio"
+                name={name}
+                checked={active}
+                disabled={disabled}
+                onChange={() => onChange(option.value)}
+                className="sr-only"
+              />
+              {option.label}
+            </label>
+          );
+        })}
+      </div>
+      {hint !== undefined && <p className="mt-1 text-micro text-ink-dim">{hint}</p>}
+    </fieldset>
+  );
 }
 
 interface ClassPickerProps {

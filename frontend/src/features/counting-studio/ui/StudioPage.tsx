@@ -69,6 +69,7 @@ import {
 import {
   ClassBreakdown,
   LineAndZoneDetail,
+  MovementMatrix,
   ResultsDashboard,
 } from "@/features/results-dashboard";
 import {
@@ -763,7 +764,7 @@ export function StudioPage() {
                 )}
                 {liveStats !== null && (
                   <p className="rounded-badge bg-base/80 px-2 py-1 text-micro text-ink-muted tabular">
-                    Uniques : {liveStats.uniqueVehicles}
+                    Véhicules : {liveStats.trackedVehicles}
                   </p>
                 )}
               </div>
@@ -873,6 +874,12 @@ export function StudioPage() {
             onSelect={(selection) => dispatch({ type: "select", selection })}
             onRenameLine={(id, name) => dispatch({ type: "renameLine", id, name })}
             onRenameZone={(id, name) => dispatch({ type: "renameZone", id, name })}
+            onRenameDirection={(id, sign, name) =>
+              dispatch({ type: "renameDirection", id, sign, name })
+            }
+            onSetDirectionRole={(id, sign, role) =>
+              dispatch({ type: "setDirectionRole", id, sign, role })
+            }
             onSetLineZone={(id, zoneId) => dispatch({ type: "setLineZone", id, zoneId })}
             onRemoveLine={(id) => dispatch({ type: "removeLine", id })}
             onRemoveZone={(id) => dispatch({ type: "removeZone", id })}
@@ -944,7 +951,8 @@ export function StudioPage() {
         <>
           <CrossingTimeline
             events={session.result.crossings}
-            lineNames={lineNames}
+            lines={geometry.lines}
+            durationMs={session.result.video.durationMs}
             currentTimeMs={replay.timeMs}
             // Toute la liste, et non `crossingsUpTo` : c'est un moyen de navigation,
             // donc masquer ce qui suit la tête de lecture empêcherait précisément
@@ -969,11 +977,11 @@ export function StudioPage() {
               {
                 id: "repartition",
                 label: "Répartition",
-                content: <ClassBreakdown stats={replay.stats} />,
+                content: <ClassBreakdown stats={replay.stats} lines={geometry.lines} />,
               },
               {
                 id: "geometrie",
-                label: "Par ligne & zone",
+                label: "Par ligne & sens",
                 badge: geometry.lines.length + geometry.zones.length,
                 content: (
                   <LineAndZoneDetail
@@ -981,6 +989,17 @@ export function StudioPage() {
                     lines={geometry.lines}
                     zones={geometry.zones}
                     replaying
+                  />
+                ),
+              },
+              {
+                id: "mouvements",
+                label: "Mouvements",
+                content: (
+                  <MovementMatrix
+                    vehicles={vehiclesAt(session.result, replay.timeMs)}
+                    lines={geometry.lines}
+                    available
                   />
                 ),
               },
@@ -1008,7 +1027,7 @@ export function StudioPage() {
                   <VehicleRegistry
                     result={session.result}
                     vehicles={vehiclesAt(session.result, replay.timeMs)}
-                    lineNames={lineNames}
+                    lines={geometry.lines}
                     // Suit le réglage réel : la note expliquant les px/s ne doit
                     // apparaître que quand l'échelle manque **effectivement**.
                     hasScale={settings.pixelsPerMeter !== null && settings.pixelsPerMeter > 0}
@@ -1025,7 +1044,7 @@ export function StudioPage() {
           la fin, et un histogramme vide se lirait comme « aucun véhicule ». */}
       {session.result === null && resultStats !== null && (
         <>
-          <ClassBreakdown stats={resultStats.stats} />
+          <ClassBreakdown stats={resultStats.stats} lines={geometry.lines} />
           <CrossingLog events={session.events} lineNames={lineNames} />
           <LineAndZoneDetail
             stats={resultStats.stats}
@@ -1042,19 +1061,18 @@ export function StudioPage() {
             Résultats
           </h2>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {/* Les mêmes libellés que le tableau de bord réel : l'état vide
-                annonçait encore « Véhicules uniques » et « Ré-identifications »,
-                deux cartes qui n'existent plus depuis ADR 0014. Un écran vide qui
-                promet des chiffres qu'on ne verra jamais est pire que pas d'écran
-                vide du tout. */}
+            {/* Les mêmes libellés **et le même ordre** que le tableau de bord réel :
+                un écran vide qui promet des chiffres qu'on ne verra jamais est pire
+                que pas d'écran vide du tout. Les quatre cartes de tête du tableau
+                réel, donc le comptage global en premier. */}
+            <MetricCard
+              label="Véhicules détectés"
+              value="—"
+              hint="Un objet suivi = un véhicule, ligne franchie ou non"
+            />
+            <MetricCard label="Franchissements" value="—" hint="Passages observés, tous sens" />
             <MetricCard label="Passages de véhicules" value="—" hint="Voitures, motos, bus, camions" />
             <MetricCard label="Passages de personnes" value="—" hint="Comptées à part" />
-            <MetricCard label="Franchissements" value="—" hint="Passages observés, tous sens" />
-            <MetricCard
-              label="Débit estimé"
-              value="—"
-              hint="Disponible après 3 s de flux analysé"
-            />
           </div>
         </section>
       )}

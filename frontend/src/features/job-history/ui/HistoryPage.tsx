@@ -208,7 +208,7 @@ export function HistoryPage() {
                         <>
                           <span className="text-ink">{job.crossingsTotal}</span>
                           <span className="block text-micro text-ink-dim">
-                            {job.uniqueVehicles} suivis
+                            {job.trackedVehicles} suivis
                           </span>
                         </>
                       ) : (

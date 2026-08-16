@@ -18,9 +18,10 @@
 
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
-import { directionLabel, formatSceneTime, formatScore, formatSpeed } from "@/features/results-dashboard";
-import type { AnalysisResult, VehicleRecord } from "@/shared/api/contracts";
+import { formatSceneTime, formatScore, formatSpeed } from "@/features/results-dashboard";
+import type { AnalysisResult, CountingLine, VehicleRecord } from "@/shared/api/contracts";
 import { classColor } from "@/shared/config/palettes";
+import { crossingDirectionName, directionArrow, lineName } from "@/shared/lib/directions";
 import { plateCell, plateTitle } from "@/shared/lib/plate";
 import { Button } from "@/shared/ui/Button";
 
@@ -39,8 +40,14 @@ interface VehicleRegistryProps {
   result: AnalysisResult;
   /** Véhicules à afficher — filtrés par la tête de lecture en relecture. */
   vehicles: readonly VehicleRecord[];
-  /** Noms des lignes, pour libeller les puces de franchissement. */
-  lineNames: ReadonlyMap<string, string>;
+  /**
+   * La géométrie courante, pour nommer les lignes **et les sens**.
+   *
+   * Les lignes entières et non une `Map` de noms : une puce de franchissement affiche
+   * désormais le nom du *sens*, que seule la ligne complète permet de calculer — le
+   * défaut géométrique se déduit de `a` et `b`.
+   */
+  lines: readonly CountingLine[];
   /** Vrai si une échelle px/m a été fournie : change l'unité de la colonne vitesse. */
   hasScale: boolean;
 }
@@ -51,7 +58,7 @@ const VIEWPORT_HEIGHT = 420;
 export function VehicleRegistry({
   result,
   vehicles,
-  lineNames,
+  lines,
   hasScale,
 }: VehicleRegistryProps) {
   const [expanded, setExpanded] = useState(false);
@@ -120,7 +127,11 @@ export function VehicleRegistry({
           <Th className="w-32">Vu de / à</Th>
           <Th>Lignes franchies</Th>
           <Th className="w-24">Vitesse</Th>
-          <Th className="w-16">Ré-id</Th>
+          {/* « Passages » remplace « Ré-id » : la ré-identification n'existe plus
+              (ADR 0016), et le nombre de franchissements d'un véhicule est
+              l'information qui rend une ligne du registre vérifiable — un 0 dit
+              « vu, jamais compté ». */}
+          <Th className="w-16">Passages</Th>
           {/* Deux colonnes et non une cellule à deux valeurs : une cellule sur deux
               lignes casserait `ROW_HEIGHT`, dont la virtualisation dépend. `w-20`
               tenait « 71 % » mais ni `AB-123-CD` ni « illisible ». */}
@@ -157,13 +168,17 @@ export function VehicleRegistry({
                   {vehicle.crossedLines.map((crossing, index) => (
                     <span
                       key={`${crossing.lineId}-${crossing.timestampMs}-${index}`}
-                      // L'infobulle donne la ligne, l'instant **et** le sens :
+                      // L'infobulle donne la ligne, l'instant **et** le sens nommé :
                       // c'est ce qui permet de retrouver le passage dans la vidéo.
-                      title={`${lineNames.get(crossing.lineId) ?? crossing.lineId} à ${formatSceneTime(crossing.timestampMs)}, sens ${directionLabel(crossing.direction)}`}
+                      title={`${lineName(lines, crossing.lineId)} à ${formatSceneTime(crossing.timestampMs)}, ${crossingDirectionName(lines, crossing.lineId, crossing.direction) ?? `sens ${directionArrow(crossing.direction)}`}`}
                       className="rounded-badge bg-elevated px-1.5 py-0.5 text-micro"
                     >
-                      {crossing.direction > 0 ? "↑" : "↓"}{" "}
-                      {lineNames.get(crossing.lineId) ?? crossing.lineId}
+                      {/* Le **nom du sens** plutôt que le nom de la ligne : c'est lui
+                          qui dit où va le véhicule, et c'est la question du registre.
+                          La ligne reste dans l'infobulle. */}
+                      {directionArrow(crossing.direction)}{" "}
+                      {crossingDirectionName(lines, crossing.lineId, crossing.direction) ??
+                        lineName(lines, crossing.lineId)}
                     </span>
                   ))}
                 </span>
@@ -173,7 +188,7 @@ export function VehicleRegistry({
               {formatSpeed(vehicle.avgSpeedKmh, vehicle.avgSpeedPxS)}
             </Td>
             <Td className="tabular">
-              {vehicle.reidCount > 0 ? `↻ ${vehicle.reidCount}` : "—"}
+              {vehicle.crossedLines.length === 0 ? "—" : vehicle.crossedLines.length}
             </Td>
             <Td
               // Le texte lu est de l'information de premier plan ; « illisible » et
@@ -260,7 +275,7 @@ export function VehicleRegistry({
             onClick={() =>
               downloadText(
                 exportFilename(result.jobId, "vehicules", "csv"),
-                vehiclesCsv(result),
+                vehiclesCsv(result, lines),
                 "text/csv",
               )
             }
@@ -273,7 +288,7 @@ export function VehicleRegistry({
             onClick={() =>
               downloadText(
                 exportFilename(result.jobId, "franchissements", "csv"),
-                crossingsCsv(result),
+                crossingsCsv(result, lines),
                 "text/csv",
               )
             }

@@ -80,7 +80,7 @@ class JobSchema(CamelModel):
     finished_at: str | None
     #: Résultats du job, **dénormalisés en base précisément pour cette liste**.
     #:
-    #: Les colonnes existaient déjà (`jobs.unique_vehicles`, `jobs.crossings_total`)
+    #: Les colonnes existaient déjà (`jobs.tracked_vehicles`, `jobs.crossings_total`)
     #: et n'étaient exposées nulle part : l'historique affichait donc date, fichier,
     #: modèle et durée, mais pas ce que l'analyse avait trouvé — l'information même
     #: qui permet de choisir laquelle rouvrir. Les lire ici évite d'ouvrir un
@@ -92,7 +92,7 @@ class JobSchema(CamelModel):
     #:
     #: Un résultat archivé **avant le 2026-08-12** compte des véhicules là où les
     #: suivants comptent des passages : les deux ne sont pas comparables (ADR 0014).
-    unique_vehicles: int = 0
+    tracked_vehicles: int = 0
     crossings_total: int = 0
 
 

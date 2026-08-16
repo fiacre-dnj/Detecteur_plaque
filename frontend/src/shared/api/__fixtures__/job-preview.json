@@ -20,7 +20,6 @@
       },
       "hits": 7,
       "counted": true,
-      "reidCount": 0,
       "speedPxS": 1250.0,
       "plates": [
         {
@@ -54,7 +53,6 @@
       },
       "hits": 7,
       "counted": false,
-      "reidCount": 0,
       "speedPxS": 1250.0,
       "plates": [
         {
@@ -88,7 +86,6 @@
       },
       "hits": 7,
       "counted": false,
-      "reidCount": 0,
       "speedPxS": 1250.0,
       "plates": [
         {
@@ -123,8 +120,8 @@
   ],
   "zoneEvents": [],
   "stats": {
-    "uniqueVehicles": 3,
-    "uniqueByClass": {
+    "trackedVehicles": 3,
+    "trackedByClass": {
       "car": 2,
       "truck": 1
     },
@@ -145,13 +142,26 @@
           "truck": 1
         },
         "byDirection": {
-          "positive": 1,
-          "negative": 1
+          "positive": {
+            "total": 1,
+            "byClass": {
+              "car": 1
+            },
+            "firstMs": 240.0,
+            "lastMs": 240.0
+          },
+          "negative": {
+            "total": 1,
+            "byClass": {
+              "truck": 1
+            },
+            "firstMs": 280.0,
+            "lastMs": 280.0
+          }
         }
       }
     },
     "byZone": {},
-    "reidHits": 0,
     "vehiclesPerMinute": 0.0,
     "activeTracks": 3,
     "elapsedMs": 440.0,
@@ -163,7 +173,10 @@
       "containedOut": 0,
       "confirmedTracks": 3,
       "tentativeTracks": 0,
-      "rescuedByLowScore": 0
+      "rescuedByLowScore": 0,
+      "nearMisses": {
+        "l1": 0
+      }
     }
   }
 }

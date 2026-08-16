@@ -20,7 +20,7 @@
  * - `speedPxS` — **converti**, parce que c'est une vitesse en pixels : sur une image
  *   réduite de 25 %, un véhicule parcourt 25 % de pixels en moins par seconde. Le
  *   laisser tel quel afficherait des vitesses sous-estimées d'un tiers ;
- * - `score`, `hits`, `reidCount`, les identifiants et les libellés — sans dimension.
+ * - `score`, `hits`, les identifiants et les libellés — sans dimension.
  */
 
 import type { TrackSnapshot } from "@/shared/api/contracts";

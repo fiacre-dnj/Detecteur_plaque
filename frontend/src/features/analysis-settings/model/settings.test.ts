@@ -167,6 +167,10 @@ describe("toRequest — la traduction vers le serveur", () => {
       name: "L",
       color: "#539df5",
       zoneId: null,
+      positiveName: "",
+      negativeName: "",
+      positiveRole: "neutral" as const,
+      negativeRole: "neutral" as const,
       a: { x: 0, y: 100 },
       b: { x: 200, y: 100 },
     },
@@ -248,7 +252,6 @@ describe("défauts alignés sur le serveur", () => {
     expect(DEFAULT_SETTINGS.iouThreshold).toBe(0.45);
     expect(DEFAULT_SETTINGS.minHits).toBe(2);
     expect(DEFAULT_SETTINGS.maxLostMs).toBe(2_500);
-    expect(DEFAULT_SETTINGS.reidMinSimilarity).toBe(0.8);
     expect(DEFAULT_SETTINGS.frameStride).toBe(1);
     expect(DEFAULT_CONFIDENCE).toBe(0.35);
   });
@@ -300,7 +303,7 @@ describe("classIds dans la requête", () => {
   // Une ligne quelconque : `toRequest` en exige une, mais aucun de ces tests ne
   // parle de géométrie.
   const LINES = [
-    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, b: { x: 10, y: 10 } },
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
   ];
 
   it("part avec les quatre véhicules par défaut", () => {
@@ -318,5 +321,70 @@ describe("classIds dans la requête", () => {
     const request = toRequest({ ...DEFAULT_SETTINGS, classIds: [2, 0] }, LINES, []);
 
     expect(request.classIds).toEqual([2, 0]);
+  });
+});
+
+describe("analysisSpeed — la cadence d'analyse", () => {
+  const LINES = [
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
+  ];
+
+  it("part sans borne par défaut", () => {
+    // Le comportement historique : qui ne touche à rien garde son débit.
+    expect(DEFAULT_SETTINGS.analysisSpeed).toBeNull();
+    expect(toRequest(DEFAULT_SETTINGS, LINES, []).analysisSpeed).toBeNull();
+  });
+
+  it("transmet une cadence choisie", () => {
+    const request = toRequest({ ...DEFAULT_SETTINGS, analysisSpeed: 1 }, LINES, []);
+
+    expect(request.analysisSpeed).toBe(1);
+  });
+
+  it("**n'envoie jamais une cadence hors bornes**", () => {
+    // Le serveur la refuserait en 422 sur un écran qui paraissait valide. Hors
+    // bornes ⇒ aucune borne, qui est le défaut.
+    expect(toRequest({ ...DEFAULT_SETTINGS, analysisSpeed: 99 }, LINES, []).analysisSpeed).toBeNull();
+    expect(toRequest({ ...DEFAULT_SETTINGS, analysisSpeed: 0 }, LINES, []).analysisSpeed).toBeNull();
+  });
+
+  it("relit une cadence persistée", () => {
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { analysisSpeed: 2 },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).analysisSpeed).toBe(2);
+  });
+
+  it("relit `null` comme « aucune borne », et non comme « absent »", () => {
+    // `nullableNumber` distingue les deux : un `null` explicite est un choix.
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { analysisSpeed: null },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).analysisSpeed).toBeNull();
+  });
+
+  it("**écarte une cadence persistée hors bornes au lieu de la borner**", () => {
+    // Bornée à 8×, elle afficherait « Illimitée » tout en bridant : un réglage que
+    // l'écran contredirait. C'est ce qui la distingue des curseurs, dont une valeur
+    // hors bornes vient d'un intervalle qui a changé entre deux versions.
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { analysisSpeed: 42 },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).analysisSpeed).toBeNull();
+  });
+
+  it("ignore une cadence d'un type faux", () => {
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { analysisSpeed: "temps réel" },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).analysisSpeed).toBeNull();
   });
 });

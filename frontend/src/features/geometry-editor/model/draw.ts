@@ -16,8 +16,16 @@
  * écran moderne, et les traits fins d'un pixel disparaissent complètement.
  */
 
-import type { Box, CountingLine, Point, TrackSnapshot, Zone } from "@/shared/api/contracts";
+import type {
+  Box,
+  CountingLine,
+  DirectionSign,
+  Point,
+  TrackSnapshot,
+  Zone,
+} from "@/shared/api/contracts";
 import { CANVAS, TRAJECTORY_ALPHA, classColor } from "@/shared/config/palettes";
+import { directionName, directionRole } from "@/shared/lib/directions";
 import { midpoint, positiveNormal } from "@/shared/lib/geometry";
 import { bestReadPlate, plateLabel } from "@/shared/lib/plate";
 
@@ -91,6 +99,14 @@ export function drawScene(
       options.lineFlashes.get(line.id) ?? null,
     );
   }
+  // **Toutes les étiquettes après tous les traits**, et en une seule passe.
+  //
+  // Deux raisons, et la seconde est celle qui a motivé le changement : un libellé
+  // dessiné dans `drawLine` finissait sous le trait de la ligne suivante ; et surtout,
+  // deux lignes parallèles proches posaient leurs libellés dans la même bande — celui
+  // du dessous de l'une sur celui du dessus de l'autre. Une passe globale est le seul
+  // endroit d'où l'on peut voir la collision pour l'écarter.
+  drawLineLabels(ctx, view, options.lines, options.lineFlashes);
   if (options.draft.length > 0) {
     drawDraft(ctx, view, options.draft, options.cursor);
   }
@@ -216,23 +232,331 @@ function drawLine(
 
   drawHandle(ctx, view, line.a, line.color, selected);
   drawHandle(ctx, view, line.b, line.color, selected);
-  drawLabelAt(ctx, midpoint(a, b), line.name, line.color, { dy: -16 });
+}
 
-  if (flash !== null) {
-    // Le sens en toutes lettres, sous l'étiquette : c'est ce qui distingue
-    // « la ligne a compté » de « la ligne a compté dans ce sens-là », et c'est
-    // la seconde information qui permet de valider une géométrie.
-    ctx.save();
-    ctx.globalAlpha = Math.min(1, 0.35 + flash.intensity);
-    drawLabelAt(
-      ctx,
-      midpoint(a, b),
-      flash.direction >= 0 ? "+1" : "−1",
-      line.color,
-      { dy: 18 },
-    );
-    ctx.restore();
+/**
+ * Toutes les étiquettes de toutes les lignes, placées **sans se chevaucher**.
+ *
+ * Deux défauts se corrigent ici, et ils venaient du même endroit : chaque ligne
+ * s'étiquetait seule, donc aucune ne pouvait voir ce que les autres avaient posé.
+ *
+ * 1. **le nom quittait le milieu** — il y entrait en collision avec le libellé du sens
+ *    négatif dès que la ligne penchait, les deux se disputant le même axe
+ *    perpendiculaire. Il se pose désormais près de la poignée A, comme les zones
+ *    s'étiquettent sur leur premier sommet, et le milieu appartient aux deux sens ;
+ * 2. **deux lignes parallèles proches** posaient leurs libellés dans la même bande.
+ *    `resolveLabelCollisions` les écarte, chacun **le long de son propre normal** —
+ *    donc sans jamais changer de côté, ce qui ferait mentir l'étiquette.
+ */
+function drawLineLabels(
+  ctx: CanvasRenderingContext2D,
+  view: Viewport,
+  lines: readonly CountingLine[],
+  flashes: ReadonlyMap<string, LineFlash>,
+): void {
+  const wanted: LabelPlacement[] = [];
+
+  // Les noms d'abord : ils sont **fixes**, donc ce sont les sens qui leur cèdent la
+  // place. L'inverse ferait errer le nom loin de sa ligne.
+  for (const line of lines) {
+    const a = toCanvas(view, line.a);
+    const b = toCanvas(view, line.b);
+    wanted.push({
+      key: `${line.id}:name`,
+      text: line.name,
+      color: line.color,
+      centre: lineNameAnchor(a, b),
+      escape: null,
+      size: measureLabel(ctx, line.name),
+      emphasis: 0,
+    });
   }
+
+  for (const line of lines) {
+    const a = toCanvas(view, line.a);
+    const b = toCanvas(view, line.b);
+    const positive = directionText(line, "positive");
+    const negative = directionText(line, "negative");
+    const sizes = { positive: measureLabel(ctx, positive), negative: measureLabel(ctx, negative) };
+    const anchors = directionLabelAnchors(a, b, sizes);
+    if (anchors === null) continue;
+
+    const normal = positiveNormal(a, b);
+    const flash = flashes.get(line.id) ?? null;
+    // Le flash **met en valeur le libellé qui existe déjà** au lieu d'en ajouter un
+    // quatrième : c'est le sens qui vient de compter, pas une information nouvelle.
+    // Une étiquette de plus, c'était une collision de plus.
+    const lit = flash === null ? null : flash.direction >= 0 ? "positive" : "negative";
+
+    wanted.push({
+      key: `${line.id}:positive`,
+      text: positive,
+      color: line.color,
+      centre: anchors.positive,
+      escape: normal,
+      size: sizes.positive,
+      emphasis: lit === "positive" ? (flash?.intensity ?? 0) : 0,
+    });
+    wanted.push({
+      key: `${line.id}:negative`,
+      text: negative,
+      color: line.color,
+      centre: anchors.negative,
+      escape: { x: -normal.x, y: -normal.y },
+      size: sizes.negative,
+      emphasis: lit === "negative" ? (flash?.intensity ?? 0) : 0,
+    });
+  }
+
+  for (const placed of resolveLabelCollisions(wanted, view)) {
+    drawLabelBox(ctx, placed);
+  }
+}
+
+/** Le libellé d'un sens tel qu'il est peint : rôle marqué, longueur bornée. */
+function directionText(line: CountingLine, sign: DirectionSign): string {
+  const role = directionRole(line, sign);
+  // Le rôle est marqué par un **préfixe textuel** et non par une couleur : la couleur
+  // du canvas encode déjà l'appartenance à une ligne, et lui faire dire aussi un rôle
+  // rendrait les deux illisibles (ADR 0004).
+  const prefix = role === "entry" ? "→ " : role === "exit" ? "← " : "";
+  return `${prefix}${truncateDirection(directionName(line, sign))}`;
+}
+
+/**
+ * Où poser le nom de la ligne : près de la poignée A, décalé vers l'intérieur.
+ *
+ * Décalé **le long du trait** pour ne pas recouvrir la poignée, et **le long du
+ * normal** pour ne pas chevaucher le trait lui-même. Vers l'intérieur du segment
+ * plutôt que vers l'extérieur : une ligne tracée jusqu'au bord de l'image aurait
+ * sinon son nom hors cadre — le clamp le ramènerait, mais par-dessus la poignée.
+ */
+export function lineNameAnchor(a: Point, b: Point): Point {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const length = Math.hypot(dx, dy);
+  if (length === 0) return { x: a.x, y: a.y - NAME_CLEARANCE };
+
+  const tangent = { x: dx / length, y: dy / length };
+  const normal = { x: -tangent.y, y: tangent.x };
+  // Jamais au-delà du milieu : sur un segment très court, avancer de 28 px ferait
+  // atterrir le nom du mauvais côté du centre, là où vivent les libellés de sens.
+  const inward = Math.min(NAME_INSET, length / 2);
+  return {
+    x: a.x + tangent.x * inward - normal.x * NAME_CLEARANCE,
+    y: a.y + tangent.y * inward - normal.y * NAME_CLEARANCE,
+  };
+}
+
+/** Air laissé entre le trait et le bord le plus proche d'une étiquette de sens. */
+export const DIRECTION_LABEL_CLEARANCE = 16;
+
+/** Recul du nom de la ligne par rapport au trait, et avancée depuis la poignée A. */
+const NAME_CLEARANCE = 14;
+const NAME_INSET = 28;
+
+/** Encombrement d'une étiquette, tel que `drawCentredLabel` la peint. */
+export interface LabelSize {
+  width: number;
+  height: number;
+}
+
+/**
+ * Où poser les deux libellés de sens : de part et d'autre du milieu du trait.
+ *
+ * **Le décalage dépend de la taille de l'étiquette et de l'angle du trait**, et c'est
+ * tout le correctif. Un décalage fixe de 30 px marchait sur une ligne horizontale — où
+ * les deux boîtes s'éloignent par leur petit côté, 16 px de haut — et **se
+ * chevauchait** dès que la ligne penchait : sur une ligne verticale, le normal est
+ * horizontal, donc deux boîtes de 110 px de large se croisaient allègrement à 60 px
+ * d'écart.
+ *
+ * L'encombrement d'une boîte alignée sur les axes, mesuré le long d'une direction `n`,
+ * vaut `|n.x|·w/2 + |n.y|·h/2`. En l'ajoutant au dégagement, l'espace entre les deux
+ * étiquettes devient **constant quel que soit l'angle** — c'est la propriété que le
+ * test vérifie sur une batterie d'orientations.
+ *
+ * **Extraite pour être testable**, comme `plateLabelBaseline` et pour la même raison :
+ * peindre demande un contexte 2D, ce calcul non, et il n'y a ni jsdom ni
+ * testing-library dans ce projet. Mais surtout parce que c'est un **signe**. Un signe
+ * s'inverse sans qu'on le remarque : les totaux resteraient justes et l'écran dirait
+ * « Vers la droite » pour des véhicules qui vont à gauche. Une panne silencieuse, donc
+ * à verrouiller par un test contre `sideOfLine` — comme `positiveNormal` l'est déjà.
+ *
+ * `null` sur un segment de longueur nulle : aucun côté n'existe, et poser deux
+ * étiquettes au même point les rendrait illisibles.
+ */
+export function directionLabelAnchors(
+  a: Point,
+  b: Point,
+  sizes: { positive: LabelSize; negative: LabelSize },
+): { positive: Point; negative: Point } | null {
+  const normal = positiveNormal(a, b);
+  if (normal.x === 0 && normal.y === 0) return null;
+
+  const centre = midpoint(a, b);
+  const push = (size: LabelSize): number =>
+    DIRECTION_LABEL_CLEARANCE +
+    Math.abs(normal.x) * (size.width / 2) +
+    Math.abs(normal.y) * (size.height / 2);
+
+  const forward = push(sizes.positive);
+  const backward = push(sizes.negative);
+  return {
+    positive: { x: centre.x + normal.x * forward, y: centre.y + normal.y * forward },
+    negative: { x: centre.x - normal.x * backward, y: centre.y - normal.y * backward },
+  };
+}
+
+/** Police des étiquettes. Déclarée une fois : `measureLabel` et le rendu doivent
+ *  s'accorder au pixel, sinon le placement calculé ne décrit plus ce qui est peint. */
+const LABEL_FONT = "600 12px Manrope, system-ui, sans-serif";
+const LABEL_HEIGHT = 16;
+const LABEL_PADDING = 4;
+
+/** Encombrement d'une étiquette avant de la peindre — l'entrée du placement. */
+export function measureLabel(ctx: CanvasRenderingContext2D, text: string): LabelSize {
+  ctx.save();
+  ctx.font = LABEL_FONT;
+  const width = ctx.measureText(text).width + LABEL_PADDING * 2;
+  ctx.restore();
+  return { width, height: LABEL_HEIGHT };
+}
+
+/** Une étiquette voulue quelque part, et la direction dans laquelle elle peut fuir. */
+export interface LabelPlacement {
+  key: string;
+  text: string;
+  color: string;
+  /** Position idéale du **centre** de l'étiquette. */
+  centre: Point;
+  /**
+   * Direction unitaire dans laquelle l'étiquette peut s'écarter en cas de collision.
+   *
+   * `null` = fixe, elle ne bouge pas et les autres lui cèdent la place. Pour un
+   * libellé de sens, c'est **son propre normal** : elle s'éloigne du trait sans jamais
+   * changer de côté, sinon l'étiquette mentirait sur le sens qu'elle nomme.
+   */
+  escape: Point | null;
+  size: LabelSize;
+  /** 0 à 1 : contraste inversé pour marquer le sens qui vient de compter. */
+  emphasis: number;
+}
+
+/** Une étiquette placée, prête à peindre : coin supérieur gauche définitif. */
+export interface PlacedLabel extends LabelPlacement {
+  x: number;
+  y: number;
+}
+
+/** Pas d'écartement, en pixels : une hauteur d'étiquette plus un filet d'air. */
+const ESCAPE_STEP = LABEL_HEIGHT + 4;
+/** Nombre maximal d'écartements avant d'abandonner et de poser quand même. */
+const ESCAPE_ATTEMPTS = 6;
+
+/**
+ * Place une série d'étiquettes en évitant qu'elles se recouvrent.
+ *
+ * Glouton et dans l'ordre reçu : chaque étiquette cède aux précédentes. C'est pour
+ * cela que l'appelant passe les **noms de ligne d'abord** — ils sont fixes, et un nom
+ * qui errerait loin de son trait serait pire qu'un chevauchement.
+ *
+ * Une étiquette qui ne trouve pas de place après `ESCAPE_ATTEMPTS` est **posée quand
+ * même**, à sa dernière position. Renoncer à l'afficher serait pire : un libellé absent
+ * se lit comme un sens non configuré, alors qu'il l'est.
+ *
+ * Le bornage au canvas est appliqué **après** chaque écartement, jamais avant : borner
+ * d'abord ferait osciller une étiquette contre un bord sans jamais la libérer.
+ *
+ * Pure et exportée pour être testée : ce genre de boucle se vérifie sur ses cas
+ * dégénérés — deux lignes confondues, une étiquette plus large que le canvas — pas à
+ * l'œil sur une capture.
+ */
+export function resolveLabelCollisions(
+  placements: readonly LabelPlacement[],
+  view: { width: number; height: number },
+): PlacedLabel[] {
+  const placed: PlacedLabel[] = [];
+
+  for (const placement of placements) {
+    let centre = placement.centre;
+    let corner = clampLabel(centre, placement.size, view);
+
+    for (let attempt = 0; attempt < ESCAPE_ATTEMPTS; attempt += 1) {
+      if (placement.escape === null) break;
+      if (!collides(corner, placement.size, placed)) break;
+      centre = {
+        x: centre.x + placement.escape.x * ESCAPE_STEP,
+        y: centre.y + placement.escape.y * ESCAPE_STEP,
+      };
+      corner = clampLabel(centre, placement.size, view);
+    }
+
+    placed.push({ ...placement, x: corner.x, y: corner.y });
+  }
+  return placed;
+}
+
+/**
+ * Borne une étiquette au canvas, à partir de son centre voulu.
+ *
+ * Pas un détail : une ligne tracée près d'un bord — le cas courant, puisqu'on trace en
+ * travers de la chaussée — poussait son libellé hors cadre, où il était simplement
+ * invisible.
+ *
+ * `Math.max(0, …)` en second : sur un canvas plus étroit que l'étiquette, mieux vaut la
+ * tronquer à droite qu'à gauche, où le début du mot disparaîtrait.
+ */
+function clampLabel(centre: Point, size: LabelSize, view: { width: number; height: number }): Point {
+  return {
+    x: Math.max(0, Math.min(centre.x - size.width / 2, view.width - size.width)),
+    y: Math.max(0, Math.min(centre.y - size.height / 2, view.height - size.height)),
+  };
+}
+
+function collides(corner: Point, size: LabelSize, placed: readonly PlacedLabel[]): boolean {
+  return placed.some(
+    (other) =>
+      corner.x < other.x + other.size.width &&
+      other.x < corner.x + size.width &&
+      corner.y < other.y + other.size.height &&
+      other.y < corner.y + size.height,
+  );
+}
+
+/**
+ * Peint une étiquette déjà placée.
+ *
+ * `emphasis` inverse progressivement le contraste : fond dans la couleur de la ligne,
+ * encre sombre. C'est ce qui marque le sens **qui vient de compter**, sans introduire
+ * ni teinte nouvelle ni quatrième étiquette.
+ */
+function drawLabelBox(ctx: CanvasRenderingContext2D, label: PlacedLabel): void {
+  const { x, y, size, color, emphasis } = label;
+
+  ctx.save();
+  ctx.font = LABEL_FONT;
+  ctx.textBaseline = "bottom";
+
+  ctx.fillStyle = CANVAS.labelBackground;
+  ctx.fillRect(x, y, size.width, size.height);
+  if (emphasis > 0) {
+    ctx.globalAlpha = Math.min(1, emphasis);
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, size.width, size.height);
+    ctx.globalAlpha = 1;
+  }
+  // Le filet de couleur sur le bord gauche : c'est lui qui rattache l'étiquette à sa
+  // ligne quand plusieurs se côtoient — et il devient indispensable dès qu'une
+  // étiquette a dû s'écarter de son trait. Inutile quand tout le fond porte déjà la
+  // couleur.
+  if (emphasis < 0.5) {
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, 2, size.height);
+  }
+  ctx.fillStyle = emphasis >= 0.5 ? CANVAS.labelBackground : CANVAS.labelInk;
+  ctx.fillText(label.text, x + LABEL_PADDING, y + size.height - 3);
+  ctx.restore();
 }
 
 /** Trajectoires, reconstituées côté client depuis les frames précédentes. */
@@ -319,8 +643,11 @@ function drawTrack(
   }
   ctx.restore();
 
-  const parts = [`#${track.globalId}`, track.identityLabel || track.label];
-  if (track.reidCount > 0) parts.push(`↻${track.reidCount}`);
+  // `globalId === 0` = piste pas encore confirmée. On affiche alors le type **sans
+  // numéro** : « #0 » se lirait comme un véhicule zéro, alors que la boîte en
+  // pointillés dit déjà « pas encore retenue ».
+  const parts = track.globalId > 0 ? [`#${track.globalId}`] : [];
+  parts.push(track.identityLabel || track.label);
   parts.push(track.counted ? "✓" : "…");
   drawLabelAt(ctx, { x: box.x, y: box.y }, parts.join(" "), color, { dy: -6 });
 
@@ -345,8 +672,6 @@ function drawTrack(
   }
 }
 
-/** Hauteur d'une étiquette, telle que `drawLabelAt` la peint. */
-const LABEL_HEIGHT = 16;
 /** Écart entre le rectangle de plaque et son étiquette. */
 const PLATE_LABEL_GAP = 2;
 
@@ -471,13 +796,17 @@ function drawLabel(
  *
  * Le fond est ce qui la garde lisible : du texte blanc sur une route claire est
  * illisible, et une bordure ne suffit pas à cette taille.
+ *
+ * `centred` centre l'étiquette **horizontalement** sur `position` au lieu de la poser
+ * à droite. C'est ce que veulent les libellés de sens, ancrés de part et d'autre du
+ * milieu du trait : posés à droite, celui du dessous partirait vers la voie voisine.
  */
 function drawLabelAt(
   ctx: CanvasRenderingContext2D,
   position: Point,
   text: string,
   color: string,
-  offset: { dy: number },
+  offset: { dy: number; centred?: boolean },
 ): void {
   ctx.save();
   ctx.font = "600 12px Manrope, system-ui, sans-serif";
@@ -485,14 +814,31 @@ function drawLabelAt(
   const metrics = ctx.measureText(text);
   const padding = 4;
   const height = 16;
-  const x = position.x;
+  const width = metrics.width + padding * 2;
+  const x = offset.centred === true ? position.x - width / 2 : position.x;
   const y = position.y + offset.dy;
 
   ctx.fillStyle = CANVAS.labelBackground;
-  ctx.fillRect(x, y - height, metrics.width + padding * 2, height);
+  ctx.fillRect(x, y - height, width, height);
   ctx.fillStyle = color;
   ctx.fillRect(x, y - height, 2, height);
   ctx.fillStyle = CANVAS.labelInk;
   ctx.fillText(text, x + padding, y - 3);
   ctx.restore();
+}
+
+/**
+ * Tronque un libellé de sens à une longueur qui tient sur la vidéo.
+ *
+ * Deux étiquettes doivent cohabiter de part et d'autre d'un trait, souvent à côté
+ * d'une autre ligne. Une chaîne libre de 60 caractères couvrirait la scène.
+ * L'infobulle du panneau porte le nom complet ; ici on garde le début, qui est ce qui
+ * distingue « Entrée rue Foch » de « Sortie rue Foch ».
+ */
+export const DIRECTION_LABEL_MAX = 18;
+
+export function truncateDirection(text: string): string {
+  return text.length <= DIRECTION_LABEL_MAX
+    ? text
+    : `${text.slice(0, DIRECTION_LABEL_MAX - 1)}…`;
 }

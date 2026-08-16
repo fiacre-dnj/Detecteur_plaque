@@ -62,9 +62,8 @@ class JobRecord:
     video: VideoMetadata = field(default_factory=VideoMetadata)
     stats_json: dict[str, Any] | None = None
     # Dénormalisés pour trier l'historique sans ouvrir le fichier de résultat.
-    unique_vehicles: int = 0
+    tracked_vehicles: int = 0
     crossings_total: int = 0
-    reid_hits: int = 0
     result_path: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None

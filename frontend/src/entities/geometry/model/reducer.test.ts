@@ -14,7 +14,13 @@ import { beforeEach, describe, expect, it } from "bun:test";
 
 import type { CountingLine, Zone } from "@/shared/api/contracts";
 
-import { geometryReducer, resetIdCounter, translateLine, translateZone } from "./reducer";
+import {
+  geometryReducer,
+  resetIdCounter,
+  translateLine,
+  translateZone,
+  withDirectionDefaults,
+} from "./reducer";
 import { EMPTY_GEOMETRY, geometrySignature, scaleGeometry, type GeometryState } from "./types";
 
 const WIDTH = 1920;
@@ -181,12 +187,142 @@ describe("création", () => {
   });
 });
 
+describe("nommage des sens", () => {
+  function withLine(): GeometryState {
+    return geometryReducer(EMPTY_GEOMETRY, { type: "addLine", width: WIDTH, height: HEIGHT });
+  }
+
+  it("crée une ligne avec des noms de sens **vides**", () => {
+    // La chaîne vide n'est pas un oubli : c'est le signal que l'interface pose son
+    // défaut géométrique, recalculé quand la ligne pivote. Y écrire un libellé le
+    // figerait à l'orientation de la création.
+    const line = withLine().lines[0];
+
+    expect(line?.positiveName).toBe("");
+    expect(line?.negativeName).toBe("");
+    expect(line?.positiveRole).toBe("neutral");
+    expect(line?.negativeRole).toBe("neutral");
+  });
+
+  it("renomme un sens sans toucher à l'autre", () => {
+    const state = withLine();
+    const id = state.lines[0]?.id ?? "";
+
+    const renamed = geometryReducer(state, {
+      type: "renameDirection",
+      id,
+      sign: "positive",
+      name: "Entrée rue Foch",
+    });
+
+    expect(renamed.lines[0]?.positiveName).toBe("Entrée rue Foch");
+    expect(renamed.lines[0]?.negativeName).toBe("");
+  });
+
+  it("pose un rôle sans toucher à l'autre sens", () => {
+    const state = withLine();
+    const id = state.lines[0]?.id ?? "";
+
+    const roled = geometryReducer(state, {
+      type: "setDirectionRole",
+      id,
+      sign: "negative",
+      role: "exit",
+    });
+
+    expect(roled.lines[0]?.negativeRole).toBe("exit");
+    expect(roled.lines[0]?.positiveRole).toBe("neutral");
+  });
+
+  it("ne touche pas aux autres lignes", () => {
+    let state = geometryReducer(EMPTY_GEOMETRY, {
+      type: "addLine",
+      width: WIDTH,
+      height: HEIGHT,
+    });
+    state = geometryReducer(state, { type: "addLine", width: WIDTH, height: HEIGHT });
+    const first = state.lines[0]?.id ?? "";
+
+    const renamed = geometryReducer(state, {
+      type: "renameDirection",
+      id: first,
+      sign: "positive",
+      name: "Nord",
+    });
+
+    expect(renamed.lines[1]?.positiveName).toBe("");
+  });
+
+  it("ignore une ligne inconnue plutôt que de lever", () => {
+    const state = withLine();
+
+    const untouched = geometryReducer(state, {
+      type: "renameDirection",
+      id: "disparue",
+      sign: "positive",
+      name: "Nord",
+    });
+
+    expect(untouched.lines).toEqual(state.lines);
+  });
+
+  it("complète les champs de sens d'un preset enregistré avant qu'ils existent", () => {
+    // **Le cas qui casserait en silence.** Sans ce complément, `positiveRole` vaudrait
+    // `undefined` là où le type promet un rôle, et les agrégations d'entrées/sorties
+    // compareraient contre rien — un total qui reste à zéro sans qu'une erreur
+    // l'explique.
+    const legacy = {
+      id: "l1",
+      name: "Voie nord",
+      color: "#539df5",
+      zoneId: null,
+      a: { x: 0, y: 600 },
+      b: { x: 1920, y: 600 },
+    } as unknown as CountingLine;
+
+    const state = geometryReducer(EMPTY_GEOMETRY, {
+      type: "replace",
+      lines: [legacy],
+      zones: [],
+    });
+
+    expect(state.lines[0]).toMatchObject({
+      positiveName: "",
+      negativeName: "",
+      positiveRole: "neutral",
+      negativeRole: "neutral",
+    });
+  });
+
+  it("laisse intacts les champs déjà présents", () => {
+    // Garde-fou du test précédent : le complément ne doit pas écraser un libellé.
+    const named: CountingLine = {
+      id: "l1",
+      name: "Voie nord",
+      color: "#539df5",
+      zoneId: null,
+      a: { x: 0, y: 600 },
+      b: { x: 1920, y: 600 },
+      positiveName: "Entrée",
+      negativeName: "Sortie",
+      positiveRole: "entry",
+      negativeRole: "exit",
+    };
+
+    expect(withDirectionDefaults(named)).toEqual(named);
+  });
+});
+
 describe("déplacement — le décalage de préhension", () => {
   const line: CountingLine = {
     id: "l1",
     name: "L",
     color: "#539df5",
     zoneId: null,
+    positiveName: "",
+    negativeName: "",
+    positiveRole: "neutral" as const,
+    negativeRole: "neutral" as const,
     a: { x: 100, y: 500 },
     b: { x: 900, y: 500 },
   };
@@ -232,6 +368,10 @@ describe("signature de géométrie — la détection d'un résultat obsolète", 
     name: "Voie nord",
     color: "#539df5",
     zoneId: null,
+    positiveName: "",
+    negativeName: "",
+    positiveRole: "neutral" as const,
+    negativeRole: "neutral" as const,
     a: { x: 0, y: 600 },
     b: { x: 1920, y: 600 },
   };
@@ -243,6 +383,20 @@ describe("signature de géométrie — la détection d'un résultat obsolète", 
     const after = geometrySignature([{ ...line, a: { x: 0, y: 400 } }], []);
 
     expect(after).not.toBe(before);
+  });
+
+  it("**ne change pas** quand un sens est renommé ou re-rôlé", () => {
+    // Un libellé ne change aucun chiffre : le serveur ne le lit pas, et le bilan
+    // entrées/sorties est recalculé côté client à chaque rendu. Faire clignoter le
+    // bandeau « résultat obsolète » sur une correction de vocabulaire pousserait à
+    // relancer une analyse de trente minutes pour rien.
+    const before = geometrySignature([line], []);
+    const renamed = geometrySignature(
+      [{ ...line, positiveName: "Entrée nord", positiveRole: "entry" as const }],
+      [],
+    );
+
+    expect(renamed).toBe(before);
   });
 
   it("change quand la portée d'une ligne change", () => {
@@ -319,6 +473,10 @@ describe("mise à l'échelle d'un preset", () => {
       name: "L",
       color: "#539df5",
       zoneId: null,
+      positiveName: "",
+      negativeName: "",
+      positiveRole: "neutral" as const,
+      negativeRole: "neutral" as const,
       a: { x: 100, y: 200 },
       b: { x: 300, y: 200 },
     };

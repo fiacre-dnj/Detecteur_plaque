@@ -36,7 +36,7 @@ service : c'est son chemin chaud, isolé.
 
 **Le chiffre qu'on vient chercher** est `framesPerSecond`, et le partage explique
 pourquoi il vaut ce qu'il vaut. Le second chiffre, tout aussi important, est le
-bloc `counts` : une optimisation qui change `uniqueVehicles` ou `crossings` n'est
+bloc `counts` : une optimisation qui change `trackedVehicles` ou `crossings` n'est
 pas une optimisation, c'est une régression déguisée en gain.
 """
 
@@ -241,7 +241,9 @@ def run_video(
         started: float | None = None
         analysed = 0
         for frame in engine.iter_video(video, config.engine_spec()):
-            outcome = session.feed(frame.frame_index, frame.timestamp_ms, frame.image, frame.tracks)
+            # Trois arguments et non quatre : depuis ADR 0016, le comptage ne
+            # reçoit plus l'image — il ne touche plus un seul pixel.
+            outcome = session.feed(frame.frame_index, frame.timestamp_ms, frame.tracks)
             serialise_started = perf_counter()
             # La sérialisation du service : `run_video` prend un `snapshot()` par
             # piste et par image pour la timeline. C'est un coût par image, donc
@@ -268,11 +270,20 @@ def run_video(
 
     stats = session.stats()
     counts = {
-        "uniqueVehicles": stats.unique_vehicles,
+        # `trackedVehicles` remplace `uniqueVehicles`, et `reidHits` a disparu avec
+        # la ré-identification (ADR 0016). Les noms comptent ici : ce bloc sert à
+        # repérer qu'une optimisation a changé un compteur, donc il doit porter les
+        # noms du contrat publié et pas leurs ancêtres.
+        "trackedVehicles": stats.tracked_vehicles,
         "crossings": stats.crossings,
-        "reidHits": stats.reid_hits,
+        "crossedUnique": stats.crossed_unique,
         "byClass": dict(sorted(stats.by_class.items())),
         "byLine": {name: tally.total for name, tally in sorted(stats.by_line.items())},
+        # Les quasi-franchissements sont **un indicateur de qualité de suivi**, pas
+        # un compteur : ils montent quand les pistes s'éteignent avant la ligne. Un
+        # levier qui gagne des images par seconde en les faisant monter a dégradé le
+        # comptage sans toucher aux totaux, ce qu'aucun autre chiffre ne dirait.
+        "nearMisses": dict(sorted(stats.diagnostics.near_misses.items())),
     }
     return timings, counts
 
@@ -301,13 +312,13 @@ def _mid_cross(width: int, height: int) -> tuple[CountingLineDef, ...]:
     **Deux lignes et non une**, parce que la première version n'en posait qu'une,
     horizontale, et rendait `crossings = 0` sur les trois vidéos : la circulation y
     est transversale, donc rien ne la franchissait jamais. Le garde-fou de justesse
-    ne vérifiait alors que `unique_vehicles`, en laissant tout le chemin de comptage
-    hors de la comparaison — c'est-à-dire précisément ce qu'une optimisation risque
-    de casser. Une croix est franchie quel que soit le sens de la circulation.
+    ne vérifiait alors que le nombre de véhicules, en laissant tout le chemin de
+    comptage hors de la comparaison — c'est-à-dire précisément ce qu'une optimisation
+    risque de casser. Une croix est franchie quel que soit le sens de la circulation.
 
-    Que les deux lignes se croisent ne double aucun total : la déduplication porte
-    sur `(identité, génération)`, et c'est la **première** franchie qui porte le
-    comptage (invariant 6, ADR 0009). Le banc exerce donc aussi cette règle.
+    Un véhicule qui franchit les deux lignes compte **deux fois** : il n'y a plus de
+    déduplication depuis ADR 0016, et c'est voulu. Le banc mesure donc le comptage
+    réellement servi, y compris cette propriété.
     """
     x = width / 2.0
     y = height / 2.0
@@ -353,9 +364,10 @@ def print_run(report: dict[str, Any]) -> None:
             marker = " (par différence)" if name == "decodeAndOther" else ""
             print(f"      {name:<16} {value:>6.2f} ms  {share:>5.1f} %{marker}")
         counts = source["counts"]
+        near = sum(counts.get("nearMisses", {}).values())
         print(
-            f"    comptage : {counts['uniqueVehicles']} véhicules uniques, "
-            f"{counts['crossings']} franchissements, {counts['reidHits']} ré-identifications"
+            f"    comptage : {counts['trackedVehicles']} véhicules suivis, "
+            f"{counts['crossings']} franchissements, {near} quasi-franchissements"
         )
 
 
@@ -386,9 +398,16 @@ def print_comparison(current: dict[str, Any], previous: dict[str, Any]) -> None:
 
         if source["counts"] != older["counts"]:
             print("    ⚠ LE COMPTAGE A CHANGÉ — ce n'est pas une optimisation neutre :")
-            for key in ("uniqueVehicles", "crossings", "reidHits"):
-                if source["counts"][key] != older["counts"][key]:
-                    print(f"      {key} : {older['counts'][key]} → {source['counts'][key]}")
+            for key in ("trackedVehicles", "crossings", "crossedUnique"):
+                if source["counts"].get(key) != older["counts"].get(key):
+                    print(f"      {key} : {older['counts'].get(key)} → {source['counts'].get(key)}")
+            # Les quasi-franchissements ne sont pas un total, mais leur variation
+            # est le signal le plus précoce d'un suivi qui s'est dégradé : les
+            # pistes s'éteignent plus tôt avant que le moindre total ne bouge.
+            was_near = sum(older["counts"].get("nearMisses", {}).values())
+            now_near = sum(source["counts"].get("nearMisses", {}).values())
+            if was_near != now_near:
+                print(f"      quasi-franchissements : {was_near} → {now_near}")
         else:
             print("    comptage identique.")
 

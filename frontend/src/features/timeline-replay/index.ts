@@ -25,6 +25,20 @@ export {
 
 export { activeCrossingIndex, formatTimecode } from "./model/timeline";
 
+export {
+  NO_FILTER,
+  type DensityBucket,
+  type TimelineFilter,
+  type TimelineGroup,
+  chooseGroupMs,
+  densityBuckets,
+  filterCrossings,
+  groupByTime,
+  presentLabels,
+  presentLines,
+  toggle,
+} from "./model/timelineFilters";
+
 export { useReplay, type ReplayState } from "./model/useReplay";
 
 export { CrossingTimeline } from "./ui/CrossingTimeline";

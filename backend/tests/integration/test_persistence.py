@@ -26,6 +26,7 @@ from traffic_analysis.features.counting.application.dto import AnalysisResultDat
 from traffic_analysis.features.counting.domain.models import (
     AnalysisStats,
     CrossingEvent,
+    DirectionTally,
     LineCrossing,
     LineTally,
     VehicleRecord,
@@ -94,7 +95,6 @@ def _result(job_id: str = "job-1", *, vehicles: int = 3, crossings: int = 5) -> 
             last_seen_ms=index * 100.0 + 4000.0,
             crossed_lines=(LineCrossing("l1", 1, index * 100.0 + 500.0),),
             zones_visited=("z1",),
-            reid_count=index % 2,
             avg_speed_px_s=120.0 + index,
             avg_speed_kmh=None,
             best_plate_score=0.7 if index == 0 else None,
@@ -126,18 +126,22 @@ def _result(job_id: str = "job-1", *, vehicles: int = 3, crossings: int = 5) -> 
         ZoneEntryEvent(zone_id="z1", global_id=1, label="car", timestamp_ms=100.0, frame_index=2)
     ]
     data.stats = AnalysisStats(
-        unique_vehicles=vehicles,
-        unique_by_class={"car": vehicles},
+        tracked_vehicles=vehicles,
+        tracked_by_class={"car": vehicles},
         crossings=crossings,
-        # Des véhicules, pas des passages : borné par `unique_vehicles`. Ici tous
-        # les franchissements viennent d'identités distinctes, au plafond près.
+        # Des véhicules, pas des passages : borné par `tracked_vehicles`. Ici tous
+        # les franchissements viennent de véhicules distincts, au plafond près.
         crossed_unique=min(crossings, vehicles),
         by_class={"car": crossings},
         by_line={
-            "l1": LineTally(total=crossings, by_class={"car": crossings}, positive=3, negative=2)
+            "l1": LineTally(
+                positive=DirectionTally(total=3, by_class={"car": 3}, first_ms=0.0, last_ms=1000.0),
+                negative=DirectionTally(
+                    total=2, by_class={"car": 2}, first_ms=250.0, last_ms=750.0
+                ),
+            )
         },
         by_zone={},
-        reid_hits=1,
         vehicles_per_minute=24.0,
         active_tracks=0,
         elapsed_ms=20000.0,
@@ -261,7 +265,7 @@ class TestAgregats:
 
         stored = await repository.get("job-1")
         assert stored is not None
-        assert stored.unique_vehicles == 3
+        assert stored.tracked_vehicles == 3
         assert stored.crossings_total == 5
         assert stored.stats_json is not None
 

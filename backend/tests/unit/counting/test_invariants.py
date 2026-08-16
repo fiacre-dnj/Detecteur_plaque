@@ -9,16 +9,13 @@ immédiatement discrédité, quelle que soit la qualité de la détection.
 Les quatre égalités :
 
 1. `crossings == Σ by_line[*].total`
-2. `by_line[l].total == positive + negative`, pour chaque ligne
-3. `Σ unique_by_class.values() == unique_vehicles`
+2. `by_line[l].total == positive.total + negative.total`, pour chaque ligne
+3. `Σ tracked_by_class.values() == tracked_vehicles`
 4. `Σ by_line[*].by_class.values() == crossings`
 """
 
 from __future__ import annotations
 
-from dataclasses import replace
-
-import numpy as np
 import pytest
 
 from tests.support.scenarios import (
@@ -34,29 +31,18 @@ from traffic_analysis.features.counting.domain.tracking_session import AnalysisS
 SCENARIOS = all_scenarios()
 
 
-def _scene() -> np.ndarray:
-    """Image texturée : la ré-identification a besoin d'apparence pour travailler."""
-    image = np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
-    image[:, :] = (40, 90, 180)
-    image[::5, :] = (240, 240, 240)
-    return image
-
-
-def _play(scenario: Scenario, *, dedupe: bool = False) -> AnalysisStats:
-    """Joue un scénario et rend ses statistiques finales.
-
-    `dedupe` demande le mode d'ADR 0009 — un véhicule compte une fois. Le défaut est
-    le mode du produit : on compte des passages (ADR 0014). Les quatre invariants
-    comptables tiennent dans les **deux** modes, ce qui est justement ce qui en fait
-    des invariants ; seul le plafond de franchissements dépend du mode.
-    """
-    session = AnalysisSession(
-        replace(scenario.config, dedupe_by_identity=dedupe), FRAME_WIDTH, FRAME_HEIGHT
-    )
-    image = _scene()
-    for index, observations in enumerate(scenario.frames):
-        session.feed(index, index * FRAME_MS, image, observations)
+def _play(scenario: Scenario) -> AnalysisStats:
+    """Joue un scénario et rend ses statistiques finales."""
+    session = _played(scenario)
     return session.stats()
+
+
+def _played(scenario: Scenario) -> AnalysisSession:
+    """Joue un scénario et rend la session, pour les tests qui veulent le registre."""
+    session = AnalysisSession(scenario.config, FRAME_WIDTH, FRAME_HEIGHT)
+    for index, observations in enumerate(scenario.frames):
+        session.feed(index, index * FRAME_MS, observations)
+    return session
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=str)
@@ -76,20 +62,20 @@ def test_le_total_d_une_ligne_est_la_somme_de_ses_deux_sens(scenario: Scenario) 
     stats = _play(scenario)
 
     for line_id, tally in stats.by_line.items():
-        assert tally.total == tally.positive + tally.negative, f"ligne « {line_id} »"
+        assert tally.total == tally.positive.total + tally.negative.total, f"ligne « {line_id} »"
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=str)
-def test_la_repartition_des_uniques_somme_au_nombre_d_uniques(scenario: Scenario) -> None:
-    """Invariant 3 — la carte « Véhicules uniques » et les tuiles par type
+def test_la_repartition_par_type_somme_au_nombre_de_vehicules(scenario: Scenario) -> None:
+    """Invariant 3 — la carte « Véhicules détectés » et les tuiles par type
     doivent raconter la même histoire.
 
     Cet invariant tient même quand un vote majoritaire bascule en cours de route :
-    le vote unique de l'identité **déménage** d'un total de classe à l'autre.
+    la voix unique du véhicule **déménage** d'un total de classe à l'autre.
     """
     stats = _play(scenario)
 
-    assert sum(stats.unique_by_class.values()) == stats.unique_vehicles
+    assert sum(stats.tracked_by_class.values()) == stats.tracked_vehicles
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=str)
@@ -110,37 +96,51 @@ def test_aucun_compteur_n_est_negatif(scenario: Scenario) -> None:
     """
     stats = _play(scenario)
 
-    assert stats.unique_vehicles >= 0
+    assert stats.tracked_vehicles >= 0
     assert stats.crossings >= 0
-    assert stats.reid_hits >= 0
     assert stats.vehicles_per_minute >= 0.0
     for tally in stats.by_line.values():
         assert tally.total >= 0
         assert min(tally.by_class.values(), default=0) >= 0
+        for side in (tally.positive, tally.negative):
+            assert side.total >= 0
+            assert min(side.by_class.values(), default=0) >= 0
     for zone_tally in stats.by_zone.values():
         assert zone_tally.entries >= 0
         assert zone_tally.inside >= 0
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=str)
-def test_en_deduplication_les_passages_ne_depassent_pas_les_generations(
-    scenario: Scenario,
-) -> None:
-    """Un franchissement de plus que possible signalerait un garde en défaut.
+def test_un_franchissement_n_existe_que_pour_un_vehicule_compte(scenario: Scenario) -> None:
+    """Aucun passage ne peut être attribué à un véhicule absent du registre.
 
-    **Ce plafond est celui du mode déduplication, pas du défaut du produit.** Chaque
-    identité y compte une fois par génération (ADR 0009), et une génération naît soit
-    à l'admission, soit d'une ré-identification : le plafond exact est donc
-    `uniques + ré-identifications`.
+    Remplace le plafond du mode déduplication, disparu avec ADR 0016 en même temps
+    que `dedupe_by_identity` et `reid_hits` dont il dépendait.
 
-    Il est serré, et c'est ce qui fait sa valeur : l'ancien plafond
-    (`uniques × lignes × 2`) restait vrai même avec le garde débranché. Le garder
-    ici, sur le mode devenu optionnel, est ce qui garantit que le garde fonctionne
-    toujours le jour où on le rallume.
+    Ce qui le remplace est plus fort, parce qu'il ne borne pas un total mais vérifie
+    une **appartenance** : chaque `global_id` qui a fait bouger un compteur doit
+    figurer dans le registre. Le plafond `uniques + ré-identifications` laissait
+    passer un franchissement attribué à un numéro inexistant du moment que le total
+    tenait ; celui-ci ne le laisse pas.
     """
-    stats = _play(scenario, dedupe=True)
+    session = _played(scenario)
+    stats = session.stats()
+    known = {record.global_id for record in session.vehicles()}
 
-    assert stats.crossings <= stats.unique_vehicles + stats.reid_hits
+    for line_id, tally in stats.by_line.items():
+        assert tally.total >= 0, f"ligne « {line_id} »"
+    assert stats.crossed_unique == len(known & _counted_ids(session))
+    assert _counted_ids(session) <= known, "un passage sans véhicule au registre"
+
+
+def _counted_ids(session: AnalysisSession) -> set[int]:
+    """Les numéros ayant fait bouger un compteur — la source du badge ✓.
+
+    Lu par un accès privé, faute d'API publique : la seule autre voie serait de
+    recomposer l'ensemble depuis `vehicles()`, ce qui ferait dériver l'attendu du
+    résultat qu'on veut vérifier.
+    """
+    return session._counter.counted_identities()
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=str)
@@ -161,7 +161,7 @@ def test_la_ventilation_par_categorie_somme_aux_franchissements(scenario: Scenar
 def test_les_vehicules_ayant_franchi_ne_depassent_jamais_les_vehicules_vus(
     scenario: Scenario,
 ) -> None:
-    """`crossed_unique <= unique_vehicles`, sur **tous** les scénarios.
+    """`crossed_unique <= tracked_vehicles`, sur **tous** les scénarios.
 
     C'est l'inégalité qui fait du taux de franchissement un pourcentage. Elle tient
     par nature — on ne peut pas avoir franchi sans avoir été vu — mais elle ne
@@ -173,7 +173,7 @@ def test_les_vehicules_ayant_franchi_ne_depassent_jamais_les_vehicules_vus(
     """
     stats = _play(scenario)
 
-    assert 0 <= stats.crossed_unique <= stats.unique_vehicles
+    assert 0 <= stats.crossed_unique <= stats.tracked_vehicles
     # Et jamais plus de véhicules distincts que de passages : chaque véhicule
     # compté a fait bouger un compteur au moins une fois.
     assert stats.crossed_unique <= stats.crossings
@@ -183,7 +183,7 @@ def test_un_aller_retour_compte_deux_passages_mais_un_seul_vehicule() -> None:
     """**Le cas exact qui cassait le taux de franchissement.**
 
     Un véhicule qui franchit puis revient produit 2 passages sous ADR 0014. Avec
-    `crossings / unique_vehicles`, le taux valait 200 % — un pourcentage impossible
+    `crossings / tracked_vehicles`, le taux valait 200 % — un pourcentage impossible
     affiché sans le moindre avertissement, et documenté à l'époque comme voulu.
 
     Ce test fixe les deux chiffres séparément, pour que personne ne « corrige »
@@ -195,7 +195,7 @@ def test_un_aller_retour_compte_deux_passages_mais_un_seul_vehicule() -> None:
 
     assert stats.crossings >= 2
     assert stats.crossed_unique == 1
-    assert stats.crossed_unique / stats.unique_vehicles <= 1.0
+    assert stats.crossed_unique / stats.tracked_vehicles <= 1.0
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=str)
@@ -206,19 +206,18 @@ def test_le_registre_est_coherent_avec_les_statistiques(scenario: Scenario) -> N
     utilisateur qui vérifie ligne à ligne ne retrouverait pas son total, et c'est
     exactement ce que le registre existe pour permettre.
     """
-    session = AnalysisSession(scenario.config, FRAME_WIDTH, FRAME_HEIGHT)
-    image = _scene()
-    for index, observations in enumerate(scenario.frames):
-        session.feed(index, index * FRAME_MS, image, observations)
+    session = _played(scenario)
 
     stats = session.stats()
     vehicles = session.vehicles()
 
-    assert len(vehicles) <= stats.unique_vehicles
+    # **Égalité et non inégalité** : les deux filtrent sur la même confirmation
+    # depuis ADR 0016. Sous la galerie, le registre était indexé sur les agrégats et
+    # le total sur un compteur d'émission distinct, donc seul un `<=` tenait.
+    assert len(vehicles) == stats.tracked_vehicles
     assert sum(len(record.crossed_lines) for record in vehicles) == stats.crossings
     for record in vehicles:
         assert record.first_seen_ms <= record.last_seen_ms
-        assert record.reid_count >= 0
 
 
 def test_la_batterie_de_scenarios_n_est_pas_vide() -> None:

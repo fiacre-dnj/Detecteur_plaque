@@ -2,15 +2,19 @@
 
 **La même session sert le fichier différé et le flux temps réel.** C'est tout
 l'intérêt du découpage : il n'existe qu'une implémentation du comptage, donc les
-deux modes ne peuvent pas divergerurer.
+deux modes ne peuvent pas diverger.
 
-L'ordre des étapes de `feed()` est impératif et deux d'entre elles ont été payées
-au prix d'un bug :
+L'ordre des étapes de `feed()` est impératif :
 
 - **`_mask` avant le suivi**, jamais après : avec « ignorer hors zone », une
   détection hors zone ne doit jamais devenir une piste ;
-- **relâcher avant d'admettre** : le moteur détruit une piste morte et crée sa
-  remplaçante dans le *même* appel.
+- **numéroter avant de compter** : un franchissement doit porter le numéro de son
+  véhicule, et l'émission différée d'un franchissement en attente tombe sur la
+  frame même où la piste se confirme — donc où son numéro est émis.
+
+L'ancienne contrainte « relâcher avant d'admettre » a disparu avec la galerie de
+ré-identification (ADR 0016) : plus rien n'est admis, donc plus rien ne se dispute
+une identité relâchée.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from traffic_analysis.features.counting.domain.models import (
     CountingLineDef,
     CrossingEvent,
     Diagnostics,
+    DirectionTally,
     FrameOutcome,
     LineCrossing,
     LineTally,
@@ -37,21 +42,14 @@ from traffic_analysis.features.counting.domain.models import (
 from traffic_analysis.features.counting.domain.plate_geometry import unread_reason
 from traffic_analysis.features.counting.domain.plate_text import normalise_plate_reading
 from traffic_analysis.features.counting.domain.plate_vote import PlateTextVote
-from traffic_analysis.features.counting.domain.reid import (
-    IdentityGallery,
-    ReidCandidate,
-    ReidOptions,
-    build_signature,
-)
 from traffic_analysis.features.counting.domain.speed import SpeedEstimator, to_kmh
+from traffic_analysis.features.counting.domain.track_numbering import TrackNumbering
 from traffic_analysis.features.counting.domain.zone_counter import ZonePresenceCounter
 from traffic_analysis.features.counting.domain.zone_geometry import point_is_in_any_zone
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    import numpy as np
-    import numpy.typing as npt
 
 # En dessous de trois secondes de flux analysé, l'extrapolation du débit oscille
 # trop pour être publiable : on rend 0 et l'interface le dit.
@@ -80,24 +78,15 @@ class SessionConfig:
     zones: tuple[ZoneDef, ...] = ()
     mask_outside_zones: bool = False
     min_hits: int = 2
-    # Miroir exact de `track_buffer: 75` du tracker Ultralytics (≈ 2,5 s à 30 fps).
-    # Si l'une des deux valeurs change, l'autre doit suivre, sinon le moteur et le
-    # domaine ne sont plus d'accord sur ce qu'est « une piste perdue ».
+    #: Miroir exact de `track_buffer: 75` du tracker Ultralytics (≈ 2,5 s à 30 fps).
+    #: Si l'une des deux valeurs change, l'autre doit suivre, sinon le moteur et le
+    #: domaine ne sont plus d'accord sur ce qu'est « une piste perdue ».
+    #:
+    #: Au-delà de ce silence, la session abandonne la piste **et oublie son
+    #: numéro** : un identifiant de piste réémis par le tracker après ce délai
+    #: désigne un autre véhicule.
     max_lost_ms: float = 2500.0
     pixels_per_meter: float | None = None
-    reid: ReidOptions = field(default_factory=ReidOptions)
-    #: Un véhicule ne compte-t-il **qu'une fois**, toutes lignes et tous sens
-    #: confondus ?
-    #:
-    #: `False` désormais, et c'est un changement de ce que les chiffres veulent
-    #: dire : on compte des **passages**, plus des véhicules. Un aller-retour compte
-    #: donc 2, et deux lignes en travers de la même voie comptent chacune. C'est le
-    #: comportement demandé — la ré-identification sort du périmètre du produit —
-    #: mais il abroge la décision d'ADR 0009, qui existait pour l'inverse.
-    #:
-    #: Le drapeau reste plutôt que d'effacer le garde : le rallumer est un mot, et
-    #: la mécanique de déduplication garde ses tests. Voir ADR 0014.
-    dedupe_by_identity: bool = False
     #: La lecture du texte de plaque tourne-t-elle réellement ?
     #:
     #: Ce que le service a **résolu**, et non ce que la requête a demandé : le
@@ -111,13 +100,20 @@ class SessionConfig:
     plate_ocr_min_width_px: float = 64.0
 
 
-def _copy_line_tally(tally: LineTally) -> LineTally:
-    """Copie profonde d'un tally de ligne — le `by_class` compris."""
-    return LineTally(
+def _copy_direction_tally(tally: DirectionTally) -> DirectionTally:
+    return DirectionTally(
         total=tally.total,
         by_class=dict(tally.by_class),
-        positive=tally.positive,
-        negative=tally.negative,
+        first_ms=tally.first_ms,
+        last_ms=tally.last_ms,
+    )
+
+
+def _copy_line_tally(tally: LineTally) -> LineTally:
+    """Copie profonde d'un tally de ligne — les deux sens et leurs `by_class`."""
+    return LineTally(
+        positive=_copy_direction_tally(tally.positive),
+        negative=_copy_direction_tally(tally.negative),
     )
 
 
@@ -126,10 +122,10 @@ def _copy_zone_tally(tally: ZoneTally) -> ZoneTally:
 
 
 @dataclass(slots=True)
-class _IdentityAggregate:
-    """Ce que la session retient d'une identité sur toute la session.
+class _VehicleAggregate:
+    """Ce que la session retient d'un véhicule sur toute sa vie.
 
-    La galerie connaît l'apparence et la classe votée ; cet agrégat connaît
+    `TrackNumbering` connaît son numéro et son type voté ; cet agrégat connaît
     l'histoire — vu de/à, lignes franchies, zones visitées, meilleure plaque.
     """
 
@@ -137,11 +133,10 @@ class _IdentityAggregate:
     last_seen_ms: float
     crossings: list[LineCrossing] = field(default_factory=list)
     best_plate_score: float | None = None
-    #: Le vote du texte de plaque. Sur l'agrégat et non sur la piste : la piste est
-    #: détruite à chaque occlusion longue, l'identité non — c'est la même raison qui
-    #: fait porter la déduplication sur l'identité (invariant 6). C'est aussi ce qui
-    #: rend la réhydratation après occlusion gratuite : au retour du véhicule, la
-    #: piste est neuve mais l'agrégat est intact.
+    #: Le vote du texte de plaque. Sur l'agrégat et non sur la piste : la piste
+    #: perd ses boîtes à chaque image, le véhicule non. C'est aussi ce qui rend la
+    #: réhydratation gratuite quand le tracker réactive un identifiant après une
+    #: occlusion courte — la piste est neuve, l'agrégat est intact.
     plate_vote: PlateTextVote = field(default_factory=PlateTextVote)
     #: Largeur de la meilleure plaque **mesurée** de cette identité, en pixels.
     #:
@@ -166,39 +161,35 @@ class AnalysisSession:
         "_contained_out",
         "_counter",
         "_first_timestamp_ms",
-        "_frame_diagonal",
         "_frame_index",
-        "_gallery",
-        "_identity_of_lost_track",
         "_last_timestamp_ms",
         "_masked_out",
-        "_released_ids",
+        "_numbering",
         "_speed",
         "_tracks",
         "_zones",
     )
 
     def __init__(self, config: SessionConfig, frame_width: int, frame_height: int) -> None:
+        # `frame_width` / `frame_height` ne servent plus au comptage : ils
+        # alimentaient le gate de déplacement de la ré-identification, supprimée par
+        # ADR 0016. La signature est conservée parce que trois appelants la
+        # traversent et qu'un futur réglage dépendant de la résolution — un plancher
+        # de taille de boîte, par exemple — la redemanderait aussitôt.
+        del frame_width, frame_height
+
         self._config = config
-        self._frame_diagonal = (frame_width**2 + frame_height**2) ** 0.5
-        self._counter = LineCrossingCounter(
-            config.lines,
-            config.zones,
-            config.min_hits,
-            dedupe_by_identity=config.dedupe_by_identity,
-        )
+        self._counter = LineCrossingCounter(config.lines, config.zones, config.min_hits)
         self._zones = ZonePresenceCounter(config.zones, config.min_hits)
-        self._gallery = IdentityGallery(config.reid)
+        self._numbering = TrackNumbering()
         self._speed = SpeedEstimator()
         # Toutes les pistes connues, pas seulement les actives : `_release_lost`
-        # doit pouvoir relâcher une piste qui a cessé d'être rapportée.
+        # doit pouvoir abandonner une piste qui a cessé d'être rapportée.
         self._tracks: dict[int, SessionTrack] = {}
-        self._aggregates: dict[int, _IdentityAggregate] = {}
-        # Identités relâchées mais dont la piste peut ressusciter avec le même id.
-        self._released_ids: set[int] = set()
-        # id de piste perdu → (identité qu'il portait, dernier instant vu).
-        # BoT-SORT réutilise ses ids : c'est ce qui permet la récupération par id.
-        self._identity_of_lost_track: dict[int, tuple[int, float]] = {}
+        # Numéro de véhicule → son histoire. **Jamais purgé** : le registre s'en
+        # sert à la fin, et un véhicule sorti du champ à la dixième seconde doit
+        # encore y figurer.
+        self._aggregates: dict[int, _VehicleAggregate] = {}
         self._first_timestamp_ms: float | None = None
         self._last_timestamp_ms: float = 0.0
         self._frame_index = 0
@@ -212,7 +203,6 @@ class AnalysisSession:
         self,
         frame_index: int,
         timestamp_ms: float,
-        image: npt.NDArray[np.uint8],
         observations: Sequence[TrackObservation],
     ) -> FrameOutcome:
         """Fait avancer la session d'une frame. **L'ordre des étapes est le contrat.**"""
@@ -223,19 +213,16 @@ class AnalysisSession:
         kept = self._mask(self._drop_contained(observations))
         active = self._advance_tracks(kept, timestamp_ms)
 
-        # Relâcher AVANT d'admettre. Le moteur détruit une piste morte et crée sa
-        # remplaçante dans le même appel : relâcher les identités *après*
-        # `admit_batch` laisserait l'ancienne marquée vivante exactement quand sa
-        # remplaçante la demande, l'exclusivité refuserait le match, et le véhicule
-        # serait admis comme neuf. Mesuré avec le mauvais ordre : 2 véhicules
-        # uniques et 0 ré-identification ; avec le bon : 1 et 1.
+        # Abandonner les pistes silencieuses **avant** de numéroter : c'est ce qui
+        # libère leur identifiant de piste, pour qu'un identifiant réémis par le
+        # tracker reçoive un numéro neuf plutôt que de fusionner deux véhicules.
         self._release_lost(timestamp_ms)
-        self._resolve_identities(active, image, timestamp_ms)
+        self._number_tracks(active)
 
         # Le texte voté est recopié de l'agrégat vers la piste vivante **ici**, et
-        # pas ailleurs : après `_resolve_identities` l'identité de chaque piste est
-        # arrêtée pour la frame, et avant `observe` le tampon du compteur a de quoi
-        # lire. C'est ce qui fait qu'un franchissement porte le texte que le véhicule
+        # pas ailleurs : après `_number_tracks` le numéro de chaque piste est arrêté
+        # pour la frame, et avant `observe` le tampon du compteur a de quoi lire.
+        # C'est ce qui fait qu'un franchissement porte le texte que le véhicule
         # avait **avant** cette frame — le seul texte qui existe à cet instant, la
         # passe OCR de cette frame n'ayant pas encore eu lieu.
         self._mirror_plate_text(active)
@@ -243,9 +230,9 @@ class AnalysisSession:
         crossings = self._counter.observe(active, timestamp_ms, frame_index)
         zone_events = self._zones.observe(active, timestamp_ms, frame_index)
 
-        # Le badge ✓ dérive du tally, jamais de la comptabilité d'une piste : un
-        # franchissement supprimé par le garde d'identité ne doit pas peindre ✓,
-        # tandis qu'une ré-identification doit le conserver.
+        # Le badge ✓ dérive du tally, jamais de la comptabilité d'une piste : c'est
+        # la même source que `crossed_unique`, donc les deux ne peuvent pas se
+        # contredire à l'écran.
         counted = self._counter.counted_identities()
         for track in active:
             track.counted = track.global_id != 0 and track.global_id in counted
@@ -344,7 +331,9 @@ class AnalysisSession:
             centroid = observation.box.centroid
             track = self._tracks.get(observation.track_id)
             if track is None:
-                recovered_id = self._recover_identity(observation.track_id, timestamp_ms)
+                # `global_id` reste à `0` : le numéro est émis à la confirmation,
+                # par `_number_tracks`. Une piste d'une seule image ne consomme donc
+                # aucun numéro, et la suite reste sans trou.
                 track = SessionTrack(
                     track_id=observation.track_id,
                     class_id=observation.class_id,
@@ -353,7 +342,6 @@ class AnalysisSession:
                     box=observation.box,
                     centroid=centroid,
                     hits=1,
-                    global_id=recovered_id,
                     last_seen_ms=timestamp_ms,
                 )
                 self._tracks[observation.track_id] = track
@@ -386,119 +374,51 @@ class AnalysisSession:
         return tuple(active)
 
     def _release_lost(self, timestamp_ms: float) -> None:
-        """Relâche les identités des pistes silencieuses depuis trop longtemps.
+        """Abandonne les pistes silencieuses depuis trop longtemps.
 
         Parcourt **toutes** les pistes connues, pas seulement les actives : une
         piste qui a cessé d'être rapportée n'apparaît plus dans `active` et ne
-        serait donc jamais relâchée.
+        serait donc jamais abandonnée.
 
-        Le release est daté de `last_seen_ms` — le dernier instant réellement vu —
-        et non de « maintenant ». C'est ce qui préserve le budget de déplacement de
-        la ré-identification (piège 14 de prompt/13).
+        Deux effets, et le second est le plus important : la mémoire est bornée, et
+        l'identifiant de piste est **rendu au tracker**. Ultralytics réactive une
+        piste perdue avec son propre identifiant tant qu'elle tient dans
+        `track_buffer` (75 images ≈ 2,5 s, le miroir exact de `max_lost_ms`) ; au
+        delà, un identifiant qui réapparaît désigne un autre objet, et lui rendre
+        l'ancien numéro fusionnerait deux véhicules.
+
+        Le véhicule, lui, n'est pas oublié : son numéro, son type voté et son
+        agrégat restent, parce que le registre les republie à la fin.
         """
-        lost: list[int] = []
-        for track_id, track in self._tracks.items():
-            if timestamp_ms - track.last_seen_ms <= self._config.max_lost_ms:
-                continue
-            lost.append(track_id)
-            if track.global_id != 0:
-                self._gallery.release(track.global_id, track.last_seen_ms, track.centroid)
-                self._released_ids.add(track.global_id)
-                # On retient quelle identité portait cet id de piste : BoT-SORT
-                # peut ressusciter le même id pour le même véhicule, et c'est une
-                # récupération plus fiable qu'un appariement d'apparence.
-                self._identity_of_lost_track[track_id] = (track.global_id, track.last_seen_ms)
+        lost = [
+            track_id
+            for track_id, track in self._tracks.items()
+            if timestamp_ms - track.last_seen_ms > self._config.max_lost_ms
+        ]
         for track_id in lost:
             del self._tracks[track_id]
+            self._numbering.forget(track_id)
 
-        # Purge de la mémoire des ids perdus, pour la borner sur un clip long.
-        # Ce n'est **pas** ce qui garantit la fraîcheur d'une récupération :
-        # `_advance_tracks` s'exécute avant cette méthode, donc la vérification
-        # d'âge doit avoir lieu au moment de la reprise, dans `_recover_identity`.
-        expired = [
-            track_id
-            for track_id, (_, last_seen) in self._identity_of_lost_track.items()
-            if timestamp_ms - last_seen > self._config.reid.max_gap_ms
-        ]
-        for track_id in expired:
-            del self._identity_of_lost_track[track_id]
+    def _number_tracks(self, active: Sequence[SessionTrack]) -> None:
+        """Numérote les pistes, vote leur type, et confirme celles qui le méritent.
 
-    def _recover_identity(self, track_id: int, timestamp_ms: float) -> int:
-        """Identité que cet id de piste portait avant d'être perdu, ou `0`.
+        Tout ce qui reste de l'ancien `_resolve_identities` : plus de descripteur
+        d'apparence calculé par image, plus d'appariement, plus d'accès aux pixels.
 
-        BoT-SORT réutilise ses identifiants : quand le même id revient peu après
-        avoir été perdu, c'est le même véhicule. Cette récupération est **plus
-        fiable** qu'un appariement d'apparence — un véhicule à contre-jour ou trop
-        petit peut ne produire aucune signature exploitable, et deviendrait alors
-        un véhicule de plus.
-
-        Au-delà de la fenêtre d'appariement de la galerie, en revanche, un id
-        réutilisé désigne presque sûrement un **autre** véhicule : le rattacher
-        fusionnerait deux véhicules distincts, ce qui est l'erreur la plus
-        difficile à remarquer — le total baisse sans raison visible à l'écran.
+        **Le numéro est émis dès la première image**, avant toute confirmation. Une
+        piste sans numéro n'aurait pas d'agrégat, donc ni `first_seen_ms` juste, ni
+        vote de plaque sur sa première lecture. Ce qui attend la confirmation, c'est
+        l'entrée dans le **comptage** — deux gestes distincts, voir `TrackNumbering`.
         """
-        previous = self._identity_of_lost_track.pop(track_id, None)
-        if previous is None:
-            return 0
-        global_id, last_seen_ms = previous
-        if timestamp_ms - last_seen_ms > self._config.reid.max_gap_ms:
-            return 0
-        return global_id
-
-    def _resolve_identities(
-        self,
-        active: Sequence[SessionTrack],
-        image: npt.NDArray[np.uint8],
-        timestamp_ms: float,
-    ) -> None:
-        """Attribue, retrouve ou entretient l'identité de chaque piste active."""
-        candidates: list[ReidCandidate] = []
         for track in active:
             if track.global_id == 0:
-                candidates.append(
-                    ReidCandidate(
-                        track_id=track.track_id,
-                        class_id=track.class_id,
-                        label=track.label,
-                        centroid=track.centroid,
-                        signature=build_signature(image, track.box),
-                    )
+                track.global_id = self._numbering.assign(
+                    track.track_id, track.class_id, track.label
                 )
-                continue
-
-            # Récupération par id : BoT-SORT peut ressusciter un id de piste dont
-            # l'identité venait d'être relâchée. C'est une vraie ré-identification.
-            if track.global_id in self._released_ids:
-                if self._gallery.reacquire(
-                    track.global_id, track.track_id, timestamp_ms, track.centroid
-                ):
-                    track.reid_count = self._gallery.reid_count_of(track.global_id)
-                self._released_ids.discard(track.global_id)
-
-            self._gallery.vote(track.global_id, track.class_id, track.label)
-            track.identity_label = self._gallery.label_of(track.global_id)
-
-            # Rafraîchissement d'apparence une frame sur N : plusieurs points de
-            # vue par identité, à coût maîtrisé.
-            if self._frame_index % self._config.reid.refresh_every_frames == 0:
-                signature = build_signature(image, track.box)
-                if signature is not None:
-                    self._gallery.refresh(track.global_id, signature)
-
-        if not candidates:
-            return
-
-        admissions = self._gallery.admit_batch(candidates, timestamp_ms, self._frame_diagonal)
-        by_track = {admission.track_id: admission for admission in admissions}
-        for track in active:
-            admission = by_track.get(track.track_id)
-            if admission is None:
-                continue
-            track.global_id = admission.global_id
-            track.reid_count = self._gallery.reid_count_of(admission.global_id)
-            self._gallery.vote(track.global_id, track.class_id, track.label)
-            track.identity_label = self._gallery.label_of(track.global_id)
-            self._released_ids.discard(track.global_id)
+            self._numbering.vote(track.global_id, track.class_id, track.label)
+            if track.hits >= self._config.min_hits:
+                self._numbering.confirm(track.global_id)
+            track.identity_label = self._numbering.label_of(track.global_id)
 
     def _mirror_plate_text(self, active: Sequence[SessionTrack]) -> None:
         """Recopie le texte voté de chaque identité sur sa piste vivante.
@@ -529,13 +449,13 @@ class AnalysisSession:
         crossings: Sequence[CrossingEvent],
         timestamp_ms: float,
     ) -> None:
-        """Tient à jour l'histoire de chaque identité, pour le registre."""
+        """Tient à jour l'histoire de chaque véhicule, pour le registre."""
         for track in active:
             if track.global_id == 0:
                 continue
             aggregate = self._aggregates.get(track.global_id)
             if aggregate is None:
-                self._aggregates[track.global_id] = _IdentityAggregate(
+                self._aggregates[track.global_id] = _VehicleAggregate(
                     first_seen_ms=timestamp_ms, last_seen_ms=timestamp_ms
                 )
             else:
@@ -668,8 +588,8 @@ class AnalysisSession:
         confirmed = sum(1 for track in self._tracks.values() if track.hits >= self._config.min_hits)
 
         return AnalysisStats(
-            unique_vehicles=self._gallery.size,
-            unique_by_class=self._gallery.count_by_class(),
+            tracked_vehicles=self._numbering.size,
+            tracked_by_class=self._numbering.count_by_class(),
             crossings=crossings,
             # La **même** source que le badge ✓ de l'overlay, et c'est voulu : le
             # taux de franchissement et le badge répondent à la même question — « ce
@@ -682,7 +602,6 @@ class AnalysisSession:
             by_zone={
                 zone_id: _copy_zone_tally(tally) for zone_id, tally in self._zones.by_zone.items()
             },
-            reid_hits=self._gallery.hits,
             vehicles_per_minute=vehicles_per_minute,
             active_tracks=len(self._tracks),
             # Côté serveur, le temps « écoulé » **est** le temps de scène analysé :
@@ -699,17 +618,32 @@ class AnalysisSession:
                 contained_out=self._contained_out,
                 confirmed_tracks=confirmed,
                 tentative_tracks=len(self._tracks) - confirmed,
+                # Les pistes **encore vivantes** sont exclues : une piste qui
+                # approche de la ligne à l'instant où l'on publie n'a rien manqué,
+                # elle n'a pas fini. C'est `self._tracks` qui fait foi — une piste
+                # en sort quand `_release_lost` l'abandonne, ce qui est exactement
+                # l'instant où « elle s'est éteinte là » devient vrai.
+                near_misses=self._counter.near_misses(ignore=self._tracks.keys()),
             ),
         )
 
     def vehicles(self) -> tuple[VehicleRecord, ...]:
-        """Le registre : une ligne par identité, triée par `global_id`.
+        """Le registre : une ligne par véhicule **compté**, triée par numéro.
 
         Les cartes de synthèse disent *combien*, le registre dit *lesquels*. C'est
-        ce qui rend un total vérifiable plutôt que croyable.
+        ce qui rend un total vérifiable plutôt que croyable — et depuis ADR 0016 la
+        vérification est immédiate : `len(vehicles()) == stats().tracked_vehicles`,
+        parce que les deux filtrent sur la même confirmation.
+
+        Les numéros ont donc des trous, et c'est voulu : une piste d'une seule image
+        a bien reçu un numéro — il lui fallait un agrégat pour voter sa plaque — mais
+        elle n'est pas un véhicule. La publier remplirait le registre de fantômes que
+        rien à l'écran ne justifierait.
         """
         records: list[VehicleRecord] = []
         for global_id in sorted(self._aggregates):
+            if not self._numbering.is_confirmed(global_id):
+                continue
             aggregate = self._aggregates[global_id]
             average = self._speed.average_px_s(global_id)
             reason = (
@@ -731,12 +665,11 @@ class AnalysisSession:
                 VehicleRecord(
                     global_id=global_id,
                     # Le libellé du **vote**, pas la dernière lecture.
-                    label=self._gallery.label_of(global_id),
+                    label=self._numbering.label_of(global_id),
                     first_seen_ms=aggregate.first_seen_ms,
                     last_seen_ms=aggregate.last_seen_ms,
                     crossed_lines=tuple(aggregate.crossings),
                     zones_visited=self._zones.zones_visited(global_id),
-                    reid_count=self._gallery.reid_count_of(global_id),
                     avg_speed_px_s=average,
                     avg_speed_kmh=to_kmh(average, self._config.pixels_per_meter),
                     best_plate_score=aggregate.best_plate_score,

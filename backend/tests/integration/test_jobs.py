@@ -181,10 +181,14 @@ class TestExecutionEtResultat:
         stats = payload["stats"]
         assert stats["crossings"] == sum(line["total"] for line in stats["byLine"].values())
         for line in stats["byLine"].values():
-            assert (
-                line["total"] == line["byDirection"]["positive"] + line["byDirection"]["negative"]
-            )
-        assert sum(stats["uniqueByClass"].values()) == stats["uniqueVehicles"]
+            positive = line["byDirection"]["positive"]
+            negative = line["byDirection"]["negative"]
+            assert line["total"] == positive["total"] + negative["total"]
+            # Chaque sens porte sa propre ventilation par type, et elle somme à son
+            # total : c'est la matrice type × sens que l'écran affiche.
+            assert sum(positive["byClass"].values()) == positive["total"]
+            assert sum(negative["byClass"].values()) == negative["total"]
+        assert sum(stats["trackedByClass"].values()) == stats["trackedVehicles"]
 
     async def test_le_resultat_est_refuse_tant_que_le_job_n_est_pas_termine(
         self, client: AsyncClient
@@ -247,14 +251,14 @@ class TestExecutionEtResultat:
         job_id = created["body"]["jobId"]
         final = await _wait_until_done(client, job_id)
 
-        assert "uniqueVehicles" in final
+        assert "trackedVehicles" in final
         assert "crossingsTotal" in final
 
         listed = (await client.get("/api/v1/jobs")).json()
         row = next(item for item in listed["items"] if item["jobId"] == job_id)
         # La liste et le détail parlent des mêmes chiffres : deux sources qui
         # diffèrent seraient pires que pas de chiffres du tout.
-        assert row["uniqueVehicles"] == final["uniqueVehicles"]
+        assert row["trackedVehicles"] == final["trackedVehicles"]
         assert row["crossingsTotal"] == final["crossingsTotal"]
 
 
@@ -500,7 +504,7 @@ class TestApercuSse:
         assert {"trackId", "globalId", "box", "counted", "identityLabel"} <= set(
             apercu["tracks"][0]
         )
-        assert "uniqueVehicles" in apercu["stats"]
+        assert "trackedVehicles" in apercu["stats"]
 
 
 class TestAnnulationEtHistorique:
@@ -617,3 +621,71 @@ class TestConfigurationDUnJob:
 
         assert response.status_code == 404
         assert response.json()["code"] == "job_not_found"
+
+    async def test_les_noms_et_roles_de_sens_font_l_aller_retour(self, client: AsyncClient) -> None:
+        """C'est ce qui les rend persistants **sans colonne dédiée**.
+
+        Les noms de sens ne servent à aucun calcul : le serveur les accepte, les
+        range dans `config_json` et les rend tels quels. C'est cette route qui les
+        ramène quand le studio recharge un job depuis l'historique — sans elle, un
+        résultat archivé afficherait « ↑ 12 · ↓ 8 » sans dire de quels sens il parle.
+        """
+        nommee = {
+            **LINE,
+            "positiveName": "Entrée rue Foch",
+            "negativeName": "Sortie rue Foch",
+            "positiveRole": "entry",
+            "negativeRole": "exit",
+        }
+        created = await _post_job(client, lines=[nommee])
+        job_id = created["body"]["jobId"]
+
+        line = (await client.get(f"/api/v1/jobs/{job_id}/config")).json()["configJson"]["lines"][0]
+
+        assert line["positiveName"] == "Entrée rue Foch"
+        assert line["negativeName"] == "Sortie rue Foch"
+        assert line["positiveRole"] == "entry"
+        assert line["negativeRole"] == "exit"
+
+    async def test_une_ligne_sans_nom_de_sens_est_acceptee(self, client: AsyncClient) -> None:
+        """La chaîne vide **est** le défaut, et elle a un sens précis.
+
+        Elle demande à l'interface de poser son libellé géométrique, recalculé quand
+        la ligne bouge. Écrire un défaut côté serveur le figerait à l'orientation
+        qu'avait la ligne au moment de l'envoi.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+
+        line = (await client.get(f"/api/v1/jobs/{job_id}/config")).json()["configJson"]["lines"][0]
+
+        assert line["positiveName"] == ""
+        assert line["negativeName"] == ""
+        assert line["positiveRole"] == "neutral"
+        assert line["negativeRole"] == "neutral"
+
+    async def test_un_role_hors_vocabulaire_est_refuse(self, client: AsyncClient) -> None:
+        """422 plutôt qu'un repli silencieux sur `neutral`.
+
+        Un rôle inventé accepté en silence retirerait des passages des totaux
+        d'entrées et de sorties sans que rien ne l'explique — et c'est exactement le
+        genre de dérive muette que ce dépôt paye le plus cher.
+        """
+        response = await client.post(
+            "/api/v1/jobs",
+            files={"file": ("carrefour.mp4", _video_bytes(), "video/mp4")},
+            data={"request": _request(lines=[{**LINE, "positiveRole": "peut-etre"}])},
+        )
+
+        assert response.status_code == 422
+
+    async def test_un_nom_de_sens_trop_long_est_refuse(self, client: AsyncClient) -> None:
+        """60 caractères : deux libellés doivent tenir de part et d'autre d'un trait
+        sur la vidéo, pas dans une colonne de tableau."""
+        response = await client.post(
+            "/api/v1/jobs",
+            files={"file": ("carrefour.mp4", _video_bytes(), "video/mp4")},
+            data={"request": _request(lines=[{**LINE, "positiveName": "x" * 61}])},
+        )
+
+        assert response.status_code == 422

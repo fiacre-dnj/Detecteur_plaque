@@ -12,8 +12,6 @@ véhicule — est bien pire : sous-compter est la panne la plus difficile à rem
 
 from __future__ import annotations
 
-import numpy as np
-
 from tests.support.builders import CAR, TRUCK, make_line, track_path
 from traffic_analysis.features.counting.domain.models import BoundingBox, TrackObservation
 from traffic_analysis.features.counting.domain.tracking_session import (
@@ -87,10 +85,6 @@ def _session(**overrides: object) -> AnalysisSession:
     return AnalysisSession(config, FRAME_WIDTH, FRAME_HEIGHT)
 
 
-def _blank() -> np.ndarray:
-    return np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
-
-
 def _observation(track_id: int, box: BoundingBox, class_id: int = TRUCK) -> TrackObservation:
     return TrackObservation(
         track_id=track_id,
@@ -108,7 +102,7 @@ class TestSuppressionDansLaSession:
         whole = _observation(1, BoundingBox(100.0, 400.0, 400.0, 200.0))
         cabin = _observation(2, BoundingBox(120.0, 420.0, 100.0, 100.0))
 
-        outcome = session.feed(0, 0.0, _blank(), [whole, cabin])
+        outcome = session.feed(0, 0.0, [whole, cabin])
 
         assert len(outcome.tracks) == 1
         assert outcome.tracks[0].track_id == 1
@@ -122,7 +116,7 @@ class TestSuppressionDansLaSession:
         large = _observation(9, BoundingBox(100.0, 400.0, 400.0, 200.0))
 
         # Ordre inversé : la plus petite est présentée en premier.
-        outcome = session.feed(0, 0.0, _blank(), [small, large])
+        outcome = session.feed(0, 0.0, [small, large])
 
         assert [track.track_id for track in outcome.tracks] == [9]
 
@@ -139,7 +133,7 @@ class TestSuppressionDansLaSession:
         car = _observation(2, BoundingBox(420.0, 420.0, 100.0, 100.0), class_id=CAR)
         assert truck.box.containment(car.box) < CONTAINMENT_THRESHOLD
 
-        outcome = session.feed(0, 0.0, _blank(), [truck, car])
+        outcome = session.feed(0, 0.0, [truck, car])
 
         assert len(outcome.tracks) == 2
 
@@ -148,16 +142,14 @@ class TestSuppressionDansLaSession:
         left = _observation(1, BoundingBox(100.0, 400.0, 120.0, 80.0))
         right = _observation(2, BoundingBox(300.0, 400.0, 120.0, 80.0))
 
-        outcome = session.feed(0, 0.0, _blank(), [left, right])
+        outcome = session.feed(0, 0.0, [left, right])
 
         assert len(outcome.tracks) == 2
 
     def test_une_seule_detection_traverse_sans_traitement(self) -> None:
         session = _session()
 
-        outcome = session.feed(
-            0, 0.0, _blank(), [_observation(1, BoundingBox(0.0, 0.0, 80.0, 60.0))]
-        )
+        outcome = session.feed(0, 0.0, [_observation(1, BoundingBox(0.0, 0.0, 80.0, 60.0))])
 
         assert len(outcome.tracks) == 1
 
@@ -172,7 +164,7 @@ class TestSuppressionDansLaSession:
         cabin = track_path(2, TRUCK, [(900.0, 500.0), (1020.0, 500.0)], box_size=(100.0, 100.0))
 
         for index, (big, small) in enumerate(zip(whole, cabin, strict=True)):
-            session.feed(index, index * FRAME_MS, _blank(), [big, small])
+            session.feed(index, index * FRAME_MS, [big, small])
 
         assert session.stats().crossings == 1
 
@@ -183,13 +175,13 @@ class TestSuppressionDansLaSession:
         whole = _observation(1, BoundingBox(100.0, 400.0, 400.0, 200.0))
         cabin = _observation(2, BoundingBox(120.0, 420.0, 100.0, 100.0))
 
-        session.feed(0, 0.0, _blank(), [whole, cabin])
+        session.feed(0, 0.0, [whole, cabin])
 
         assert session.stats().diagnostics.contained_out == 1
 
     def test_aucune_suppression_laisse_le_compteur_a_zero(self) -> None:
         session = _session()
 
-        session.feed(0, 0.0, _blank(), [_observation(1, BoundingBox(0.0, 0.0, 80.0, 60.0))])
+        session.feed(0, 0.0, [_observation(1, BoundingBox(0.0, 0.0, 80.0, 60.0))])
 
         assert session.stats().diagnostics.contained_out == 0

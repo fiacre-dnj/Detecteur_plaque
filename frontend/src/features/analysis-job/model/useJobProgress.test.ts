@@ -29,7 +29,7 @@ function job(status: JobStatus, progress: number, jobId = "j1"): Job {
     fileName: "carrefour.mp4",
     // Zéro et non un chiffre plausible : les agrégats sont écrits en une fois à la
     // fin, donc une trame de progression les porte bien à zéro.
-    uniqueVehicles: 0,
+    trackedVehicles: 0,
     crossingsTotal: 0,
     createdAt: "2026-08-05T10:00:00+00:00",
     finishedAt: null,

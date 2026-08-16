@@ -26,12 +26,19 @@ from traffic_analysis.features.counting.domain.models import (
 )
 
 # Identifiants COCO, nommés pour que les scénarios se lisent.
+PERSON = 0
 CAR = 2
 MOTORCYCLE = 3
 BUS = 5
 TRUCK = 7
 
-CLASS_LABELS: dict[int, str] = {CAR: "car", MOTORCYCLE: "motorcycle", BUS: "bus", TRUCK: "truck"}
+CLASS_LABELS: dict[int, str] = {
+    PERSON: "person",
+    CAR: "car",
+    MOTORCYCLE: "motorcycle",
+    BUS: "bus",
+    TRUCK: "truck",
+}
 
 type XY = tuple[float, float]
 
@@ -131,7 +138,6 @@ def session_track(
     *,
     hits: int = 5,
     global_id: int = 1,
-    reid_count: int = 0,
     previous: XY | None = None,
     identity_label: str = "",
 ) -> SessionTrack:
@@ -139,15 +145,11 @@ def session_track(
 
     Les tests des compteurs isolent volontairement le comptage du suivi : ils
     fixent `hits`, `global_id` et le centroïde précédent à la main, ce qui rend
-    chaque scénario indépendant de la logique d'identité.
+    chaque scénario indépendant de la numérotation.
 
-    `hits=5` et `global_id=1` par défaut : la piste est confirmée et identifiée,
+    `hits=5` et `global_id=1` par défaut : la piste est confirmée et numérotée,
     donc le compteur peut compter. Un scénario qui teste la montée en confiance
     passe explicitement `hits=0`.
-
-    `reid_count` est la **génération** de l'identité, ce que le compteur lit pour
-    savoir s'il doit se ré-armer. Le passer à la main est ce qui permet de tester
-    le recomptage après ré-identification sans monter une galerie.
     """
     return SessionTrack(
         track_id=observation.track_id,
@@ -159,6 +161,5 @@ def session_track(
         previous_centroid=Point(*previous) if previous else None,
         hits=hits,
         global_id=global_id,
-        reid_count=reid_count,
         identity_label=identity_label,
     )

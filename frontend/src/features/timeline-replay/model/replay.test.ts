@@ -93,7 +93,7 @@ describe("statsAt — les compteurs suivent la tête de lecture", () => {
     const stats = statsAt(result, -1);
 
     expect(stats.crossings).toBe(0);
-    expect(stats.uniqueVehicles).toBe(0);
+    expect(stats.trackedVehicles).toBe(0);
   });
 
   it("atteint les totaux du serveur à la fin", () => {
@@ -103,7 +103,7 @@ describe("statsAt — les compteurs suivent la tête de lecture", () => {
     const stats = statsAt(result, result.video.durationMs + 1000);
 
     expect(stats.crossings).toBe(result.stats.crossings);
-    expect(stats.uniqueVehicles).toBe(result.stats.uniqueVehicles);
+    expect(stats.trackedVehicles).toBe(result.stats.trackedVehicles);
   });
 
   it("**fait baisser les compteurs quand on recule**", () => {
@@ -139,7 +139,9 @@ describe("statsAt — les compteurs suivent la tête de lecture", () => {
   it("respecte total === positive + negative à tout instant", () => {
     for (let timeMs = 0; timeMs <= result.video.durationMs; timeMs += 80) {
       for (const tally of Object.values(statsAt(result, timeMs).byLine)) {
-        expect(tally.byDirection.positive + tally.byDirection.negative).toBe(tally.total);
+        expect(tally.byDirection.positive.total + tally.byDirection.negative.total).toBe(
+          tally.total,
+        );
       }
     }
   });
@@ -148,8 +150,8 @@ describe("statsAt — les compteurs suivent la tête de lecture", () => {
     // Compter tout le registre afficherait le total final dès la première seconde.
     const first = Math.min(...result.vehicles.map((vehicle) => vehicle.firstSeenMs));
 
-    expect(statsAt(result, first - 1).uniqueVehicles).toBe(0);
-    expect(statsAt(result, first).uniqueVehicles).toBeGreaterThan(0);
+    expect(statsAt(result, first - 1).trackedVehicles).toBe(0);
+    expect(statsAt(result, first).trackedVehicles).toBeGreaterThan(0);
   });
 
   it("conserve les diagnostics, qui décrivent l'analyse entière", () => {
@@ -158,13 +160,13 @@ describe("statsAt — les compteurs suivent la tête de lecture", () => {
     expect(statsAt(result, 0).diagnostics).toEqual(result.stats.diagnostics);
   });
 
-  it("borne crossedUnique par uniqueVehicles à tout instant", () => {
+  it("borne crossedUnique par trackedVehicles à tout instant", () => {
     // L'inégalité qui fait du taux de franchissement un pourcentage : on ne peut
     // pas avoir franchi sans avoir été vu. Elle ne tenait **pas** avec `crossings`
     // au numérateur — un aller-retour donnait 200 %.
     for (let timeMs = 0; timeMs <= result.video.durationMs; timeMs += 80) {
       const stats = statsAt(result, timeMs);
-      expect(stats.crossedUnique, `t=${timeMs}`).toBeLessThanOrEqual(stats.uniqueVehicles);
+      expect(stats.crossedUnique, `t=${timeMs}`).toBeLessThanOrEqual(stats.trackedVehicles);
       expect(stats.crossedUnique, `t=${timeMs}`).toBeLessThanOrEqual(stats.crossings);
     }
   });
