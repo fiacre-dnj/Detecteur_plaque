@@ -165,3 +165,35 @@ export function directionLabel(direction: number): string {
 export function directionArrow(direction: number): string {
   return direction > 0 ? "↑" : "↓";
 }
+
+/**
+ * La phrase-bilan d'une ligne, dans la section Statistique.
+ *
+ * **« Entrée » veut dire entrer dans le carrefour**, pas dans la rue — la phrase
+ * le dit explicitement (« dans le carrefour par... ») plutôt que de se limiter à
+ * un « X en entrée » qui laisserait deviner le sens du mot.
+ *
+ * `null` signifie qu'un sens est resté `neutral` — une ligne tracée avant ADR
+ * 0021, où le rôle est devenu obligatoire. Omettre cette moitié de la phrase
+ * plutôt qu'inventer un chiffre : la logique déjà pratiquée par
+ * `flowBalance.declared` dans `directions.ts`.
+ */
+export function crossroadFlowSentence(
+  lineName: string,
+  entries: number | null,
+  exits: number | null,
+): string {
+  if (entries === null && exits === null) {
+    return `Le rôle des sens de « ${lineName} » n'est pas déclaré.`;
+  }
+  if (exits === null) {
+    return `${plural(entries ?? 0, "véhicule est entré", "véhicules sont entrés")} dans le carrefour par « ${lineName} ».`;
+  }
+  if (entries === null) {
+    return `${plural(exits, "véhicule est ressorti", "véhicules sont ressortis")} du carrefour par « ${lineName} ».`;
+  }
+  return (
+    `${plural(entries, "véhicule est entré", "véhicules sont entrés")} dans le carrefour ` +
+    `par « ${lineName} », ${plural(exits, "en est ressorti", "en sont ressortis")}.`
+  );
+}

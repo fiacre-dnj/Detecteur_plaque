@@ -3,16 +3,28 @@
 export {
   type DirectionRow,
   type FlowBalance,
-  type Movement,
   directionRows,
   flowBalance,
-  movements,
+  isEntryRow,
 } from "./model/directions";
+
+export { entriesByClass } from "./model/entriesByClass";
+
+export {
+  type LineHighlight,
+  busiestLine,
+  busiestVsQuietestShareGap,
+  mostEnteredLine,
+  mostExitedLine,
+  strongestInflowLine,
+  strongestOutflowLine,
+} from "./model/highlights";
 
 export {
   VEHICLE_CLASSES,
   classLabel,
   crossingRate,
+  crossroadFlowSentence,
   directionArrow,
   directionLabel,
   formatCrossingRate,
@@ -24,9 +36,8 @@ export {
   type VehicleClass,
 } from "./model/labels";
 
-export {
-  ClassBreakdown,
-  LineAndZoneDetail,
-  MovementMatrix,
-  ResultsDashboard,
-} from "./ui/ResultsDashboard";
+export { ClassEntriesChart } from "./ui/ClassEntriesChart";
+export { ClassEntriesGrid } from "./ui/ClassEntriesGrid";
+export { LineFlowChart } from "./ui/LineFlowChart";
+export { LineFlowDashboard } from "./ui/LineFlowDashboard";
+export { ResultsDashboard } from "./ui/ResultsDashboard";
