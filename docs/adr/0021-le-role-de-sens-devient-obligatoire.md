@@ -48,7 +48,7 @@ premier choix explique déjà entièrement.
 `neutral` ne bascule rien : il n'est plus atteignable depuis le panneau, et il
 n'a pas d'opposé à imposer à une ligne héritée qui le porte encore.
 
-## Décision — les flèches suivent l'angle réel de la ligne
+## Décision — les flèches suivent l'angle réel de la ligne, exactement
 
 Le préfixe du libellé de sens (canvas) et le repère à côté de chaque menu
 (panneau) étaient des glyphes **figés** — « → »/« ← » sur le canvas, « ↑ »/« ↓ »
@@ -57,12 +57,33 @@ inversés, juste à côté) pour toute ligne tracée en diagonale. Une flèche
 légèrement fausse se remarque moins qu'une flèche inversée, donc se corrige
 moins vite.
 
-`shared/lib/geometry.ts:compassArrow` arrondit un vecteur à la plus proche des
-huit flèches cardinales unicode (`→ ↘ ↓ ↙ ← ↖ ↑ ↗`), au lieu d'un angle continu
-qu'aucun glyphe ne peut représenter et qu'un texte peint sur un `<canvas>` ne
-peut pas faire pivoter en CSS. Les deux appelants lui passent le normal réel de
-la ligne (`positiveNormal`, son opposé pour le sens négatif) plutôt qu'une paire
-de constantes.
+Une première version arrondissait un vecteur à la plus proche des huit flèches
+cardinales unicode (`→ ↘ ↓ ↙ ← ↖ ↑ ↗`) — mieux que deux glyphes figés, mais
+encore une approximation au huitième de tour : une ligne à 40° affichait la
+flèche de 45°, *presque* perpendiculaire, jamais exactement. **Revenu en
+arrière au profit d'un vecteur**, dans les deux affichages :
+
+- sur le canvas, `drawArrowGlyph` peint un petit trait et sa pointe à l'angle
+  exact du normal — la même silhouette que la flèche déjà posée sur le trait
+  lui-même (`drawLine`), qui n'a jamais été un glyphe. Le préfixe textuel a
+  disparu du libellé (`directionText`) ; `LabelPlacement.arrow` porte le
+  vecteur à peindre, `ARROW_RESERVED_WIDTH` réserve sa place ;
+- dans le panneau, `arrowRotationDeg` calcule l'angle CSS exact et pivote une
+  icône `ArrowUp` (`transform: rotate()`) — un SVG pivote à n'importe quel
+  angle, contrairement à un caractère peint sur un `<canvas>` ou à un glyphe
+  unicode.
+
+Les deux passent le normal réel de la ligne (`positiveNormal`, son opposé pour
+le sens négatif), jamais une paire de constantes.
+
+## Décision — plus d'icône de rôle, la flèche suffit
+
+Une icône (`LogIn`/`LogOut`) a un temps accompagné chaque rangée du panneau, en
+plus de la flèche et du mot. Retirée : la flèche distingue déjà les deux
+rangées sans ambiguïté une fois qu'elle pointe au bon angle, et le mot
+« Entrée »/« Sortie » dit ce qu'elle signifie — une troisième représentation du
+même fait n'ajoutait qu'une convention de plus à retenir (« laquelle des deux
+icônes veut dire quoi ? »), pas une information.
 
 ## Essayé puis abandonné — les libellés de sens à l'extrémité opposée au nom
 
@@ -100,6 +121,26 @@ zones, les trajectoires ni les boîtes des véhicules : c'est une question de
 confort de lecture sur un texte qu'on n'a plus besoin de vérifier pendant que ça
 tourne, pas un jugement sur l'importance relative des couches.
 
+## Décision — un bouton d'inversion remplace les deux menus déroulants
+
+Le `<select>` par sens a été retiré à son tour, au profit d'un seul bouton
+(`ArrowUpDown`) qui **inverse** la paire. La mutualité déjà en place
+(« bascule automatiquement l'autre à l'opposé », ci-dessus) rendait le second
+menu redondant dès qu'on touchait au premier : deux menus à faire correspondre
+l'un à l'autre à l'œil pour une paire qui n'a jamais que deux états possibles
+— « positif entrée, négatif sortie » ou l'inverse.
+
+Chaque sens s'affiche désormais en **lecture seule** — flèche réelle du tracé,
+icône (`LogIn`/`LogOut`) et libellé — et le bouton agit sur la paire entière en
+un geste. Techniquement, il ne fait qu'appeler `onSetDirectionRole` avec le
+rôle actuel de l'autre sens : la mutuelle exclusivité du reducer fait le reste,
+aucune nouvelle action n'a été nécessaire.
+
+Une ligne héritée dont un sens est resté `neutral` n'a rien à inverser : le
+bouton lui pose alors la paire par défaut (`entry`/`exit`) plutôt que de
+deviner un bilan que personne n'a demandé — le même principe que la paire par
+défaut d'une ligne fraîchement tracée, plus haut dans cette ADR.
+
 ## Ce qui ne change pas
 
 - **Le champ `positiveName`/`negativeName` du contrat reste.** Le retirer
@@ -111,8 +152,9 @@ tourne, pas un jugement sur l'importance relative des couches.
   contrat.** Une ligne tracée avant ce changement peut encore le porter, et
   `withDirectionDefaults` continue d'y retomber pour un champ **manquant** —
   deviner entrée ou sortie à sa place fausserait un bilan que personne n'a
-  demandé. Le panneau affiche alors une option masquée « à préciser » qui force
-  un choix explicite au premier contact, plutôt qu'un défaut silencieux.
+  demandé. Le panneau affiche alors « à préciser » le temps qu'on la touche, et
+  le bouton d'inversion lui pose la paire par défaut au premier clic plutôt que
+  de la deviner tout seul.
 - **Aucun compteur ne change.** Comme pour ADR 0016, le rôle ne traverse jamais
   le domaine de comptage — il vit dans `config_json` et n'est agrégé que côté
   client (`features/results-dashboard/model/directions.ts`).
@@ -121,13 +163,20 @@ tourne, pas un jugement sur l'importance relative des couches.
 
 - Une ligne fraîchement tracée contribue tout de suite au bilan entrées/sorties
   (`flowBalance.declared === true`), sans geste supplémentaire.
-- Le panneau perd un champ de texte par sens et un groupe de trois boutons, au
-  profit d'un seul `<select>` — moins large, plus rapide à lire.
+- Le panneau perd un champ de texte par sens, un groupe de trois boutons puis
+  deux menus déroulants, au profit de deux rangées de lecture et **un** bouton
+  d'inversion — moins large, plus rapide à lire, un seul geste pour un résultat
+  toujours cohérent.
 - Choisir un sens configure toujours **les deux** côtés de la ligne d'un seul
   geste — jamais deux menus à renseigner pour un résultat cohérent.
-- Une ligne tracée en diagonale montre une flèche qui pointe réellement où elle
-  va, sur le canvas comme dans le panneau — jusqu'ici une diagonale se lisait
-  sous un « → » ou un « ↑ » qui mentait un peu.
+- Une ligne tracée en diagonale montre une flèche qui pointe **exactement** où
+  elle va, sur le canvas comme dans le panneau — jusqu'ici une diagonale se
+  lisait d'abord sous un « → » ou un « ↑ » qui mentait un peu, puis sous une
+  flèche arrondie au huitième de tour le plus proche, presque juste.
+- Le panneau perd son icône de rôle et la phrase « Entrée ou sortie : c'est ce
+  qui donne le bilan du carrefour dans les résultats » sous les deux rangées :
+  une flèche exacte et un mot suffisent, l'un et l'autre étaient devenus
+  redondants.
 - Pendant une analyse, l'écran se lit d'abord par ses boîtes et ses compteurs ;
   la géométrie reste visible, estompée, pour qui veut vérifier qu'une ligne est
   toujours à sa place sans qu'elle dispute l'attention aux pistes.

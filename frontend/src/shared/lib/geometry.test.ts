@@ -16,9 +16,9 @@ import { describe, expect, it } from "bun:test";
 
 import type { Point } from "@/shared/api/contracts";
 import {
+  arrowRotationDeg,
   boxCentroid,
   clampToSource,
-  compassArrow,
   distance,
   distanceToSegment,
   midpoint,
@@ -189,34 +189,32 @@ describe("utilitaires de dessin", () => {
   });
 });
 
-describe("compassArrow — la flèche suit le tracé, pas un axe figé", () => {
-  it("rend les quatre flèches cardinales", () => {
-    expect(compassArrow({ x: 1, y: 0 })).toBe("→");
-    // `y` croît vers le bas dans le repère du canvas et de la vidéo.
-    expect(compassArrow({ x: 0, y: 1 })).toBe("↓");
-    expect(compassArrow({ x: -1, y: 0 })).toBe("←");
-    expect(compassArrow({ x: 0, y: -1 })).toBe("↑");
+describe("arrowRotationDeg — la flèche pivote à l'angle exact, pas au 45° le plus proche", () => {
+  it("ne tourne pas une icône déjà orientée vers le haut", () => {
+    expect(arrowRotationDeg({ x: 0, y: -1 })).toBeCloseTo(0);
   });
 
-  it("rend les quatre diagonales", () => {
-    expect(compassArrow({ x: 1, y: 1 })).toBe("↘");
-    expect(compassArrow({ x: -1, y: 1 })).toBe("↙");
-    expect(compassArrow({ x: -1, y: -1 })).toBe("↖");
-    expect(compassArrow({ x: 1, y: -1 })).toBe("↗");
+  it("tourne les trois autres cardinaux de 90° en 90°, dans le sens horaire", () => {
+    // `y` croît vers le bas dans le repère du canvas et de la vidéo — comme
+    // `transform: rotate()` en CSS, une rotation positive est horaire.
+    expect(arrowRotationDeg({ x: 1, y: 0 })).toBeCloseTo(90);
+    expect(arrowRotationDeg({ x: 0, y: 1 })).toBeCloseTo(180);
+    expect(arrowRotationDeg({ x: -1, y: 0 })).toBeCloseTo(-90);
   });
 
-  it("arrondit au huitième de tour le plus proche", () => {
-    // 40° : plus près de 45° (↘) que de 0° (→).
-    const radians = (40 * Math.PI) / 180;
-    expect(compassArrow({ x: Math.cos(radians), y: Math.sin(radians) })).toBe("↘");
+  it("**rend l'angle exact, pas arrondi à 45°**", () => {
+    // Le défaut corrigé : un vecteur à 40° tombait sur le glyphe de 45°, une
+    // flèche presque perpendiculaire au trait, jamais exactement. Une icône
+    // pivote à l'angle réel.
+    expect(arrowRotationDeg({ x: Math.sin((40 * Math.PI) / 180), y: -Math.cos((40 * Math.PI) / 180) })).toBeCloseTo(40);
   });
 
   it("ignore la longueur du vecteur, seul l'angle compte", () => {
-    expect(compassArrow({ x: 500, y: 0 })).toBe(compassArrow({ x: 1, y: 0 }));
+    expect(arrowRotationDeg({ x: 500, y: 0 })).toBeCloseTo(arrowRotationDeg({ x: 1, y: 0 }));
   });
 
-  it("rend un glyphe neutre pour un vecteur nul", () => {
+  it("ne tourne pas un vecteur nul", () => {
     // Un segment de longueur nulle n'a pas de direction — pas de flèche fausse.
-    expect(compassArrow({ x: 0, y: 0 })).toBe("•");
+    expect(arrowRotationDeg({ x: 0, y: 0 })).toBe(0);
   });
 });

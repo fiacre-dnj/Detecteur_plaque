@@ -126,33 +126,24 @@ export function positiveNormal(a: Point, b: Point): Point {
 }
 
 /**
- * Les huit flèches cardinales, dans l'ordre des secteurs de 45° à partir de l'est
- * et **dans le sens horaire de l'écran** (`y` croît vers le bas).
+ * Angle de rotation CSS, en degrés, pour pointer une icône dessinée **vers le
+ * haut** (`ArrowUp`) exactement dans la direction d'un vecteur du repère
+ * canvas/vidéo (`x` vers la droite, `y` vers le bas).
+ *
+ * `0°` correspond à un vecteur `(0, -1)` — l'icône est déjà orientée vers le
+ * haut, rien à tourner. La rotation est **horaire**, comme `transform:
+ * rotate()` en CSS et comme un vecteur qui tourne dans un repère où `y`
+ * descend : ce n'est pas un détail, une convention inversée ferait pointer
+ * chaque flèche de sens à l'envers sous un rôle par ailleurs juste.
+ *
+ * Remplace un ancien arrondi aux huit flèches cardinales unicode (`→ ↘ ↓ …`) :
+ * un glyphe ne pivote qu'à 45° près, ce qui rendait la flèche *presque*
+ * perpendiculaire au trait, jamais exactement. Une icône SVG pivote à l'angle
+ * réel — c'est ce qu'exploite `GeometryPanel`.
  */
-const COMPASS_ARROWS = ["→", "↘", "↓", "↙", "←", "↖", "↑", "↗"] as const;
-
-/**
- * La flèche unicode la plus proche d'un vecteur, arrondie au huitième de tour.
- *
- * C'est ce qui fait pointer une flèche de sens dans la **vraie** direction du
- * tracé plutôt qu'un « → »/« ↑ » figé : deux glyphes fixes suffisaient tant que
- * les lignes étaient horizontales ou verticales, mais une ligne tracée en
- * diagonale les rendait faux — pas inversés, juste à côté, ce qui se remarque
- * moins qu'une inversion et se corrige donc moins vite.
- *
- * Huit directions plutôt qu'un angle continu : au-delà, un glyphe unicode
- * n'existe plus, et un texte pivoté par CSS ne s'applique pas à un caractère
- * peint sur un `<canvas>`.
- *
- * `Math.round` plutôt que `Math.floor` : un vecteur à 40° doit tomber sur « ↘ »
- * (45°), pas rester sur « → » (0°) jusqu'à 45° pile.
- */
-export function compassArrow(vector: Point): string {
-  if (vector.x === 0 && vector.y === 0) return "•";
-  const angle = Math.atan2(vector.y, vector.x);
-  const normalised = angle < 0 ? angle + Math.PI * 2 : angle;
-  const sector = Math.round(normalised / (Math.PI / 4)) % COMPASS_ARROWS.length;
-  return COMPASS_ARROWS[sector] ?? "→";
+export function arrowRotationDeg(vector: Point): number {
+  if (vector.x === 0 && vector.y === 0) return 0;
+  return (Math.atan2(vector.x, -vector.y) * 180) / Math.PI;
 }
 
 /**

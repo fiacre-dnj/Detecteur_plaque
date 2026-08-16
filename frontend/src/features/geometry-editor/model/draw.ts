@@ -26,7 +26,7 @@ import type {
 } from "@/shared/api/contracts";
 import { CANVAS, TRAJECTORY_ALPHA, classColor } from "@/shared/config/palettes";
 import { directionName, directionRole } from "@/shared/lib/directions";
-import { compassArrow, midpoint, positiveNormal } from "@/shared/lib/geometry";
+import { midpoint, positiveNormal } from "@/shared/lib/geometry";
 import { bestReadPlate, plateLabel } from "@/shared/lib/plate";
 
 import type { LineFlash } from "./lineFlashes";
@@ -282,6 +282,8 @@ function drawLineLabels(
       size: measureLabel(ctx, line.name),
       emphasis: 0,
       opacity: restingOpacity,
+      // Fixe : le nom n'indique aucun sens, il n'a pas de flèche à porter.
+      arrow: null,
     });
   }
 
@@ -289,9 +291,18 @@ function drawLineLabels(
     const a = toCanvas(view, line.a);
     const b = toCanvas(view, line.b);
     const normal = positiveNormal(a, b);
-    const positive = directionText(line, "positive", normal);
-    const negative = directionText(line, "negative", { x: -normal.x, y: -normal.y });
-    const sizes = { positive: measureLabel(ctx, positive), negative: measureLabel(ctx, negative) };
+    const negatedNormal = { x: -normal.x, y: -normal.y };
+    const positive = directionText(line, "positive");
+    const negative = directionText(line, "negative");
+    // La flèche n'occupe la place qu'elle prend réellement (`ARROW_RESERVED_WIDTH`)
+    // sur un sens marqué entrée ou sortie : `neutral` n'en affiche pas, il n'y a
+    // rien à orienter.
+    const positiveArrow = directionRole(line, "positive") === "neutral" ? null : normal;
+    const negativeArrow = directionRole(line, "negative") === "neutral" ? null : negatedNormal;
+    const sizes = {
+      positive: withArrowWidth(measureLabel(ctx, positive), positiveArrow),
+      negative: withArrowWidth(measureLabel(ctx, negative), negativeArrow),
+    };
     const anchors = directionLabelAnchors(a, b, sizes);
     if (anchors === null) continue;
 
@@ -312,16 +323,18 @@ function drawLineLabels(
       // Un sens qui vient de compter reste net même pendant l'analyse : c'est
       // l'événement qui justifie de regarder l'écran à cet instant précis.
       opacity: lit === "positive" ? 1 : restingOpacity,
+      arrow: positiveArrow,
     });
     wanted.push({
       key: `${line.id}:negative`,
       text: negative,
       color: line.color,
       centre: anchors.negative,
-      escape: { x: -normal.x, y: -normal.y },
+      escape: negatedNormal,
       size: sizes.negative,
       emphasis: lit === "negative" ? (flash?.intensity ?? 0) : 0,
       opacity: lit === "negative" ? 1 : restingOpacity,
+      arrow: negativeArrow,
     });
   }
 
@@ -331,20 +344,15 @@ function drawLineLabels(
 }
 
 /**
- * Le libellé d'un sens tel qu'il est peint : rôle marqué, longueur bornée.
+ * Le libellé d'un sens tel qu'il est peint : longueur bornée, sans préfixe.
  *
- * `normal` est le vecteur **de ce sens précis** — celui du sens positif pour l'un,
- * son opposé pour l'autre — pas une paire de glyphes figés. Une ligne tracée en
- * diagonale a une flèche en diagonale ; deux glyphes fixes (`→`/`←`) la rendaient
- * fausse, pas inversée, ce qui se remarque moins.
+ * La flèche n'est plus un caractère dans le texte — un glyphe unicode ne
+ * pivote qu'à 45° près, ce qui la rendait *presque* perpendiculaire au trait,
+ * jamais exactement. `drawLabelBox` la peint désormais en vecteur, à l'angle
+ * réel du normal (`LabelPlacement.arrow`), avant le texte.
  */
-function directionText(line: CountingLine, sign: DirectionSign, normal: Point): string {
-  const role = directionRole(line, sign);
-  // Le rôle est marqué par un **préfixe textuel** et non par une couleur : la couleur
-  // du canvas encode déjà l'appartenance à une ligne, et lui faire dire aussi un rôle
-  // rendrait les deux illisibles (ADR 0004).
-  const prefix = role === "entry" || role === "exit" ? `${compassArrow(normal)} ` : "";
-  return `${prefix}${truncateDirection(directionName(line, sign))}`;
+function directionText(line: CountingLine, sign: DirectionSign): string {
+  return truncateDirection(directionName(line, sign));
 }
 
 /**
@@ -463,6 +471,20 @@ export function measureLabel(ctx: CanvasRenderingContext2D, text: string): Label
   return { width, height: LABEL_HEIGHT };
 }
 
+/**
+ * Place réservée à la flèche d'un libellé de sens, avant le texte.
+ *
+ * Vecteur, pas caractère : un glyphe unicode ne pivote qu'à 45° près, ce qui la
+ * rendait *presque* perpendiculaire au trait — jamais exactement. `drawArrowGlyph`
+ * la peint à l'angle réel du normal, dans cette largeur réservée.
+ */
+const ARROW_RESERVED_WIDTH = 14;
+
+/** Ajoute la place de la flèche à un encombrement mesuré, si le sens en porte une. */
+function withArrowWidth(size: LabelSize, arrow: Point | null): LabelSize {
+  return arrow === null ? size : { width: size.width + ARROW_RESERVED_WIDTH, height: size.height };
+}
+
 /** Une étiquette voulue quelque part, et la direction dans laquelle elle peut fuir. */
 export interface LabelPlacement {
   key: string;
@@ -483,6 +505,15 @@ export interface LabelPlacement {
   emphasis: number;
   /** 0 à 1 : opacité globale de l'étiquette — estompée pendant l'analyse serveur. */
   opacity: number;
+  /**
+   * Direction de la flèche peinte avant le texte, ou `null` — pas de flèche.
+   *
+   * `null` pour le nom de la ligne (aucun sens à indiquer) et pour un sens resté
+   * `neutral` (rien à orienter). Distinct d'`escape` : celui-ci dit dans quel
+   * sens l'étiquette peut s'écarter en cas de collision, celui-là ce qu'elle
+   * dessine — les deux valent souvent le même vecteur, mais pas toujours.
+   */
+  arrow: Point | null;
 }
 
 /** Une étiquette placée, prête à peindre : coin supérieur gauche définitif. */
@@ -600,8 +631,56 @@ function drawLabelBox(ctx: CanvasRenderingContext2D, label: PlacedLabel): void {
     ctx.fillStyle = color;
     ctx.fillRect(x, y, 2, size.height);
   }
-  ctx.fillStyle = emphasis >= 0.5 ? CANVAS.labelBackground : CANVAS.labelInk;
-  ctx.fillText(label.text, x + LABEL_PADDING, y + size.height - 3);
+  const ink = emphasis >= 0.5 ? CANVAS.labelBackground : CANVAS.labelInk;
+  ctx.fillStyle = ink;
+
+  // La flèche occupe sa place réservée, le texte commence juste après — jamais les
+  // deux au même endroit, sinon l'un des deux serait illisible.
+  let textX = x + LABEL_PADDING;
+  if (label.arrow !== null) {
+    const centre = { x: x + ARROW_RESERVED_WIDTH / 2, y: y + size.height / 2 };
+    drawArrowGlyph(ctx, centre, label.arrow, ink);
+    textX = x + ARROW_RESERVED_WIDTH;
+  }
+  ctx.fillText(label.text, textX, y + size.height - 3);
+  ctx.restore();
+}
+
+/**
+ * Une flèche peinte en **vecteur**, à l'angle exact de `direction` — jamais un
+ * glyphe unicode, qui ne pivote qu'à 45° près et rendrait le sens *presque*
+ * perpendiculaire au trait plutôt qu'exactement.
+ *
+ * Même silhouette que la flèche posée sur le trait lui-même (`drawLine`) : un
+ * corps, une pointe en deux traits obliques. La cohérence entre les deux évite
+ * qu'on lise deux conventions différentes sur le même écran.
+ */
+function drawArrowGlyph(
+  ctx: CanvasRenderingContext2D,
+  centre: Point,
+  direction: Point,
+  color: string,
+): void {
+  if (direction.x === 0 && direction.y === 0) return;
+  const length = Math.hypot(direction.x, direction.y);
+  const unit = { x: direction.x / length, y: direction.y / length };
+  const half = ARROW_RESERVED_WIDTH / 2 - 2;
+  const tail = { x: centre.x - unit.x * half, y: centre.y - unit.y * half };
+  const tip = { x: centre.x + unit.x * half, y: centre.y + unit.y * half };
+  const back = { x: -unit.x, y: -unit.y };
+  const side = { x: -unit.y, y: unit.x };
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(tail.x, tail.y);
+  ctx.lineTo(tip.x, tip.y);
+  ctx.moveTo(tip.x, tip.y);
+  ctx.lineTo(tip.x + back.x * 3.5 + side.x * 2.5, tip.y + back.y * 3.5 + side.y * 2.5);
+  ctx.moveTo(tip.x, tip.y);
+  ctx.lineTo(tip.x + back.x * 3.5 - side.x * 2.5, tip.y + back.y * 3.5 - side.y * 2.5);
+  ctx.stroke();
   ctx.restore();
 }
 
