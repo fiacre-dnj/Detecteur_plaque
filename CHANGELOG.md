@@ -105,6 +105,17 @@ plus deux fois dans le même sens » si.
   tantôt ralentie selon la charge du serveur. Un plafond **absolu**, en 30 ou
   60 images par seconde, reste disponible en plus pour brider le débit du
   serveur lui-même, indépendamment de la cadence de la vidéo.
+- **Chaque sens de ligne est désormais obligatoirement « Entrée » ou
+  « Sortie ».** Le panneau de géométrie n'offre plus de nom libre à taper : un
+  menu déroulant à deux choix remplace le champ de texte et les trois boutons
+  de rôle facultatif. Une ligne fraîchement tracée contribue donc tout de suite
+  au bilan entrées/sorties du carrefour, sans geste supplémentaire. Choisir un
+  sens configure l'autre côté automatiquement à l'opposé, et les flèches de sens
+  (canvas et panneau) suivent désormais l'angle réel de la ligne au lieu d'un
+  glyphe figé.
+- **Le nom de la ligne et les libellés de sens s'estompent pendant qu'une
+  analyse tourne**, différée ou en direct, pour laisser la place aux boîtes et
+  aux compteurs — sauf le sens qui vient tout juste de compter, qui reste net.
 
 ### Corrigé
 

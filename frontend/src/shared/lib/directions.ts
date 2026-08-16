@@ -43,16 +43,20 @@ export function signOf(direction: number): DirectionSign {
 }
 
 /**
- * Le libellé **effectif** d'un sens : celui de l'utilisateur, ou le défaut
- * géométrique.
+ * Le libellé **effectif** d'un sens : « Entrée », « Sortie », ou un repli pour les
+ * lignes tracées avant que le rôle soit obligatoire.
  *
- * À appeler partout où un sens s'affiche. Lire `line.positiveName` directement
- * afficherait une case vide sur toute ligne non renommée — c'est-à-dire la plupart.
- *
- * Le défaut est calculé **à l'affichage** et non stocké : c'est ce qui fait suivre le
- * libellé quand on fait pivoter la ligne.
+ * À appeler partout où un sens s'affiche. Depuis que le panneau de géométrie
+ * n'offre plus qu'un choix entrée/sortie, le rôle **est** le libellé — il n'y a
+ * plus de nom libre à préférer. Le repli sur le nom saisi puis sur le défaut
+ * géométrique ne joue que pour une ligne dont le rôle est resté `neutral`, ce que
+ * l'éditeur ne produit plus mais qu'un preset ou un `configJson` archivé avant ce
+ * changement peut encore porter.
  */
 export function directionName(line: CountingLine, sign: DirectionSign): string {
+  const role = directionRole(line, sign);
+  if (role === "entry") return "Entrée";
+  if (role === "exit") return "Sortie";
   const given = sign === "positive" ? line.positiveName : line.negativeName;
   if (given !== undefined && given.trim() !== "") return given;
   const defaults = defaultDirectionNames(line.a, line.b);

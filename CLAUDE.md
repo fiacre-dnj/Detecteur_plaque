@@ -18,9 +18,10 @@ rejoue le résultat.
 véhicule, et c'est le tracker qui décide ce qu'est un objet suivi
 ([ADR 0016](docs/adr/0016-compter-les-objets-suivis.md)). Deux comptages coexistent et ne
 se divisent jamais l'un par l'autre — les **véhicules** (`trackedVehicles`, tracé ou pas)
-et les **passages** (`crossings`, par ligne et par sens). Chaque ligne porte deux sens
-que l'utilisateur nomme, avec un rôle optionnel entrée / sortie qui donne le bilan du
-carrefour.
+et les **passages** (`crossings`, par ligne et par sens). Chaque ligne porte deux sens,
+et depuis le 2026-08-16 chacun est **obligatoirement** entrée ou sortie ([ADR
+0021](docs/adr/0021-le-role-de-sens-devient-obligatoire.md)) — ce rôle donne le bilan
+du carrefour et **est** le libellé affiché, il n'y a plus de nom libre à taper.
 
 Deux modes partagent **le même** code de comptage — la même `AnalysisSession`, les
 mêmes schémas de requête, les mêmes sérialiseurs — et c'est ce qui garantit qu'un
@@ -413,9 +414,10 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       arrière, verrouillée par
       `test_un_vehicule_occulte_trop_longtemps_compte_deux_fois`.
 
-    Les noms et rôles de sens (`entry` / `exit` / `neutral`) traversent le domaine
-    **sans qu'aucun compteur les lise** : ils sont persistés dans `config_json` et
-    agrégés côté client seulement.
+    Les noms et rôles de sens (`entry` / `exit`, plus `neutral` pour une ligne tracée
+    avant qu'il devienne obligatoire) traversent le domaine **sans qu'aucun compteur
+    les lise** : ils sont persistés dans `config_json` et agrégés côté client
+    seulement.
     [ADR 0016](docs/adr/0016-compter-les-objets-suivis.md).
 17. **L'analyse peut être bridée sur le temps de la scène, et le rattrapage est
     borné.** L'aperçu live *cale* la vidéo du client sur l'image analysée, il ne la
