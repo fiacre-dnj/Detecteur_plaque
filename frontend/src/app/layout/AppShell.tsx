@@ -3,6 +3,15 @@
  *
  * Une entête compacte et non un bandeau : c'est un outil de travail, et chaque
  * pixel pris en haut est un pixel de moins pour la scène vidéo.
+ *
+ * **Fixée en haut** (`sticky top-0`) : sur le studio, la barre de réglages et la
+ * vidéo défilent sous elle dès que la chronologie et les onglets allongent la
+ * page — la navigation et l'état du serveur restent atteignables sans remonter.
+ * `sticky` plutôt qu'un vrai `fixed` : le rendu est identique une fois la page
+ * chargée, mais `sticky` reste dans le flux du document — un `fixed` aurait
+ * exigé un espaceur pour que `<main>` ne parte pas sous l'entête, une source
+ * de décalage à chaque changement de hauteur de l'entête (ex. un message
+ * d'erreur du badge serveur qui passe sur deux lignes).
  */
 
 import { Suspense } from "react";
@@ -20,7 +29,7 @@ const LINKS = [
 export function AppShell() {
   return (
     <div className="min-h-dvh bg-base">
-      <header className="border-b border-line/40 bg-base/95 backdrop-blur">
+      <header className="sticky top-0 z-40 border-b border-line/40 bg-base/95 backdrop-blur">
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-x-8 gap-y-3 px-6 py-4">
           <div className="min-w-0">
             <h1 className="text-heading font-bold leading-tight text-ink">

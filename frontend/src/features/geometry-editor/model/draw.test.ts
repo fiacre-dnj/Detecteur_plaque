@@ -247,7 +247,17 @@ describe("resolveLabelCollisions — deux lignes proches ne s'écrasent plus", (
     centre: Point,
     escape: Point | null = { x: 0, y: 1 },
   ): LabelPlacement {
-    return { key, text: key, color: "#539df5", centre, escape, size: SIZE, emphasis: 0, opacity: 1 };
+    return {
+      key,
+      text: key,
+      color: "#539df5",
+      centre,
+      escape,
+      size: SIZE,
+      emphasis: 0,
+      opacity: 1,
+      arrow: null,
+    };
   }
 
   function overlaps(placed: readonly ReturnType<typeof resolveLabelCollisions>[number][]): string[] {

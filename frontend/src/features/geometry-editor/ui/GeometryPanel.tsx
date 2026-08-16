@@ -12,19 +12,23 @@
  * pas un geste de pointage.
  *
  * Chaque sens est **obligatoirement** « Entrée » ou « Sortie » — il n'y a plus de nom
- * libre à taper. Un menu déroulant à deux choix plutôt qu'un champ de texte : c'est
+ * libre à taper, et les deux sens d'une ligne sont toujours l'un et l'autre : c'est
  * ce qui garantit que le bilan entrées/sorties du carrefour est toujours exploitable,
- * sans dépendre d'un utilisateur qui penserait à cocher un rôle facultatif.
+ * sans dépendre d'un utilisateur qui penserait à cocher un rôle facultatif. Puisqu'il
+ * n'y a jamais que deux états possibles pour la paire, un bouton qui les **inverse**
+ * remplace le menu déroulant par sens : un geste au lieu de deux choix à faire
+ * correspondre à l'œil.
  *
  * Le bloc des sens ne s'ouvre que sur la ligne **sélectionnée**, et c'est délibéré :
  * six lignes dépliées feraient douze menus dans une colonne de 24 rem, où on ne
  * retrouverait plus la ligne qu'on cherchait.
  */
 
-import { Bookmark, Plus, Square, Trash2 } from "lucide-react";
+import { ArrowUp, ArrowUpDown, Bookmark, Plus, Square, Trash2 } from "lucide-react";
 
 import type { CountingLine, DirectionRole, DirectionSign, Zone } from "@/shared/api/contracts";
-import { compassArrow, positiveNormal } from "@/shared/lib/geometry";
+import { directionRole } from "@/shared/lib/directions";
+import { arrowRotationDeg, positiveNormal } from "@/shared/lib/geometry";
 import type { Selection } from "@/entities/geometry";
 
 interface GeometryPanelProps {
@@ -232,10 +236,14 @@ export function GeometryPanel(props: GeometryPanelProps) {
 }
 
 /**
- * Les deux sens de la ligne sélectionnée, chacun étiqueté entrée ou sortie.
+ * Les deux sens de la ligne sélectionnée, et le bouton qui les inverse.
  *
- * Il n'y a plus de libellé libre : le rôle **est** le nom (`directionName`), et le
- * choisir est obligatoire — un menu déroulant à deux options, jamais vide.
+ * Il n'y a plus de libellé libre : le rôle **est** le nom (`directionName`). Et
+ * puisqu'une paire n'a jamais que deux états — « positif entrée, négatif sortie »
+ * ou l'inverse — un bouton qui bascule de l'un à l'autre remplace deux menus
+ * déroulants à faire correspondre l'un à l'autre à l'œil. Les deux rangées
+ * restent lisibles pendant la bascule : c'est **elles** qui disent l'état actuel,
+ * le bouton ne fait qu'agir dessus.
  */
 function DirectionFields({
   line,
@@ -245,83 +253,84 @@ function DirectionFields({
   onSetDirectionRole: (id: string, sign: DirectionSign, role: DirectionRole) => void;
 }) {
   const normal = positiveNormal(line.a, line.b);
+  const positiveRole = directionRole(line, "positive");
+  const negativeRole = directionRole(line, "negative");
+  // `neutral` n'est plus atteignable depuis ce panneau, mais une ligne tracée
+  // avant qu'il le devienne peut encore le porter des deux côtés
+  // (`withDirectionDefaults`). Il n'y a alors rien à inverser : le bouton pose
+  // la paire par défaut plutôt que de deviner un bilan que personne n'a demandé.
+  const undecided = positiveRole === "neutral" || negativeRole === "neutral";
+
+  const swap = (): void => {
+    onSetDirectionRole(line.id, "positive", undecided ? "entry" : negativeRole);
+  };
 
   return (
-    <ul className="mt-1 ms-5 space-y-1 border-s border-line ps-2">
-      {(["positive", "negative"] as const).map((sign) => (
-        <li key={sign} className="flex flex-wrap items-center gap-1">
-          {/* La flèche dit **quel** sens dans la convention du canvas — la même que
-              celle dessinée sur le trait, à la même **direction réelle** de la
-              ligne plutôt qu'un « ↑ »/« ↓ » figé. Sans elle, l'utilisateur ne
-              saurait pas lequel des deux menus correspond à quel côté. */}
-          <span
-            aria-hidden="true"
-            className="w-3 shrink-0 text-center text-micro"
-            style={{ color: line.color }}
-          >
-            {compassArrow(sign === "positive" ? normal : { x: -normal.x, y: -normal.y })}
-          </span>
-          <RoleSelect line={line} sign={sign} onSetDirectionRole={onSetDirectionRole} />
-        </li>
-      ))}
-      <li className="text-micro text-ink-dim">
-        Entrée ou sortie : c'est ce qui donne le bilan du carrefour dans les
-        résultats.
-      </li>
-    </ul>
+    <div className="mt-1 ms-5 border-s border-line ps-2">
+      <div className="flex items-stretch gap-1.5">
+        <ul className="min-w-0 flex-1 space-y-1">
+          {(["positive", "negative"] as const).map((sign) => (
+            <DirectionRoleRow
+              key={sign}
+              line={line}
+              sign={sign}
+              role={sign === "positive" ? positiveRole : negativeRole}
+              normal={normal}
+            />
+          ))}
+        </ul>
+        <button
+          type="button"
+          onClick={swap}
+          title="Inverser entrée et sortie"
+          aria-label={`Inverser les sens entrée et sortie de ${line.name}`}
+          className="grid shrink-0 place-items-center rounded-input bg-surface-2 px-2 text-ink-muted transition-colors hover:bg-elevated hover:text-ink active:scale-95"
+        >
+          <ArrowUpDown aria-hidden="true" className="size-4" />
+        </button>
+      </div>
+    </div>
   );
 }
 
-/** Les deux seuls rôles proposables — « ni l'un ni l'autre » a disparu du panneau. */
-const ROLES: readonly { role: DirectionRole; label: string }[] = [
-  { role: "entry", label: "Entrée" },
-  { role: "exit", label: "Sortie" },
-];
-
 /**
- * Le rôle d'un sens, en `<select>` **obligatoire**.
+ * Une rangée de sens, en **lecture seule** : la flèche réelle du tracé, son
+ * libellé. Plus aucune interaction directe — `DirectionFields` porte le seul
+ * geste possible, le bouton d'inversion.
  *
- * Un menu déroulant convient ici, contrairement au reste de l'écran qui préfère des
- * boutons visibles ensemble : il n'y a plus que deux choix à comparer, et l'un des
- * deux est toujours sélectionné — rien à cacher derrière un clic.
- *
- * `neutral` n'est plus atteignable depuis ce panneau, mais une ligne tracée avant ce
- * changement peut encore le porter (`withDirectionDefaults`). Une option masquée le
- * représente le temps que l'utilisateur tranche, plutôt que de deviner à sa place —
- * deviner fausserait un bilan que personne n'a demandé.
+ * Pas d'icône de rôle : la flèche suffit à distinguer les deux rangées, et le
+ * mot « Entrée »/« Sortie » à côté dit ce qu'elle signifie. Une icône
+ * supplémentaire n'ajoutait qu'une convention à retenir.
  */
-function RoleSelect({
+function DirectionRoleRow({
   line,
   sign,
-  onSetDirectionRole,
+  role,
+  normal,
 }: {
   line: CountingLine;
   sign: DirectionSign;
-  onSetDirectionRole: (id: string, sign: DirectionSign, role: DirectionRole) => void;
+  role: DirectionRole;
+  normal: { x: number; y: number };
 }) {
-  const current = (sign === "positive" ? line.positiveRole : line.negativeRole) ?? "neutral";
+  const direction = sign === "positive" ? normal : { x: -normal.x, y: -normal.y };
 
   return (
-    <select
-      value={current}
-      required
-      onChange={(event) =>
-        onSetDirectionRole(line.id, sign, event.target.value as DirectionRole)
-      }
-      aria-label={`Rôle du sens ${sign === "positive" ? "A vers B" : "B vers A"} de ${line.name}`}
-      className="min-w-0 flex-1 rounded-input bg-transparent px-1 text-micro text-ink focus:bg-base"
-    >
-      {ROLES.map((entry) => (
-        <option key={entry.role} value={entry.role}>
-          {entry.label}
-        </option>
-      ))}
-      {current === "neutral" && (
-        <option value="neutral" disabled hidden>
-          — à préciser —
-        </option>
-      )}
-    </select>
+    <li className="flex items-center gap-1.5 rounded-input bg-surface-2 px-2 py-1">
+      {/* La flèche dit **quel** sens dans la convention du canvas — pivotée à
+          l'angle **exact** du tracé (`arrowRotationDeg`), pas arrondie au
+          huitième de tour le plus proche comme le ferait un glyphe unicode.
+          Sans elle, l'utilisateur ne saurait pas laquelle des deux rangées
+          correspond à quel côté. */}
+      <ArrowUp
+        aria-hidden="true"
+        className="size-3.5 shrink-0"
+        style={{ color: line.color, transform: `rotate(${arrowRotationDeg(direction)}deg)` }}
+      />
+      <span className="min-w-0 truncate text-micro text-ink">
+        {role === "entry" ? "Entrée" : role === "exit" ? "Sortie" : "À préciser"}
+      </span>
+    </li>
   );
 }
 

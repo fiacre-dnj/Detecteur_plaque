@@ -164,11 +164,11 @@ câblage passe par `StudioPage` — c'est pourquoi `GeometryPanel` reçoit un
 `onOpenPresets` plutôt que la modale elle-même, et pourquoi `SettingsPanels` reçoit
 un emplacement `leading` où le studio pose le bouton d'import.
 
-#### La disposition du studio, depuis le 2026-08-12
+#### La disposition du studio, depuis le 2026-08-12 (barre flottante depuis le 2026-08-16)
 
 ```
-[⇧ Importer]  [Détection ▾] [Comptage ▾] [Affichage & analyse ▾]   ← barre
-└─ tiroir pleine largeur du panneau ouvert, en 2-3 colonnes (fermé par défaut)
+[⇧ Importer]  [Détection ▾] [Comptage ▾] [Affichage & analyse ▾]  … nom du fichier →
+              └─ tiroir flottant du panneau ouvert, 2 colonnes, PAR-DESSUS la page
 ┌──────────────────────────────┬──────────────────┐
 │ vidéo + canvas + HUD          │ RÉSULTATS         │  aside 24 rem
 │ TransportBar                  │ KPI en 2 colonnes │
@@ -178,6 +178,23 @@ un emplacement `leading` où le studio pose le bouton d'import.
 │ [Flux][Registre]                                  │
 └──────────────────────────────────────────────────┘
 ```
+
+Le tiroir ouvrait initialement **en flux normal**, pleine largeur — il grandissait
+la page et poussait la vidéo et les résultats de plusieurs centaines de pixels vers
+le bas à chaque ouverture. Depuis le 2026-08-16 il **flotte** (`position: absolute`,
+ancré sous la barre, `z-30`) : la page ne bouge plus quand on l'ouvre. Un clic en
+dehors ou `Échap` le referme. L'entête de l'application (`AppShell`) est fixée en
+haut de l'écran (`sticky top-0 z-40`) pour la même raison de fond — rester
+atteignable pendant que la page défile en dessous.
+
+Les trois boutons du tiroir sont **grisés tant qu'aucune vidéo n'est chargée** :
+régler la détection, le comptage ou l'affichage n'a rien à quoi s'appliquer sans
+source. La scène vide n'affiche plus une phrase inerte mais une invite cliquable
+(icône, « Importer une vidéo », glisser-déposer) — le bouton de la barre et cette
+invite déclenchent le même import, `handleFile`. Le nom du fichier importé se lit
+désormais **à l'extrémité de la barre** (`trailing`, poussé par `ms-auto`), et non
+plus juste après le bouton : une fois choisie, la source se consulte, elle ne se
+reclique pas.
 
 Elle est l'inverse de la précédente, où les réglages tenaient la colonne de droite
 et les résultats vivaient sous la grille. Trois conséquences à connaître :
@@ -438,14 +455,19 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     **`processing_fps` d'un run bridé mesure le bridage, pas la machine** : l'attente
     n'est pas retranchée, contrairement au temps de pause.
     `maxAnalysisFps` (ADR 0020) est un **second** bridage, indépendant : un plafond
-    **absolu** en images par seconde réelle (30 ou 60), qui ignore la cadence de la
-    source et `frame_stride`. Les deux se composent — c'est la période la plus
-    longue des deux qui gagne — et chacun agit même quand l'autre vaut `null`.
+    **absolu** en images par seconde réelle (illimité, 30 ou 60), qui ignore la
+    cadence de la source et `frame_stride`. Les deux se composent — c'est la
+    période la plus longue des deux qui gagne — et chacun agit même quand
+    l'autre vaut `null`. **`30` par défaut depuis ADR 0022** : la cadence vidéo
+    la plus courante, qui ne borne rien en pratique sur une source à cette
+    cadence ou en dessous.
     [ADR 0017](docs/adr/0017-brider-l-analyse-sur-le-temps-de-la-scene.md), dont
     [ADR 0019](docs/adr/0019-la-lecture-locale-reste-a-vitesse-normale.md) change le
     défaut sans toucher au mécanisme, et qu'
     [ADR 0020](docs/adr/0020-un-plafond-absolu-de-cadence.md) complète d'un second
-    axe de bridage.
+    axe de bridage, dont
+    [ADR 0022](docs/adr/0022-le-plafond-absolu-vaut-30-img-s-par-defaut.md) change
+    à son tour le défaut.
 
 ## Mesurer avant d'optimiser l'ANPR
 
