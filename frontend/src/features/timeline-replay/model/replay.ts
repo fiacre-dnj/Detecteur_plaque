@@ -81,9 +81,10 @@ export const TRAIL_LENGTH = 24;
  * que le client peut recalculer. Sur une timeline de 54 000 frames, embarquer 24
  * positions par piste et par frame multiplierait le poids du résultat.
  *
- * Indexé par `globalId` et non par `trackId` : une piste est détruite et recréée à
- * chaque occlusion longue, et la trajectoire doit survivre à cette rupture — c'est
- * tout l'intérêt de la ré-identification.
+ * Indexé par `globalId` et non par `trackId` : c'est le numéro du véhicule, la même
+ * clé que le comptage et le registre. Les deux coïncident le plus souvent depuis
+ * ADR 0016, mais `trackId` est l'identifiant du tracker et non celui sous lequel on
+ * compte — indexer dessus ferait dépendre l'affichage d'une clé que rien ne garantit.
  */
 export function trailsAt(
   timeline: readonly TimelineRow[],
@@ -125,24 +126,41 @@ export function statsAt(result: AnalysisResult, timeMs: number): AnalysisStats {
 
   const byLine: Record<string, LineTally> = {};
   const byClass: Record<string, number> = {};
-  const seenIdentities = new Set<number>();
-  const uniqueByClass: Record<string, number> = {};
+  const byCategory: AnalysisStats["byCategory"] = {};
+  const seenVehicles = new Set<number>();
+  // Les véhicules **ayant franchi**, distincts. Un `Set` dans la boucle qui existe
+  // déjà : aucun parcours supplémentaire, et le chiffre reste dérivé des événements
+  // plutôt que compté à côté (invariant 3).
+  const crossedIdentities = new Set<number>();
+  const trackedByClass: Record<string, number> = {};
   let crossings = 0;
 
   for (const event of result.crossings) {
     if (event.timestampMs > timeMs) continue;
     crossings += 1;
+    crossedIdentities.add(event.globalId);
     byClass[event.label] = (byClass[event.label] ?? 0) + 1;
+    // La catégorie est **lue** sur l'événement, jamais déduite du libellé : c'est le
+    // serveur qui classe, et le rejeu ne fait que sommer ce qu'il a décidé.
+    //
+    // `?? "vehicle"` : les résultats archivés avant le 2026-08-12 n'ont pas ce champ.
+    // Sans ce repli, la clé serait `undefined` et les deux cartes de passages
+    // afficheraient 0 à côté d'un `crossings` non nul — voir ADR 0014.
+    byCategory[event.category ?? "vehicle"] =
+      (byCategory[event.category ?? "vehicle"] ?? 0) + 1;
     tallyLine(byLine, event);
   }
 
   // Les véhicules « vus » sont ceux dont la première apparition précède `timeMs` :
   // compter tous les véhicules du registre afficherait le total final dès la
   // première seconde de relecture.
+  //
+  // Le registre ne contient que des pistes **confirmées** (ADR 0016), donc ce
+  // décompte est bien celui de `trackedVehicles` et non une approximation.
   for (const vehicle of result.vehicles) {
     if (vehicle.firstSeenMs > timeMs) continue;
-    seenIdentities.add(vehicle.globalId);
-    uniqueByClass[vehicle.label] = (uniqueByClass[vehicle.label] ?? 0) + 1;
+    seenVehicles.add(vehicle.globalId);
+    trackedByClass[vehicle.label] = (trackedByClass[vehicle.label] ?? 0) + 1;
   }
 
   const byZone: Record<string, ZoneTally> = {};
@@ -157,18 +175,18 @@ export function statsAt(result: AnalysisResult, timeMs: number): AnalysisStats {
   // Le serveur ne renvoie pas l'appartenance par frame, donc on ne peut pas la
   // recalculer ici sans la géométrie ; on laisse 0 et le tableau affiche
   // l'occupation finale hors relecture. Ce choix est documenté dans le composant.
-  const reidHits = tracks.reduce((sum, track) => sum + track.reidCount, 0);
   const elapsedMs = Math.max(0, Math.min(timeMs, result.video.durationMs));
 
   return {
-    uniqueVehicles: seenIdentities.size,
-    uniqueByClass,
+    trackedVehicles: seenVehicles.size,
+    trackedByClass,
     crossings,
+    crossedUnique: crossedIdentities.size,
     byClass,
+    byCategory,
     byLine,
     byZone,
-    reidHits,
-    vehiclesPerMinute: ratePerMinute(seenIdentities.size, elapsedMs),
+    vehiclesPerMinute: ratePerMinute(seenVehicles.size, elapsedMs),
     activeTracks: tracks.length,
     elapsedMs,
     analysedSceneMs: elapsedMs,
@@ -182,12 +200,23 @@ function tallyLine(byLine: Record<string, LineTally>, event: CrossingEvent): voi
   const tally = (byLine[event.lineId] ??= {
     total: 0,
     byClass: {},
-    byDirection: { positive: 0, negative: 0 },
+    byDirection: {
+      positive: { total: 0, byClass: {}, firstMs: null, lastMs: null },
+      negative: { total: 0, byClass: {}, firstMs: null, lastMs: null },
+    },
   });
-  tally.total += 1;
+  const side = tally.byDirection[event.direction > 0 ? "positive" : "negative"];
+
+  // **Le sens d'abord, la ligne ensuite.** Le serveur dérive `total` et `byClass`
+  // des deux sens ; les incrémenter ici indépendamment rouvrirait la porte à deux
+  // compteurs du même fait, et le rejeu contredirait le résultat qu'il rejoue.
+  side.total += 1;
+  side.byClass[event.label] = (side.byClass[event.label] ?? 0) + 1;
+  side.firstMs ??= event.timestampMs;
+  side.lastMs = event.timestampMs;
+
+  tally.total = tally.byDirection.positive.total + tally.byDirection.negative.total;
   tally.byClass[event.label] = (tally.byClass[event.label] ?? 0) + 1;
-  if (event.direction > 0) tally.byDirection.positive += 1;
-  else tally.byDirection.negative += 1;
 }
 
 /**

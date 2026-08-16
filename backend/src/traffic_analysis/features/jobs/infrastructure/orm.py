@@ -59,9 +59,8 @@ class JobModel(TimestampMixin, Base):
     stats_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     # Dénormalisés : trier l'historique par nombre de véhicules ne doit pas
     # obliger à ouvrir et décompresser chaque fichier de résultat.
-    unique_vehicles: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tracked_vehicles: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     crossings_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    reid_hits: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     result_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
@@ -97,7 +96,12 @@ class JobVehicleModel(Base):
     label: Mapped[str] = mapped_column(String(32), nullable=False)
     first_seen_ms: Mapped[float] = mapped_column(Float, nullable=False)
     last_seen_ms: Mapped[float] = mapped_column(Float, nullable=False)
-    reid_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: Nombre de franchissements de ce véhicule. **Dénormalisé** de
+    #: `crossed_lines_json` pour une seule raison : « montre-moi les véhicules qui
+    #: n'ont franchi aucune ligne » est devenu une question courante depuis qu'un
+    #: objet suivi compte (ADR 0016), et compter les éléments d'un JSON ne
+    #: s'indexe pas. Remplace `reid_count`, disparu avec la ré-identification.
+    crossings_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     avg_speed_px_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     avg_speed_kmh: Mapped[float | None] = mapped_column(Float, nullable=True)
     best_plate_score: Mapped[float | None] = mapped_column(Float, nullable=True)

@@ -11,5 +11,5 @@ export {
   type SourceKind,
 } from "./model/useMediaSource";
 
-export { SourcePicker } from "./ui/SourcePicker";
+export { DropZone, SourcePicker } from "./ui/SourcePicker";
 export { VideoScene } from "./ui/VideoScene";

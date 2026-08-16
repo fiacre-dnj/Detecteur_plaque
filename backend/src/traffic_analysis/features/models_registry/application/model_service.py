@@ -52,7 +52,13 @@ class ModelInfo:
 class ModelService:
     """Catalogue enrichi de l'état mémoire, préchargement, déchargement."""
 
-    __slots__ = ("_default_model_id", "_plate_detector", "_plate_reader", "_registry")
+    __slots__ = (
+        "_default_model_id",
+        "_plate_detector",
+        "_plate_loadable",
+        "_plate_reader",
+        "_registry",
+    )
 
     def __init__(
         self,
@@ -66,6 +72,10 @@ class ModelService:
         self._default_model_id = default_model_id
         self._plate_detector = plate_detector
         self._plate_reader = plate_reader
+        #: Verdict de l'auto-test, `None` tant qu'il n'a pas tourné. Trois états et
+        #: non deux : « pas encore testé » n'est pas « en échec », et les afficher
+        #: pareil ferait passer un démarrage sans préchauffage pour une panne.
+        self._plate_loadable: bool | None = None
 
     def catalogue_with_state(self) -> list[ModelInfo]:
         loaded = set(self._registry.loaded_ids())
@@ -97,6 +107,19 @@ class ModelService:
     def device(self) -> str:
         return self._registry.device()
 
+    def device_reason(self) -> str | None:
+        """Pourquoi `device()` vaut ce qu'il vaut, déléguée à l'infrastructure.
+
+        `None` seulement avant tout appel à `device()` — en pratique jamais côté
+        API, puisque `/health` appelle toujours `device()` d'abord.
+        """
+        return self._registry.device_reason()
+
+    def gpu_name(self) -> str | None:
+        """Nom du GPU retenu, ou `None` hors GPU. Délégué pour la même raison que
+        `device_reason` : l'application ne connaît aucune bibliothèque de vision."""
+        return self._registry.gpu_name()
+
     def half(self) -> bool:
         return self._registry.half()
 
@@ -117,6 +140,35 @@ class ModelService:
         `plateAvailable` avait été inventé pour éviter.
         """
         return self._plate_reader is not None and self._plate_reader.available
+
+    def plate_loadable(self) -> bool | None:
+        """Le détecteur de plaques a-t-il passé son auto-test ?
+
+        `None` = pas encore testé (préchauffage désactivé, ou toujours en cours) ;
+        `False` = les poids sont là et **ne se chargent pas**. C'est ce second état
+        qui justifie le champ : `plate_available` seul ne peut pas le distinguer d'un
+        fonctionnement normal, et ce projet a déjà passé un projet entier avec un
+        drapeau vert et une ANPR muette.
+        """
+        return self._plate_loadable
+
+    async def probe_plates(self) -> bool | None:
+        """Lance l'auto-test du détecteur **dans un thread worker**, et retient son
+        verdict.
+
+        Dans un thread parce qu'il charge un modèle et lance une inférence : deux
+        opérations bloquantes qui figeraient la boucle asyncio, et tout le service
+        avec (invariant 11).
+
+        Rend `None` sans rien tenter quand aucun détecteur n'est câblé ou que ses
+        poids sont absents : l'absence est déjà dite par `plate_available`, et la
+        répéter en « échec » ferait passer un déploiement neuf pour une panne.
+        """
+        detector = self._plate_detector
+        if detector is None or not detector.available:
+            return None
+        self._plate_loadable = await anyio.to_thread.run_sync(detector.probe)
+        return self._plate_loadable
 
     def ultralytics_version(self) -> str:
         """Version d'Ultralytics, déléguée à l'infrastructure.

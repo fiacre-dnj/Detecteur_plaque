@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         AnalysisStats,
         BoundingBox,
         CrossingEvent,
+        DirectionTally,
         PlateDetection,
         SessionTrack,
         VehicleRecord,
@@ -99,7 +100,6 @@ def serialise_track(track: SessionTrack) -> dict[str, Any]:
         "box": serialise_box(track.box),
         "hits": track.hits,
         "counted": track.counted,
-        "reidCount": track.reid_count,
         "speedPxS": _optional_pixel(track.speed_px_s),
         "plates": [serialise_plate(plate) for plate in track.plates],
         # Le texte **voté**, en plus des lectures de la frame — même raison
@@ -125,6 +125,10 @@ def serialise_crossing(event: CrossingEvent) -> dict[str, Any]:
         "globalId": event.global_id,
         "trackId": event.track_id,
         "label": event.label,
+        # La catégorie voyage avec l'événement : la relecture côté navigateur
+        # ventile par catégorie au fil de la tête de lecture, et la lui faire
+        # deviner depuis le libellé lui ferait recopier la politique du serveur.
+        "category": event.category,
         "direction": event.direction,
         "timestampMs": _pixel(event.timestamp_ms),
         "frameIndex": event.frame_index,
@@ -164,7 +168,6 @@ def serialise_vehicle(record: VehicleRecord) -> dict[str, Any]:
             for crossing in record.crossed_lines
         ],
         "zonesVisited": list(record.zones_visited),
-        "reidCount": record.reid_count,
         "avgSpeedPxS": _optional_pixel(record.avg_speed_px_s),
         "avgSpeedKmh": None if record.avg_speed_kmh is None else round(record.avg_speed_kmh, 1),
         "bestPlateScore": None
@@ -204,6 +207,22 @@ def serialise_video(info: VideoInfo) -> dict[str, Any]:
     }
 
 
+def _direction(tally: DirectionTally) -> dict[str, Any]:
+    """Un sens de ligne sur le fil.
+
+    `firstMs` / `lastMs` restent `null` tant que le sens n'a rien compté — et non
+    `0`, qui se lirait comme « à la première image ». C'est la même discipline que
+    partout ailleurs dans ce module : une absence se dit, elle ne se déguise pas en
+    valeur plausible.
+    """
+    return {
+        "total": tally.total,
+        "byClass": dict(tally.by_class),
+        "firstMs": _optional_pixel(tally.first_ms),
+        "lastMs": _optional_pixel(tally.last_ms),
+    }
+
+
 def serialise_stats(stats: AnalysisStats) -> dict[str, Any]:
     """Le bloc que les cartes du frontend affichent, dans leur forme exacte.
 
@@ -212,15 +231,30 @@ def serialise_stats(stats: AnalysisStats) -> dict[str, Any]:
     connaît le serveur.
     """
     return {
-        "uniqueVehicles": stats.unique_vehicles,
-        "uniqueByClass": dict(stats.unique_by_class),
+        # Le comptage global : un objet suivi, un véhicule (ADR 0016).
+        "trackedVehicles": stats.tracked_vehicles,
+        "trackedByClass": dict(stats.tracked_by_class),
         "crossings": stats.crossings,
+        # Des **véhicules**, pas des passages : borné par `trackedVehicles`. C'est le
+        # numérateur du taux de franchissement — diviser des passages par des
+        # véhicules faisait dépasser 100 % dès le premier aller-retour.
+        "crossedUnique": stats.crossed_unique,
         "byClass": dict(stats.by_class),
+        # Véhicules et personnes séparés. Somme garantie égale à `crossings` :
+        # la ventilation est dérivée du même `by_class`, jamais comptée à part.
+        "byCategory": dict(stats.by_category),
         "byLine": {
             line_id: {
+                # `total` et `byClass` sont **dérivés** des deux sens côté domaine.
+                # Ils sont tout de même publiés : le client les lit à chaque
+                # rafraîchissement, et les lui faire resommer à chaque fois n'aurait
+                # d'autre effet que de dupliquer la règle.
                 "total": tally.total,
                 "byClass": dict(tally.by_class),
-                "byDirection": {"positive": tally.positive, "negative": tally.negative},
+                "byDirection": {
+                    "positive": _direction(tally.positive),
+                    "negative": _direction(tally.negative),
+                },
             }
             for line_id, tally in stats.by_line.items()
         },
@@ -232,7 +266,6 @@ def serialise_stats(stats: AnalysisStats) -> dict[str, Any]:
             }
             for zone_id, tally in stats.by_zone.items()
         },
-        "reidHits": stats.reid_hits,
         "vehiclesPerMinute": round(stats.vehicles_per_minute, 2),
         "activeTracks": stats.active_tracks,
         "elapsedMs": _pixel(stats.elapsed_ms),
@@ -245,6 +278,11 @@ def serialise_stats(stats: AnalysisStats) -> dict[str, Any]:
             "confirmedTracks": stats.diagnostics.confirmed_tracks,
             "tentativeTracks": stats.diagnostics.tentative_tracks,
             "rescuedByLowScore": stats.diagnostics.rescued_by_low_score,
+            # Par ligne, et non un total : un total ne dirait pas **laquelle** est
+            # mal placée, ce qui est la seule chose qu'on veut en savoir. Une ligne
+            # sans quasi-franchissement est présente à `0` — l'absence de clé se
+            # lirait comme « pas d'information » alors que c'est une information.
+            "nearMisses": dict(stats.diagnostics.near_misses),
         },
     }
 

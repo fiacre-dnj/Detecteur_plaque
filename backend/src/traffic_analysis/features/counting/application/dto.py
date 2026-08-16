@@ -23,9 +23,13 @@ from traffic_analysis.features.counting.application.ports import (
 )
 from traffic_analysis.features.counting.domain.geometry import Point
 from traffic_analysis.features.counting.domain.models import (
+    DETECTABLE_CLASS_IDS,
+    DETECTABLE_CLASSES,
     VEHICLE_CLASS_IDS,
     BoundingBox,
     CountingLineDef,
+    DetectableClass,
+    DirectionRole,
     PlateDetection,
     TrackObservation,
     VideoInfo,
@@ -42,7 +46,6 @@ from traffic_analysis.features.counting.domain.plate_policy import (
     PlateOcrOptions,
     PlateOcrPolicy,
 )
-from traffic_analysis.features.counting.domain.reid import ReidOptions
 from traffic_analysis.features.counting.domain.tracking_session import (
     AnalysisSession,
     SessionConfig,
@@ -61,6 +64,12 @@ if TYPE_CHECKING:
 # une analyse. Une feature qui a besoin d'autre chose du domaine du comptage a
 # besoin d'un nouveau port, pas d'un import direct.
 __all__ = [
+    # Le catalogue des classes cochables et sa validation. Publiés parce que
+    # `models_registry` les expose par HTTP et que le schéma de requête valide
+    # contre eux : les deux ont besoin de la **même** liste, sinon une case cochable
+    # côté interface serait refusée à l'envoi.
+    "DETECTABLE_CLASSES",
+    "DETECTABLE_CLASS_IDS",
     "TIMELINE_WARNING_THRESHOLD",
     # Réexporté pour le benchmark : il mesure sur **les mêmes classes** qu'une
     # analyse. Mesurer sur les 80 classes de COCO gonflerait le post-traitement, et
@@ -76,6 +85,10 @@ __all__ = [
     "AnalysisSession",
     "BoundingBox",
     "CountingLineDef",
+    "DetectableClass",
+    # Le vocabulaire des sens de ligne, publié pour le schéma de requête : c'est lui
+    # qui valide « entry | exit | neutral », et il ne doit pas recopier la liste.
+    "DirectionRole",
     "EngineFrame",
     "EngineSpec",
     # Réexportés pour le conteneur et le banc de mesure. `PlateGeometry` en
@@ -148,10 +161,50 @@ class AnalysisJobConfig:
     #: connaître, et dont il ne pourrait pas juger l'effet sur sa vidéo.
     read_plate_text: bool = False
     pixels_per_meter: float | None = None
-    reid_min_similarity: float = 0.80
     max_lost_ms: float = 2500.0
     lines: tuple[CountingLineDef, ...] = ()
     zones: tuple[ZoneDef, ...] = ()
+    #: Classes à détecter **et** à compter, choisies par l'utilisateur.
+    #:
+    #: Elles voyagent par requête, contrairement aux réglages de débit du moteur :
+    #: c'est une question que seul l'utilisateur peut trancher devant sa scène —
+    #: compte-t-on les piétons de ce carrefour, les vélos de cette piste ?
+    #:
+    #: Le défaut est le comportement historique, les quatre véhicules : qui ne
+    #: touche à rien obtient ce que l'application faisait avant.
+    #:
+    #: **Restreindre les classes ne suffit pas à éviter les doublons** : le NMS
+    #: d'Ultralytics est *class-aware*, et c'est `agnostic_nms=True` posé dans
+    #: l'adaptateur qui empêche une camionnette de survivre en `car` **et** en
+    #: `truck` (piège 5 de prompt/13).
+    class_ids: tuple[int, ...] = VEHICLE_CLASS_IDS
+    #: Cadence maximale d'analyse, en multiples de la vitesse réelle de la scène.
+    #: `None` — le défaut — n'impose aucune borne.
+    #:
+    #: `1.0` fait durer l'analyse exactement le temps de la vidéo, et c'est le seul
+    #: réglage qui rend l'aperçu live regardable : le client cale sa vidéo sur le
+    #: temps de scène analysé, donc un serveur deux fois plus rapide que la scène
+    #: produit un aperçu deux fois trop rapide (voir `domain/pacing.py`).
+    #:
+    #: Voyage par requête, comme les classes et pour la même raison : c'est un
+    #: arbitrage que seul l'utilisateur devant sa vidéo peut trancher — regarder, ou
+    #: obtenir ses chiffres au plus vite. Le défaut est le comportement historique.
+    #:
+    #: **Sans effet en direct**, où le client cadence lui-même son envoi. Comme
+    #: `frame_stride`, ce champ ne concerne que la lecture d'un fichier.
+    analysis_speed: float | None = None
+    #: Plafond **absolu** de cadence, en images analysées par seconde réelle.
+    #: `None` — le défaut — n'impose aucune borne.
+    #:
+    #: Indépendant d'`analysis_speed` : celui-ci borne la vitesse *relative* à la
+    #: scène (« pas plus vite que la vidéo »), celui-ci borne le débit *absolu* du
+    #: serveur (« jamais plus de N images par seconde », quelle que soit la
+    #: cadence de la source). Les deux peuvent être posés ensemble — le plus
+    #: restrictif des deux s'applique — et chacun peut s'appliquer même quand
+    #: l'autre est `None` (`domain/pacing.py`).
+    #:
+    #: **Sans effet en direct**, comme `analysis_speed`.
+    max_analysis_fps: float | None = None
 
     def engine_spec(self) -> EngineSpec:
         """Ce que le moteur doit savoir : les seuils **vivants** de la requête."""
@@ -159,7 +212,7 @@ class AnalysisJobConfig:
             model_id=self.model_id,
             confidence=self.confidence_threshold,
             iou=self.iou_threshold,
-            class_ids=VEHICLE_CLASS_IDS,
+            class_ids=self.class_ids,
             frame_stride=self.frame_stride,
         )
 
@@ -172,7 +225,6 @@ class AnalysisJobConfig:
             min_hits=self.min_hits,
             max_lost_ms=self.max_lost_ms,
             pixels_per_meter=self.pixels_per_meter,
-            reid=ReidOptions(min_similarity=self.reid_min_similarity),
         )
 
 

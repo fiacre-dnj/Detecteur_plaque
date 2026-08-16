@@ -16,6 +16,7 @@ import {
   DEFAULT_SETTINGS,
   SETTINGS_SCHEMA_VERSION,
   loadSettings,
+  sanitiseClassIds,
   saveSettings,
   toRequest,
   type AnalysisSettings,
@@ -166,6 +167,10 @@ describe("toRequest — la traduction vers le serveur", () => {
       name: "L",
       color: "#539df5",
       zoneId: null,
+      positiveName: "",
+      negativeName: "",
+      positiveRole: "neutral" as const,
+      negativeRole: "neutral" as const,
       a: { x: 0, y: 100 },
       b: { x: 200, y: 100 },
     },
@@ -247,8 +252,205 @@ describe("défauts alignés sur le serveur", () => {
     expect(DEFAULT_SETTINGS.iouThreshold).toBe(0.45);
     expect(DEFAULT_SETTINGS.minHits).toBe(2);
     expect(DEFAULT_SETTINGS.maxLostMs).toBe(2_500);
-    expect(DEFAULT_SETTINGS.reidMinSimilarity).toBe(0.8);
     expect(DEFAULT_SETTINGS.frameStride).toBe(1);
     expect(DEFAULT_CONFIDENCE).toBe(0.35);
+  });
+});
+
+describe("sanitiseClassIds — la sélection recalée sur le catalogue du serveur", () => {
+  const CATALOGUE = [
+    { id: 2, defaultSelected: true },
+    { id: 3, defaultSelected: true },
+    { id: 5, defaultSelected: true },
+    { id: 7, defaultSelected: true },
+    { id: 1, defaultSelected: false },
+    { id: 0, defaultSelected: false },
+  ];
+
+  it("garde l'ordre du catalogue, pas celui des clics", () => {
+    // Deux configurations identiques doivent se relire identiques : une liste
+    // ordonnée par l'ordre des clics rendrait la comparaison instable.
+    expect(sanitiseClassIds([0, 2], CATALOGUE)).toEqual([2, 0]);
+  });
+
+  it("écarte un identifiant que le serveur ne propose plus", () => {
+    // Le cas réel : un réglage persisté par une version antérieure. Sans ce
+    // nettoyage, l'envoi partirait en 422 sur un écran dont les cases paraissent
+    // toutes valides.
+    expect(sanitiseClassIds([2, 99], CATALOGUE)).toEqual([2]);
+  });
+
+  it("écarte les doublons", () => {
+    expect(sanitiseClassIds([2, 2, 3], CATALOGUE)).toEqual([2, 3]);
+  });
+
+  it("**retombe sur les cases par défaut quand tout est décoché**", () => {
+    // Le serveur refuse une liste vide, et il a raison : elle ne restreindrait rien
+    // et compterait les 80 classes de COCO. Retomber sur le défaut vaut mieux qu'un
+    // message d'erreur là où l'utilisateur a simplement tout décoché.
+    expect(sanitiseClassIds([], CATALOGUE)).toEqual([2, 3, 5, 7]);
+    expect(sanitiseClassIds([99], CATALOGUE)).toEqual([2, 3, 5, 7]);
+  });
+
+  it("rend la sélection intacte tant que le catalogue n'a pas répondu", () => {
+    // Nettoyer contre une liste vide effacerait la sélection de l'utilisateur le
+    // temps d'un aller-retour réseau, et l'écran se réinitialiserait sous ses yeux.
+    expect(sanitiseClassIds([2, 99], [])).toEqual([2, 99]);
+  });
+});
+
+describe("classIds dans la requête", () => {
+  // Une ligne quelconque : `toRequest` en exige une, mais aucun de ces tests ne
+  // parle de géométrie.
+  const LINES = [
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
+  ];
+
+  it("part avec les quatre véhicules par défaut", () => {
+    expect(toRequest(DEFAULT_SETTINGS, LINES, []).classIds).toEqual([2, 3, 5, 7]);
+  });
+
+  it("ne part jamais vide", () => {
+    // Le serveur refuserait la requête ; le repli garde l'écran utilisable.
+    const request = toRequest({ ...DEFAULT_SETTINGS, classIds: [] }, LINES, []);
+
+    expect(request.classIds).toEqual([2, 3, 5, 7]);
+  });
+
+  it("transmet une sélection contenant les personnes", () => {
+    const request = toRequest({ ...DEFAULT_SETTINGS, classIds: [2, 0] }, LINES, []);
+
+    expect(request.classIds).toEqual([2, 0]);
+  });
+});
+
+describe("analysisSpeed — la cadence d'analyse", () => {
+  const LINES = [
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
+  ];
+
+  it("part en temps réel par défaut", () => {
+    // Depuis ADR 0019 : sans borne, la lecture locale calée sur l'aperçu paraît
+    // accélérée ou ralentie selon la charge du serveur.
+    expect(DEFAULT_SETTINGS.analysisSpeed).toBe(1);
+    expect(toRequest(DEFAULT_SETTINGS, LINES, []).analysisSpeed).toBe(1);
+  });
+
+  it("transmet une cadence choisie", () => {
+    const request = toRequest({ ...DEFAULT_SETTINGS, analysisSpeed: 1 }, LINES, []);
+
+    expect(request.analysisSpeed).toBe(1);
+  });
+
+  it("**n'envoie jamais une cadence hors bornes**", () => {
+    // Le serveur la refuserait en 422 sur un écran qui paraissait valide. Hors
+    // bornes ⇒ aucune borne, qui est le défaut.
+    expect(toRequest({ ...DEFAULT_SETTINGS, analysisSpeed: 99 }, LINES, []).analysisSpeed).toBeNull();
+    expect(toRequest({ ...DEFAULT_SETTINGS, analysisSpeed: 0 }, LINES, []).analysisSpeed).toBeNull();
+  });
+
+  it("relit une cadence persistée", () => {
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { analysisSpeed: 2 },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).analysisSpeed).toBe(2);
+  });
+
+  it("relit `null` comme « aucune borne », et non comme « absent »", () => {
+    // `nullableNumber` distingue les deux : un `null` explicite est un choix.
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { analysisSpeed: null },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).analysisSpeed).toBeNull();
+  });
+
+  it("**écarte une cadence persistée hors bornes au lieu de la borner**", () => {
+    // Bornée à 8×, elle afficherait « Illimitée » tout en bridant : un réglage que
+    // l'écran contredirait. C'est ce qui la distingue des curseurs, dont une valeur
+    // hors bornes vient d'un intervalle qui a changé entre deux versions. Le repli
+    // est le défaut du module (`1`, temps réel, depuis ADR 0019).
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { analysisSpeed: 42 },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).analysisSpeed).toBe(1);
+  });
+
+  it("ignore une cadence d'un type faux", () => {
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { analysisSpeed: "temps réel" },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).analysisSpeed).toBe(1);
+  });
+});
+
+describe("maxAnalysisFps — le plafond absolu de cadence", () => {
+  const LINES = [
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
+  ];
+
+  it("part sans plafond par défaut", () => {
+    // La vitesse de lecture normale est déjà assurée par `analysisSpeed` ; ce
+    // plafond est un choix supplémentaire, pas un correctif.
+    expect(DEFAULT_SETTINGS.maxAnalysisFps).toBeNull();
+    expect(toRequest(DEFAULT_SETTINGS, LINES, []).maxAnalysisFps).toBeNull();
+  });
+
+  it("transmet un plafond choisi", () => {
+    const request = toRequest({ ...DEFAULT_SETTINGS, maxAnalysisFps: 30 }, LINES, []);
+
+    expect(request.maxAnalysisFps).toBe(30);
+  });
+
+  it("**n'envoie jamais un plafond hors bornes**", () => {
+    expect(
+      toRequest({ ...DEFAULT_SETTINGS, maxAnalysisFps: 999 }, LINES, []).maxAnalysisFps,
+    ).toBeNull();
+    expect(
+      toRequest({ ...DEFAULT_SETTINGS, maxAnalysisFps: 0 }, LINES, []).maxAnalysisFps,
+    ).toBeNull();
+  });
+
+  it("relit un plafond persisté", () => {
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { maxAnalysisFps: 60 },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBe(60);
+  });
+
+  it("relit `null` comme « aucun plafond », et non comme « absent »", () => {
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { maxAnalysisFps: null },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBeNull();
+  });
+
+  it("**écarte un plafond persisté hors bornes au lieu de le borner**", () => {
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { maxAnalysisFps: 999 },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBeNull();
+  });
+
+  it("ignore un plafond d'un type faux", () => {
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { maxAnalysisFps: "30 img/s" },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBeNull();
   });
 });

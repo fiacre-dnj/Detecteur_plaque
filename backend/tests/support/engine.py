@@ -152,10 +152,16 @@ class FakePlateDetector:
         self,
         *,
         available: bool = True,
+        loadable: bool | None = None,
         score: float = 0.71,
         plates_for: Callable[[BoundingBox], Sequence[tuple[BoundingBox, float]]] | None = None,
     ) -> None:
         self._available = available
+        #: Verdict rendu par `probe()`. `None` suit `available`, ce qui est le cas
+        #: sain ; le poser explicitement à `False` reproduit **l'état qui compte** —
+        #: des poids présents et illisibles, donc un drapeau vert et une ANPR muette.
+        #: Aucune doublure ne pouvait exprimer cet état avant ADR 0015.
+        self._loadable = available if loadable is None else loadable
         self._score = score
         #: Rend la main sur **ce que le détecteur trouve**, boîte par boîte.
         #:
@@ -177,10 +183,17 @@ class FakePlateDetector:
         #: écarte les bonnes pistes — et surtout qu'il ne laisse aucun trou dans
         #: les snapshots des images qu'il saute.
         self.submitted: list[tuple[BoundingBox, ...]] = []
+        #: Combien de fois l'auto-test a tourné. Il doit tourner **une** fois, au
+        #: démarrage : le rappeler par requête coûterait des secondes.
+        self.probes = 0
 
     @property
     def available(self) -> bool:
         return self._available
+
+    def probe(self) -> bool:
+        self.probes += 1
+        return self._loadable
 
     def detect(
         self,

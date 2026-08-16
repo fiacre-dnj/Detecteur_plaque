@@ -1,6 +1,15 @@
 /** `features/results-dashboard` — ce que l'analyse a trouvé, chiffre par chiffre. */
 
 export {
+  type DirectionRow,
+  type FlowBalance,
+  type Movement,
+  directionRows,
+  flowBalance,
+  movements,
+} from "./model/directions";
+
+export {
   VEHICLE_CLASSES,
   classLabel,
   crossingRate,
@@ -15,4 +24,9 @@ export {
   type VehicleClass,
 } from "./model/labels";
 
-export { ResultsDashboard } from "./ui/ResultsDashboard";
+export {
+  ClassBreakdown,
+  LineAndZoneDetail,
+  MovementMatrix,
+  ResultsDashboard,
+} from "./ui/ResultsDashboard";

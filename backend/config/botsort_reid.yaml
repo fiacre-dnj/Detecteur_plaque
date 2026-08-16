@@ -28,6 +28,17 @@ model: auto
 proximity_thresh: 0.5
 appearance_thresh: 0.25
 
-# Compensation de mouvement de caméra. `sparseOptFlow` est le meilleur compromis
-# coût/qualité sur une caméra fixe légèrement soumise au vent.
-gmc_method: sparseOptFlow
+# Compensation de mouvement de caméra. **Valeur de base, surchargée par le
+# réglage `TRAFFIC_TRACKER_GMC`** : quand les deux diffèrent, le moteur écrit un
+# fichier dérivé et c'est lui qui tourne (`resolved_tracker_config`).
+#
+# `none` et non `sparseOptFlow`, contrairement à ce que ce fichier a dit pendant
+# tout le projet. La raison est mesurée, pas supposée : `scripts/pipeline_bench.py`
+# chiffre `sparseOptFlow` à **20,2 ms par image** sur du 720p — plus cher que
+# l'inférence GPU (17,8 ms), et 39 % du temps total — pour compenser un mouvement
+# de caméra qui n'existe pas sur une caméra fixe. À comptage strictement identique,
+# le supprimer fait passer l'analyse de 19,4 à 34,8 images/s.
+#
+# Une caméra qui bouge réellement (plan embarqué, drone, mât par grand vent) doit
+# repasser à `sparseOptFlow` par le réglage. Voir ADR 0013.
+gmc_method: none

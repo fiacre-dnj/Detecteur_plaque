@@ -181,10 +181,14 @@ class TestExecutionEtResultat:
         stats = payload["stats"]
         assert stats["crossings"] == sum(line["total"] for line in stats["byLine"].values())
         for line in stats["byLine"].values():
-            assert (
-                line["total"] == line["byDirection"]["positive"] + line["byDirection"]["negative"]
-            )
-        assert sum(stats["uniqueByClass"].values()) == stats["uniqueVehicles"]
+            positive = line["byDirection"]["positive"]
+            negative = line["byDirection"]["negative"]
+            assert line["total"] == positive["total"] + negative["total"]
+            # Chaque sens porte sa propre ventilation par type, et elle somme à son
+            # total : c'est la matrice type × sens que l'écran affiche.
+            assert sum(positive["byClass"].values()) == positive["total"]
+            assert sum(negative["byClass"].values()) == negative["total"]
+        assert sum(stats["trackedByClass"].values()) == stats["trackedVehicles"]
 
     async def test_le_resultat_est_refuse_tant_que_le_job_n_est_pas_termine(
         self, client: AsyncClient
@@ -232,6 +236,89 @@ class TestExecutionEtResultat:
         stored = settings.data_dir / "jobs" / job_id / "result.json.gz"
         assert stored.read_bytes()[:2] == b"\x1f\x8b", "le résultat n'est pas gzippé sur disque"
         assert json.loads(gzip.decompress(stored.read_bytes()))["jobId"] == job_id
+
+    async def test_l_historique_porte_les_compteurs_sans_ouvrir_le_resultat(
+        self, client: AsyncClient
+    ) -> None:
+        """La liste dit ce qu'une analyse a trouvé, pas seulement quand elle a tourné.
+
+        Les colonnes sont dénormalisées en base **pour cet usage** et n'étaient
+        exposées nulle part : l'historique affichait date, fichier, modèle et durée,
+        donc rien qui aide à choisir laquelle rouvrir. Les lire ici évite d'ouvrir un
+        `result.json.gz` de plusieurs centaines de mégaoctets par ligne de tableau.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+        final = await _wait_until_done(client, job_id)
+
+        assert "trackedVehicles" in final
+        assert "crossingsTotal" in final
+
+        listed = (await client.get("/api/v1/jobs")).json()
+        row = next(item for item in listed["items"] if item["jobId"] == job_id)
+        # La liste et le détail parlent des mêmes chiffres : deux sources qui
+        # diffèrent seraient pires que pas de chiffres du tout.
+        assert row["trackedVehicles"] == final["trackedVehicles"]
+        assert row["crossingsTotal"] == final["crossingsTotal"]
+
+
+class TestVideoAnalysee:
+    """La vidéo resservie, pour rejouer une analyse archivée.
+
+    Les compteurs, le registre et l'histogramme se rejouent depuis le seul résultat.
+    L'incrustation des boîtes et le déplacement dans la timeline, eux, ont besoin de
+    la vidéo — et aucune route ne la servait.
+    """
+
+    async def test_la_video_analysee_est_resservie(self, client: AsyncClient) -> None:
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+        await _wait_until_done(client, job_id)
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/input")
+
+        assert response.status_code == 200
+        assert len(response.content) > 0
+        # `Accept-Ranges` est ce qui rend le déplacement praticable : sans lui, le
+        # navigateur retélécharge tout depuis le début à chaque clic de timeline.
+        assert response.headers["accept-ranges"] == "bytes"
+        assert "immutable" in response.headers["cache-control"]
+        # `private` : une scène de trafic contient des plaques réelles et des
+        # visages, aucun proxy partagé ne doit la garder.
+        assert "private" in response.headers["cache-control"]
+        # Un type deviné, jamais `application/octet-stream` : le navigateur refuse
+        # de lire un flux binaire dans une balise `<video>`.
+        assert response.headers["content-type"].startswith("video/")
+
+    async def test_une_video_purgee_le_dit_sans_demander_de_relancer(
+        self, client: AsyncClient, settings: Settings
+    ) -> None:
+        """**Le refus qui compte**, et pourquoi il n'est pas `result_missing`.
+
+        La vidéo est purgée plus tôt que le résultat, délibérément. Quand elle
+        manque, le résultat est intact et parfaitement affichable : envoyer
+        l'utilisateur « relancer l'analyse » lui ferait refaire un calcul inutile.
+        Le code doit donc être distinct, et le message dire « redéposez le fichier ».
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+        await _wait_until_done(client, job_id)
+
+        for candidate in (settings.data_dir / "jobs" / job_id).glob("input.*"):
+            candidate.unlink()
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/input")
+
+        assert response.status_code == 409
+        assert response.json()["code"] == "input_missing"
+        # Le résultat, lui, répond toujours : c'est tout l'intérêt de séparer les deux.
+        assert (await client.get(f"/api/v1/jobs/{job_id}/result")).status_code == 200
+
+    async def test_un_job_inconnu_rend_404(self, client: AsyncClient) -> None:
+        response = await client.get("/api/v1/jobs/inexistant/input")
+
+        assert response.status_code == 404
+        assert response.json()["code"] == "job_not_found"
 
 
 class TestSse:
@@ -417,7 +504,7 @@ class TestApercuSse:
         assert {"trackId", "globalId", "box", "counted", "identityLabel"} <= set(
             apercu["tracks"][0]
         )
-        assert "uniqueVehicles" in apercu["stats"]
+        assert "trackedVehicles" in apercu["stats"]
 
 
 class TestAnnulationEtHistorique:
@@ -534,3 +621,71 @@ class TestConfigurationDUnJob:
 
         assert response.status_code == 404
         assert response.json()["code"] == "job_not_found"
+
+    async def test_les_noms_et_roles_de_sens_font_l_aller_retour(self, client: AsyncClient) -> None:
+        """C'est ce qui les rend persistants **sans colonne dédiée**.
+
+        Les noms de sens ne servent à aucun calcul : le serveur les accepte, les
+        range dans `config_json` et les rend tels quels. C'est cette route qui les
+        ramène quand le studio recharge un job depuis l'historique — sans elle, un
+        résultat archivé afficherait « ↑ 12 · ↓ 8 » sans dire de quels sens il parle.
+        """
+        nommee = {
+            **LINE,
+            "positiveName": "Entrée rue Foch",
+            "negativeName": "Sortie rue Foch",
+            "positiveRole": "entry",
+            "negativeRole": "exit",
+        }
+        created = await _post_job(client, lines=[nommee])
+        job_id = created["body"]["jobId"]
+
+        line = (await client.get(f"/api/v1/jobs/{job_id}/config")).json()["configJson"]["lines"][0]
+
+        assert line["positiveName"] == "Entrée rue Foch"
+        assert line["negativeName"] == "Sortie rue Foch"
+        assert line["positiveRole"] == "entry"
+        assert line["negativeRole"] == "exit"
+
+    async def test_une_ligne_sans_nom_de_sens_est_acceptee(self, client: AsyncClient) -> None:
+        """La chaîne vide **est** le défaut, et elle a un sens précis.
+
+        Elle demande à l'interface de poser son libellé géométrique, recalculé quand
+        la ligne bouge. Écrire un défaut côté serveur le figerait à l'orientation
+        qu'avait la ligne au moment de l'envoi.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+
+        line = (await client.get(f"/api/v1/jobs/{job_id}/config")).json()["configJson"]["lines"][0]
+
+        assert line["positiveName"] == ""
+        assert line["negativeName"] == ""
+        assert line["positiveRole"] == "neutral"
+        assert line["negativeRole"] == "neutral"
+
+    async def test_un_role_hors_vocabulaire_est_refuse(self, client: AsyncClient) -> None:
+        """422 plutôt qu'un repli silencieux sur `neutral`.
+
+        Un rôle inventé accepté en silence retirerait des passages des totaux
+        d'entrées et de sorties sans que rien ne l'explique — et c'est exactement le
+        genre de dérive muette que ce dépôt paye le plus cher.
+        """
+        response = await client.post(
+            "/api/v1/jobs",
+            files={"file": ("carrefour.mp4", _video_bytes(), "video/mp4")},
+            data={"request": _request(lines=[{**LINE, "positiveRole": "peut-etre"}])},
+        )
+
+        assert response.status_code == 422
+
+    async def test_un_nom_de_sens_trop_long_est_refuse(self, client: AsyncClient) -> None:
+        """60 caractères : deux libellés doivent tenir de part et d'autre d'un trait
+        sur la vidéo, pas dans une colonne de tableau."""
+        response = await client.post(
+            "/api/v1/jobs",
+            files={"file": ("carrefour.mp4", _video_bytes(), "video/mp4")},
+            data={"request": _request(lines=[{**LINE, "positiveName": "x" * 61}])},
+        )
+
+        assert response.status_code == 422

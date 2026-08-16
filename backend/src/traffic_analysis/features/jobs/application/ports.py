@@ -133,6 +133,18 @@ class ResultStore(Protocol):
         """
         ...
 
+    def input_path_for(self, job_id: str) -> Path | None:
+        """Chemin de **la vidéo déposée** si elle est encore là, `None` sinon.
+
+        `None` est un état normal et non une anomalie : la vidéo a un TTL plus court
+        que le job, donc un résultat intact peut très bien l'avoir perdue.
+
+        Sert à rejouer une analyse archivée. Les chiffres, le registre et
+        l'histogramme se rejouent depuis le seul résultat ; l'incrustation des boîtes
+        et le déplacement dans la timeline, eux, ont besoin de la vidéo.
+        """
+        ...
+
     def delete_input(self, job_id: str) -> bool:
         """Supprime **la vidéo déposée** en gardant le résultat. Idempotent.
 

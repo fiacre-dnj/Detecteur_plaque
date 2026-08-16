@@ -70,6 +70,7 @@ class ModelRegistry:
         "_configured_device",
         "_configured_half",
         "_device",
+        "_device_reason",
         "_half",
         "_lock",
         "_max_loaded",
@@ -91,6 +92,9 @@ class ModelRegistry:
         self._lock = threading.Lock()
         self._device: str | None = None
         self._half: bool | None = None
+        #: Pourquoi `_device` vaut ce qu'il vaut — jamais recalculée après coup,
+        #: mémorisée en même temps que `_device` pour rester cohérente avec elle.
+        self._device_reason: str | None = None
 
     # ── Catalogue ────────────────────────────────────────────────────────────
 
@@ -128,32 +132,140 @@ class ModelRegistry:
 
         `torch` est importé localement : les tests du domaine ne doivent jamais
         payer un import de deux secondes pour une valeur qu'ils n'utilisent pas.
+
+        `device_reason()` explique **pourquoi** cette valeur a été retenue —
+        distinction utile parce que « cpu » ne dit pas si c'est parce qu'aucun
+        GPU n'a été trouvé, parce que la détection a échoué, ou parce que c'est
+        ce que l'opérateur a demandé.
         """
         if self._device is not None:
             return self._device
 
         if self._configured_device != "auto":
             self._device = self._configured_device
+            self._device_reason = "configuré explicitement"
             return self._device
 
         try:
             import torch
 
-            self._device = "0" if torch.cuda.is_available() else "cpu"
-        except Exception:
-            logger.warning("torch indisponible — bascule sur CPU")
+            if torch.cuda.is_available():
+                self._device = "0"
+                self._device_reason = "CUDA détecté"
+            else:
+                self._device = "cpu"
+                self._device_reason = "aucun GPU CUDA détecté"
+        except Exception as exc:
+            logger.warning("torch indisponible — bascule sur CPU", error=str(exc))
             self._device = "cpu"
+            self._device_reason = "torch indisponible"
         return self._device
 
-    def half(self) -> bool:
-        """fp16 **seulement sur GPU**.
+    def device_reason(self) -> str | None:
+        """Pourquoi `device()` vaut ce qu'il vaut. `None` avant tout appel à `device()`.
 
-        Sur CPU, `half=True` ne va pas plus vite : il ralentit, parce que les
-        noyaux fp16 n'y sont pas optimisés (piège 30 de prompt/13).
+        Exposé séparément plutôt que concaténé à `device()` : le badge d'état du
+        frontend affiche `device` seul, et cette explication n'a de sens que dans
+        un panneau de diagnostic, pas accolée à chaque « cpu » du badge.
+        """
+        return self._device_reason
+
+    def gpu_name(self) -> str | None:
+        """Nom du GPU retenu par `torch.cuda.get_device_name`, ou `None`.
+
+        `None` dans trois cas qu'on ne distingue pas ici — hors GPU, torch
+        indisponible, ou l'appel a échoué malgré un device GPU résolu — parce
+        qu'aucun des trois n'appelle un geste différent : dans les trois, il n'y a
+        simplement rien à nommer. Ne lève jamais, pour la même raison que
+        `ultralytics_version()` : c'est un champ de badge, pas un chemin critique.
+        """
+        device = self.device()
+        if device == "cpu":
+            return None
+        try:
+            import torch
+
+            return str(torch.cuda.get_device_name(self._device_index()))
+        except Exception:
+            return None
+
+    def _device_index(self) -> int:
+        """Index CUDA du device retenu. `« cuda:0 »` comme `« 0 »` donnent 0.
+
+        Toute forme non numérique retombe sur 0 : un device qu'on n'arrive pas à
+        décomposer est le premier GPU dans tous les cas rencontrés, et les deux
+        appelants (`gpu_name`, `_fp16_is_slow`) traitent déjà l'échec sans lever.
+        """
+        device = self.device()
+        if device.isdigit():
+            return int(device)
+        _, _, suffix = device.partition(":")
+        return int(suffix) if suffix.isdigit() else 0
+
+    def _fp16_is_slow(self) -> bool:
+        """Vrai **seulement si** le GPU retenu est connu pour calculer mal le fp16.
+
+        Avant Volta (capability < 7.0), il n'y a pas de cœurs tensoriels et le fp16
+        est calculé à une fraction du débit fp32 : mesuré sur une Quadro P1000
+        (6.1, Pascal), yolov8n passe de **38,9 ms à 48,9 ms par image** en demi-
+        précision — le réglage censé accélérer coûte 26 %.
+
+        La question n'est donc pas « suis-je sur GPU » mais « ce GPU-ci calcule-t-il
+        le fp16 vite », et c'est ce que `half()` demande désormais.
+
+        **L'inconnu ne vaut pas un refus.** Si la capability n'est pas lisible —
+        torch absent, device explicite sur une machine sans pilote — on rend `False`
+        et le réglage de l'opérateur passe. Contredire un `half=True` explicite sur
+        la foi d'une sonde qui vient d'échouer serait la même faute que le repli
+        silencieux qu'`ADR 0011` interdit : on ne désactive que ce qu'on a mesuré.
+        """
+        try:
+            import torch
+
+            major, minor = torch.cuda.get_device_capability(self._device_index())
+        except Exception:
+            return False
+        if major >= 7:
+            return False
+        logger.info(
+            "fp16 désactivé : ce GPU le calcule plus lentement que le fp32",
+            capability=f"{major}.{minor}",
+            gpu=self.gpu_name(),
+        )
+        return True
+
+    def half(self) -> bool:
+        """fp16 **seulement sur un GPU qui le calcule vite**.
+
+        Deux conditions, et il a fallu les deux :
+
+        1. pas sur CPU. `half=True` n'y va pas plus vite, il ralentit, parce que
+           les noyaux fp16 n'y sont pas optimisés (piège 30 de prompt/13) ;
+        2. pas sur un GPU d'avant Volta. La même erreur s'y répète pour une autre
+           raison matérielle — voir `_fp16_is_slow`.
         """
         if self._half is None:
-            self._half = self._configured_half and self.device() != "cpu"
+            self._half = (
+                self._configured_half and self.device() != "cpu" and not self._fp16_is_slow()
+            )
         return self._half
+
+    def _fall_back_to_cpu(self, reason: str) -> None:
+        """Invalide un device GPU déjà mémorisé et repose « cpu » à sa place.
+
+        **Réservé au repli après un échec réel d'inférence** (voir `warmup`) :
+        `torch.cuda.is_available()` peut répondre vrai alors que la première
+        inférence réelle échoue — pilote incomplet, VRAM insuffisante, CUDA mal
+        installé. Sans ce repli, le service resterait configuré sur un device qui
+        vient de démontrer qu'il ne fonctionne pas, et chaque analyse ultérieure
+        échouerait de la même façon sans que rien ne corrige le diagnostic.
+
+        `_half` est invalidé avec `_device` : un GPU disparu ne doit pas laisser
+        `half=True` actif sur le CPU qui prend sa place (piège 30 de prompt/13).
+        """
+        self._device = "cpu"
+        self._device_reason = reason
+        self._half = None
 
     def apply_thread_budget(self, threads: int) -> None:
         """Borne le nombre de threads d'inférence CPU de torch. `0` ne fait rien.
@@ -184,6 +296,35 @@ class ModelRegistry:
             logger.info("budget de threads d'inférence posé", threads=threads)
         except Exception as exc:
             logger.warning("budget de threads non appliqué", error=str(exc))
+
+    def enable_cudnn_autotune(self) -> None:
+        """Laisse cuDNN choisir ses algorithmes de convolution par la mesure.
+
+        **Appelée une fois au démarrage, avant toute inférence**, comme
+        `apply_thread_budget` et pour la même raison : le choix est mémorisé par
+        forme d'entrée, et le déclencher au milieu d'une analyse ferait payer
+        l'étalonnage à une image en plein vol.
+
+        L'échange est explicite : les premières images d'une **nouvelle forme**
+        d'entrée coûtent plus cher, parce que cuDNN essaie plusieurs algorithmes
+        avant de garder le meilleur. Notre forme est fixe pour une vidéo donnée —
+        `imgsz` est un réglage, la résolution ne change pas en cours de route —
+        donc l'étalonnage est amorti dès les premières images et le préchauffage en
+        absorbe l'essentiel.
+
+        Sans effet hors GPU, et sans effet si torch est absent. Ne lève jamais :
+        c'est une optimisation, et un service qui refuserait de démarrer parce
+        qu'il n'a pas pu l'activer échangerait de la vitesse contre une panne.
+        """
+        if self.device() == "cpu":
+            return
+        try:
+            import torch
+
+            torch.backends.cudnn.benchmark = True
+            logger.info("autotune cuDNN activé")
+        except Exception as exc:
+            logger.warning("autotune cuDNN non activé", error=str(exc))
 
     def loaded_ids(self) -> list[str]:
         with self._lock:
@@ -355,6 +496,16 @@ class ModelRegistry:
         couches : sans préchauffage, il se lit comme un blocage de plusieurs
         dizaines de secondes (piège 31 de prompt/13).
 
+        **C'est aussi la seule vérification réelle du GPU choisi.**
+        `torch.cuda.is_available()` (dans `device()`) ne fait qu'interroger le
+        pilote ; il peut répondre vrai alors qu'une inférence échoue quand même —
+        pilote incomplet, VRAM déjà saturée par un autre processus, build CUDA
+        incompatible. Si cette première inférence réelle échoue sur un device
+        auto-détecté (pas explicitement demandé par l'opérateur), on retombe sur
+        CPU et on retente une fois : mieux vaut démarrer plus lentement que rester
+        configuré sur un device qui vient de démontrer qu'il ne fonctionne pas, et
+        faire échouer de la même façon chaque analyse jusqu'au prochain redémarrage.
+
         Un échec est **journalisé, pas fatal** : mieux vaut un service qui démarre
         et qui sera lent une fois qu'un service qui refuse de démarrer.
         """
@@ -362,9 +513,30 @@ class ModelRegistry:
             import numpy as np
 
             blank = np.zeros((WARMUP_SIDE, WARMUP_SIDE, 3), dtype=np.uint8)
-            with self.lease(model_id) as model:
-                model.predict(blank, verbose=False, device=self.device(), half=self.half())
-            logger.info("modèle préchauffé", model_id=model_id)
+            try:
+                with self.lease(model_id) as model:
+                    model.predict(blank, verbose=False, device=self.device(), half=self.half())
+            except Exception as exc:
+                # Un device explicitement demandé (`device != "auto"`) reste tel
+                # quel : l'opérateur a fait ce choix, et le retourner en silence
+                # masquerait une configuration fausse plutôt que de la signaler.
+                if self._configured_device != "auto" or self.device() == "cpu":
+                    raise
+                logger.warning(
+                    "échec d'inférence sur le device détecté — repli CPU",
+                    model_id=model_id,
+                    device=self.device(),
+                    error=str(exc),
+                )
+                self._fall_back_to_cpu("échec d'inférence GPU au préchauffage, repli CPU")
+                with self.lease(model_id) as model:
+                    model.predict(blank, verbose=False, device=self.device(), half=self.half())
+            logger.info(
+                "modèle préchauffé",
+                model_id=model_id,
+                device=self.device(),
+                device_reason=self.device_reason(),
+            )
         except Exception as exc:
             logger.warning("préchauffage en échec", model_id=model_id, error=str(exc))
 

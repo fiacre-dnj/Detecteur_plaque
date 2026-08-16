@@ -154,7 +154,7 @@ class TestExportCsv:
         assert "Type" in header
         # 3. Les en-têtes sont en français, comme tout ce qui est destiné à un
         #    lecteur humain.
-        assert "Ré-identifications" in header
+        assert "Franchissements" in header
 
     async def test_les_nombres_utilisent_la_virgule_decimale(self, client: AsyncClient) -> None:
         """Sinon Excel lit du texte et refuse de faire la moindre somme."""

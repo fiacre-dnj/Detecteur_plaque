@@ -29,6 +29,16 @@ export interface Health {
   environment: string;
   /** « cpu », « 0 », « cuda:0 »… */
   device: string;
+  /**
+   * Pourquoi `device` vaut cette valeur : configuré explicitement, GPU détecté,
+   * aucun GPU détecté, torch indisponible, ou repli après un échec d'inférence
+   * constaté au préchauffage. Un « cpu » seul ne distingue pas ces causes, qui
+   * n'appellent pas le même geste — installer un pilote n'est pas la même chose
+   * que revoir un réglage explicite.
+   */
+  deviceReason: string | null;
+  /** Nom du GPU retenu par le pilote, `null` hors GPU. */
+  gpuName: string | null;
   /** Toujours faux hors GPU : en fp16 sur CPU, l'inférence ralentit. */
   half: boolean;
   ultralyticsVersion: string;
@@ -41,6 +51,18 @@ export interface Health {
    * du texte, qui dépend d'un autre fichier — voir `plateOcrAvailable`.
    */
   plateAvailable: boolean;
+  /**
+   * Le détecteur de plaques a-t-il passé son auto-test au démarrage — chargement
+   * réel, puis une inférence à vide ?
+   *
+   * `null` = pas encore testé (préchauffage désactivé, ou toujours en cours).
+   *
+   * **`false` avec un `plateAvailable: true` est l'état à montrer** : les poids sont
+   * présents et ne se chargent pas, donc l'ANPR est muette alors que tout paraît
+   * vert. `plateAvailable` ne peut pas le voir — ce n'est qu'un test de présence de
+   * fichier, délibérément, parce que l'interface interroge `/health` en permanence.
+   */
+  plateLoadable: boolean | null;
   /**
    * Le modèle de **lecture** et son dictionnaire de caractères sont présents.
    *
@@ -142,6 +164,35 @@ export interface Job {
   fileName: string;
   createdAt: string;
   finishedAt: string | null;
+  /**
+   * Ce que l'analyse a trouvé, dénormalisé en base **pour cette liste**.
+   *
+   * `0` tant que le job n'est pas terminé, jamais `null` : les agrégats sont écrits
+   * en une fois, à la fin. Sur une trame SSE de progression ils valent donc zéro, et
+   * c'est exact — rien n'est encore consolidé.
+   *
+   * Un résultat archivé **avant le 2026-08-12** compte des véhicules là où les
+   * suivants comptent des passages : les deux ne sont pas comparables (ADR 0014).
+   * Un résultat archivé **avant le 2026-08-13** comptait des identités
+   * ré-identifiées là où celui-ci compte des objets suivis (ADR 0016).
+   */
+  trackedVehicles: number;
+  crossingsTotal: number;
+}
+
+/**
+ * Un job **et la configuration qui l'a produit**.
+ *
+ * Servi par `GET /jobs/{id}/config` et par lui seul : `configJson` porte la géométrie
+ * complète, et la faire voyager sur chaque trame SSE de progression — plusieurs fois
+ * par seconde, pour une valeur qui ne change jamais — serait du gaspillage pur.
+ *
+ * Le type existe parce que sa forme était **inlinée** au point d'appel
+ * (`Job & { configJson: AnalysisRequest }`), seul endroit du code qui échappait à la
+ * règle « `contracts.ts` est le miroir unique des schémas pydantic ».
+ */
+export interface JobDetail extends Job {
+  configJson: AnalysisRequest;
 }
 
 export interface Page<T> {
@@ -171,12 +222,30 @@ export interface Point {
 }
 
 /**
+ * Rôle d'un sens de franchissement, tel que l'utilisateur le déclare.
+ *
+ * Purement descriptif côté serveur : **aucun total n'en dépend**. C'est le
+ * frontend, et lui seul, qui s'en sert pour agréger « combien de véhicules entrent
+ * dans cette rue ». Deux conséquences voulues : corriger un rôle est instantané et
+ * ne demande pas de relancer l'analyse, et la règle de classement n'existe pas en
+ * double.
+ */
+export type DirectionRole = 'entry' | 'exit' | 'neutral';
+
+/** Les deux sens d'une ligne, dans la convention du serveur. */
+export type DirectionSign = 'positive' | 'negative';
+
+/**
  * Une ligne de comptage.
  *
  * `color` appartient à l'interface : le serveur l'accepte pour qu'une
  * configuration soit rejouable à l'identique, et ne l'interprète **jamais**.
  *
  * `zoneId` restreint la ligne à une zone : `null` signifie « toute l'image ».
+ *
+ * Les quatre champs de sens font l'aller-retour par `configJson`, ce qui les rend
+ * persistants sans colonne dédiée : recharger un job depuis l'historique ramène les
+ * libellés avec la géométrie.
  */
 export interface CountingLine {
   id: string;
@@ -185,6 +254,19 @@ export interface CountingLine {
   zoneId: string | null;
   a: Point;
   b: Point;
+  /**
+   * Nom du sens A→B, ou `''`.
+   *
+   * **La chaîne vide n'est pas un nom manquant** : c'est le signal de poser le
+   * défaut géométrique de `defaultDirectionNames`, recalculé quand la ligne bouge.
+   * Y écrire un défaut le figerait à l'orientation qu'avait la ligne ce jour-là.
+   * Utiliser `directionLabel()` pour lire, jamais ce champ directement.
+   */
+  positiveName: string;
+  /** Nom du sens B→A. Même règle. */
+  negativeName: string;
+  positiveRole: DirectionRole;
+  negativeRole: DirectionRole;
 }
 
 export interface Zone {
@@ -201,8 +283,13 @@ export interface AnalysisRequest {
   confidenceThreshold: number;
   iouThreshold: number;
   minHits: number;
+  /**
+   * Au-delà de ce silence, la piste est abandonnée et son identifiant rendu au
+   * tracker. **Miroir exact de `track_buffer` côté serveur** : une occlusion plus
+   * longue donne un véhicule de plus, puisque plus rien ne recolle deux pistes
+   * (ADR 0016).
+   */
   maxLostMs: number;
-  reidMinSimilarity: number;
   maskOutsideZones: boolean;
   frameStride: number;
   detectPlates: boolean;
@@ -218,8 +305,59 @@ export interface AnalysisRequest {
   readPlateText: boolean;
   /** `null` ⇒ les vitesses restent en px/s au lieu d'être converties à tort. */
   pixelsPerMeter: number | null;
+  /**
+   * Classes à détecter **et** à compter, par identifiant COCO.
+   *
+   * Le catalogue cochable vient de `GET /api/v1/models/classes` : il n'est jamais
+   * recopié ici, sinon une case cochable dans le navigateur pourrait être refusée
+   * à l'envoi. Une liste vide est refusée par le serveur — elle ne restreindrait
+   * rien et compterait les 80 classes de COCO.
+   */
+  classIds: number[];
+  /**
+   * Cadence maximale de l'analyse, en multiples de la vitesse réelle de la scène.
+   *
+   * `null` — le défaut — n'impose aucune borne : l'analyse va aussi vite que la
+   * machine le permet. `1` la fait durer exactement la durée de la vidéo, ce qui
+   * est le **seul** réglage rendant l'aperçu live regardable : le client cale sa
+   * balise `<video>` sur le temps de scène analysé, donc un serveur deux fois plus
+   * rapide que la scène produit un aperçu deux fois trop rapide.
+   *
+   * Borné à [0,25 ; 8] par le serveur. Sans effet en direct, où c'est le client qui
+   * cadence son envoi.
+   */
+  analysisSpeed: number | null;
+  /**
+   * Plafond **absolu** de l'analyse, en images analysées par seconde réelle —
+   * indépendant de la cadence de la source.
+   *
+   * `null` — le défaut — n'impose aucune borne. Distinct d'`analysisSpeed`, qui
+   * borne une vitesse *relative* au temps de la scène : les deux peuvent être
+   * posés ensemble, et c'est le plus restrictif des deux qui s'applique. Utile
+   * pour brider le débit du serveur lui-même plutôt que la vitesse de lecture —
+   * deux caméras à cadences différentes partageant la même machine, par exemple.
+   *
+   * Borné à [1 ; 240] par le serveur. Sans effet en direct.
+   */
+  maxAnalysisFps: number | null;
   lines: CountingLine[];
   zones: Zone[];
+}
+
+/**
+ * Une classe cochable, servie par `GET /api/v1/models/classes`.
+ *
+ * Miroir de `DetectableClassSchema`. `cocoName` est la clé des `byClass` du
+ * résultat ; `label` est ce qu'on affiche. Ne jamais confondre les deux : une
+ * correspondance faite sur le libellé traduit ne trouverait jamais rien.
+ */
+export interface DetectableClass {
+  id: number;
+  cocoName: string;
+  label: string;
+  category: CountCategory;
+  /** Coché à l'ouverture : les quatre véhicules, le comportement historique. */
+  defaultSelected: boolean;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -280,13 +418,28 @@ export interface PlateDetection {
 /** Une piste, telle qu'une frame de la timeline la fige. */
 export interface TrackSnapshot {
   trackId: number;
-  /** Identité stable au travers des occlusions. C'est **sous elle** qu'on compte. */
+  /**
+   * Numéro du véhicule, et **c'est sous lui qu'on compte**.
+   *
+   * Strictement croissant sur l'analyse, jamais réattribué : un `#7` désigne le même
+   * véhicule du début à la fin. Ce n'est pas l'identifiant du tracker (`trackId`,
+   * juste au-dessus), pour une raison de correction expliquée dans
+   * `TrackNumbering` côté serveur.
+   *
+   * `0` signifie « piste pas encore confirmée » — un état bref, pendant lequel rien
+   * n'est compté et l'overlay dessine la boîte en pointillés **sans numéro**.
+   * Afficher `#0` se lirait comme un véhicule zéro.
+   *
+   * La suite a des trous : un scintillement du détecteur consomme un numéro sans
+   * jamais être compté. `stats.trackedVehicles` est donc inférieur au plus grand
+   * numéro visible, et c'est voulu.
+   */
   globalId: number;
   classId: number;
   /** Lecture de la frame courante — peut vaciller d'une image à l'autre. */
   label: string;
   /**
-   * Libellé **voté** sur la galerie d'apparence.
+   * Libellé **voté** sur toute la vie du véhicule.
    *
    * Le canvas colore par lui et non par `label` : une lecture qui vacille ne doit
    * pas faire clignoter la couleur de la boîte.
@@ -297,7 +450,6 @@ export interface TrackSnapshot {
   /** Images accumulées. En dessous de `minHits`, la boîte est en pointillés. */
   hits: number;
   counted: boolean;
-  reidCount: number;
   speedPxS: number | null;
   plates: PlateDetection[];
   /**
@@ -324,6 +476,15 @@ export interface CrossingEvent {
   globalId: number;
   trackId: number;
   label: string;
+  /**
+   * Véhicule ou personne, **décidé par le serveur**.
+   *
+   * Transporté plutôt que déduit de `label` : la relecture ventile les
+   * franchissements par catégorie au fil de la tête de lecture, et lui faire
+   * recopier la table des classes ferait vivre la même règle à deux endroits. Un
+   * franchissement changerait alors de colonne selon l'écran qui le montre.
+   */
+  category: CountCategory;
   /** Signe du côté d'arrivée par rapport à la ligne orientée A→B : `+1` ou `-1`. */
   direction: number;
   timestampMs: number;
@@ -354,9 +515,16 @@ export interface VehicleRecord {
   label: string;
   firstSeenMs: number;
   lastSeenMs: number;
+  /**
+   * Les lignes franchies, **dans l'ordre chronologique**.
+   *
+   * L'ordre est ce qui rend la matrice origine-destination calculable : deux
+   * franchissements consécutifs décrivent un mouvement « entré par ici, sorti par
+   * là », et c'est la réponse à « combien de véhicules venant du nord tournent vers
+   * l'est ».
+   */
   crossedLines: { lineId: string; direction: number; timestampMs: number }[];
   zonesVisited: string[];
-  reidCount: number;
   avgSpeedPxS: number | null;
   /** `null` sans échelle px/m — et non 0, qui voudrait dire « à l'arrêt ». */
   avgSpeedKmh: number | null;
@@ -425,10 +593,34 @@ export interface VideoInfo {
   durationMs: number;
 }
 
+/**
+ * Ce qu'un **sens** d'une ligne sait de lui-même.
+ *
+ * Le détail par sens n'est pas un confort d'affichage : c'est la question que pose
+ * un carrefour. « 240 franchissements » ne dit pas si la rue se remplit ou se vide.
+ *
+ * `firstMs` / `lastMs` sont `null` tant que le sens n'a rien compté — et non `0`,
+ * qui se lirait comme « à la première image de la vidéo ».
+ */
+export interface DirectionTally {
+  total: number;
+  byClass: Record<string, number>;
+  firstMs: number | null;
+  lastMs: number | null;
+}
+
+/**
+ * Les compteurs d'une ligne.
+ *
+ * `total` et `byClass` sont **dérivés** des deux sens côté serveur, et publiés
+ * uniquement pour éviter de resommer à chaque rafraîchissement. Ne jamais les
+ * recalculer autrement : `total === byDirection.positive.total +
+ * byDirection.negative.total`.
+ */
 export interface LineTally {
   total: number;
   byClass: Record<string, number>;
-  byDirection: { positive: number; negative: number };
+  byDirection: Record<DirectionSign, DirectionTally>;
 }
 
 export interface ZoneTally {
@@ -458,22 +650,77 @@ export interface Diagnostics {
   confirmedTracks: number;
   tentativeTracks: number;
   rescuedByLowScore: number;
+  /**
+   * **Quasi-franchissements par ligne** : pistes éteintes à portée d'une ligne sans
+   * l'avoir franchie, indexées par identifiant de ligne.
+   *
+   * Le seul diagnostic qui porte sur le **tracé** et non sur la détection. Il
+   * sépare deux situations qui affichent toutes les deux `0` sur une ligne et
+   * appellent des gestes opposés : personne ne passe, ou la ligne est posée là où
+   * les pistes meurent — près d'un bord d'image, ou dans le champ lointain où les
+   * véhicules sont trop petits pour être suivis.
+   *
+   * **Ne s'additionne à aucun total** : ce n'est pas un franchissement présumé.
+   *
+   * Optionnel : les résultats archivés avant l'ajout du champ n'en ont pas, et une
+   * absence doit se lire « pas mesuré » et non « zéro ».
+   */
+  nearMisses?: Record<string, number>;
 }
+
+/** Catégorie d'un objet compté. Les totaux ne mélangent jamais les deux. */
+export type CountCategory = 'vehicle' | 'person';
 
 /**
  * Statistiques d'une analyse.
  *
  * Deux invariants que le frontend ne doit jamais recalculer autrement :
  * `crossings === Σ byLine[*].total` et `total === positive + negative`.
+ *
+ * `crossings` compte des **passages** : un aller-retour en vaut deux, et deux lignes
+ * en travers de la même voie en valent deux. `trackedVehicles` compte des objets
+ * suivis. Ce sont deux unités, et les diviser l'une par l'autre est l'erreur que
+ * l'invariant 3 interdit.
  */
 export interface AnalysisStats {
-  uniqueVehicles: number;
-  uniqueByClass: Record<string, number>;
+  /**
+   * **Le comptage global** : combien d'objets le tracker a suivis, toutes classes
+   * confondues, qu'ils aient franchi une ligne ou non.
+   *
+   * Un objet suivi = un véhicule (ADR 0016). Ne comptent que les pistes confirmées :
+   * un scintillement du détecteur sur une seule image n'est pas un véhicule.
+   *
+   * Remplace `uniqueVehicles`, dont le nom promettait une unicité que la
+   * ré-identification ne tenait pas — le même numéro pouvait réapparaître au milieu
+   * de la vidéo, ce qui est le bug qui a motivé l'ADR.
+   */
+  trackedVehicles: number;
+  trackedByClass: Record<string, number>;
   crossings: number;
+  /**
+   * Combien de véhicules **distincts** ont franchi au moins une ligne.
+   *
+   * Une autre unité que `crossings`, pas un doublon : celui-là compte des passages
+   * — un aller-retour en vaut deux — alors que celui-ci compte des véhicules, et
+   * il est donc borné par `trackedVehicles`.
+   *
+   * C'est le numérateur du « taux de franchissement ». Avec `crossings` au
+   * numérateur, le taux mélangeait deux unités et pouvait dépasser 100 % sans que
+   * rien ne le signale. Son complément — `trackedVehicles - crossedUnique` — est le
+   * nombre de véhicules vus qui n'ont franchi aucune ligne : stationnés, ou hors du
+   * tracé.
+   */
+  crossedUnique: number;
   byClass: Record<string, number>;
+  /**
+   * Passages ventilés en véhicules et personnes. Somme garantie égale à
+   * `crossings` : le serveur la dérive de `byClass`, il ne la compte pas à part.
+   *
+   * Une catégorie absente signifie zéro passage — jamais « pas d'information ».
+   */
+  byCategory: Partial<Record<CountCategory, number>>;
   byLine: Record<string, LineTally>;
   byZone: Record<string, ZoneTally>;
-  reidHits: number;
   vehiclesPerMinute: number;
   activeTracks: number;
   elapsedMs: number;

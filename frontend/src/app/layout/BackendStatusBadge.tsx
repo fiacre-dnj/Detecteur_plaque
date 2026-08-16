@@ -44,19 +44,36 @@ export function BackendStatusBadge() {
   // Le détail matériel est dans l'infobulle plutôt qu'à l'écran : il compte
   // quand on interprète un chiffre de latence, pas en permanence.
   const detail = [
+    // La raison distingue « aucun GPU sur cette machine » de « la détection a
+    // échoué » — deux causes qui n'appellent pas le même geste. Le nom du GPU
+    // n'apparaît que s'il y en a un à nommer.
+    health.gpuName !== null
+      ? `${health.device === "cpu" ? "CPU" : "GPU"} (${health.gpuName})`
+      : health.deviceReason !== null
+        ? `${health.device === "cpu" ? "CPU" : "GPU"} (${health.deviceReason})`
+        : null,
     `Ultralytics ${health.ultralyticsVersion}`,
     health.loadedModels.length > 0
       ? `Résidents : ${health.loadedModels.join(", ")}`
       : "Aucun modèle en mémoire",
-    // Trois états et non deux. « Lecture de plaques disponible » décrivait déjà ce qui
-    // n'était qu'une détection ; le corriger maintenant évite qu'un serveur sans OCR
-    // annonce une lecture qu'il ne sait pas faire.
-    !health.plateAvailable
-      ? "Plaques : indisponibles"
-      : health.plateOcrAvailable
-        ? "Plaques : détection et lecture disponibles"
-        : "Plaques : détection seule, sans lecture du texte",
-  ].join(" · ");
+    // Quatre états et non deux. « Lecture de plaques disponible » décrivait déjà ce qui
+    // n'était qu'une détection ; le corriger évite qu'un serveur sans OCR annonce une
+    // lecture qu'il ne sait pas faire.
+    //
+    // Le quatrième — poids présents, auto-test en échec — est le seul qu'aucun autre
+    // drapeau ne peut exprimer, et c'est celui qui trompe : `plateAvailable` est vrai,
+    // l'option est cochable, et aucune plaque ne sortira jamais. Il passe donc en
+    // premier dans la liste.
+    health.plateAvailable && health.plateLoadable === false
+      ? "Plaques : modèle présent mais ILLISIBLE — l'ANPR ne rendra rien"
+      : !health.plateAvailable
+        ? "Plaques : indisponibles"
+        : health.plateOcrAvailable
+          ? "Plaques : détection et lecture disponibles"
+          : "Plaques : détection seule, sans lecture du texte",
+  ]
+    .filter((line): line is string => line !== null)
+    .join(" · ");
 
   return (
     <span

@@ -141,7 +141,7 @@ class PlateDetector(Protocol):
 
         Un lot et non un recadrage, pour la même raison que `PlateReader.read` : c'est
         à l'adaptateur de décider comment amortir ses inférences, et il ne peut le
-        faire que s'il voit toute la frame d'un coup. L'implémentation ONNX sait
+        faire que s'il voit toute la frame d'un coup. L'implémentation Ultralytics sait
         empaqueter plusieurs recadrages dans une seule entrée de réseau — un échange
         rappel/vitesse qu'elle documente et que le déploiement arbitre.
 
@@ -155,11 +155,28 @@ class PlateDetector(Protocol):
 
     @property
     def available(self) -> bool:
-        """Le modèle est-il réellement chargeable ?
+        """Les poids sont-ils présents ?
 
         Distinct de « l'objet existe » : les poids sont chargés paresseusement, et
         leur absence ne doit pas empêcher le service de démarrer — l'option est
         simplement signalée indisponible dans `/health` et désactivée dans l'UI.
+
+        Distinct aussi de `probe()` : celui-ci répond « le fichier est là », pas
+        « le fichier est utilisable ». Un poids corrompu ou d'un format que son
+        suffixe contredit rend `True` ici et échoue au chargement.
+        """
+        ...
+
+    def probe(self) -> bool:
+        """Charge les poids et lance **une** inférence à vide. Ne lève jamais.
+
+        Appelé une fois au démarrage, dans un thread worker, et **jamais** depuis
+        une route : c'est une opération de plusieurs secondes.
+
+        Sépare deux états que `available` confondait, et cette confusion a un
+        historique ici — trois pannes silencieuses de la même famille, où un
+        drapeau vert accompagnait un pipeline muet. Un `available: true` avec un
+        `probe()` faux nomme la panne au lieu de la laisser deviner.
         """
         ...
 

@@ -94,7 +94,6 @@ describe("contrat d'une piste", () => {
       "plateText",
       "plateTextScore",
       "plates",
-      "reidCount",
       "score",
       "speedPxS",
       "trackId",
@@ -216,21 +215,53 @@ describe("invariants que l'affichage ne doit jamais contredire", () => {
 
   it("total === positive + negative pour chaque ligne", () => {
     for (const [lineId, tally] of Object.entries(result.stats.byLine)) {
-      expect(tally.byDirection.positive + tally.byDirection.negative, lineId).toBe(tally.total);
+      expect(
+        tally.byDirection.positive.total + tally.byDirection.negative.total,
+        lineId,
+      ).toBe(tally.total);
+    }
+  });
+
+  it("chaque sens ventile par type, et sa ventilation somme à son total", () => {
+    // La matrice type × sens que l'écran affiche. Sans cette égalité, « 3 camions
+    // entrent » pourrait coexister avec « 2 passages dans ce sens ».
+    for (const [lineId, tally] of Object.entries(result.stats.byLine)) {
+      for (const sign of ["positive", "negative"] as const) {
+        const side = tally.byDirection[sign];
+        const summed = Object.values(side.byClass).reduce((sum, count) => sum + count, 0);
+        expect(summed, `${lineId} ${sign}`).toBe(side.total);
+      }
+    }
+  });
+
+  it("un sens sans passage porte `null` et non 0 comme premier instant", () => {
+    // `0` se lirait « à la première image de la vidéo », ce qui est une affirmation
+    // et non une absence.
+    for (const tally of Object.values(result.stats.byLine)) {
+      for (const sign of ["positive", "negative"] as const) {
+        const side = tally.byDirection[sign];
+        if (side.total === 0) {
+          expect(side.firstMs).toBeNull();
+          expect(side.lastMs).toBeNull();
+        } else {
+          expect(typeof side.firstMs).toBe("number");
+          expect(typeof side.lastMs).toBe("number");
+        }
+      }
     }
   });
 
   it("deux véhicules en sens opposés comptent chacun dans son sens", () => {
-    // La fixture décrit **deux véhicules distincts** traversant en sens
-    // opposés — pas un aller-retour, qui ne compterait qu'une fois depuis
-    // l'ADR 0009. La déduplication porte sur l'identité : deux identités
-    // distinctes comptent toujours chacune.
+    // La fixture décrit deux véhicules distincts traversant en sens opposés. Depuis
+    // ADR 0016 il n'y a plus de déduplication du tout : chaque franchissement
+    // observé compte, donc un aller-retour du *même* véhicule donnerait le même
+    // résultat — ce qui n'était pas vrai sous ADR 0009.
     const tally = result.stats.byLine.l1;
     expect(tally).toBeDefined();
     if (tally === undefined) return;
 
-    expect(tally.byDirection.positive).toBe(1);
-    expect(tally.byDirection.negative).toBe(1);
+    expect(tally.byDirection.positive.total).toBe(1);
+    expect(tally.byDirection.negative.total).toBe(1);
   });
 
   it("un franchissement porte un sens qui vaut +1 ou -1", () => {
@@ -250,8 +281,34 @@ describe("invariants que l'affichage ne doit jamais contredire", () => {
     }
   });
 
-  it("uniqueVehicles correspond à la taille du registre", () => {
-    expect(result.stats.uniqueVehicles).toBe(result.vehicles.length);
+  it("trackedVehicles correspond exactement à la taille du registre", () => {
+    // **Égalité et non inégalité** : les deux filtrent sur la même confirmation de
+    // piste depuis ADR 0016. Le total est donc vérifiable ligne à ligne, ce qui est
+    // toute la raison d'être du registre.
+    expect(result.stats.trackedVehicles).toBe(result.vehicles.length);
+  });
+
+  it("la répartition par type somme au nombre de véhicules", () => {
+    const summed = Object.values(result.stats.trackedByClass).reduce(
+      (sum, count) => sum + count,
+      0,
+    );
+    expect(summed).toBe(result.stats.trackedVehicles);
+  });
+
+  it("les véhicules qui ont franchi ne dépassent pas ceux qui ont été vus", () => {
+    // L'inégalité qui fait du taux de franchissement un pourcentage. Avec
+    // `crossings` au numérateur, il dépassait 100 % dès le premier aller-retour.
+    expect(result.stats.crossedUnique).toBeLessThanOrEqual(result.stats.trackedVehicles);
+  });
+
+  it("les numéros de véhicule sont strictement croissants et sans répétition", () => {
+    // **Le défaut qu'ADR 0016 supprime, verrouillé de l'autre côté du fil.** La
+    // galerie relâchait une identité puis la ré-attachait, donc le même `#1` pouvait
+    // réapparaître au milieu de la vidéo et fausser le comptage.
+    const ids = result.vehicles.map((vehicle) => vehicle.globalId);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect([...ids].sort((left, right) => left - right)).toEqual(ids);
   });
 
   it("un franchissement expose la plaque connue à l'instant du comptage", () => {
@@ -260,6 +317,10 @@ describe("invariants que l'affichage ne doit jamais contredire", () => {
     if (crossing === undefined) return;
 
     expect(Object.keys(crossing).sort()).toEqual([
+      // La catégorie est **servie**, pas déduite du libellé : c'est ce qui permet à
+      // la relecture de ventiler véhicules et personnes sans recopier la table des
+      // classes du serveur.
+      "category",
       "direction",
       "frameIndex",
       "globalId",
@@ -319,7 +380,6 @@ describe("contrat du registre des véhicules", () => {
       "plateText",
       "plateTextScore",
       "plateUnreadReason",
-      "reidCount",
       "zonesVisited",
     ]);
   });
@@ -344,7 +404,7 @@ describe("contrat du registre des véhicules", () => {
 });
 
 describe("contrat du diagnostic", () => {
-  it("expose les sept compteurs qui rendent un comptage explicable", () => {
+  it("expose les huit mesures qui rendent un comptage explicable", () => {
     // Ce bloc n'est pas décoratif : « le compte est faux » n'est diagnosticable
     // que si l'on voit si un véhicule manquant n'a jamais été détecté, l'a été
     // faiblement, n'était pas confirmé, ou a été masqué par une zone — et, dans
@@ -355,9 +415,25 @@ describe("contrat du diagnostic", () => {
       "highDetections",
       "lowDetections",
       "maskedOut",
+      "nearMisses",
       "rescuedByLowScore",
       "tentativeTracks",
     ]);
+  });
+
+  it("indexe les quasi-franchissements par ligne, une entrée par ligne tracée", () => {
+    // La seule mesure du bloc qui ne soit pas un entier : elle porte sur le
+    // **tracé** et non sur la détection, et un total ne dirait pas *laquelle* des
+    // lignes est mal posée — ce qui est la seule chose qu'on veut en savoir.
+    //
+    // Une ligne sans quasi-franchissement est présente à `0` : l'absence de clé se
+    // lirait « pas d'information » alors que zéro en est une.
+    const nearMisses = result.stats.diagnostics.nearMisses;
+    expect(nearMisses).toBeDefined();
+    expect(Object.keys(nearMisses ?? {}).sort()).toEqual(Object.keys(result.stats.byLine).sort());
+    for (const count of Object.values(nearMisses ?? {})) {
+      expect(Number.isInteger(count)).toBe(true);
+    }
   });
 });
 
@@ -441,15 +517,15 @@ describe("contrat de l'aperçu d'une analyse en cours", () => {
   it("porte les compteurs courants, pas seulement des boîtes", () => {
     // Sans eux, l'aperçu montrerait des véhicules détectés sans jamais dire
     // s'ils sont comptés — c'est-à-dire la moitié de ce qu'on cherche à valider.
-    expect(preview.stats.uniqueVehicles).toBeGreaterThan(0);
+    expect(preview.stats.trackedVehicles).toBeGreaterThan(0);
     expect(preview.stats.crossings).toBe(
       Object.values(preview.stats.byLine).reduce((sum, tally) => sum + tally.total, 0),
     );
   });
 
   it("marque ✓ une piste comptée, et elle seule", () => {
-    // Le badge dérive du tally serveur (invariant 5) : un franchissement
-    // supprimé par le garde d'identité ne doit pas peindre ✓.
+    // Le badge dérive du tally serveur (invariant 5) : il vient de la même source
+    // que `crossedUnique`, donc les deux ne peuvent pas se contredire à l'écran.
     const counted = preview.tracks.filter((track) => track.counted).map((t) => t.globalId);
     const crossed = new Set(preview.crossings.map((crossing) => crossing.globalId));
 

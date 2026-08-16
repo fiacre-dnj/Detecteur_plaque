@@ -38,7 +38,6 @@ export interface AnalysisSettings {
   iouThreshold: number;
   minHits: number;
   maxLostMs: number;
-  reidMinSimilarity: number;
   maskOutsideZones: boolean;
   frameStride: number;
   detectPlates: boolean;
@@ -57,6 +56,47 @@ export interface AnalysisSettings {
   readPlateText: boolean;
   /** `null` = échelle non définie : les vitesses restent en px/s. */
   pixelsPerMeter: number | null;
+  /**
+   * Classes à détecter et à compter, par identifiant COCO.
+   *
+   * Le **catalogue** vient du serveur (`GET /api/v1/models/classes`) ; seule la
+   * sélection vit ici. Ne jamais recopier le catalogue dans ce module : une case
+   * cochable que le serveur refuse à l'envoi est le mode de panne exact que la
+   * publication du catalogue existe pour empêcher.
+   *
+   * Une sélection persistée peut contenir un identifiant que le serveur ne propose
+   * plus. `sanitiseClassIds` s'en charge à la lecture — plutôt que de laisser un
+   * 422 arriver sur un réglage que l'écran affiche comme valide.
+   */
+  classIds: number[];
+  /**
+   * Cadence maximale de l'analyse, en multiples de la vitesse réelle de la scène.
+   * `null` = aucune borne.
+   *
+   * Le seul réglage d'analyse qui ne change **aucun** chiffre : il ne décide que de
+   * la vitesse à laquelle l'aperçu défile. Sans borne, un serveur à 55 images par
+   * seconde sur une source à 25 fps montre un aperçu 2,2× trop rapide — le curseur
+   * est calé sur le temps de scène analysé, pas lu.
+   *
+   * Pas d'incrément de `SETTINGS_SCHEMA_VERSION` : la fusion est champ par champ,
+   * donc un `localStorage` antérieur reprend simplement le défaut ci-dessous
+   * (ADR 0019).
+   */
+  analysisSpeed: number | null;
+  /**
+   * Plafond **absolu** de l'analyse, en images analysées par seconde réelle —
+   * `null` = aucune borne.
+   *
+   * Indépendant d'`analysisSpeed` : celui-ci borne une vitesse *relative* au
+   * temps de la scène (« pas plus vite que la vidéo »), celui-ci borne le débit
+   * *absolu* du serveur (« jamais plus de N images par seconde », quelle que
+   * soit la cadence de la source). Les deux peuvent être réglés ensemble — le
+   * plus restrictif s'applique — et chacun agit même quand l'autre vaut `null`.
+   *
+   * Pas d'incrément de `SETTINGS_SCHEMA_VERSION` : la fusion est champ par
+   * champ, donc un `localStorage` antérieur reprend simplement le défaut.
+   */
+  maxAnalysisFps: number | null;
   showTrails: boolean;
 }
 
@@ -67,7 +107,6 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   iouThreshold: 0.45,
   minHits: 2,
   maxLostMs: 2_500,
-  reidMinSimilarity: 0.8,
   maskOutsideZones: false,
   frameStride: 1,
   detectPlates: false,
@@ -76,8 +115,73 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   // un cran de confidentialité qui doit être choisi, pas hérité.
   readPlateText: false,
   pixelsPerMeter: null,
+  // Les quatre véhicules de COCO : voiture, moto, bus, camion. C'est le
+  // comportement historique de l'application, donc qui ne touche à rien retrouve
+  // exactement ses chiffres d'avant. Les personnes se cochent quand on les veut.
+  classIds: [2, 3, 5, 7],
+  // Temps réel par défaut, depuis ADR 0019 : sans borne, l'aperçu défile à la
+  // vitesse de l'analyse (jusqu'à 1,7× mesuré) et la lecture locale, calée dessus,
+  // paraît accélérée ou ralentie selon la charge du serveur — un défaut qui
+  // surprend plutôt qu'un choix. `1` fait durer l'analyse la durée de la vidéo ;
+  // « Illimitée » reste un choix explicite pour qui veut ses chiffres au plus vite.
+  analysisSpeed: 1,
+  // Aucun plafond absolu par défaut : la vitesse de lecture normale est déjà
+  // assurée par `analysisSpeed`. Ce réglage est un choix supplémentaire, pas un
+  // correctif — celui qui veut brider le débit du serveur lui-même le choisit.
+  maxAnalysisFps: null,
   showTrails: true,
 };
+
+/**
+ * Les cadences proposées, et **pourquoi il n'y en a que trois**.
+ *
+ * Un curseur continu inviterait à régler 1,37× — un chiffre qui ne répond à aucune
+ * question. Les seules cadences qui en répondent une sont : « le plus vite
+ * possible », « je regarde » et « je regarde, mais pressé ».
+ */
+export const ANALYSIS_SPEEDS: readonly { value: number | null; label: string }[] = [
+  { value: null, label: "Illimitée" },
+  { value: 1, label: "Temps réel" },
+  { value: 2, label: "2×" },
+];
+
+/**
+ * Les plafonds absolus proposés, en images par seconde.
+ *
+ * Deux valeurs seulement, comme pour `ANALYSIS_SPEEDS` et pour la même raison :
+ * ce sont les deux cadences vidéo courantes (30 et 60 fps), pas un curseur
+ * continu qui inviterait à régler un chiffre arbitraire.
+ */
+export const ANALYSIS_FPS_CAPS: readonly { value: number | null; label: string }[] = [
+  { value: null, label: "Illimité" },
+  { value: 30, label: "30 img/s" },
+  { value: 60, label: "60 img/s" },
+];
+
+/**
+ * Nettoie une sélection de classes contre le catalogue **du serveur**.
+ *
+ * Trois cas réels, et aucun ne doit produire un 422 :
+ *
+ * - un identifiant que le serveur ne propose plus — réglage persisté par une
+ *   version antérieure — est écarté ;
+ * - les doublons sont écartés en gardant l'ordre du catalogue, qui est celui de
+ *   l'affichage ;
+ * - une sélection **vide** retombe sur les cases par défaut. Le serveur la
+ *   refuserait, et à raison : elle ne restreindrait rien et compterait les 80
+ *   classes de COCO. Retomber sur le défaut vaut mieux qu'un message d'erreur sur
+ *   un écran où l'utilisateur a simplement tout décoché.
+ */
+export function sanitiseClassIds(
+  selected: readonly number[],
+  catalogue: readonly { id: number; defaultSelected: boolean }[],
+): number[] {
+  if (catalogue.length === 0) return [...selected];
+  const wanted = new Set(selected);
+  const kept = catalogue.filter((entry) => wanted.has(entry.id)).map((entry) => entry.id);
+  if (kept.length > 0) return kept;
+  return catalogue.filter((entry) => entry.defaultSelected).map((entry) => entry.id);
+}
 
 /** Confiance effective quand l'utilisateur suit le défaut. */
 export const DEFAULT_CONFIDENCE = 0.35;
@@ -88,7 +192,6 @@ export const BOUNDS = {
   iouThreshold: { min: 0.05, max: 0.95, step: 0.05 },
   minHits: { min: 1, max: 10, step: 1 },
   maxLostMs: { min: 200, max: 15_000, step: 100 },
-  reidMinSimilarity: { min: 0.5, max: 0.99, step: 0.01 },
   frameStride: { min: 1, max: 5, step: 1 },
   plateConfidence: { min: 0.05, max: 0.95, step: 0.05 },
   pixelsPerMeter: { min: 0, max: 500, step: 0.5 },
@@ -116,7 +219,6 @@ export function toRequest(
     iouThreshold: settings.iouThreshold,
     minHits: settings.minHits,
     maxLostMs: settings.maxLostMs,
-    reidMinSimilarity: settings.reidMinSimilarity,
     maskOutsideZones: settings.maskOutsideZones && zones.length > 0,
     frameStride: settings.frameStride,
     detectPlates: settings.detectPlates,
@@ -129,9 +231,40 @@ export function toRequest(
       settings.pixelsPerMeter !== null && settings.pixelsPerMeter > 0
         ? settings.pixelsPerMeter
         : null,
+    // Jamais vide : le serveur refuse une liste vide, et il a raison. Le repli sur
+    // les quatre véhicules est le même que celui de `sanitiseClassIds` — l'écran
+    // reste utilisable quand l'utilisateur a tout décoché.
+    classIds: settings.classIds.length > 0 ? [...settings.classIds] : [...DEFAULT_SETTINGS.classIds],
+    // Borné aux cadences que le serveur accepte : une valeur hors de [0,25 ; 8] —
+    // relue d'un `localStorage` bricolé — vaudrait un 422 sur un écran qui paraît
+    // valide. Hors bornes ⇒ aucune borne, qui est le défaut.
+    analysisSpeed: isSupportedSpeed(settings.analysisSpeed) ? settings.analysisSpeed : null,
+    // Même logique que pour `analysisSpeed` : hors bornes ⇒ aucun plafond.
+    maxAnalysisFps: isSupportedFpsCap(settings.maxAnalysisFps) ? settings.maxAnalysisFps : null,
     lines: [...lines],
     zones: [...zones],
   };
+}
+
+/**
+ * Bornes du bridage côté serveur — les dépasser produirait un 422.
+ *
+ * Elles ne sont pas dans `BOUNDS` : ce n'est pas un curseur, et les afficher comme
+ * un intervalle continu suggérerait des cadences que l'écran ne propose pas.
+ */
+export const SPEED_BOUNDS = { min: 0.25, max: 8 } as const;
+
+/** Bornes du plafond absolu côté serveur — les dépasser produirait un 422. */
+export const FPS_CAP_BOUNDS = { min: 1, max: 240 } as const;
+
+function isSupportedSpeed(value: number | null): boolean {
+  if (value === null) return true;
+  return Number.isFinite(value) && value >= SPEED_BOUNDS.min && value <= SPEED_BOUNDS.max;
+}
+
+function isSupportedFpsCap(value: number | null): boolean {
+  if (value === null) return true;
+  return Number.isFinite(value) && value >= FPS_CAP_BOUNDS.min && value <= FPS_CAP_BOUNDS.max;
 }
 
 /**
@@ -189,14 +322,28 @@ function mergeSettings(source: Record<string, unknown>): AnalysisSettings {
   merged.iouThreshold = boundedNumber(source.iouThreshold, merged.iouThreshold, BOUNDS.iouThreshold);
   merged.minHits = boundedNumber(source.minHits, merged.minHits, BOUNDS.minHits);
   merged.maxLostMs = boundedNumber(source.maxLostMs, merged.maxLostMs, BOUNDS.maxLostMs);
-  merged.reidMinSimilarity = boundedNumber(
-    source.reidMinSimilarity,
-    merged.reidMinSimilarity,
-    BOUNDS.reidMinSimilarity,
-  );
   merged.frameStride = boundedNumber(source.frameStride, merged.frameStride, BOUNDS.frameStride);
   merged.plateConfidence = nullableNumber(source.plateConfidence, merged.plateConfidence);
+  // Écarté plutôt que borné, contrairement aux curseurs : une cadence hors bornes
+  // n'est pas un intervalle qui a changé entre deux versions, c'est une valeur qui
+  // ne correspond à aucun des trois choix de l'écran. La ramener à 8× afficherait
+  // « Illimitée » tout en bridant — un réglage que l'écran contredirait.
+  const speed = nullableNumber(source.analysisSpeed, merged.analysisSpeed);
+  merged.analysisSpeed = isSupportedSpeed(speed) ? speed : merged.analysisSpeed;
+  const fpsCap = nullableNumber(source.maxAnalysisFps, merged.maxAnalysisFps);
+  merged.maxAnalysisFps = isSupportedFpsCap(fpsCap) ? fpsCap : merged.maxAnalysisFps;
   merged.pixelsPerMeter = nullableNumber(source.pixelsPerMeter, merged.pixelsPerMeter);
+
+  // Les identifiants non numériques sont écartés un par un plutôt que de faire
+  // tomber toute la liste : un `localStorage` bricolé à la main ne doit pas coûter
+  // la sélection entière. La confrontation au catalogue du serveur, elle, a lieu
+  // dans `sanitiseClassIds` — ce module ne connaît pas le catalogue.
+  if (Array.isArray(source.classIds)) {
+    const ids = source.classIds.filter(
+      (value): value is number => typeof value === "number" && Number.isInteger(value),
+    );
+    if (ids.length > 0) merged.classIds = [...new Set(ids)];
+  }
 
   if (typeof source.maskOutsideZones === "boolean") merged.maskOutsideZones = source.maskOutsideZones;
   if (typeof source.detectPlates === "boolean") merged.detectPlates = source.detectPlates;

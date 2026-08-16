@@ -33,6 +33,21 @@ class HealthSchema(CamelModel):
         description="Device d'inférence résolu : « cpu », « 0 », « cuda:0 »…",
         examples=["cpu"],
     )
+    device_reason: str | None = Field(
+        description=(
+            "Pourquoi `device` vaut cette valeur : configuré explicitement, GPU "
+            "détecté, aucun GPU détecté, torch indisponible, ou repli après un "
+            "échec d'inférence constaté au préchauffage. Un « cpu » seul ne dit "
+            "pas laquelle de ces raisons s'applique, et elles n'appellent pas le "
+            "même geste — installer un pilote n'est pas la même chose que revoir "
+            "un réglage explicite."
+        ),
+        examples=["aucun GPU CUDA détecté"],
+    )
+    gpu_name: str | None = Field(
+        description="Nom du GPU retenu par le pilote, ou `null` hors GPU.",
+        examples=[None],
+    )
     half: bool = Field(
         description=(
             "Inférence en demi-précision. Toujours faux hors GPU : "
@@ -52,6 +67,19 @@ class HealthSchema(CamelModel):
             "est désactivée dans l'interface, et le service fonctionne normalement. "
             "Ne dit rien de la lecture du texte, voir `plateOcrAvailable`."
         )
+    )
+    plate_loadable: bool | None = Field(
+        default=None,
+        description=(
+            "Le détecteur de plaques a-t-il passé son auto-test au démarrage — "
+            "chargement réel puis une inférence à vide ? `null` = pas encore testé "
+            "(préchauffage désactivé ou toujours en cours). **`false` avec un "
+            "`plateAvailable: true` est l'état à surveiller** : les poids sont là et "
+            "ne se chargent pas, donc l'ANPR est muette alors que tout paraît vert. "
+            "C'est typiquement un fichier corrompu, tronqué, ou dont le suffixe "
+            "contredit le format — Ultralytics choisit son backend d'après le "
+            "suffixe."
+        ),
     )
     plate_ocr_available: bool = Field(
         description=(

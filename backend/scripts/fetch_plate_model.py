@@ -11,12 +11,20 @@ ANPR indisponible, ce que `/health` annonce et ce que l'interface désactive.
 La somme SHA-256 est **obligatoire**. Un poids de modèle est du code exécuté par
 le service : le télécharger sans vérifier son empreinte reviendrait à exécuter ce
 que renvoie une URL, quoi que ce soit.
+
+Le **suffixe** est vérifié pour une raison distincte de l'empreinte, et tout aussi
+concrète : Ultralytics choisit son backend d'après le nom du fichier, pas d'après son
+contenu (`ultralytics/nn/autobackend.py`, `_model_type()`). Un `.pt` téléchargé vers
+`license-plate.onnx` passe donc l'empreinte, existe sur le disque, rend
+`plateAvailable: true` — et échoue à chaque inférence, sans autre trace qu'une ligne
+de journal par processus. Voir ADR 0015.
 """
 
 from __future__ import annotations
 
 import hashlib
 import sys
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -25,6 +33,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from traffic_analysis.core.settings import Settings
 
 CHUNK = 1024 * 1024
+
+#: Formats qu'Ultralytics sait charger pour une simple détection. L'ONNX reste
+#: accepté — il fonctionne, il est seulement cloué au CPU ici, `onnxruntime` n'ayant
+#: pas de provider CUDA sur cette machine.
+KNOWN_SUFFIXES = frozenset({".pt", ".onnx"})
 
 
 def _download(url: str, destination: Path) -> str:
@@ -49,6 +62,39 @@ def _download(url: str, destination: Path) -> str:
     return computed
 
 
+def suffix_mismatch(url: str, destination: Path) -> str | None:
+    """Décrit le désaccord de format entre l'URL et la destination, ou `None`.
+
+    Une fonction nommée et testable plutôt qu'un `if` dans `main` : c'est la seule
+    logique de ce script qui mérite un test, et elle en a un.
+
+    Le suffixe de l'URL est lu **sans sa requête** : un lien de CDN se termine
+    couramment par `?download=true`, ce qu'un `Path(url).suffix` naïf prendrait pour
+    l'extension.
+    """
+    url_suffix = Path(urllib.parse.urlparse(url).path).suffix.lower()
+    target_suffix = destination.suffix.lower()
+    if url_suffix not in KNOWN_SUFFIXES:
+        # Silence plutôt qu'un refus : une URL peut légitimement ne rien annoncer
+        # (redirection, lien signé). L'auto-test du démarrage reste le filet.
+        return None
+    if url_suffix == target_suffix:
+        return None
+    return (
+        f"L'URL annonce un fichier « {url_suffix} » et la destination est "
+        f"« {target_suffix} » :\n"
+        f"  URL         : {url}\n"
+        f"  destination : {destination}\n"
+        "Ultralytics choisit son backend d'après le SUFFIXE du fichier, pas d'après "
+        "son contenu.\n"
+        f"Un « {url_suffix} » nommé « {target_suffix} » se téléchargerait sans erreur, "
+        "existerait sur le disque,\n"
+        "rendrait `plateAvailable: true` — puis ne détecterait jamais rien.\n"
+        f"Posez TRAFFIC_PLATE_MODEL_PATH=./.weights/license-plate{url_suffix} "
+        "et relancez.\n"
+    )
+
+
 def main() -> int:
     settings = Settings()
     url = settings.plate_model_url
@@ -68,6 +114,13 @@ def main() -> int:
             "Un poids de modèle est du code exécuté par le service : "
             "il n'est pas téléchargé sans empreinte à vérifier.\n"
         )
+        return 1
+
+    # Avant le téléchargement, et non après : un refus qui a déjà écrit le fichier
+    # laisse derrière lui exactement le piège qu'il prétend éviter.
+    mismatch = suffix_mismatch(url, destination)
+    if mismatch is not None:
+        sys.stdout.write(f"ÉCHEC : format incohérent.\n{mismatch}")
         return 1
 
     if destination.is_file():

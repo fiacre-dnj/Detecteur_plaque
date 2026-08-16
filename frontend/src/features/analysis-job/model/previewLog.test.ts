@@ -30,6 +30,7 @@ function crossing(
     globalId,
     trackId: globalId,
     label: "car",
+    category: "vehicle" as const,
     direction,
     timestampMs,
     frameIndex: Math.round(timestampMs / 40),

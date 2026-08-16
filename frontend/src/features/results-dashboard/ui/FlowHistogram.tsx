@@ -21,13 +21,23 @@ interface FlowHistogramProps {
   buckets: readonly FlowBucket[];
   /** Largeur d'une tranche, pour libeller l'axe et le résumé. */
   bucketMs: number;
+  /**
+   * Déplace la lecture au début d'une tranche. `undefined` laisse le graphique
+   * inerte, comme il l'était.
+   *
+   * Le même geste que la chronologie, sur l'autre représentation des mêmes
+   * événements : le pic d'activité est justement l'endroit qu'on veut aller voir, et
+   * le lire sans pouvoir s'y rendre obligeait à chercher l'instant à la main dans la
+   * barre de transport.
+   */
+  onSeek?: ((timestampMs: number) => void) | undefined;
 }
 
 /** Hauteur du dessin, en unités du `viewBox`. */
 const HEIGHT = 90;
 const BAR_GAP = 2;
 
-export function FlowHistogram({ buckets, bucketMs }: FlowHistogramProps) {
+export function FlowHistogram({ buckets, bucketMs, onSeek }: FlowHistogramProps) {
   if (buckets.length === 0) return null;
 
   const max = Math.max(...buckets.map((bucket) => bucket.count));
@@ -64,9 +74,8 @@ export function FlowHistogram({ buckets, bucketMs }: FlowHistogramProps) {
             // franchissement isolé sur un pic élevé serait invisible, et le
             // graphique dirait « rien » là où il y a eu quelque chose.
             const height = bucket.count === 0 ? 0 : Math.max(1, (bucket.count / max) * HEIGHT);
-            return (
+            const bar = (
               <rect
-                key={bucket.startMs}
                 x={index * 10}
                 y={HEIGHT - height}
                 width={barWidth}
@@ -75,6 +84,36 @@ export function FlowHistogram({ buckets, bucketMs }: FlowHistogramProps) {
                 // une donnée et non une décoration.
                 className="fill-accent"
               />
+            );
+            if (onSeek === undefined) return <g key={bucket.startMs}>{bar}</g>;
+            return (
+              <g
+                key={bucket.startMs}
+                role="button"
+                tabIndex={0}
+                aria-label={`Aller à ${formatSceneTime(bucket.startMs)} — ${bucket.count} franchissements`}
+                className="cursor-pointer focus-visible:outline-none"
+                onClick={() => onSeek(bucket.startMs)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  // `preventDefault` sur l'espace : sans lui, la page défile en même
+                  // temps que la lecture se déplace, et on perd le graphique de vue.
+                  event.preventDefault();
+                  onSeek(bucket.startMs);
+                }}
+              >
+                {/* Une cible pleine hauteur derrière la barre : viser une tranche
+                    vide, ou une barre d'un pixel, serait autrement impossible. Elle
+                    est transparente au repos et se révèle au survol. */}
+                <rect
+                  x={index * 10}
+                  y={0}
+                  width={barWidth}
+                  height={HEIGHT}
+                  className="fill-ink/0 hover:fill-ink/10"
+                />
+                {bar}
+              </g>
             );
           })}
         </svg>

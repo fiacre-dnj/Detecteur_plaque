@@ -14,9 +14,9 @@
  * ligne — une directive qu'Excel comprend et que les autres outils ignorent.
  */
 
-import type { AnalysisResult, VehicleRecord } from "@/shared/api/contracts";
-
 import { directionLabel, formatSceneTime } from "@/features/results-dashboard";
+import type { AnalysisResult, CountingLine, VehicleRecord } from "@/shared/api/contracts";
+import { crossingDirectionName, lineName } from "@/shared/lib/directions";
 
 /** Séparateur attendu par Excel en configuration française. */
 const SEPARATOR = ";";
@@ -59,17 +59,23 @@ function toCsv(headers: readonly string[], rows: readonly (string | number | nul
   return BOM + SEP_DIRECTIVE + lines.join("\r\n") + "\r\n";
 }
 
-/** Le registre des véhicules en CSV. */
-export function vehiclesCsv(result: AnalysisResult): string {
+/**
+ * Le registre des véhicules en CSV.
+ *
+ * `lines` sert à **nommer les sens** dans la colonne des franchissements : un export
+ * qui dirait « l1 A→B » obligerait à rouvrir l'application pour l'interpréter, ce qui
+ * annule l'intérêt d'un fichier.
+ */
+export function vehiclesCsv(result: AnalysisResult, lines: readonly CountingLine[]): string {
   return toCsv(
     [
-      "Identité",
+      "Véhicule",
       "Type",
       "Vu de",
       "Vu à",
       "Lignes franchies",
       "Zones visitées",
-      "Ré-identifications",
+      "Passages",
       "Vitesse (px/s)",
       "Vitesse (km/h)",
       // Le texte lu d'abord — c'est ce qu'on cherche —, puis les deux confiances.
@@ -83,10 +89,16 @@ export function vehiclesCsv(result: AnalysisResult): string {
       formatSceneTime(vehicle.firstSeenMs),
       formatSceneTime(vehicle.lastSeenMs),
       vehicle.crossedLines
-        .map((crossing) => `${crossing.lineId} ${directionLabel(crossing.direction)}`)
+        .map(
+          (crossing) =>
+            `${lineName(lines, crossing.lineId)} ${
+              crossingDirectionName(lines, crossing.lineId, crossing.direction) ??
+              directionLabel(crossing.direction)
+            }`,
+        )
         .join(" | "),
       vehicle.zonesVisited.join(" | "),
-      vehicle.reidCount,
+      vehicle.crossedLines.length,
       vehicle.avgSpeedPxS,
       vehicle.avgSpeedKmh,
       // `null` devient une case vide, **pas** « illisible » : un CSV n'est pas une vue,
@@ -100,11 +112,14 @@ export function vehiclesCsv(result: AnalysisResult): string {
 }
 
 /** Les franchissements en CSV, un par ligne. */
-export function crossingsCsv(result: AnalysisResult): string {
+export function crossingsCsv(result: AnalysisResult, lines: readonly CountingLine[]): string {
   return toCsv(
-    ["Ligne", "Identité", "Piste", "Type", "Sens", "Horodatage", "Image", "Plaque"],
+    ["Ligne", "Sens", "Véhicule", "Piste", "Type", "Signe", "Horodatage", "Image", "Plaque"],
     result.crossings.map((event) => [
-      event.lineId,
+      lineName(lines, event.lineId),
+      // Le nom du sens **et** son signe, en deux colonnes : le nom est ce qu'un
+      // humain lit, le signe est ce qui reste comparable si les libellés changent.
+      crossingDirectionName(lines, event.lineId, event.direction) ?? "",
       event.globalId,
       event.trackId,
       event.label,

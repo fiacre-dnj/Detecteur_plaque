@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from mimetypes import guess_type
 from typing import TYPE_CHECKING, Annotated
 from uuid import uuid4
 
@@ -200,6 +201,48 @@ async def get_result(manager: JobManagerDep, job_id: str) -> FileResponse:
             # navigateur le décompresse nativement.
             "Content-Encoding": "gzip",
             "Cache-Control": "private, max-age=31536000, immutable",
+        },
+    )
+
+
+@router.get(
+    "/{job_id}/input",
+    operation_id="getAnalysisInputVideo",
+    summary="Vidéo analysée, pour rejouer un résultat archivé",
+    description=(
+        "Sert le fichier déposé, tel quel. L'historique en a besoin pour redessiner "
+        "les boîtes sur l'image et pour déplacer la lecture depuis la timeline ; les "
+        "compteurs, le registre et l'histogramme, eux, se rejouent depuis le seul "
+        "résultat.\n\n"
+        "**Un 409 `input_missing` n'est pas une panne** : la vidéo est purgée plus "
+        "tôt que le résultat, parce qu'une scène de trafic contient des plaques "
+        "réelles et des visages. Le résultat reste affichable — c'est la vidéo qu'il "
+        "faut redéposer, pas l'analyse qu'il faut relancer."
+    ),
+    responses={
+        200: {"content": {"video/mp4": {}}, "description": "Vidéo déposée"},
+        404: {"model": ProblemDetails, "description": "Job inconnu"},
+        409: {"model": ProblemDetails, "description": "Job non terminé, ou vidéo purgée"},
+    },
+)
+async def get_input_video(manager: JobManagerDep, job_id: str) -> FileResponse:
+    path = await manager.input_video_path(job_id)
+    return FileResponse(
+        path,
+        # Deviné depuis l'extension, que le dépôt a validée contre une liste
+        # fermée. `None` laisse Starlette retomber sur un flux binaire, ce que le
+        # navigateur refuserait de lire dans une balise `<video>`.
+        media_type=guess_type(path.name)[0] or "application/octet-stream",
+        headers={
+            # Même cache que le résultat : une vidéo déposée ne change jamais. Le
+            # `private` compte — c'est une donnée personnelle, aucun proxy partagé
+            # ne doit la garder.
+            "Cache-Control": "private, max-age=31536000, immutable",
+            # Les requêtes de plage sont ce qui rend le déplacement dans la vidéo
+            # praticable : sans elles, le navigateur retélécharge depuis le début à
+            # chaque clic dans la timeline. `FileResponse` les gère, encore faut-il
+            # l'annoncer.
+            "Accept-Ranges": "bytes",
         },
     )
 

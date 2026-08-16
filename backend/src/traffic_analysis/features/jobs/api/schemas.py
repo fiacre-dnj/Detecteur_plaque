@@ -78,6 +78,22 @@ class JobSchema(CamelModel):
     file_name: str
     created_at: str
     finished_at: str | None
+    #: Résultats du job, **dénormalisés en base précisément pour cette liste**.
+    #:
+    #: Les colonnes existaient déjà (`jobs.tracked_vehicles`, `jobs.crossings_total`)
+    #: et n'étaient exposées nulle part : l'historique affichait donc date, fichier,
+    #: modèle et durée, mais pas ce que l'analyse avait trouvé — l'information même
+    #: qui permet de choisir laquelle rouvrir. Les lire ici évite d'ouvrir un
+    #: `result.json.gz` de plusieurs centaines de mégaoctets par ligne de tableau.
+    #:
+    #: **`0` tant que le job n'est pas terminé**, jamais `null` : ils sont écrits en
+    #: une fois avec les agrégats, à la fin. Sur une trame SSE de progression ils
+    #: valent donc zéro, et c'est exact — rien n'est encore consolidé.
+    #:
+    #: Un résultat archivé **avant le 2026-08-12** compte des véhicules là où les
+    #: suivants comptent des passages : les deux ne sont pas comparables (ADR 0014).
+    tracked_vehicles: int = 0
+    crossings_total: int = 0
 
 
 class JobDetailSchema(JobSchema):

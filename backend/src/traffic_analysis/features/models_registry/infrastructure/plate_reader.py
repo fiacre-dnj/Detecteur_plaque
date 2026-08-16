@@ -342,7 +342,7 @@ def deskew(grey: npt.NDArray[np.uint8], angle: float) -> npt.NDArray[np.uint8]:
 class OnnxPlateReader:
     """Lecteur de plaques onnxruntime, chargé **paresseusement**.
 
-    Paresseusement pour la même raison que `OnnxPlateDetector` : l'absence des
+    Paresseusement pour la même raison que `UltralyticsPlateDetector` : l'absence des
     fichiers ne doit pas empêcher le service de démarrer. L'option est alors signalée
     indisponible dans `/health`, désactivée dans l'interface, et **la détection de
     plaques continue de fonctionner** — l'OCR est une option de l'option.

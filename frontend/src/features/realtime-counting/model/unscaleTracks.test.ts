@@ -16,7 +16,6 @@ const TRACK: TrackSnapshot = {
   box: { x: 300, y: 150, width: 90, height: 60 },
   hits: 12,
   counted: true,
-  reidCount: 1,
   speedPxS: 120,
   plates: [
     {
@@ -86,7 +85,6 @@ describe("unscaleTrack", () => {
     const back = unscaleTrack(TRACK, FACTOR);
     expect(back.score).toBe(0.91);
     expect(back.hits).toBe(12);
-    expect(back.reidCount).toBe(1);
     expect(back.trackId).toBe(7);
     expect(back.globalId).toBe(3);
     expect(back.identityLabel).toBe("car");

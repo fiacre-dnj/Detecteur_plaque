@@ -1,10 +1,21 @@
 """Comptage de franchissements de lignes.
 
-Le compteur **détecte et déduplique au même endroit**, et `observe()` ne rend que
-les événements qui ont réellement atteint un compteur. C'est ce qui permet au
-badge ✓ de l'interface de dériver du tally : si un franchissement est supprimé par
-le garde d'identité, aucun événement ne sort, et l'overlay ne prétend pas qu'un
-véhicule est compté alors que le total n'a pas bougé.
+**Chaque franchissement observé compte.** Il n'y a plus de garde de
+déduplication : `dedupe_by_identity`, dernier vestige d'ADR 0009, a été supprimé
+par ADR 0016 en même temps que la ré-identification qui lui donnait sa clé. Un
+aller-retour compte 2, deux lignes en travers d'une même voie comptent 2, et une
+occlusion qui coupe une piste en deux compte 2.
+
+`observe()` ne rend que les événements qui ont réellement atteint un compteur —
+ce qui, désormais, est tous ceux qu'il détecte. La propriété est conservée parce
+que c'est elle qui permet au badge ✓ de l'interface de dériver du tally plutôt que
+de la comptabilité d'une piste, et parce qu'elle laisse la porte ouverte à un
+futur refus sans avoir à rebrancher l'overlay.
+
+Le compteur tient enfin un **diagnostic** — `near_misses()` — et pas un second
+comptage : les pistes qui se sont éteintes à portée d'une ligne sans jamais la
+franchir. C'est ce qui distingue une ligne que personne n'emprunte d'une ligne mal
+placée, deux situations qui affichent le même `0` et appellent des gestes opposés.
 """
 
 from __future__ import annotations
@@ -13,8 +24,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from traffic_analysis.features.counting.domain.geometry import (
+    Point,
+    point_segment_distance,
     segments_intersect,
-    side_of_line,
+    signed_line_offset,
 )
 from traffic_analysis.features.counting.domain.models import (
     CountingLineDef,
@@ -26,53 +39,127 @@ from traffic_analysis.features.counting.domain.models import (
 from traffic_analysis.features.counting.domain.zone_geometry import track_is_in_zone
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Container, Iterable, Sequence
+
+
+#: Seuil du **quasi-franchissement**, exprimé en demi-boîtes du véhicule.
+#:
+#: `1.0` signifie « la boîte du véhicule recouvrait encore la ligne quand la piste
+#: s'est éteinte ». Le seuil est relatif à la boîte et non en pixels, pour la raison
+#: qui vaut partout ailleurs dans ce projet : un plancher absolu réglé sur du 720p
+#: ne veut plus rien dire en 4K, alors qu'une demi-boîte décrit la même situation
+#: physique à toute résolution.
+NEAR_MISS_RATIO = 1.0
+
+#: Demi-épaisseur de la **bande morte** autour d'un trait, en demi-boîtes.
+#:
+#: Dans cette bande, le côté d'une piste n'est pas tranché : c'est le traitement que
+#: le compteur réservait déjà au centroïde tombant *exactement* sur la ligne, avec
+#: une épaisseur mesurée au lieu de zéro.
+#:
+#: **Le zéro coûtait des doublons.** Mesuré sur `video_7.mp4` : un véhicule arrêté
+#: sur un trait pendant 0,4 s a produit **trois** franchissements comptés, aux
+#: distances +0,1 / −0,1 / +0,2 px — le signe du produit vectoriel bascule sur du
+#: bruit numérique. Un second cas, où la boîte du détecteur s'effondre puis se
+#: rétablit (demi-boîte 69 → 47 → 38 → 61 px), a déplacé le centre de quelques
+#: pixels et donné trois passages de plus.
+#:
+#: `0.25` est un compromis mesuré des deux côtés, et les deux bornes ont été
+#: touchées :
+#:
+#: - **plancher** — le bruit observé plafonne à **0,10** demi-boîte, donc 2,5× de
+#:   marge. En dessous, les doublons reviennent ;
+#: - **plafond** — la bande est traversée *avant* d'être franchie, donc trop large
+#:   elle avale des trajets entiers. À `0.5`, un poids lourd de 400 px obtient une
+#:   bande de 100 px, et le scénario de non-régression du doublon cabine/remorque —
+#:   120 px de trajet — cessait d'être compté. Ce test a rejeté la valeur.
+#:
+#: Relatif à la boîte et non en pixels, pour la raison habituelle : un plancher
+#: absolu réglé en 720p ne veut plus rien dire en 4K. Et pour une raison propre à ce
+#: cas : le bruit dominant est **proportionnel** à la boîte — une boîte qui perd 30 %
+#: de son étendue déplace son centre d'environ 15 % de cette étendue.
+#:
+#: Ce n'est **pas** un garde d'identité. Il ne regarde ni le numéro du véhicule, ni
+#: les autres lignes, ni ce qui a déjà été compté : un aller-retour franc compte
+#: toujours 2, et deux lignes franchies comptent toujours 2. Voir ADR 0018.
+CROSSING_BAND_RATIO = 0.25
+
+
+def _near_miss_ratio(track: SessionTrack, line: CountingLineDef) -> float:
+    """Distance du centroïde au segment, **en demi-boîtes du véhicule**.
+
+    `1.0` veut dire « la boîte touchait encore la ligne ». C'est la mesure qui
+    correspond à ce que l'utilisateur voit : à l'écran il juge sur la boîte, pas
+    sur le centroïde, et c'est tout l'écart entre « cette voiture est passée
+    dessus » et « son centre n'a jamais changé de côté ».
+
+    Une boîte dégénérée rend `inf` — jamais un quasi-franchissement, parce qu'un
+    objet sans surface ne permet aucun jugement.
+    """
+    half_extent = max(track.box.width, track.box.height) / 2.0
+    if half_extent <= 0.0:
+        return float("inf")
+    return point_segment_distance(track.centroid, line.a, line.b) / half_extent
 
 
 @dataclass(slots=True)
 class _LineState:
     """Ce que le compteur retient d'un couple (piste, ligne) — de la géométrie seule.
 
-    Aucune comptabilité ici : la déduplication porte sur l'identité, pas sur la
-    piste (piège 1 de prompt/13), et une piste détruite par une occlusion
-    emporterait sa mémoire avec elle.
+    Aucune comptabilité ici. Cet état n'est **jamais purgé**, y compris quand la
+    session abandonne la piste : le tracker peut réactiver un identifiant, et une
+    mémoire effacée ferait repartir la piste en amorçage — son premier
+    franchissement au retour serait alors perdu (piège 11 de prompt/13). Il est
+    borné par le nombre de pistes du clip, pas par sa durée.
     """
 
-    # Dernier côté observé. `0` signifie « pas encore amorcé » : une piste vue
-    # pour la première fois n'a pas de côté précédent, donc rien à comparer.
+    # Dernier côté **tranché** — c'est-à-dire observé hors de la bande morte. `0`
+    # signifie « pas encore amorcé » : une piste vue pour la première fois n'a pas
+    # de côté précédent, donc rien à comparer.
     side: int = 0
+    # Dernière position **hors de la bande**, et non la position de l'image
+    # précédente. C'est elle qui forme le segment testé contre le trait.
+    #
+    # Sans cette mémoire, la bande morte perdrait les franchissements qu'elle est
+    # censée assainir : un véhicule qui s'arrête sur la ligne puis repart aurait,
+    # au moment où il ressort de la bande, une image précédente **du même côté que
+    # lui** — le segment ne couperait donc rien et le vrai franchissement
+    # disparaîtrait. Le segment doit enjamber la bande, pas s'arrêter à son bord.
+    settled_centroid: Point | None = None
     # Franchissement détecté alors que la piste n'était pas encore confirmée.
     # Il est mis en attente, pas jeté : le jeter perdrait tout véhicule qui
     # franchit dans ses premières frames — fréquent avec une ligne près du bord.
     pending_direction: int | None = None
+    # Ce couple a-t-il déjà fait bouger un compteur ? **Ce n'est pas un garde** —
+    # rien ne le lit pour refuser un franchissement (ADR 0016). Il ne sert qu'au
+    # diagnostic : une piste qui a franchi n'est jamais un quasi-franchissement.
+    crossed: bool = False
+    # Distance de la **dernière** position observée au segment, en demi-boîtes du
+    # véhicule. La dernière et non la plus petite : la question posée est « la piste
+    # s'est-elle éteinte à portée de la ligne ? », pas « est-elle passée près un
+    # jour ? ». Un véhicule qui longe la ligne puis s'éloigne finit loin, et n'a
+    # rien d'un franchissement manqué.
+    last_ratio: float = float("inf")
 
 
 class LineCrossingCounter:
-    """Compte **un** franchissement par véhicule, jusqu'à sa prochaine réapparition.
+    """Compte **chaque franchissement observé**, ventilé par ligne et par sens.
 
-    Deux gardes se superposent, et chacun répond à un bug distinct :
+    Un seul garde subsiste, et il est purement géométrique :
+    **l'intersection de segments**. Sans lui, un véhicule qui passe au-delà des
+    extrémités tracées serait compté, parce qu'il change de côté de la droite
+    *infinie* — c'est le piège 7 de prompt/13.
 
-    1. **intersection de segments** — sinon un véhicule qui passe au-delà des
-       extrémités tracées est compté, parce qu'il change de côté de la droite
-       *infinie* ;
-    2. **`(identité, génération)`** — le garde de comptage. La génération est le
-       nombre de ré-identifications déjà subies par l'identité
-       (`SessionTrack.reid_count`).
+    Le garde d'identité d'ADR 0009 a disparu avec la ré-identification (ADR 0016).
+    Ses conséquences, désormais assumées :
 
-    Ce que le garde 2 **coûte**, et qui est voulu (ADR 0009) :
+    - un aller-retour compte **2**, une fois dans chaque sens ;
+    - un véhicule qui franchit deux lignes compte sur **chacune**, ce qui est ce
+      qu'on attend d'un carrefour où deux rues sont instrumentées séparément ;
+    - une occlusion plus longue que `track_buffer` coupe la piste et donne **2**.
 
-    - un aller-retour réel ne compte **qu'une fois**. Le sens ne ré-arme pas ;
-    - un véhicule qui franchit deux lignes successives ne compte **qu'une fois**,
-      sur la première ligne franchie. Les lignes suivantes restent à zéro pour
-      lui. C'est ce qui garde `crossings == Σ by_line[*].total` vrai sans
-      accumuler deux totaux en parallèle.
-
-    Ce qui le **ré-arme** : une vraie ré-identification, et elle seule. La
-    galerie n'incrémente `reid_count` que lorsqu'un véhicule réellement disparu
-    revient (`reacquire` ou `Admission.reidentified`), donc un tremblement de
-    boîte, une occlusion courte tenue par le tracker ou un simple demi-tour ne
-    donnent jamais un second comptage. Après ré-armement, la règle repart
-    identique : un franchissement, puis plus rien.
+    `crossings == Σ by_line[*].total` reste vrai, parce que le total global est
+    *dérivé* des tallies de lignes et jamais accumulé à côté (invariant 3).
     """
 
     __slots__ = ("_lines", "_min_hits", "_state", "_tallied", "_zones", "by_line")
@@ -87,10 +174,11 @@ class LineCrossingCounter:
         self._zones = {zone.id: zone for zone in zones}
         self._min_hits = min_hits
         self._state: dict[tuple[int, str], _LineState] = {}
-        # Le garde de comptage. Clé : (identité, génération). Ni la ligne ni le
-        # sens n'y figurent : un véhicule compte une fois, où qu'il franchisse et
-        # dans quelque sens que ce soit, jusqu'à sa prochaine ré-identification.
-        self._tallied: set[tuple[int, int]] = set()
+        # Les véhicules ayant fait bouger un compteur. **La source du badge ✓**, et
+        # sa seule raison d'exister depuis qu'il n'y a plus de déduplication :
+        # cesser de le remplir ferait disparaître le ✓ de l'overlay, ce qui se
+        # lirait comme une panne de comptage.
+        self._tallied: set[int] = set()
         # Chaque ligne a son compteur dès le départ : une ligne sans
         # franchissement doit s'afficher à zéro, pas manquer du tableau.
         self.by_line: dict[str, LineTally] = {line.id: LineTally() for line in self._lines}
@@ -113,18 +201,53 @@ class LineCrossingCounter:
         return tuple(events)
 
     def counted_identities(self) -> set[int]:
-        """Identités ayant réellement fait bouger un compteur.
+        """Numéros de véhicule ayant réellement fait bouger un compteur.
 
-        C'est la **source du badge ✓**. Le dériver d'ici et non de la comptabilité
-        d'une piste est ce qui évite d'afficher « compté » pour un franchissement
-        que le garde a supprimé.
+        C'est la **source du badge ✓** et celle de `crossed_unique` — les deux
+        répondent à la même question, « ce véhicule est-il passé ? », et les faire
+        dériver de deux endroits finirait par afficher un ✓ sur un véhicule que le
+        taux ne compte pas.
 
-        Le ✓ ne se rétracte **jamais** : un ré-armement ajoute une génération sans
-        retirer les précédentes, donc un véhicule ré-identifié reste marqué compté
-        en attendant de recroiser. Voir le franchissement disparaître de l'overlay
-        parce que le véhicule est revenu se lirait comme une panne de comptage.
+        Le ✓ ne se rétracte **jamais** : un numéro entré ici y reste jusqu'à la fin
+        de la session.
         """
-        return {global_id for global_id, _ in self._tallied}
+        return set(self._tallied)
+
+    def near_misses(self, ignore: Container[int] = ()) -> dict[str, int]:
+        """Pistes **éteintes à portée d'une ligne sans l'avoir franchie**, par ligne.
+
+        Le chiffre qui explique une ligne à zéro. Sans lui, une ligne que personne
+        ne franchit et une ligne mal placée affichent le même `0`, et le second cas
+        se lit comme une panne du comptage — c'est exactement le diagnostic qui a
+        coûté une demi-journée sur `video_7.mp4`, où trois pistes mouraient à ~33 px
+        d'une ligne tracée à 60 px du bord de l'image.
+
+        Ce **n'est pas** un compteur de franchissements et ne s'additionne à aucun
+        total : c'est une mesure de la géométrie du tracé, pas du trafic. Un
+        quasi-franchissement ne dit rien de ce qui s'est réellement passé à l'écran
+        — le véhicule a peut-être franchi, peut-être fait demi-tour, peut-être
+        stationné. Il dit seulement que **le tracé et le suivi se sont manqués de
+        peu**, ce qui est actionnable : reculer la ligne, ou tenir la piste plus
+        longtemps.
+
+        `ignore` reçoit les identifiants de piste **encore vivants** : une piste qui
+        approche de la ligne à l'instant où l'on publie n'a pas manqué son
+        franchissement, elle ne l'a pas encore fait. Sans ce filtre, l'aperçu live
+        annoncerait un quasi-franchissement par véhicule en approche, puis le
+        retirerait — un chiffre qui clignote ne se lit pas.
+
+        **Dérivé, jamais accumulé** (invariant 3) : recalculé depuis `_state` à
+        chaque appel, donc il ne peut pas diverger de ce que le compteur a vu. Le
+        coût est en `pistes × lignes` — quelques milliers d'itérations sur un clip
+        long, contre une inférence par image.
+        """
+        counts = {line.id: 0 for line in self._lines}
+        for (track_id, line_id), state in self._state.items():
+            if state.crossed or track_id in ignore:
+                continue
+            if state.last_ratio <= NEAR_MISS_RATIO:
+                counts[line_id] = counts.get(line_id, 0) + 1
+        return counts
 
     def _observe_line(
         self,
@@ -137,18 +260,31 @@ class LineCrossingCounter:
     ) -> None:
         state = self._state.setdefault((track.track_id, line.id), _LineState())
 
-        # 1. Émission différée : la piste vient de se confirmer, et un
-        #    franchissement l'attendait.
-        if state.pending_direction is not None and confirmed:
-            event = self._tally(track, line, state.pending_direction, timestamp_ms, frame_index)
-            state.pending_direction = None
-            if event is not None:
-                events.append(event)
+        # 0. Mémoire du diagnostic, tenue à **chaque** image observée — donc avant
+        #    les trois retours anticipés ci-dessous. Les écrire après perdrait
+        #    précisément le cas qu'on cherche à voir : la piste qui s'éteint pile
+        #    sur la ligne, dont la dernière image repart en `side == 0`.
+        if not state.crossed:
+            state.last_ratio = _near_miss_ratio(track, line)
 
-        side = side_of_line(line.a, line.b, track.centroid)
-        # 2. Pile sur la ligne : on attend la frame suivante. Trancher
-        #    arbitrairement produirait un faux franchissement dans un sens au
-        #    hasard dès que le centroïde effleure la ligne.
+        # 1. Émission différée : la piste vient de se confirmer, et un
+        #    franchissement l'attendait. Elle porte désormais un numéro — la
+        #    session le lui a donné dans `_number_tracks`, juste avant `observe`.
+        if state.pending_direction is not None and confirmed:
+            events.append(
+                self._tally(track, line, state.pending_direction, timestamp_ms, frame_index)
+            )
+            state.pending_direction = None
+            state.crossed = True
+
+        # 2. Dans la bande morte : on ne tranche pas de côté et on attend une image
+        #    où la piste est franchement d'un côté. C'est le traitement que ce code
+        #    réservait au centroïde tombant *exactement* sur la ligne, avec une
+        #    épaisseur mesurée au lieu de zéro — trancher au dixième de pixel
+        #    produisait trois passages pour un véhicule arrêté sur le trait
+        #    (ADR 0018). `settled_centroid` n'est **pas** mis à jour ici : c'est ce
+        #    qui permet au segment de la sortie de bande d'enjamber le trait.
+        side = self._settled_side(track, line)
         if side == 0:
             return
 
@@ -158,23 +294,28 @@ class LineCrossingCounter:
         #    l'analyse serait compté.
         if state.side == 0:
             state.side = side
+            state.settled_centroid = track.centroid
             return
 
         if side == state.side:
+            state.settled_centroid = track.centroid
             return
 
         # 4. Changement de côté : deux conditions **géométriques** doivent tenir.
-        #    La déduplication n'en fait pas partie — elle est décidée dans
-        #    `_tally`, qui refuse en rendant `None`. Filtrer ici sur ce qui a déjà
-        #    compté remettrait un garde sur la piste, que l'occlusion efface.
+        #    Le segment part de la dernière position **hors bande**, et non de
+        #    l'image précédente : quand la piste vient de traverser la bande, sa
+        #    position précédente est du même côté qu'elle, et le segment ne
+        #    couperait rien.
         accepted = self._crossing_is_in_scope(track, line) and segments_intersect(
-            track.previous_centroid or track.centroid, track.centroid, line.a, line.b
+            state.settled_centroid or track.previous_centroid or track.centroid,
+            track.centroid,
+            line.a,
+            line.b,
         )
         if accepted:
             if confirmed:
-                event = self._tally(track, line, side, timestamp_ms, frame_index)
-                if event is not None:
-                    events.append(event)
+                events.append(self._tally(track, line, side, timestamp_ms, frame_index))
+                state.crossed = True
             else:
                 state.pending_direction = side
 
@@ -182,6 +323,27 @@ class LineCrossingCounter:
         #    Sans cela, la piste « regarde dans le mauvais sens » et son
         #    franchissement suivant compte à l'envers (piège 11 de prompt/13).
         state.side = side
+        state.settled_centroid = track.centroid
+
+    @staticmethod
+    def _settled_side(track: SessionTrack, line: CountingLineDef) -> int:
+        """Côté **tranché** de la piste : `0` tant qu'elle est dans la bande morte.
+
+        La bande est exprimée en demi-boîtes du véhicule, donc son épaisseur en
+        pixels suit la taille de l'objet : quelques pixels pour une voiture au
+        loin, quelques dizaines pour un camion au premier plan. C'est ce qui la
+        rend valable sur une même image comme d'une résolution à l'autre.
+
+        Une boîte dégénérée retombe sur le test de côté strict — sans surface, il
+        n'y a pas de demi-boîte, et refuser de trancher figerait la piste.
+        """
+        offset = signed_line_offset(line.a, line.b, track.centroid)
+        half_extent = max(track.box.width, track.box.height) / 2.0
+        if half_extent <= 0.0:
+            return 0 if offset == 0.0 else (1 if offset > 0.0 else -1)
+        if abs(offset) < CROSSING_BAND_RATIO * half_extent:
+            return 0
+        return 1 if offset > 0.0 else -1
 
     def _crossing_is_in_scope(self, track: SessionTrack, line: CountingLineDef) -> bool:
         """La ligne est-elle active à cet endroit pour cette piste ?
@@ -209,33 +371,22 @@ class LineCrossingCounter:
         direction: int,
         timestamp_ms: float,
         frame_index: int,
-    ) -> CrossingEvent | None:
-        """Comptabilise un franchissement, ou refuse et rend `None`.
+    ) -> CrossingEvent:
+        """Comptabilise un franchissement. **Le seul endroit qui fait bouger un total.**
 
-        Un seul refus : cette identité a déjà compté pour sa génération courante.
-        Peu importe que ce soit sur une autre ligne, dans l'autre sens, ou sous
-        une piste depuis longtemps détruite — c'est le même véhicule, il a déjà
-        été compté, et il ne le sera plus tant qu'il ne sera pas réapparu.
+        Il n'y a plus de refus possible : chaque franchissement géométriquement
+        accepté est compté. La méthode reste séparée parce qu'elle est le point
+        unique où un tally et un événement naissent ensemble — les faire naître à
+        deux endroits laisserait l'overlay et les chiffres diverger.
 
-        `track.reid_count` est lu et non recalculé : la session l'a arrêté pour
-        cette frame dans `_resolve_identities`, juste avant `observe`. Le
-        compteur n'a donc pas à savoir ce qu'est une galerie.
-
-        Rendre `None` plutôt qu'un événement est ce qui garde le badge ✓ honnête.
+        Le compteur écrit dans **un seul** objet, `LineTally.side(direction)` ; le
+        total de la ligne et sa répartition par type en sont dérivés. C'est
+        l'invariant 3 rendu structurel plutôt que surveillé.
         """
-        key = (track.global_id, track.reid_count)
-        if key in self._tallied:
-            return None
-        self._tallied.add(key)
+        self._tallied.add(track.global_id)
 
         label = track.counting_label
-        tally = self.by_line[line.id]
-        tally.total += 1
-        tally.by_class[label] = tally.by_class.get(label, 0) + 1
-        if direction > 0:
-            tally.positive += 1
-        else:
-            tally.negative += 1
+        self.by_line[line.id].side(direction).record(label, timestamp_ms)
 
         return CrossingEvent(
             line_id=line.id,

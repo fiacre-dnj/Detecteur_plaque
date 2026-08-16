@@ -376,6 +376,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             container.model_registry.apply_thread_budget, settings.inference_threads
         )
 
+    # Même fenêtre et même raison que le budget de threads : avant la première
+    # inférence. Sans GPU, l'appel rend la main sans importer torch — le moteur
+    # factice des tests n'est donc pas touché.
+    await anyio.to_thread.run_sync(container.model_registry.enable_cudnn_autotune)
+
     background: set[asyncio.Task[None]] = set()
     cleanup = asyncio.create_task(_cleanup_loop(app), name="cleanup")
     background.add(cleanup)
@@ -439,6 +444,11 @@ async def _warmup(container: Container) -> None:
     = True` existait, était documenté dans `.env.example`, et aucune ligne ne le
     consultait. La première analyse réelle payait donc toujours le chargement.
     """
+    # L'auto-test des plaques d'abord, et non après : c'est le moins coûteux des deux
+    # (un modèle nano contre le détecteur de véhicules) et c'est celui dont le verdict
+    # est attendu par `/health`. Il ne lève jamais — `probe()` avale tout.
+    await _probe_plates(container)
+
     registry = container.model_registry
     if registry is None:
         return
@@ -452,6 +462,29 @@ async def _warmup(container: Container) -> None:
         await anyio.to_thread.run_sync(registry.warmup, model_id)
     except Exception as exc:  # pragma: no cover — `warmup` avale déjà ses erreurs
         logger.warning("préchauffage en échec", model_id=model_id, error=str(exc))
+
+
+async def _probe_plates(container: Container) -> None:
+    """Vérifie que le détecteur de plaques se charge **vraiment**, une fois.
+
+    `plateAvailable` ne teste qu'une présence de fichier, délibérément : l'interface
+    interroge `/health` en permanence et charger un modèle à chaque appel serait
+    absurde. Mais ce projet a payé trois fois le mode de panne que cette économie
+    laisse passer — un `.env` commenté, un dictionnaire d'OCR décalé d'un cran, un
+    suffixe de fichier qui trompe le choix de backend d'Ultralytics. Chaque fois : un
+    drapeau vert, aucune exception, et zéro plaque à chaque image.
+
+    Une inférence sur une image noire au démarrage tranche entre les deux, et le
+    verdict remonte dans `/health` sous `plateLoadable`.
+    """
+    service = container.model_service
+    if service is None:
+        return
+    verdict = await service.probe_plates()
+    if verdict is False:
+        # `error` et non `warning` : les poids sont là, l'utilisateur croit donc que
+        # l'ANPR marche. C'est le seul état de ce démarrage qui mérite d'être criard.
+        logger.error("auto-test du détecteur de plaques en échec — ANPR muette")
 
 
 async def _cleanup_loop(app: FastAPI) -> None:

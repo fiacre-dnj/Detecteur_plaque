@@ -142,7 +142,7 @@ class LiveSession:
         observations = await anyio.to_thread.run_sync(
             lambda: self._stream.track(image, timestamp_ms)
         )
-        outcome = counting.feed(self._frame_index, timestamp_ms, image, observations)
+        outcome = counting.feed(self._frame_index, timestamp_ms, observations)
         self._frame_index += 1
 
         return {

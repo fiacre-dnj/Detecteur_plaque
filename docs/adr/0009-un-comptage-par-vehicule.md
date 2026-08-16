@@ -1,6 +1,9 @@
 # ADR 0009 — Un véhicule compte une fois, la ré-identification ré-arme
 
-- **Statut** : accepté
+- **Statut** : **abrogé** par [ADR 0016](0016-compter-les-objets-suivis.md) — son garde
+  et toute la ré-identification qui lui servait de clé ont été supprimés du code. Reste
+  ici pour l'histoire : il explique pourquoi le garde a existé, ce qui est ce dont on a
+  besoin avant de le réintroduire.
 - **Date** : 2026-08-07
 - **Remplace** : la règle de déduplication `(ligne, identité, sens)` de
   [`prompt/03-DOMAINE-COMPTAGE.md`](../../prompt/03-DOMAINE-COMPTAGE.md) §3

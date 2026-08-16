@@ -38,7 +38,7 @@ from traffic_analysis.features.models_registry.infrastructure.inference_probe im
     RegistryInferenceProbe,
 )
 from traffic_analysis.features.models_registry.infrastructure.plate_detector import (
-    OnnxPlateDetector,
+    UltralyticsPlateDetector,
 )
 from traffic_analysis.features.models_registry.infrastructure.plate_reader import OnnxPlateReader
 from traffic_analysis.features.models_registry.infrastructure.registry import ModelRegistry
@@ -136,13 +136,24 @@ def build_container(
         device=settings.device,
         half=settings.half,
     )
-    resolved_engine = engine or UltralyticsEngine(registry)
-    resolved_plates = plate_detector or OnnxPlateDetector(
+    resolved_engine = engine or UltralyticsEngine(
+        registry,
+        gmc_method=settings.tracker_gmc,
+        imgsz=settings.inference_imgsz,
+        batch=settings.inference_batch,
+    )
+    resolved_plates = plate_detector or UltralyticsPlateDetector(
         settings.resolved_plate_model_path,
         settings.plate_confidence,
         iou=settings.plate_iou,
         mosaic_side=settings.plate_mosaic_side,
         geometry=PlateGeometry(max_per_vehicle=settings.plate_max_per_vehicle),
+        # Le registre est l'autorité sur le matériel, pour le détecteur de plaques
+        # comme pour celui des véhicules : une seule décision par machine, prise à
+        # un seul endroit, testée une seule fois. Des appelables et non des valeurs
+        # — le registre ne sonde le GPU qu'au premier besoin (ADR 0015).
+        device_provider=registry.device,
+        half_provider=registry.half,
     )
     resolved_plate_reader = plate_reader or OnnxPlateReader(
         settings.resolved_plate_ocr_model_path,
@@ -252,5 +263,6 @@ def build_container(
             preparer=model_service if engine is None else None,
             max_concurrent_jobs=settings.max_concurrent_jobs,
             preview_interval_ms=settings.preview_interval_ms,
+            preview_interval_paced_ms=settings.preview_interval_paced_ms,
         ),
     )

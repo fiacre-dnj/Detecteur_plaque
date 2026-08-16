@@ -14,15 +14,21 @@ c'est-à-dire au-dessus de tout seuil raisonnable. Elles étaient toutes dessin�
 toutes de vraies plaques. La séparation est géométrique et nette : une plaque
 occupe 11 à 25 % de la largeur de son véhicule, une fausse détection 98 à 100 %.
 
-**Pourquoi une mosaïque, et pourquoi elle est désactivée par défaut.** Le `.onnx`
-est figé à `1×3×640×640` : sa grille d'ancres est une constante de l'export, donc
-ni la résolution ni la taille du lot ne sont négociables (mesuré : toute autre
-forme fait échouer le `Reshape` du DFL). Empaqueter plusieurs recadrages dans une
-seule image est donc la seule façon d'amortir l'inférence.
+**Pourquoi une mosaïque, et pourquoi elle est désactivée par défaut.** Elle est née
+d'une contrainte qui n'existe plus : l'export `.onnx` d'origine était figé à
+`1×3×640×640`, sa grille d'ancres gravée dans le graphe, donc ni la résolution ni la
+taille du lot n'étaient négociables — empaqueter plusieurs recadrages dans une seule
+image était la seule façon d'amortir l'inférence. Depuis le passage en `.pt`
+([ADR 0015](../../../../../docs/adr/0015-le-detecteur-de-plaques-en-pt.md)), le lot
+et la résolution sont libres : `predict()` accepte une liste de recadrages et les
+traite en un seul appel, ce qui amortit mieux **et** sans rien perdre.
 
-L'intuition « un recadrage de 200 px agrandi à 640 ne gagne rien, donc
-l'empaqueter ne coûte rien » est **fausse**, et c'est la mesure qui le dit. Ce qui
-décide qu'une plaque est trouvée n'est pas le facteur d'agrandissement mais la
+La mosaïque reste néanmoins ici, inchangée et toujours désactivée par défaut, parce
+que son arbitrage a été mesuré et qu'il garde sa valeur sur une machine sans GPU.
+L'intuition « un recadrage de 200 px agrandi à 640 ne gagne rien, donc l'empaqueter
+ne coûte rien » est **fausse**, et c'est la mesure qui le dit.
+
+Ce qui décide qu'une plaque est trouvée n'est pas le facteur d'agrandissement mais la
 taille de la plaque **dans l'entrée du réseau** — et elle ne dépend que de la
 cellule, pas du recadrage :
 
@@ -63,7 +69,7 @@ from traffic_analysis.features.counting.application.dto import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
     import numpy.typing as npt
@@ -74,8 +80,14 @@ logger = get_logger("traffic_analysis.anpr")
 # soit distinguable : l'inférence coûterait sans jamais rien trouver.
 MIN_CROP_SIDE_PX = 32
 
-#: Côté de l'entrée du réseau. **Constante de l'export, pas un réglage** : la
-#: grille d'ancres `8400` est gravée dans le graphe.
+#: Côté de l'entrée du réseau.
+#:
+#: C'était une **constante de l'export** au temps du `.onnx` — la grille d'ancres
+#: `8400` était gravée dans le graphe, et toute autre forme faisait échouer le
+#: `Reshape` du DFL. Depuis le `.pt` (ADR 0015) c'est un choix, gardé à 640 parce
+#: que c'est la résolution d'entraînement du modèle : monter plus haut interpole des
+#: pixels que le réseau n'a jamais vus à cette échelle, et cela se mesure au banc
+#: avant de se décider.
 NET_SIZE = 640
 
 #: Gouttière entre deux cellules de la mosaïque. 12 px à 640, soit un peu plus que
@@ -115,18 +127,28 @@ class _Placement:
     scale: float
 
 
-class OnnxPlateDetector:
-    """Détecteur de plaques ONNX, chargé **paresseusement**.
+class UltralyticsPlateDetector:
+    """Détecteur de plaques chargé par Ultralytics, **paresseusement**.
 
     Paresseusement parce que l'absence du fichier ne doit pas empêcher le service
     de démarrer : l'option ANPR est alors signalée indisponible dans `/health` et
     désactivée dans l'interface, et tout le reste fonctionne.
+
+    **Le nom ne dit plus un format, et c'est voulu.** La classe s'appelait
+    `OnnxPlateDetector` ; elle n'a jamais fait que passer son chemin à
+    `YOLO(path, task="detect")`, qui accepte indifféremment un `.pt` et un `.onnx`.
+    Le format est maintenant un `.pt` (ADR 0015), et un nom qui affirme un format
+    que la classe n'impose pas est un nom qui finira par mentir.
     """
 
     __slots__ = (
         "_checked",
         "_confidence",
+        "_device",
+        "_device_provider",
         "_geometry",
+        "_half",
+        "_half_provider",
         "_iou",
         "_lock",
         "_model",
@@ -142,7 +164,26 @@ class OnnxPlateDetector:
         iou: float = 0.45,
         mosaic_side: int = DEFAULT_MOSAIC_SIDE,
         geometry: PlateGeometry | None = None,
+        device_provider: Callable[[], str] | None = None,
+        half_provider: Callable[[], bool] | None = None,
     ) -> None:
+        """`device_provider` et `half_provider` **délèguent au registre**.
+
+        Deux appelables et non deux valeurs, parce que le registre ne décide de son
+        device qu'au premier besoin : il sonde le GPU, lit sa capacité de calcul et
+        peut retomber sur le CPU. Copier sa décision à la construction du conteneur
+        la figerait avant qu'elle soit prise.
+
+        Et deux appelables **du registre** plutôt qu'une détection propre à cet
+        adaptateur, parce qu'il n'y a qu'une bonne réponse par machine : c'est le
+        registre qui applique la règle « fp16 seulement à partir de Volta »
+        d'ADR 0012 — sur une carte Pascal le fp16 est *plus lent* que le fp32,
+        38,9 ms contre 48,9 mesurées. Deux détections indépendantes finiraient par
+        se contredire, et celle du détecteur de plaques serait la moins testée.
+
+        `None` laisse Ultralytics choisir seul, ce qui est le comportement d'avant
+        ADR 0015 : les doublures de test n'ont pas à connaître un registre.
+        """
         self._path = model_path
         self._confidence = confidence
         self._iou = iou
@@ -151,6 +192,10 @@ class OnnxPlateDetector:
         self._model: Any = None
         self._checked = False
         self._lock = threading.Lock()
+        self._device_provider = device_provider
+        self._half_provider = half_provider
+        self._device: str | None = None
+        self._half = False
 
     @property
     def available(self) -> bool:
@@ -159,8 +204,66 @@ class OnnxPlateDetector:
         Une vérification de présence et non de chargement : charger pour répondre
         à `/health` prendrait des secondes à chaque appel, alors que l'interface
         interroge cette route en permanence.
+
+        **Ce que ce drapeau ne dit pas**, et qui a coûté cher ici : rien sur la
+        lisibilité du fichier. Un poids corrompu, tronqué, ou d'un format que le
+        suffixe contredit passe ce test et rend `available: true`, puis échoue au
+        chargement — donc zéro plaque à chaque image, avec un drapeau vert.
+        `probe()` répond à l'autre question, une fois, au démarrage.
         """
         return self._path.is_file()
+
+    def _runtime_kwargs(self) -> dict[str, Any]:
+        """Arguments de `predict` qui décrivent le matériel, pas la tâche.
+
+        Omis quand aucun fournisseur n'a été injecté : passer `device=None`
+        explicitement n'est pas neutre côté Ultralytics.
+        """
+        kwargs: dict[str, Any] = {}
+        if self._device is not None:
+            kwargs["device"] = self._device
+            kwargs["half"] = self._half
+        return kwargs
+
+    def probe(self) -> bool:
+        """Charge le modèle et lance **une** inférence. Ne lève jamais.
+
+        L'auto-test que `available` ne peut pas faire. Il existe parce que ce projet
+        a payé trois fois le même mode de panne — un `.env` commenté, un
+        dictionnaire d'OCR décalé d'un cran, un suffixe qui trompe le choix de
+        backend : à chaque fois un drapeau vert, un pipeline muet, et aucun message
+        qui mentionne la cause. Une inférence sur une image de synthèse au démarrage
+        transforme les trois en une ligne de journal.
+
+        Rend `True` si le modèle est chargé **et** inférable. Le résultat de la
+        détection n'a aucune importance : une image noire ne contient aucune plaque,
+        et c'est très bien — ce qu'on teste est le chemin, pas la justesse.
+        """
+        if not self.available:
+            return False
+        try:
+            model = self._ensure_loaded()
+            if model is None:
+                return False
+            probe_image = np.zeros((NET_SIZE, NET_SIZE, 3), dtype=np.uint8)
+            model.predict(
+                probe_image,
+                conf=self._confidence,
+                iou=self._iou,
+                imgsz=NET_SIZE,
+                max_det=1,
+                verbose=False,
+                **self._runtime_kwargs(),
+            )
+        except Exception as exc:
+            logger.error(
+                "modèle de plaques présent mais inutilisable — ANPR indisponible",
+                path=str(self._path),
+                error=str(exc),
+            )
+            return False
+        logger.info("auto-test du détecteur de plaques réussi", path=str(self._path))
+        return True
 
     def detect(
         self, image: npt.NDArray[np.uint8], box: BoundingBox, confidence: float | None = None
@@ -239,8 +342,21 @@ class OnnxPlateDetector:
                 return None
             from ultralytics import YOLO  # type: ignore[attr-defined]
 
+            # Le device est résolu **ici** et non à la construction : le registre ne
+            # sonde le GPU qu'au premier besoin, et le sonder plus tôt aurait figé sa
+            # décision avant qu'elle soit prise.
+            if self._device_provider is not None:
+                self._device = self._device_provider()
+            if self._half_provider is not None:
+                self._half = self._half_provider()
+
             self._model = YOLO(str(self._path), task="detect")
-            logger.info("modèle de plaques chargé", path=str(self._path))
+            logger.info(
+                "modèle de plaques chargé",
+                path=str(self._path),
+                device=self._device or "auto",
+                half=self._half,
+            )
             return self._model
 
     @staticmethod
@@ -274,6 +390,9 @@ class OnnxPlateDetector:
         # une mosaïque redimensionnée casserait la correspondance des cellules.
         # `iou` et `max_det` explicites aussi : les défauts (0,7 et 300) sont
         # calibrés pour une scène COCO, pas pour une classe unique.
+        # `device` et `half` explicites : sans eux, Ultralytics refait sa propre
+        # détection de matériel par modèle, et le détecteur de plaques pouvait
+        # atterrir ailleurs que le détecteur de véhicules sur la même machine.
         results = model.predict(
             tile,
             conf=threshold,
@@ -281,6 +400,7 @@ class OnnxPlateDetector:
             imgsz=NET_SIZE,
             max_det=len(placements) * 8,
             verbose=False,
+            **self._runtime_kwargs(),
         )
         if not results:
             return {}

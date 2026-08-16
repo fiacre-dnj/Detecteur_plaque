@@ -85,6 +85,22 @@ class FileResultStore:
         path = self._root / job_id / RESULT_FILENAME
         return path if path.is_file() else None
 
+    def input_path_for(self, job_id: str) -> Path | None:
+        """Chemin de la vidéo déposée si elle est encore là, `None` sinon.
+
+        **Retrouvée par recherche et non reconstruite** : `input_path()` demande
+        l'extension, que seul le dépôt connaissait. La relire ici obligerait
+        l'appelant à la porter jusqu'à la relecture, alors que le disque la sait.
+
+        `None` est un état **normal**, pas une anomalie : la vidéo a son propre TTL,
+        plus court que celui du job. Une analyse dont le résultat est intact peut donc
+        très bien avoir perdu sa vidéo, et c'est à l'appelant de le dire proprement.
+        """
+        directory = self._root / job_id
+        if not directory.is_dir():
+            return None
+        return next((path for path in sorted(directory.glob(f"{INPUT_STEM}.*"))), None)
+
     def delete_input(self, job_id: str) -> bool:
         """Supprime la vidéo déposée mais garde le résultat. **Idempotent**.
 

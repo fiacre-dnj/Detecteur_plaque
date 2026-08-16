@@ -29,7 +29,6 @@
           },
           "hits": 1,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": null,
           "plates": [
             {
@@ -62,7 +61,6 @@
           },
           "hits": 1,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": null,
           "plates": [
             {
@@ -95,7 +93,6 @@
           },
           "hits": 1,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": null,
           "plates": [
             {
@@ -134,7 +131,6 @@
           },
           "hits": 2,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -167,7 +163,6 @@
           },
           "hits": 2,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -201,7 +196,6 @@
           },
           "hits": 2,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -241,7 +235,6 @@
           },
           "hits": 3,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -275,7 +268,6 @@
           },
           "hits": 3,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -308,7 +300,6 @@
           },
           "hits": 3,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -348,7 +339,6 @@
           },
           "hits": 4,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -382,7 +372,6 @@
           },
           "hits": 4,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -416,7 +405,6 @@
           },
           "hits": 4,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -455,7 +443,6 @@
           },
           "hits": 5,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -488,7 +475,6 @@
           },
           "hits": 5,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -522,7 +508,6 @@
           },
           "hits": 5,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -562,7 +547,6 @@
           },
           "hits": 6,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -596,7 +580,6 @@
           },
           "hits": 6,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -629,7 +612,6 @@
           },
           "hits": 6,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -669,7 +651,6 @@
           },
           "hits": 7,
           "counted": true,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -703,7 +684,6 @@
           },
           "hits": 7,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -737,7 +717,6 @@
           },
           "hits": 7,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -776,7 +755,6 @@
           },
           "hits": 8,
           "counted": true,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -809,7 +787,6 @@
           },
           "hits": 8,
           "counted": true,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -843,7 +820,6 @@
           },
           "hits": 8,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -883,7 +859,6 @@
           },
           "hits": 9,
           "counted": true,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -917,7 +892,6 @@
           },
           "hits": 9,
           "counted": true,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -950,7 +924,6 @@
           },
           "hits": 9,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -990,7 +963,6 @@
           },
           "hits": 10,
           "counted": true,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -1024,7 +996,6 @@
           },
           "hits": 10,
           "counted": true,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -1058,7 +1029,6 @@
           },
           "hits": 10,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -1097,7 +1067,6 @@
           },
           "hits": 11,
           "counted": true,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -1131,7 +1100,6 @@
           },
           "hits": 11,
           "counted": true,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -1165,7 +1133,6 @@
           },
           "hits": 11,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -1205,7 +1172,6 @@
           },
           "hits": 12,
           "counted": true,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -1239,7 +1205,6 @@
           },
           "hits": 12,
           "counted": true,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -1272,7 +1237,6 @@
           },
           "hits": 12,
           "counted": false,
-          "reidCount": 0,
           "speedPxS": 1250.0,
           "plates": [
             {
@@ -1300,6 +1264,7 @@
       "globalId": 1,
       "trackId": 1,
       "label": "car",
+      "category": "vehicle",
       "direction": 1,
       "timestampMs": 240.0,
       "frameIndex": 6,
@@ -1311,6 +1276,7 @@
       "globalId": 2,
       "trackId": 2,
       "label": "truck",
+      "category": "vehicle",
       "direction": -1,
       "timestampMs": 280.0,
       "frameIndex": 7,
@@ -1333,7 +1299,6 @@
         }
       ],
       "zonesVisited": [],
-      "reidCount": 0,
       "avgSpeedPxS": 1250.0,
       "avgSpeedKmh": null,
       "bestPlateScore": 0.71,
@@ -1357,7 +1322,6 @@
         }
       ],
       "zonesVisited": [],
-      "reidCount": 0,
       "avgSpeedPxS": 1250.0,
       "avgSpeedKmh": null,
       "bestPlateScore": 0.71,
@@ -1375,7 +1339,6 @@
       "lastSeenMs": 440.0,
       "crossedLines": [],
       "zonesVisited": [],
-      "reidCount": 0,
       "avgSpeedPxS": 1250.0,
       "avgSpeedKmh": null,
       "bestPlateScore": 0.71,
@@ -1388,15 +1351,19 @@
     }
   ],
   "stats": {
-    "uniqueVehicles": 3,
-    "uniqueByClass": {
+    "trackedVehicles": 3,
+    "trackedByClass": {
       "car": 2,
       "truck": 1
     },
     "crossings": 2,
+    "crossedUnique": 2,
     "byClass": {
       "car": 1,
       "truck": 1
+    },
+    "byCategory": {
+      "vehicle": 2
     },
     "byLine": {
       "l1": {
@@ -1406,13 +1373,26 @@
           "truck": 1
         },
         "byDirection": {
-          "positive": 1,
-          "negative": 1
+          "positive": {
+            "total": 1,
+            "byClass": {
+              "car": 1
+            },
+            "firstMs": 240.0,
+            "lastMs": 240.0
+          },
+          "negative": {
+            "total": 1,
+            "byClass": {
+              "truck": 1
+            },
+            "firstMs": 280.0,
+            "lastMs": 280.0
+          }
         }
       }
     },
     "byZone": {},
-    "reidHits": 0,
     "vehiclesPerMinute": 0.0,
     "activeTracks": 3,
     "elapsedMs": 440.0,
@@ -1424,7 +1404,10 @@
       "containedOut": 0,
       "confirmedTracks": 3,
       "tentativeTracks": 0,
-      "rescuedByLowScore": 0
+      "rescuedByLowScore": 0,
+      "nearMisses": {
+        "l1": 0
+      }
     }
   }
 }

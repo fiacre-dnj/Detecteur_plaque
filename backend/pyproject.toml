@@ -2,7 +2,7 @@
 name = "traffic-analysis"
 version = "0.1.0"
 description = "Comptage de véhicules par vision : détection, suivi, ré-identification, ANPR."
-readme = "../README.md"
+readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }
 # La borne haute est volontaire : voir docs/adr/0001-python-312.md.
 # Sans elle, le mode de défaillance est « plante à l'import de torch » après
@@ -37,6 +37,12 @@ dependencies = [
     # première analyse ANPR, et un échec pur et simple dans un conteneur sans
     # réseau — deux raisons de le déclarer ici plutôt que de le subir.
     "onnx>=1.16",
+    # `pyyaml` arrive de toute façon avec ultralytics, mais l'adaptateur l'importe
+    # **lui-même** pour dériver la configuration du tracker (`resolved_tracker_config`,
+    # ADR 0013). Même règle que pour `onnx` ci-dessus : ce qu'on importe se déclare,
+    # sinon une mise à jour d'ultralytics qui s'en passerait casserait le service
+    # avec un `ModuleNotFoundError` sans rapport visible avec elle.
+    "pyyaml>=6",
     # ── Persistance ──────────────────────────────────────────────────────────
     "sqlalchemy>=2.0",
     "aiosqlite>=0.20",
@@ -61,15 +67,39 @@ dev = [
 # ─── Résolution de torch ─────────────────────────────────────────────────────
 [tool.uv]
 # uv choisit la variante de torch d'après le matériel de la machine qui
-# installe : roue CPU (~250 Mo) ici, roue CUDA correspondant au pilote détecté
-# sur une machine NVIDIA. Aucune ligne de code ne dépend de ce choix, et le
-# lockfile porte les deux univers — donc pas d'extra à penser, et pas 2,3 Go de
-# CUDA jamais exécutés sur un poste sans GPU.
+# **résout** — roue CPU (~250 Mo), roue CUDA sur une machine NVIDIA.
 #
-# Pour forcer une variante :  UV_TORCH_BACKEND=cu124 uv sync
+# Ce réglage seul ne suffit pas, et c'est la nuance qui a coûté le GPU pendant
+# tout le projet : `auto` joue à la **résolution**, pas à l'installation. Le
+# lockfile committé fige la variante choisie par la machine qui a locké, et
+# `uv sync` ne fait que la reposer — un poste NVIDIA recevait donc la roue CPU
+# sans qu'aucun message ne le dise. D'où les sources explicites ci-dessous.
 #
-# Voir docs/adr/0005-torch-cpu-par-defaut.md.
+# Pour forcer une variante :  UV_TORCH_BACKEND=cu126 uv sync
+#
+# Voir docs/adr/0005-torch-cpu-par-defaut.md et docs/adr/0012-torch-cuda-sur-windows.md.
 torch-backend = "auto"
+
+# La ligne cu126 est la **dernière** qui embarque les noyaux Pascal (`sm_61`) :
+# CUDA 13 a supprimé Maxwell, Pascal et Volta, et la roue cu128 s'arrête à
+# `sm_70`. Le poste de développement du projet a une Quadro P1000 (`sm_61`), que
+# le pilote annonce pourtant en CUDA 13.0 — `auto` y choisirait donc une roue qui
+# se charge sans erreur puis échoue à la première inférence.
+#
+# `explicit = true` : cet index ne sert **qu'**aux paquets qui le nomment
+# ci-dessous. Sans ce drapeau, uv y chercherait toutes les dépendances, et une
+# roue absente de cet index disparaîtrait de la résolution.
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+# Le marqueur borne l'épinglage à Windows, où vit le seul GPU du projet. Linux
+# garde `torch-backend = "auto"`, et l'image Docker garde son `UV_TORCH_BACKEND=cpu`
+# — ni la CI ni le conteneur ne téléchargent les 2,4 Go de CUDA.
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu126", marker = "sys_platform == 'win32'" }]
+torchvision = [{ index = "pytorch-cu126", marker = "sys_platform == 'win32'" }]
 
 [build-system]
 requires = ["hatchling"]

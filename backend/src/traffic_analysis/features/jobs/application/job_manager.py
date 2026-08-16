@@ -85,6 +85,7 @@ class JobManager:
         "_max_concurrent",
         "_pauses",
         "_preparer",
+        "_preview_interval_paced_s",
         "_preview_interval_s",
         "_repository",
         "_result_store",
@@ -103,6 +104,7 @@ class JobManager:
         preparer: ModelPreparer | None = None,
         max_concurrent_jobs: int = 1,
         preview_interval_ms: int = 200,
+        preview_interval_paced_ms: int = 100,
     ) -> None:
         self._repository = repository
         self._result_store = result_store
@@ -118,6 +120,11 @@ class JobManager:
         # En millisecondes dans la configuration, en secondes ici : `0` désactive
         # l'aperçu, et la conversion est faite une fois plutôt qu'à chaque job.
         self._preview_interval_s = preview_interval_ms / 1000.0 if preview_interval_ms > 0 else None
+        # L'intervalle des analyses bridées. Il ne décide **pas** si l'aperçu existe
+        # — c'est `_preview_interval_s` seul qui le fait, à zéro — il ne fait que le
+        # resserrer quand la cadence est bornée. `run_video` retient le minimum des
+        # deux, donc un déploiement ne peut pas desserrer l'aperçu par ce champ.
+        self._preview_interval_paced_s = preview_interval_paced_ms / 1000.0
         self._semaphore: asyncio.Semaphore | None = None
         self._cancellations: dict[str, threading.Event] = {}
         # Un événement **posé** signifie « suspendu ». Comme pour l'annulation, la
@@ -218,6 +225,35 @@ class JobManager:
             raise ConflictError(
                 "Le fichier de résultat a été purgé. Relancez l'analyse pour le régénérer.",
                 code="result_missing",
+            )
+        return path
+
+    async def input_video_path(self, job_id: str) -> Path:
+        """Chemin de la vidéo analysée, ou une erreur qui dit **pourquoi** elle manque.
+
+        Sert à rejouer une analyse depuis l'historique. Les compteurs, le registre et
+        l'histogramme se rejouent depuis le seul `result.json.gz` ; l'incrustation
+        des boîtes et le déplacement dans la timeline ont besoin de la vidéo.
+
+        **Le refus est distinct de celui du résultat**, et ce n'est pas du zèle : une
+        vidéo purgée n'appelle pas « relancez l'analyse » — le résultat, lui, est
+        intact et parfaitement affichable. Elle appelle « redéposez le fichier ».
+        Réutiliser `result_missing` enverrait l'utilisateur refaire un calcul qui n'a
+        pas besoin d'être refait.
+        """
+        record = await self.get(job_id)
+        if record.status != "done":
+            raise ConflictError(
+                f"La vidéo n'est pas disponible : le job est « {record.status} ».",
+                code="job_not_finished",
+            )
+        path = self._result_store.input_path_for(job_id)
+        if path is None:
+            raise ConflictError(
+                "La vidéo analysée a été purgée — elle est effacée plus tôt que le "
+                "résultat. Les chiffres restent affichables ; redéposez le fichier "
+                "pour revoir les boîtes sur l'image.",
+                code="input_missing",
             )
         return path
 
@@ -457,6 +493,7 @@ class JobManager:
                 on_progress=on_progress,
                 on_preview=None if interval is None else on_preview,
                 preview_interval_s=interval or 0.0,
+                paced_preview_interval_s=self._preview_interval_paced_s,
                 is_cancelled=cancellation.is_set,
                 wait_while_paused=wait_while_paused,
             )
@@ -602,6 +639,11 @@ class JobManager:
             "fileName": record.file_name,
             "createdAt": record.created_at.isoformat(),
             "finishedAt": record.finished_at.isoformat() if record.finished_at else None,
+            # Les agrégats dénormalisés, pour que l'historique dise ce qu'une analyse
+            # a trouvé sans ouvrir son `result.json.gz`. Zéro tant qu'elle tourne :
+            # ils sont écrits en une fois à la fin.
+            "trackedVehicles": record.tracked_vehicles,
+            "crossingsTotal": record.crossings_total,
         }
 
     @staticmethod

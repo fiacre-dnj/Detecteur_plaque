@@ -10,9 +10,17 @@ Guide pour Claude Code (claude.ai/code) dans ce dépôt.
 
 ## Ce que fait l'application
 
-Détection, suivi, ré-identification et comptage de véhicules sur une vidéo ou un
-flux caméra. Toute l'inférence est côté serveur ; le navigateur pilote, dessine la
-géométrie de comptage et rejoue le résultat.
+Détection, suivi et comptage de véhicules sur une vidéo ou un flux caméra. Toute
+l'inférence est côté serveur ; le navigateur pilote, dessine la géométrie de comptage et
+rejoue le résultat.
+
+**Il n'y a plus de ré-identification** depuis le 2026-08-13 : un objet suivi est un
+véhicule, et c'est le tracker qui décide ce qu'est un objet suivi
+([ADR 0016](docs/adr/0016-compter-les-objets-suivis.md)). Deux comptages coexistent et ne
+se divisent jamais l'un par l'autre — les **véhicules** (`trackedVehicles`, tracé ou pas)
+et les **passages** (`crossings`, par ligne et par sens). Chaque ligne porte deux sens
+que l'utilisateur nomme, avec un rôle optionnel entrée / sortie qui donne le bilan du
+carrefour.
 
 Deux modes partagent **le même** code de comptage — la même `AnalysisSession`, les
 mêmes schémas de requête, les mêmes sérialiseurs — et c'est ce qui garantit qu'un
@@ -42,7 +50,7 @@ Le dossier [`prompt/`](prompt/) (15 fichiers, à lire dans l'ordre depuis
 [`prompt/README.md`](prompt/README.md)) **est** le cahier des charges. Quand il
 écrit « obligatoire », « jamais » ou « exactement », c'est une contrainte qui a
 coûté un bug dans une version antérieure.
-[`prompt/13-PIEGES-CONNUS.md`](prompt/13-PIEGES-CONNUS.md) en tient la liste (56
+[`prompt/13-PIEGES-CONNUS.md`](prompt/13-PIEGES-CONNUS.md) en tient la liste (66
 entrées) — **le relire avant de déboguer quoi que ce soit**.
 
 Si une contrainte semble fausse : le dire avec la preuve, proposer l'alternative,
@@ -60,7 +68,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1193 tests
+uv run pytest                                                            # 1303 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -69,11 +77,12 @@ uv run alembic revision --autogenerate -m "ajoute la table X"
 uv run python scripts/fetch_weights.py --tiers nano,medium,large,xlarge
 uv run python scripts/fetch_plate_model.py
 uv run python scripts/fetch_plate_ocr_model.py       # modèle OCR + son dictionnaire
+uv run python scripts/audit_lignes.py                # « pourquoi cette ligne est à 0 ? »
 
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 471 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 595 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -81,8 +90,12 @@ uvx pre-commit run --all-files
 ```
 
 **Il n'y a pas d'extra `gpu`.** `pyproject.toml` déclare
-`[tool.uv] torch-backend = "auto"` : `uv sync` prend la roue CPU ici et la roue
-CUDA sur une machine NVIDIA. Pour forcer : `UV_TORCH_BACKEND=cpu uv sync`.
+`[tool.uv] torch-backend = "auto"` **et** une source explicite : sur Windows,
+`torch` et `torchvision` viennent de l'index **cu126**. `auto` seul ne suffisait
+pas — il joue à la résolution, et le lockfile committé fige son verdict, donc une
+machine NVIDIA recevait la roue CPU en silence
+([ADR 0012](docs/adr/0012-torch-cuda-sur-windows.md)). Pour forcer une variante —
+poste Windows sans GPU, build reproductible : `UV_TORCH_BACKEND=cpu uv sync`.
 
 ## Architecture
 
@@ -106,9 +119,11 @@ feature A → feature B  UNIQUEMENT par son `application`
 ```
 
 `features/*/domain/**` n'importe jamais `fastapi`, `sqlalchemy`, `ultralytics`,
-`cv2` ni `pydantic` (`numpy` est autorisé : un descripteur de ré-identification
-est du calcul). C'est ce qui permet à la CI de tourner **sans GPU, sans poids et
-sans ultralytics**, en injectant un `FakeEngine`.
+`cv2` ni `pydantic`. `numpy` reste autorisé — il servait aux descripteurs de
+ré-identification, supprimés par ADR 0016, et le domaine ne l'importe plus nulle part ;
+la règle reste ouverte parce qu'un calcul vectoriel y est légitime. C'est ce qui permet à
+la CI de tourner **sans GPU, sans poids et sans ultralytics**, en injectant un
+`FakeEngine`.
 
 Cette architecture a un prix, payé deux fois : un bug de chemin de configuration
 du tracker et une erreur d'encodage multipart ont traversé 500 tests verts, parce
@@ -116,7 +131,8 @@ que le moteur factice ne les atteint jamais. **Vérifier contre le vrai serveur
 avant de déclarer une fonctionnalité terminée.**
 
 `features/counting/domain/` est le cœur : `geometry`, `models`, `line_counter`,
-`zone_counter`, `reid`, `speed`, `tracking_session`, plus tout ce qui décide de
+`zone_counter`, `track_numbering`, `speed`, `tracking_session`, plus tout ce qui décide
+de
 l'ANPR sans toucher un pixel — `plate_geometry` (le filtre de plausibilité et les
 raisons de non-lecture), `plate_policy` (les deux étranglements), `plate_anchor`,
 `plate_text`, `plate_vote`. Sa spécification est
@@ -144,7 +160,43 @@ app → features → entities → shared
 
 Une feature n'importe **jamais** une autre feature. Quand deux en ont besoin, le
 câblage passe par `StudioPage` — c'est pourquoi `GeometryPanel` reçoit un
-`onOpenPresets` plutôt que la modale elle-même.
+`onOpenPresets` plutôt que la modale elle-même, et pourquoi `SettingsPanels` reçoit
+un emplacement `leading` où le studio pose le bouton d'import.
+
+#### La disposition du studio, depuis le 2026-08-12
+
+```
+[⇧ Importer]  [Détection ▾] [Comptage ▾] [Affichage & analyse ▾]   ← barre
+└─ tiroir pleine largeur du panneau ouvert, en 2-3 colonnes (fermé par défaut)
+┌──────────────────────────────┬──────────────────┐
+│ vidéo + canvas + HUD          │ RÉSULTATS         │  aside 24 rem
+│ TransportBar                  │ KPI en 2 colonnes │
+├──────────────────────────────┴──────────────────┤
+│ CHRONOLOGIE — cliquable, déplace la vidéo         │  toujours visible
+│ [Répartition][Par ligne & sens][Mouvements]        │  onglets
+│ [Flux][Registre]                                  │
+└──────────────────────────────────────────────────┘
+```
+
+Elle est l'inverse de la précédente, où les réglages tenaient la colonne de droite
+et les résultats vivaient sous la grille. Trois conséquences à connaître :
+
+- **le direct n'a plus de porte d'entrée.** Les cartes « démonstration » et
+  « caméra » sont retirées de l'écran — elles étaient désactivées depuis longtemps.
+  `realtime-counting`, `RealtimePanel`, `media.selectCamera` et `isCamera` sont
+  **intacts** : rouvrir la porte est un `useCallback` et un bouton dans la barre ;
+- **la chronologie n'est pas dans les onglets**, délibérément : c'est un outil de
+  navigation, et l'enfouir obligerait à changer d'onglet pour se déplacer. Depuis le
+  2026-08-13 elle a quatre étages — rail de densité cliquable, bandeau de synthèse,
+  filtres ligne/sens/type, liste groupée par tranche — et chacun répond à une question
+  qu'aucun autre ne sait poser. Ses règles vivent dans
+  `timeline-replay/model/timelineFilters.ts`, testables sans DOM ; **un ensemble de
+  filtre vide signifie « tout »**, parce qu'une intersection naïve afficherait une
+  chronologie vide au premier rendu ;
+- **`Tabs` est une primitive partagée** (`shared/ui/Tabs.tsx`), avec le clavier du
+  motif ARIA — flèches, Home/Fin, un seul onglet dans l'ordre de tabulation.
+  L'accordéon maison qu'elle remplace n'avait ni `role`, ni `aria-controls`, ni
+  gestion des flèches.
 
 ### Le contrat, pas un build
 
@@ -172,21 +224,46 @@ Chacun est un bug déjà payé.
    modèle, jamais en pixels CSS. Les conversions se font aux frontières.
 3. **Un compteur affiché est dérivé, jamais accumulé en double.**
    `crossings == Σ by_line[*].total` et `total == positive + negative`.
-4. **On compte sous `identity_label`** (vote majoritaire de la galerie), jamais
-   sous la lecture de la frame courante. **Le texte de plaque suit la même règle** :
+   **Et surtout : ne jamais diviser un compteur de passages par un compteur de
+   véhicules.** Les deux unités ont divergé au 2026-08-12 (ADR 0014) et le « taux de
+   franchissement » l'a payé — il affichait 200 % dès le premier aller-retour, en le
+   documentant comme voulu. Le numérateur est `crossed_unique`, le nombre de
+   véhicules **distincts** ayant franchi, dérivé de
+   `LineCounter.counted_identities()` — la même source que le badge ✓, pour que les
+   deux ne puissent pas se contredire.
+4. **On compte sous `identity_label`** (vote majoritaire sur la vie du véhicule),
+   jamais sous la lecture de la frame courante. Le vote est le seul morceau de
+   l'ancienne galerie d'apparence qui survit à ADR 0016, et c'est lui qui rend le type
+   cohérent entre véhicules de types différents. **Le texte de plaque suit la même règle** :
    ce qui est publié est le vote de `PlateTextVote` sur toute la vie du véhicule,
    jamais la lecture de la frame — sinon deux relectures du même clip donnent deux
    plaques.
 5. **Le badge ✓ dérive du tally**, jamais de la comptabilité interne d'une piste.
-6. **Un véhicule compte une fois, la ré-identification ré-arme.** La
-   déduplication porte sur `(identité, génération)` — jamais sur la piste,
-   détruite à chaque occlusion longue. Ni la ligne ni le sens n'entrent dans la
-   clé : deux lignes en travers de la même voie ne doublent pas le total (c'est la
-   **première** franchie qui le porte), et un aller-retour compte 1. La génération
-   est `reid_count`, que la galerie n'incrémente que sur une réapparition réelle.
-   [ADR 0009](docs/adr/0009-un-comptage-par-vehicule.md).
-7. **`_release_lost` avant `_resolve_identities`.** Mesuré avec le mauvais ordre :
-   2 véhicules uniques et 0 ré-identification ; avec le bon : 1 et 1.
+6. **Deux comptages, deux unités, et on ne les divise jamais l'un par l'autre.**
+   - **véhicules** — `tracked_vehicles` : *un objet suivi = un véhicule*, qu'il ait
+     franchi une ligne ou non. Seules comptent les pistes **confirmées**
+     (`hits >= min_hits`) ;
+   - **passages** — `crossings` et tous les `by_line` : chaque franchissement observé
+     compte. Un aller-retour compte **2**, deux lignes en travers de la même voie
+     comptent **2**, une occlusion qui coupe une piste compte **2**.
+
+   Le garde d'ADR 0009 est **supprimé**, plus débranché : `dedupe_by_identity`,
+   `reid_count` et `reid_hits` n'existent plus. `domain/reid.py` non plus — il est
+   remplacé par `domain/track_numbering.py`, qui numérote et vote la classe, sans
+   jamais comparer deux apparences.
+   **Un résultat archivé avant le 2026-08-13 ne se recharge plus dans le studio** :
+   son `result.json.gz` porte les anciennes clés, et ses chiffres ne sont de toute
+   façon pas comparables.
+   [ADR 0016](docs/adr/0016-compter-les-objets-suivis.md), qui abroge
+   [ADR 0009](docs/adr/0009-un-comptage-par-vehicule.md) et amende
+   [ADR 0014](docs/adr/0014-compter-des-passages.md).
+7. **`_release_lost` avant `_number_tracks`.** L'ordre reste, la raison a changé :
+   il ne s'agit plus de relâcher une identité avant qu'une autre piste la réclame
+   (plus rien n'est admis), mais de **libérer l'identifiant de piste** avant de
+   numéroter. Un `track_id` réémis par le tracker au-delà de `max_lost_ms` doit
+   recevoir un numéro neuf, sinon deux véhicules fusionnent — et
+   `BaseTrack._count` d'Ultralytics étant un attribut de *classe*, une session temps
+   réel qui démarre pendant une analyse suffit à provoquer ce cas.
 8. **La timeline stocke des `snapshot()`**, pris **après** la passe ANPR **et**
    après la passe OCR. Un snapshot pris entre les deux porterait des boîtes muettes
    que l'analyse, elle, avait su lire.
@@ -229,9 +306,9 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
 2. **Python 3.12 épinglé**, borne haute `<3.13`.
    [ADR 0001](docs/adr/0001-python-312.md).
 3. **Aucun poids dans git.** [ADR 0002](docs/adr/0002-pas-de-poids-dans-git.md).
-   Le dossier `yolo/` contient des `.onnx` d'une version antérieure :
-   **inutilisables** (un export ONNX ne porte pas le pipeline BoT-SORT + ReID +
-   GMC) et ignorés par le code.
+   Le dossier `yolo/` que les versions antérieures de ce fichier décrivaient
+   **n'existe plus** : ne pas le chercher. Tous les poids vivent dans
+   `backend/.weights/`, tous en `.pt`, tous récupérés par script.
 4. **`torch` en variante automatique** selon le matériel, pas d'extra.
    [ADR 0005](docs/adr/0005-torch-cpu-par-defaut.md).
 5. **Persistance SQLite + SQLAlchemy async + Alembic.** Sept tables. La timeline
@@ -259,11 +336,20 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
    vitesse (côté 2 : 3,4× pour −16 % de rappel ; côté 3 : 6,6× pour −44 %), et ce
    n'est pas un arbitrage à faire en silence.
    [ADR 0008](docs/adr/0008-precision-de-l-anpr.md).
-10. **Un véhicule compte une fois, toutes lignes et tous sens confondus** ; seule
-    une vraie ré-identification lui redonne droit à un franchissement. Plusieurs
-    lignes servent à *situer* un passage, pas à le multiplier. C'est un changement
-    de spécification par rapport à `prompt/03`, qui décrivait un garde
-    `(ligne, identité, sens)`. [ADR 0009](docs/adr/0009-un-comptage-par-vehicule.md).
+10. **On compte des passages, les personnes à part, et l'utilisateur choisit les
+    classes.** Chaque franchissement observé compte : la déduplication par identité
+    d'ADR 0009 est **supprimée** depuis ADR 0016 (le drapeau ne reste pas non plus).
+    Les franchissements sont ventilés
+    en `vehicle` / `person` par une propriété **dérivée** de `by_class` — jamais un
+    second compteur. Les classes cochables sont servies par
+    `GET /api/v1/models/classes`, pas recopiées dans l'interface, et le défaut reste
+    les quatre véhicules.
+    **Aucun modèle du catalogue ne sait détecter une charrette** : COCO n'a pas
+    cette classe, et l'ajouter au catalogue donnerait une case qui ne détecte jamais
+    rien. Les deux vraies voies — vocabulaire ouvert (YOLO-World/YOLOE) ou
+    entraînement dédié — sont décrites dans l'ADR.
+    [ADR 0014](docs/adr/0014-compter-des-passages.md), qui abroge
+    [ADR 0009](docs/adr/0009-un-comptage-par-vehicule.md).
 11. **Le détecteur de plaques est étranglé, et une ancre rend l'étranglement
     invisible.** Il tournait une inférence 640×640 par piste et par image :
     **823 ms/image mesurées**, soit près de dix minutes pour 30 s de vidéo. Les
@@ -273,12 +359,22 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     (2,9×). Deux règles absolues : **l'OCR ne lit jamais une boîte reprojetée**, et
     une reprojection ne nourrit aucun agrégat.
     [ADR 0010](docs/adr/0010-etranglement-du-detecteur-de-plaques.md).
-12. **Le plancher de lecture est mesuré, pas supposé : ~64 px.** L'échelle de
-    vérité terrain rend 8/8 lectures justes à 320 px, 4/8 à 64 px et **0/8 à
-    48 px** — rejouable par `scripts/anpr_bench.py --truth-ladder`. `min_width_px`
-    vaut donc 64 (et non 32, cinq fois trop permissif, ni 150, qui supprimerait
-    toute lecture). L'OCR relit une identité seulement si la nouvelle vignette bat
-    la meilleure déjà lue de 25 % en **qualité = largeur × netteté**.
+12. **Le plancher de lecture est mesuré, pas supposé — et il y en a _deux_.** Ne
+    pas les confondre, c'est ce qui faisait dire à ce fichier « ~64 px » ici et
+    « ~150 px » plus bas, les deux étant vrais :
+    - **64 px, le seuil de tentative** (`min_width_px`) — en dessous, l'OCR
+      n'essaie même pas. Ni 32 (cinq fois trop permissif) ni 150 (qui
+      supprimerait toute lecture) ;
+    - **~150 px, le seuil de fiabilité** — en dessous, elle essaie et se trompe
+      souvent.
+
+    L'échelle de vérité terrain : 8/8 lectures justes à 320 px, 4/8 à 64 px,
+    **0/8 à 48 px** — rejouable par `scripts/anpr_bench.py --truth-ladder`.
+    Entre 64 et 150 px, l'OCR travaille mais son vote est incertain, et c'est
+    précisément là que `PlateTextVote` gagne sa place.
+
+    L'OCR relit une identité seulement si la nouvelle vignette bat la meilleure
+    déjà lue de 25 % en **qualité = largeur × netteté**.
 13. **Un échec porte son message et son code.** Une `AppError` fait traverser
     `detail` et `code` jusqu'à l'écran ; tout le reste garde la phrase générique,
     parce qu'un `RuntimeError` porte des chemins serveur. Le modèle est **chargé
@@ -289,6 +385,65 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     appellent cinq gestes différents, avec la largeur de la meilleure plaque vue.
     Ce n'est pas un confort : l'étranglement et le plancher de lecture rendent le
     silence plus fréquent, et un silence non expliqué se lit comme une panne.
+15. **Le détecteur de plaques est un `.pt` sur GPU ; l'OCR reste un `.onnx` sur
+    CPU.** Ce n'est pas une incohérence, c'est une mesure : `onnxruntime` n'a pas de
+    provider CUDA ici, donc tout ONNX est cloué au CPU — mais PP-OCRv3 rec est un
+    modèle CTC qu'Ultralytics ne sait pas charger, et son seul équivalent `.pt`
+    imposerait PaddlePaddle (600 Mo, refusé en ADR 0007). L'arbitrage penche
+    franchement : l'OCR coûte 66 ms par vignette contre 702 pour l'ancien détecteur,
+    rapport 10,7 à 1 — **optimiser l'OCR ne rend rien de perceptible.** Les poids
+    véhicules, eux, étaient déjà des `.pt` par nécessité (`track()` a besoin de
+    BoT-SORT + ReID + GMC).
+    [ADR 0015](docs/adr/0015-le-detecteur-de-plaques-en-pt.md).
+16. **Un objet suivi est un véhicule, et les sens de ligne portent un nom.** La galerie
+    de ré-identification est supprimée : elle relâchait une identité puis la
+    ré-attachait, donc le même `#1` réapparaissait au milieu d'une vidéo et faussait le
+    comptage. Trois points qui ne se devinent pas :
+    - **le numéro publié (`globalId`) n'est pas le `track_id` du tracker.** Il est local
+      à la session, parce que `BaseTrack._count` d'Ultralytics est un attribut de
+      *classe* : ouvrir la caméra pendant qu'un fichier s'analyse le remet à zéro, et
+      l'analyse en cours réémettrait des identifiants déjà utilisés. La panne est
+      silencieuse et **fusionne deux véhicules** ;
+    - **la suite des numéros a des trous.** Un numéro est émis dès la première image
+      d'une piste — sinon la première lecture de plaque n'a pas d'agrégat où voter et
+      `first_seen_ms` date de la confirmation — mais seule une piste confirmée entre
+      dans `tracked_vehicles` ;
+    - **une occlusion plus longue que `track_buffer` (2,5 s) donne un véhicule de
+      plus.** C'est la contrepartie assumée d'un numéro qui ne revient jamais en
+      arrière, verrouillée par
+      `test_un_vehicule_occulte_trop_longtemps_compte_deux_fois`.
+
+    Les noms et rôles de sens (`entry` / `exit` / `neutral`) traversent le domaine
+    **sans qu'aucun compteur les lise** : ils sont persistés dans `config_json` et
+    agrégés côté client seulement.
+    [ADR 0016](docs/adr/0016-compter-les-objets-suivis.md).
+17. **L'analyse peut être bridée sur le temps de la scène, et le rattrapage est
+    borné.** L'aperçu live *cale* la vidéo du client sur l'image analysée, il ne la
+    lit pas : le curseur avance donc de `fps_analyse / fps_vidéo` seconde de scène
+    par seconde réelle, soit **1,70× mesuré** sur cette machine. `analysisSpeed`
+    borne la cadence — **`1` (temps réel) par défaut depuis ADR 0019**, pour que la
+    lecture locale reste à vitesse normale sans réglage à toucher ; `null`
+    (« Illimitée ») reste un choix explicite pour qui veut ses chiffres au plus vite.
+    `1` rend 0,99× et fait durer l'analyse la durée de la vidéo. C'est une cadence
+    **maximale** : `2` rend 1,82× parce que le travail par image approche la période.
+    Le piège est dans le cadenceur, pas dans le réglage : **interdire tout
+    rattrapage servait 0,82× en annonçant 1×**. Le coût d'une image est irrégulier —
+    60 images sur 240 dépassent leur période — et chaque dépassement était perdu
+    définitivement. Trois périodes de retard sont donc rattrapables, au-delà on
+    renonce (sinon un décrochage produirait la rafale que le bridage corrige). Ni la
+    gigue de `sleep` (0,4 ms) ni le coût de l'aperçu resserré n'y étaient pour quoi
+    que ce soit — les deux ont été mesurés et écartés.
+    **`processing_fps` d'un run bridé mesure le bridage, pas la machine** : l'attente
+    n'est pas retranchée, contrairement au temps de pause.
+    `maxAnalysisFps` (ADR 0020) est un **second** bridage, indépendant : un plafond
+    **absolu** en images par seconde réelle (30 ou 60), qui ignore la cadence de la
+    source et `frame_stride`. Les deux se composent — c'est la période la plus
+    longue des deux qui gagne — et chacun agit même quand l'autre vaut `null`.
+    [ADR 0017](docs/adr/0017-brider-l-analyse-sur-le-temps-de-la-scene.md), dont
+    [ADR 0019](docs/adr/0019-la-lecture-locale-reste-a-vitesse-normale.md) change le
+    défaut sans toucher au mécanisme, et qu'
+    [ADR 0020](docs/adr/0020-un-plafond-absolu-de-cadence.md) complète d'un second
+    axe de bridage.
 
 ## Mesurer avant d'optimiser l'ANPR
 
@@ -313,6 +468,77 @@ les régénérer, jamais les corriger à la main** : une fixture éditée pour f
 passer `tsc` affirme ce que le frontend espère au lieu de ce que le backend
 produit, ce qui retire la seule propriété qu'on lui demandait.
 
+## « Cette voiture est passée et elle n'est pas comptée »
+
+C'est la réclamation la plus fréquente et la plus difficile à trancher : elle est
+irréfutable et invérifiable à la fois. Elle se règle en deux gestes, jamais en
+modifiant le compteur.
+
+**1. `scripts/audit_lignes.py`.** Il rejoue la géométrie *seule* sur la timeline
+persistée d'un job — sans le compteur, dont il réimplémente exprès les primitives —
+puis confronte les deux. Un franchissement présent dans la trajectoire et absent des
+totaux est un bug du compteur, et le script le nomme ; le code de sortie vaut alors
+`1`.
+
+```bash
+uv run python scripts/audit_lignes.py                    # le dernier job terminé
+uv run python scripts/audit_lignes.py <job_id> --json out/audit.json
+```
+
+**2. Les quasi-franchissements**, `diagnostics.nearMisses`, par ligne, publiés dans
+les stats et affichés sur la carte de la ligne concernée. Une piste qui s'éteint à
+moins d'une **demi-boîte** d'un trait sans jamais le franchir. Le seuil est relatif à
+la boîte du véhicule et non en pixels, pour qu'il veuille dire la même chose en 720p
+et en 4K, et les pistes **encore vivantes** en sont exclues — approcher n'est pas
+manquer, et un chiffre qui clignote pendant l'aperçu ne se lit pas.
+
+Ce que ce diagnostic sépare, et que rien ne séparait avant : une ligne à `0` parce
+que personne ne passe, et une ligne à `0` parce qu'elle est posée là où le suivi
+s'arrête. Les deux affichaient le même chiffre et appellent des gestes opposés.
+
+Mesuré sur `video_7.mp4`, quatre lignes, `yolov8n` : **10 franchissements comptés,
+10 franchissements géométriques, zéro refus** — et **7 quasi-franchissements**, dont
+trois sur une ligne tracée à 60 px du bord droit d'une image de 1280, où les pistes
+mouraient à ~33 px du trait. Le comptage était juste ; le tracé ne l'était pas.
+
+**Un quasi-franchissement ne s'ajoute à aucun total** et n'affirme pas qu'un
+véhicule est passé : le véhicule a pu faire demi-tour ou stationner. Il dit que le
+tracé et le suivi se sont manqués de peu.
+
+## « Ce véhicule est compté deux fois »
+
+L'autre moitié de la réclamation, et elle a une cause **distincte** : le côté d'une
+piste était tranché par le seul signe d'un produit vectoriel, donc un centroïde à un
+dixième de pixel du trait avait un côté parfaitement défini. Un véhicule arrêté sur
+une ligne produisait **trois** passages en 0,14 s, aux distances +0,1 / −0,1 /
++0,2 px ; un véhicule dont la boîte s'effondre puis se rétablit en produisait trois
+autres.
+
+Depuis le 2026-08-14, une **bande morte** d'un quart de demi-boîte entoure chaque
+trait : le côté n'y est pas tranché, exactement comme pour un centroïde tombant pile
+sur la ligne. Trois points qui ne se devinent pas :
+
+- **ce n'est pas un garde d'identité.** La bande ne regarde ni le numéro du
+  véhicule, ni les autres lignes, ni ce qui a déjà été compté. ADR 0016 reste
+  entier : un aller-retour franc compte 2, deux lignes franchies comptent 2 ;
+- **le segment testé enjambe la bande** (`settled_centroid`). Une bande morte naïve
+  *perd* les franchissements lents — à la sortie de bande, l'image précédente est du
+  même côté que la piste, donc le segment ne coupe rien. Ce mode de panne est pire
+  que les doublons qu'on corrige, et il est verrouillé par
+  `test_un_vehicule_qui_traverse_la_bande_compte_une_fois` ;
+- **`0.25` a été fixé par les deux bornes**, pas choisi : le bruit mesuré plafonne à
+  0,10 demi-boîte, et à `0.5` un poids lourd de 400 px obtenait une bande de 100 px
+  qui avalait le trajet du test de non-régression cabine/remorque.
+
+Le contrôle qui vaut la mesure : `yolo11s` et `yolo11m`, deux détecteurs différents,
+publient désormais **les mêmes 14 passages** sur `video_7.mp4`, aux mêmes secondes.
+Avant la bande, ils différaient de quatre.
+[ADR 0018](docs/adr/0018-une-bande-morte-autour-du-trait.md).
+
+**L'horodatage d'un passage est celui de la sortie de bande**, pas du contact avec le
+trait : mesuré jusqu'à **2,2 s** de retard pour un gros véhicule abordant une ligne
+presque parallèlement. Le comptage est juste, sa date est tardive.
+
 ## Pièges d'environnement de cette machine
 
 - `uv` a été installé par winget et vit dans
@@ -329,10 +555,23 @@ produit, ce qui retire la seule propriété qu'on lui demandait.
   mentionne la cause**. Ce piège a tenu l'ANPR hors service pendant tout le
   projet, avec le bon fichier au bon endroit. Le commentaire va au-dessus de la
   clé ; `Settings._blank_means_unset` neutralise en plus les `.env` déjà écrits.
-- Le modèle de plaques vit dans `backend/.weights/license-plate.onnx` (copié
-  depuis `yolo/`, git-ignoré des deux côtés). Contrairement aux `.onnx` de
-  véhicules du dossier `yolo/`, **celui-là est utilisable** : la passe ANPR est
-  une simple détection, elle ne demande ni tracker ni ReID.
+- Le modèle de plaques vit dans **`backend/.weights/license-plate.pt`**, récupéré
+  par `scripts/fetch_plate_model.py` depuis l'URL documentée dans `.env.example`.
+  Un `.pt` et non un `.onnx` : `onnxruntime` n'a **pas de provider CUDA** ici
+  (vérifié : `['AzureExecutionProvider', 'CPUExecutionProvider']`), donc un ONNX
+  reste sur le CPU quel que soit le GPU. Mesuré, même modèle, même image : 45,2 ms
+  sur GPU contre 183,9 ms sur CPU
+  ([ADR 0015](docs/adr/0015-le-detecteur-de-plaques-en-pt.md)).
+- **Le suffixe du fichier de plaques fait partie du contrat.** Ultralytics choisit
+  son backend d'après le *nom*, jamais d'après le contenu. Un `.pt` déposé sous un
+  nom en `.onnx` rend `plateAvailable: true` puis ne détecte **jamais rien** —
+  quatrième exemplaire de la panne silencieuse de cette section. Le script de
+  récupération refuse désormais ce désaccord avant d'écrire.
+- **`plateAvailable` ne dit que « le fichier est là ».** `plateLoadable` dit « il se
+  charge » : un auto-test au démarrage (une inférence à vide, accroché au `warmup`,
+  donc désactivé par `TRAFFIC_WARMUP=false`). `plateAvailable: true` +
+  `plateLoadable: false` est **l'état à surveiller** — poids présents, ANPR muette,
+  tout vert par ailleurs. `null` = pas encore testé, ce n'est pas un échec.
 - **`weights_dir` relatif est ancré sur `backend/`, plus sur le répertoire de
   lancement.** Avant ce correctif, lancer `uvicorn` depuis la racine du dépôt
   faisait paraître *tous* les poids absents et rendait l'ANPR indisponible sans
@@ -340,15 +579,20 @@ produit, ce qui retire la seule propriété qu'on lui demandait.
   chemin résolu est journalisé au démarrage et exposé dans `/health`
   (`weightsDir`) : en cas de doute, le regarder avant de chercher ailleurs. Un
   chemin **enraciné** (`/opt/poids`, `C:\poids`) traverse inchangé.
-- **Cet export est figé à `1×3×640×640` et sa grille d'ancres est une constante.**
-  Vérifié par chirurgie de graphe : rendre le lot ou la résolution dynamiques fait
-  échouer le `Reshape` du DFL. Ni résolution adaptative ni lot sans ré-export, et
-  le `.pt` d'origine n'est pas dans le dépôt. C'est ce qui force la mosaïque comme
-  seul levier de débit ([ADR 0008](docs/adr/0008-precision-de-l-anpr.md)).
-- **L'OCR a un plancher de résolution, mesuré : ~150 px de large.** En dessous elle
-  décroche (80 px → 3/8, 48 px → 0/8), et sur les vidéos de `D:\TesteIA\Video` les
-  plaques font 27 à 88 px : elle n'y lira rien, quel que soit le prétraitement. Elle
-  se tait au lieu d'inventer, ce qui est voulu — mais ne pas conclure à une panne.
+- **La contrainte `1×3×640×640` n'existe plus** — elle était celle de l'ancien
+  export ONNX, dont la grille d'ancres était gravée dans le graphe (vérifié par
+  chirurgie de graphe : toute autre forme faisait échouer le `Reshape` du DFL).
+  C'était la raison d'être de la mosaïque comme seul levier de débit d'ADR 0008. En
+  `.pt`, lot et résolution sont libres. `NET_SIZE` reste néanmoins à **640**, qui est
+  la résolution d'entraînement du modèle, et la mosaïque reste **désactivée par
+  défaut** : son arbitrage rappel/vitesse garde sa valeur sans GPU, et ne se change
+  pas en silence.
+- **L'OCR a un plancher de fiabilité, mesuré : ~150 px de large.** En dessous elle
+  décroche (80 px → 3/8, 48 px → 0/8) ; en dessous de 64 px elle n'essaie même pas
+  (invariant 12). Sur des plaques de 27 à 88 px, elle ne lira quasiment rien, quel
+  que soit le prétraitement. Elle se tait au lieu d'inventer, ce qui est voulu — mais
+  ne pas conclure à une panne. **ADR 0015 accélère la détection, pas la lecture** :
+  ne pas lire ce gain de vitesse comme un gain de justesse.
 - L'OCR demande **deux** fichiers dans `backend/.weights/` :
   `license-plate-ocr.onnx` (`en_PP-OCRv3_rec`, 97 classes) et
   `license-plate-ocr.charset.txt` (`en_dict.txt`, 95 lignes), récupérés ensemble par
@@ -363,8 +607,25 @@ produit, ce qui retire la seule propriété qu'on lui demandait.
   et n'a été trouvé qu'en installant les vrais poids — troisième cas où une doublure
   ne pouvait pas voir. 95 lignes + espace de `use_space_char` + blanc CTC = 97.
   Voir [ADR 0007](docs/adr/0007-lecture-du-texte-de-plaque.md), « Effet de bord ».
-- **Aucun GPU.** `TRAFFIC_HALF=false`, et les mesures de benchmark sont des mesures
-  CPU — à interpréter comme telles.
+- **Un GPU depuis le 2026-08-12 : Quadro P1000 (Pascal, `sm_61`, 4 Go).** Trois
+  conséquences qui ne se devinent pas :
+  - **la roue torch doit être cu126**, épinglée par marqueur `win32` dans
+    `pyproject.toml`. C'est la dernière ligne qui embarque `sm_61` : CUDA 13 a
+    supprimé Pascal, et le pilote annonce pourtant CUDA 13.0, donc une détection
+    automatique choisit une roue qui s'installe, répond `is_available() == True`,
+    puis échoue à la première inférence ;
+  - **`half` reste faux sur cette carte**, et le code le décide seul depuis
+    ADR 0012 (capability < 7.0). Avant Volta le fp16 est *plus lent* que le fp32 :
+    38,9 ms → 48,9 ms mesurées. Ne pas « réactiver » `TRAFFIC_HALF` en croyant
+    optimiser ;
+  - **les mesures de benchmark antérieures au 2026-08-12 sont des mesures CPU**,
+    et les chiffres des ADR 0007, 0008 et 0010 n'ont pas été rejoués sur GPU.
+    Les comparer à une mesure GPU sans le dire serait trompeur — c'est pourquoi un
+    run persisté porte son `device`.
+
+  Repère : `yolov8n` sur une image 1280×720 coûte 147,8 ms sur CPU et 38,9 ms sur
+  ce GPU. Le conteneur, lui, n'a toujours pas de GPU.
+  [ADR 0012](docs/adr/0012-torch-cuda-sur-windows.md).
 - Le frontend est passé de pnpm à **bun** ; `bun.lock` est le lockfile committé.
   La version est épinglée en **trois** endroits qui doivent rester d'accord :
   `frontend/package.json` (`packageManager`), l'image `oven/bun` des deux
@@ -386,7 +647,7 @@ produit, ce qui retire la seule propriété qu'on lui demandait.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1193 (1 skip) | 471 |
+| Nombre | 1303 (1 skip) | 595 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

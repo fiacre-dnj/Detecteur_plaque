@@ -1,23 +1,32 @@
-"""La session de comptage — les sept scénarios normatifs de prompt/03 §7.
+"""La session de comptage — les scénarios normatifs de prompt/03 §7.
 
 Ces tests utilisent des `TrackObservation` fabriquées à la main : **aucun moteur,
 aucun modèle, aucun GPU**. C'est la décision d'architecture qui rend tout le reste
-testable.
+testable. Et depuis ADR 0016, `feed()` ne reçoit même plus l'image : le comptage ne
+touche plus un seul pixel.
 
-Le test le plus précieux du fichier est
-`test_un_vehicule_occulte_trois_secondes_reste_le_meme_vehicule` : il mesure
-exactement ce que l'ordre « relâcher avant admettre » achète. Avec le mauvais
-ordre, on obtenait 2 véhicules uniques et 0 ré-identification ; avec le bon, 1 et 1.
+La classe la plus précieuse du fichier est `TestNumerotationDesVehicules`. Elle
+verrouille les deux propriétés que la ré-identification empêchait de tenir — un
+numéro strictement croissant et jamais réattribué — **et** la conséquence assumée
+qui va avec : un véhicule occulté plus longtemps que `max_lost_ms` compte deux fois.
+Un test qui affirme la contrepartie autant que le bénéfice est ce qui empêche de
+« corriger » l'un en cassant l'autre.
 """
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
-from tests.support.builders import CAR, TRUCK, box_at, make_line, make_zone, track_path
+from tests.support.builders import (
+    CAR,
+    PERSON,
+    TRUCK,
+    box_at,
+    make_line,
+    make_zone,
+    track_path,
+)
 from traffic_analysis.features.counting.domain.models import BoundingBox, PlateDetection
-from traffic_analysis.features.counting.domain.reid import ReidOptions
 from traffic_analysis.features.counting.domain.tracking_session import (
     AnalysisSession,
     SessionConfig,
@@ -27,19 +36,6 @@ FRAME_WIDTH = 1920
 FRAME_HEIGHT = 1080
 FPS = 25.0
 FRAME_MS = 1000.0 / FPS
-
-
-def _scene(*, texture: int = 0) -> np.ndarray:
-    """Image de scène. Un motif la rend descriptible par la ré-identification.
-
-    `np.zeros` suffit à tous les tests de comptage — le domaine ne dépend d'aucun
-    pixel — mais la ré-identification a besoin d'apparence pour fonctionner.
-    """
-    image = np.zeros((FRAME_HEIGHT, FRAME_WIDTH, 3), dtype=np.uint8)
-    if texture:
-        image[:, :] = (texture, 60, 200 - texture)
-        image[::5, :] = (255, 255, 255)
-    return image
 
 
 def _config(**overrides: object) -> SessionConfig:
@@ -64,13 +60,12 @@ class TestVehiculeQuiTraverse:
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
         path = [(900.0, 300.0 + step * 50.0) for step in range(10)]
         observations = track_path(1, CAR, path)
-        image = _scene(texture=40)
 
         for index, observation in enumerate(observations):
-            session.feed(index, index * FRAME_MS, image, (observation,))
+            session.feed(index, index * FRAME_MS, (observation,))
 
         stats = session.stats()
-        assert stats.unique_vehicles == 1
+        assert stats.tracked_vehicles == 1
         assert stats.crossings == 1
         assert stats.by_line["l1"].total == 1
 
@@ -78,11 +73,10 @@ class TestVehiculeQuiTraverse:
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
         path = [(900.0, 300.0 + step * 50.0) for step in range(10)]
         observations = track_path(1, CAR, path)
-        image = _scene(texture=40)
 
         outcome = None
         for index, observation in enumerate(observations):
-            outcome = session.feed(index, index * FRAME_MS, image, (observation,))
+            outcome = session.feed(index, index * FRAME_MS, (observation,))
 
         assert outcome is not None
         assert outcome.tracks[0].counted is True
@@ -90,10 +84,9 @@ class TestVehiculeQuiTraverse:
     def test_le_registre_decrit_le_vehicule(self) -> None:
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
         path = [(900.0, 300.0 + step * 50.0) for step in range(10)]
-        image = _scene(texture=40)
 
         for index, observation in enumerate(track_path(1, CAR, path)):
-            session.feed(index, index * FRAME_MS, image, (observation,))
+            session.feed(index, index * FRAME_MS, (observation,))
 
         vehicles = session.vehicles()
         assert len(vehicles) == 1
@@ -110,160 +103,144 @@ class TestVehiculeQuiTraverse:
     def test_avec_une_echelle_la_vitesse_est_convertie(self) -> None:
         session = AnalysisSession(_config(pixels_per_meter=10.0), FRAME_WIDTH, FRAME_HEIGHT)
         path = [(900.0, 300.0 + step * 50.0) for step in range(10)]
-        image = _scene(texture=40)
 
         for index, observation in enumerate(track_path(1, CAR, path)):
-            session.feed(index, index * FRAME_MS, image, (observation,))
+            session.feed(index, index * FRAME_MS, (observation,))
 
         assert session.vehicles()[0].avg_speed_kmh is not None
 
 
-class TestReidentification:
-    def test_un_vehicule_occulte_trois_secondes_reste_le_meme_vehicule(self) -> None:
-        """LE test de l'ordre « relâcher avant admettre ».
+class TestNumerotationDesVehicules:
+    """Les propriétés du numéro de véhicule, et le prix qu'elles coûtent.
 
-        Le véhicule traverse, disparaît trois secondes (plus que `max_lost_ms`), et
-        revient avec un **nouvel id de piste** — c'est exactement ce que fait
-        BoT-SORT après une occlusion longue.
+    Chaque test de cette classe verrouille une facette d'ADR 0016. Les deux
+    premiers sont les héritiers directs des tests de ré-identification qu'ils
+    remplacent : le scénario est identique, **l'attendu est inversé**, et c'est
+    exactement ce qu'on veut voir écrit noir sur blanc.
+    """
 
-        **Le détail qui fait tout : aucune frame vide entre les deux.** La mort de
-        l'ancienne piste et la naissance de sa remplaçante doivent avoir lieu dans
-        le *même* appel à `feed`, parce que c'est ce que fait le moteur — et c'est
-        la seule situation où le mauvais ordre se voit. Avec une frame vide
-        intermédiaire, le release et l'admission tombent dans deux appels
-        différents et les deux ordres donnent le même résultat : le test passerait
-        en étant inutile.
+    def test_un_vehicule_occulte_trop_longtemps_compte_deux_fois(self) -> None:
+        """La conséquence assumée d'ADR 0016, verrouillée par un test.
 
-        Attendu : 1 véhicule unique, au moins 1 ré-identification, et **1 seul**
-        franchissement puisqu'il ne recroise pas la ligne. Avec le mauvais ordre :
-        2 uniques et 0 ré-identification.
+        Le véhicule traverse, disparaît trois secondes (plus que `max_lost_ms`) et
+        revient avec un **nouvel id de piste** — c'est ce que fait BoT-SORT au-delà
+        de `track_buffer`. Plus rien ne recolle les deux morceaux, donc cela fait
+        deux véhicules.
+
+        Ce test remplace celui qui attendait 1. Il n'est pas là par acquit de
+        conscience : il documente le prix payé pour un numéro qui ne revient jamais
+        en arrière, et il échouera si quelqu'un réintroduit un recollage par
+        apparence sans écrire d'ADR.
+
+        **Aucune frame vide entre les deux passes**, comme dans le test qu'il
+        remplace : la mort de l'ancienne piste et la naissance de sa remplaçante
+        tombent dans le *même* appel à `feed`, parce que c'est ce que fait le moteur.
         """
         session = AnalysisSession(_config(max_lost_ms=2500.0), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
         # Traversée : de y=300 à y=750, la ligne est à y=500.
         for index, observation in enumerate(
             track_path(1, CAR, [(900.0, 300.0 + step * 50.0) for step in range(10)])
         ):
-            session.feed(index, index * FRAME_MS, image, (observation,))
+            session.feed(index, index * FRAME_MS, (observation,))
 
-        premiere_passe = session.stats()
-        assert premiere_passe.crossings == 1
+        assert session.stats().crossings == 1
 
-        # Trois secondes plus tard, sans aucune frame entre-temps : la piste 1 est
-        # morte et la piste 7 la remplace dans le même appel.
+        # Trois secondes plus tard, la piste 7 remplace la piste 1 dans le même appel.
         for step in range(10):
             observation = track_path(7, CAR, [(910.0, 760.0 + step * 5.0)])[0]
-            session.feed(100 + step, 4000.0 + step * FRAME_MS, image, (observation,))
+            session.feed(100 + step, 4000.0 + step * FRAME_MS, (observation,))
 
         stats = session.stats()
-        assert stats.unique_vehicles == 1, "le retour a été admis comme un véhicule neuf"
-        assert stats.reid_hits >= 1
-        assert stats.crossings == 1, "le retour a recompté un franchissement"
+        assert stats.tracked_vehicles == 2, "un nouvel id de piste est un nouveau véhicule"
+        # Il ne recroise pas la ligne : le second véhicule est vu sans être compté.
+        assert stats.crossings == 1
+        assert stats.crossed_unique == 1
+        assert stats.tracked_vehicles - stats.crossed_unique == 1
 
-    def test_un_vehicule_reidentifie_qui_recroise_compte_une_seconde_fois(self) -> None:
-        """Le pendant du test précédent, et la règle d'[ADR 0009] de bout en bout.
+    def test_un_vehicule_revenu_qui_recroise_compte_un_second_passage(self) -> None:
+        """Le pendant du précédent : deux véhicules, deux franchissements, deux sens.
 
-        Même scénario — traversée, trois secondes d'absence, retour reconnu — mais
-        cette fois le véhicule **recroise** la ligne en remontant. La
-        ré-identification a ré-armé son comptage : c'est un second passage, et il
-        doit compter. Toujours **un seul** véhicule unique : on compte des
-        passages, pas des immatriculations.
-
-        Sans ré-armement on mesurerait 1 franchissement, et un véhicule faisant la
-        navette sur une route resterait invisible après son premier passage.
+        Même scénario, mais le second morceau **remonte** et repasse la ligne. Le
+        franchissement compte, dans le sens négatif — c'est ce qu'un aller-retour
+        doit produire. Ce qui change, c'est que le comptage n'a plus besoin d'un
+        « ré-armement » pour l'autoriser : chaque franchissement observé compte.
         """
         session = AnalysisSession(_config(max_lost_ms=2500.0), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
-        # Descente : de y=300 à y=750, la ligne est à y=500.
         for index, observation in enumerate(
             track_path(1, CAR, [(900.0, 300.0 + step * 50.0) for step in range(10)])
         ):
-            session.feed(index, index * FRAME_MS, image, (observation,))
+            session.feed(index, index * FRAME_MS, (observation,))
         assert session.stats().crossings == 1
 
-        # Trois secondes plus tard, un nouvel id de piste remonte depuis le bas et
-        # repasse la ligne. Aucune frame vide : la mort et la naissance ont lieu
-        # dans le même appel, comme le fait le moteur.
         for step in range(10):
             observation = track_path(7, CAR, [(910.0, 760.0 - step * 50.0)])[0]
-            session.feed(100 + step, 4000.0 + step * FRAME_MS, image, (observation,))
+            session.feed(100 + step, 4000.0 + step * FRAME_MS, (observation,))
 
         stats = session.stats()
-        assert stats.unique_vehicles == 1, "le retour a été admis comme un véhicule neuf"
-        assert stats.reid_hits >= 1
-        assert stats.crossings == 2, "la ré-identification n'a pas ré-armé le comptage"
-        assert stats.by_line["l1"].negative == 1, "le retour remonte, il compte en négatif"
+        assert stats.tracked_vehicles == 2
+        assert stats.crossings == 2
+        assert stats.by_line["l1"].positive.total == 1, "la descente compte en positif"
+        assert stats.by_line["l1"].negative.total == 1, "la remontée compte en négatif"
+        assert stats.by_line["l1"].total == 2, "le total est dérivé des deux sens"
 
-    def test_un_id_de_piste_ressuscite_recupere_son_identite(self) -> None:
-        """Récupération **par id**, sans passer par l'apparence.
+    def test_un_id_de_piste_reactive_dans_la_fenetre_garde_son_numero(self) -> None:
+        """Une occlusion **courte** ne fabrique pas un véhicule de plus.
 
-        BoT-SORT réutilise ses identifiants. Quand le même id revient peu après
-        avoir été perdu, c'est le même véhicule, et c'est une information plus
-        fiable qu'un appariement d'apparence : un véhicule à contre-jour ou trop
-        petit peut ne produire aucune signature exploitable et deviendrait sinon un
-        véhicule de plus.
+        Ultralytics réactive une piste perdue avec son propre identifiant tant
+        qu'elle tient dans `track_buffer`. La session n'a alors rien abandonné —
+        `max_lost_ms` en est le miroir exact — donc la piste retrouve son
+        `SessionTrack`, ses `hits` et son numéro.
 
-        Le scénario force ce chemin en rendant l'apparence inutilisable : la boîte
-        fait moins de 20 px de côté, donc `build_signature` refuse. Seule la
-        récupération par id peut alors sauver l'identité.
-
-        La frame vide intermédiaire est nécessaire : `_advance_tracks` s'exécute
-        avant `_release_lost`, donc sans elle la piste serait simplement mise à
-        jour et ne mourrait jamais.
+        C'est ce qui rend le comptage utilisable : sans cela, chaque poteau, chaque
+        camion croisé et chaque tremblement de boîte ajouterait un véhicule.
         """
         session = AnalysisSession(_config(max_lost_ms=2500.0), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
-        petite = (16.0, 16.0)
 
         for index in range(4):
-            observation = track_path(1, CAR, [(900.0, 300.0 + index * 10.0)], box_size=petite)[0]
-            session.feed(index, index * FRAME_MS, image, (observation,))
-        assert session.stats().unique_vehicles == 1
+            observation = track_path(1, CAR, [(900.0, 300.0 + index * 10.0)])[0]
+            session.feed(index, index * FRAME_MS, (observation,))
+        assert session.stats().tracked_vehicles == 1
 
-        session.feed(50, 3000.0, image, ())  # la piste 1 meurt ici
-
-        # Le MÊME id de piste réapparaît, dans la fenêtre d'appariement.
+        # Une seconde de silence — sous `max_lost_ms` — puis le même id revient.
+        session.feed(50, 1000.0, ())
         for index in range(4):
-            observation = track_path(1, CAR, [(920.0, 340.0 + index * 10.0)], box_size=petite)[0]
-            session.feed(100 + index, 4000.0 + index * FRAME_MS, image, (observation,))
+            observation = track_path(1, CAR, [(920.0, 340.0 + index * 10.0)])[0]
+            session.feed(100 + index, 1500.0 + index * FRAME_MS, (observation,))
 
-        stats = session.stats()
-        assert stats.unique_vehicles == 1, "l'id ressuscité a été admis comme un véhicule neuf"
-        assert stats.reid_hits == 1
+        assert session.stats().tracked_vehicles == 1
 
-    def test_un_id_reutilise_bien_plus_tard_ne_recupere_rien(self) -> None:
-        """Au-delà de la fenêtre d'appariement, un id réutilisé est un autre véhicule.
+    def test_un_id_reutilise_apres_la_fenetre_recoit_un_numero_neuf(self) -> None:
+        """Le garde contre la fusion de deux véhicules distincts.
 
-        Le conserver indéfiniment ferait fusionner deux véhicules distincts, ce qui
-        est l'erreur la plus difficile à remarquer : le total baisse sans que rien à
-        l'écran ne l'explique.
+        Au-delà de `max_lost_ms`, la session a oublié la correspondance piste →
+        numéro (`TrackNumbering.forget`). Un identifiant qui réapparaît reçoit donc
+        un numéro neuf.
+
+        **C'est aussi ce qui protège du compteur global d'Ultralytics.**
+        `BaseTrack._count` est un attribut de classe : une session temps réel qui
+        démarre pendant une analyse le remet à zéro, et l'analyse se remet à voir des
+        identifiants 1, 2, 3. Sans cet oubli, ils rendraient d'anciens numéros et
+        deux véhicules fusionneraient — un total qui baisse sans que rien à l'écran
+        ne l'explique.
         """
         session = AnalysisSession(_config(max_lost_ms=2500.0), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
-        petite = (16.0, 16.0)
 
         for index in range(4):
-            observation = track_path(1, CAR, [(900.0, 300.0)], box_size=petite)[0]
-            session.feed(index, index * FRAME_MS, image, (observation,))
-        session.feed(50, 3000.0, image, ())  # la piste 1 meurt ici
+            observation = track_path(1, CAR, [(900.0, 300.0)])[0]
+            session.feed(index, index * FRAME_MS, (observation,))
+        session.feed(50, 3000.0, ())  # la piste 1 est abandonnée ici
 
-        # Bien au-delà de `reid.max_gap_ms` (30 s), et ailleurs dans l'image.
+        # Le même identifiant, bien plus tard et ailleurs dans l'image.
         for index in range(4):
-            observation = track_path(1, CAR, [(300.0, 700.0)], box_size=petite)[0]
-            session.feed(500 + index, 90_000.0 + index * FRAME_MS, image, (observation,))
+            observation = track_path(1, CAR, [(300.0, 700.0)])[0]
+            session.feed(500 + index, 90_000.0 + index * FRAME_MS, (observation,))
 
-        assert session.stats().unique_vehicles == 2
+        assert session.stats().tracked_vehicles == 2
 
-    def test_deux_vehicules_identiques_simultanes_restent_deux(self) -> None:
-        """L'exclusivité : une identité portée par une piste vivante est inéligible.
-
-        Sans elle, la seconde voiture hériterait de l'identité de la première et ne
-        serait jamais comptée.
-        """
+    def test_deux_vehicules_simultanes_recoivent_deux_numeros(self) -> None:
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
         for index in range(10):
             y = 300.0 + index * 50.0
@@ -271,11 +248,113 @@ class TestReidentification:
                 track_path(1, CAR, [(700.0, y)])[0],
                 track_path(2, CAR, [(1100.0, y)])[0],
             )
-            session.feed(index, index * FRAME_MS, image, observations)
+            session.feed(index, index * FRAME_MS, observations)
 
         stats = session.stats()
-        assert stats.unique_vehicles == 2
+        assert stats.tracked_vehicles == 2
         assert stats.crossings == 2
+
+    def test_les_numeros_sont_une_suite_partagee_par_tous_les_types(self) -> None:
+        """La cohérence inter-types, verrouillée.
+
+        Une voiture, un camion et un piéton reçoivent 1, 2 et 3 — **une seule
+        suite**, pas un compteur par classe. Un `car#1` et un `truck#1` coexistants
+        seraient deux véhicules portant le même badge à l'écran, et le registre
+        n'aurait plus de clé.
+
+        Ici les trois pistes se confirment, donc le total **est** le dernier numéro
+        émis. Le test suivant montre le cas où les deux divergent.
+        """
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+
+        numbers: dict[int, int] = {}
+        for index in range(6):
+            y = 300.0 + index * 50.0
+            observations = (
+                track_path(1, CAR, [(600.0, y)])[0],
+                track_path(2, TRUCK, [(900.0, y)])[0],
+                track_path(3, PERSON, [(1200.0, y)])[0],
+            )
+            outcome = session.feed(index, index * FRAME_MS, observations)
+            for track in outcome.tracks:
+                if track.global_id:
+                    numbers[track.track_id] = track.global_id
+
+        assert numbers == {1: 1, 2: 2, 3: 3}
+        assert session.stats().tracked_vehicles == 3
+        assert max(numbers.values()) == session.stats().tracked_vehicles
+
+    def test_un_scintillement_prend_un_numero_mais_n_est_pas_compte(self) -> None:
+        """Émettre un numéro et compter un véhicule sont deux gestes distincts.
+
+        Deux pistes naissent sur l'image 0 et prennent les numéros 1 et 2 — il leur
+        faut un agrégat immédiatement, sinon la première lecture de plaque n'aurait
+        nulle part où voter. La piste 99 disparaît aussitôt : son numéro reste émis et
+        **n'entre jamais dans le total**.
+
+        C'est de là que viennent les trous de la numérotation, et c'est le prix d'un
+        badge qui ne change jamais en cours de route. Ne pas « corriger » cela en
+        renumérotant à la confirmation : un même véhicule changerait de numéro entre
+        sa première et sa deuxième image.
+        """
+        session = AnalysisSession(_config(min_hits=2), FRAME_WIDTH, FRAME_HEIGHT)
+
+        outcome = session.feed(
+            0,
+            0.0,
+            (
+                track_path(1, CAR, [(600.0, 300.0)])[0],
+                track_path(99, CAR, [(1500.0, 300.0)])[0],
+            ),
+        )
+        assert sorted(track.global_id for track in outcome.tracks) == [1, 2]
+        assert session.stats().tracked_vehicles == 0, "aucune piste n'est encore confirmée"
+
+        # La piste 99 a disparu ; la piste 1 se confirme et devient le seul véhicule.
+        outcome = session.feed(1, FRAME_MS, (track_path(1, CAR, [(600.0, 350.0)])[0],))
+        assert outcome.tracks[0].global_id == 1
+        assert session.stats().tracked_vehicles == 1
+
+        # Une piste qui arrive plus tard prend le numéro suivant — le 2 est consommé.
+        for index in (2, 3):
+            outcome = session.feed(
+                index,
+                index * FRAME_MS,
+                (
+                    track_path(1, CAR, [(600.0, 350.0 + index * 20.0)])[0],
+                    track_path(5, CAR, [(1000.0, 300.0 + index * 20.0)])[0],
+                ),
+            )
+        assert sorted(track.global_id for track in outcome.tracks) == [1, 3]
+        assert session.stats().tracked_vehicles == 2
+        assert [record.global_id for record in session.vehicles()] == [1, 3]
+
+    def test_le_registre_a_exactement_autant_de_lignes_que_de_vehicules(self) -> None:
+        """`len(vehicles()) == tracked_vehicles`, le total rendu vérifiable.
+
+        Les deux comptent les mêmes pistes confirmées. Sous la galerie, cette
+        égalité tenait par coïncidence — le registre était indexé sur les agrégats et
+        le total sur un compteur d'émission distinct.
+        """
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+
+        for index in range(8):
+            y = 300.0 + index * 50.0
+            session.feed(
+                index,
+                index * FRAME_MS,
+                (
+                    track_path(1, CAR, [(600.0, y)])[0],
+                    track_path(2, TRUCK, [(1000.0, y)])[0],
+                ),
+            )
+        # Une piste d'une seule image, qui ne doit apparaître nulle part.
+        session.feed(8, 8 * FRAME_MS, (track_path(42, CAR, [(50.0, 50.0)])[0],))
+
+        stats = session.stats()
+        assert stats.tracked_vehicles == 2
+        assert len(session.vehicles()) == stats.tracked_vehicles
+        assert [record.global_id for record in session.vehicles()] == [1, 2]
 
 
 class TestMasqueDeZone:
@@ -291,16 +370,15 @@ class TestMasqueDeZone:
         session = AnalysisSession(
             _config(zones=(zone,), mask_outside_zones=True), FRAME_WIDTH, FRAME_HEIGHT
         )
-        image = _scene(texture=40)
 
         # x = 100 : hors de la zone, qui commence à x = 400.
         for index, observation in enumerate(
             track_path(1, CAR, [(100.0, 300.0 + step * 50.0) for step in range(10)])
         ):
-            session.feed(index, index * FRAME_MS, image, (observation,))
+            session.feed(index, index * FRAME_MS, (observation,))
 
         stats = session.stats()
-        assert stats.unique_vehicles == 0
+        assert stats.tracked_vehicles == 0
         assert stats.crossings == 0
         assert stats.active_tracks == 0
         assert stats.diagnostics.masked_out == 10
@@ -313,30 +391,28 @@ class TestMasqueDeZone:
         session = AnalysisSession(
             _config(zones=(zone,), mask_outside_zones=False), FRAME_WIDTH, FRAME_HEIGHT
         )
-        image = _scene(texture=40)
 
         for index, observation in enumerate(
             track_path(1, CAR, [(100.0, 300.0 + step * 50.0) for step in range(10)])
         ):
-            session.feed(index, index * FRAME_MS, image, (observation,))
+            session.feed(index, index * FRAME_MS, (observation,))
 
-        assert session.stats().unique_vehicles == 1
+        assert session.stats().tracked_vehicles == 1
 
 
 class TestVoteDeClasse:
     def test_une_lecture_qui_alterne_ne_fait_pas_osciller_le_compteur(self) -> None:
-        """`identity_label` reste stable, et `unique_by_class` somme aux uniques."""
+        """`identity_label` reste stable, et `tracked_by_class` somme aux uniques."""
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
         lectures = [TRUCK, TRUCK, CAR, TRUCK, CAR, TRUCK, TRUCK, CAR, TRUCK, TRUCK]
 
         for index, class_id in enumerate(lectures):
             observation = track_path(1, class_id, [(900.0, 300.0 + index * 50.0)])[0]
-            session.feed(index, index * FRAME_MS, image, (observation,))
+            session.feed(index, index * FRAME_MS, (observation,))
 
         stats = session.stats()
-        assert stats.unique_by_class == {"truck": 1}
-        assert sum(stats.unique_by_class.values()) == stats.unique_vehicles
+        assert stats.tracked_by_class == {"truck": 1}
+        assert sum(stats.tracked_by_class.values()) == stats.tracked_vehicles
         # Le franchissement est comptabilisé sous la classe votée.
         assert stats.by_line["l1"].by_class == {"truck": 1}
 
@@ -353,21 +429,27 @@ class TestStatistiques:
             FRAME_WIDTH,
             FRAME_HEIGHT,
         )
-        image = _scene(texture=40)
 
         for index, observation in enumerate(
             track_path(1, CAR, [(900.0, 300.0 + step * 60.0) for step in range(12)])
         ):
-            session.feed(index, index * FRAME_MS, image, (observation,))
+            session.feed(index, index * FRAME_MS, (observation,))
 
         stats = session.stats()
+        # L'invariant 3, celui qui ne bouge pas : le total est **dérivé** du détail
+        # par ligne, jamais accumulé à côté.
         assert stats.crossings == sum(tally.total for tally in stats.by_line.values())
         assert sum(stats.by_class.values()) == stats.crossings
-        # Le véhicule traverse les deux lignes, mais ne compte qu'une fois (ADR
-        # 0009) : c'est la première ligne franchie qui porte le total.
-        assert stats.crossings == 1
+        # Le véhicule traverse les deux lignes, et compte donc **deux passages**
+        # (ADR 0014). C'était 1 sous ADR 0009, où la première ligne franchie portait
+        # seule le total.
+        assert stats.crossings == 2
         assert stats.by_line["haute"].total == 1
-        assert stats.by_line["basse"].total == 0
+        assert stats.by_line["basse"].total == 1
+        # La ventilation par catégorie est dérivée du même `by_class` : sa somme est
+        # le total, par construction.
+        assert stats.by_category == {"vehicle": 2}
+        assert sum(stats.by_category.values()) == stats.crossings
 
     def test_le_debit_est_nul_sous_trois_secondes_de_flux(self) -> None:
         """En dessous de 3 s, l'extrapolation oscille trop pour être publiable.
@@ -376,12 +458,11 @@ class TestStatistiques:
         le reste de l'écran.
         """
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
         for index, observation in enumerate(
             track_path(1, CAR, [(900.0, 300.0 + step * 50.0) for step in range(10)])
         ):
-            session.feed(index, index * FRAME_MS, image, (observation,))
+            session.feed(index, index * FRAME_MS, (observation,))
 
         stats = session.stats()
         assert stats.analysed_scene_ms < 3000.0
@@ -389,12 +470,11 @@ class TestStatistiques:
 
     def test_au_dela_de_trois_secondes_le_debit_est_publie(self) -> None:
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
         for index in range(120):  # 120 frames à 25 fps = 4,8 s
             y = 300.0 + (index % 10) * 50.0
             observation = track_path(1, CAR, [(900.0, y)])[0]
-            session.feed(index, index * FRAME_MS, image, (observation,))
+            session.feed(index, index * FRAME_MS, (observation,))
 
         stats = session.stats()
         assert stats.analysed_scene_ms >= 3000.0
@@ -407,9 +487,8 @@ class TestStatistiques:
         il ne doit pas être renseigné avec une horloge murale.
         """
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
         for index, observation in enumerate(track_path(1, CAR, [(900.0, 300.0)] * 5)):
-            session.feed(index, index * FRAME_MS, image, (observation,))
+            session.feed(index, index * FRAME_MS, (observation,))
 
         stats = session.stats()
         assert stats.elapsed_ms == stats.analysed_scene_ms
@@ -418,13 +497,42 @@ class TestStatistiques:
     def test_le_diagnostic_distingue_confirme_et_provisoire(self) -> None:
         """« Le compte est faux » n'est diagnosticable que si l'on voit pourquoi."""
         session = AnalysisSession(_config(min_hits=5), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
-        session.feed(0, 0.0, image, (track_path(1, CAR, [(900.0, 300.0)])[0],))
+        session.feed(0, 0.0, (track_path(1, CAR, [(900.0, 300.0)])[0],))
         stats = session.stats()
 
         assert stats.diagnostics.confirmed_tracks == 0
         assert stats.diagnostics.tentative_tracks == 1
+
+    def test_le_diagnostic_explique_une_ligne_restee_a_zero(self) -> None:
+        """Une ligne à `0` dit si personne ne passe, ou si le trait est mal posé.
+
+        Le véhicule monte vers la ligne (y=500), s'éteint à 30 px d'elle — sa boîte
+        la recouvrait encore — puis le silence dépasse `max_lost_ms`. Sans ce
+        chiffre, la ligne affiche exactement le même `0` qu'une ligne que personne
+        n'emprunte, et rien à l'écran ne distingue les deux.
+
+        L'attente est en **deux temps** parce que c'est l'ordre qui porte le sens :
+        tant que la piste vit, elle n'a rien manqué.
+        """
+        session = AnalysisSession(_config(max_lost_ms=2500.0), FRAME_WIDTH, FRAME_HEIGHT)
+
+        for index, observation in enumerate(
+            track_path(1, CAR, [(900.0, 300.0 + step * 20.0) for step in range(9)])
+        ):
+            session.feed(index, index * FRAME_MS, (observation,))
+
+        assert session.stats().crossings == 0
+        assert session.stats().diagnostics.near_misses == {"l1": 0}, (
+            "la piste vit encore : elle approche, elle n'a pas manqué"
+        )
+
+        # Le silence dépasse `max_lost_ms` : la session abandonne la piste, et
+        # « elle s'est éteinte là » devient vrai.
+        session.feed(100, 4000.0, ())
+
+        assert session.stats().diagnostics.near_misses == {"l1": 1}
+        assert session.stats().crossings == 0, "un quasi-franchissement ne compte pas"
 
 
 class TestTimelineEtAliasing:
@@ -436,13 +544,12 @@ class TestTimelineEtAliasing:
         frame afficherait la position de sortie des véhicules.
         """
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
         timeline = []
 
         for index, observation in enumerate(
             track_path(1, CAR, [(900.0, 300.0 + step * 50.0) for step in range(5)])
         ):
-            outcome = session.feed(index, index * FRAME_MS, image, (observation,))
+            outcome = session.feed(index, index * FRAME_MS, (observation,))
             timeline.append(tuple(track.snapshot() for track in outcome.tracks))
 
         premiere = timeline[0][0].centroid
@@ -455,17 +562,16 @@ class TestTimelineEtAliasing:
 class TestPlaques:
     def test_la_meilleure_plaque_par_identite_est_conservee(self) -> None:
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
-        outcome = session.feed(0, 0.0, image, (track_path(1, CAR, [(900.0, 300.0)])[0],))
+        outcome = session.feed(0, 0.0, (track_path(1, CAR, [(900.0, 300.0)])[0],))
         track = outcome.tracks[0]
         session.record_plates(track, (PlateDetection(BoundingBox(1.0, 1.0, 20.0, 8.0), 0.42),))
 
-        outcome = session.feed(1, FRAME_MS, image, (track_path(1, CAR, [(900.0, 350.0)])[0],))
+        outcome = session.feed(1, FRAME_MS, (track_path(1, CAR, [(900.0, 350.0)])[0],))
         track = outcome.tracks[0]
         session.record_plates(track, (PlateDetection(BoundingBox(1.0, 1.0, 20.0, 8.0), 0.71),))
 
-        outcome = session.feed(2, 2 * FRAME_MS, image, (track_path(1, CAR, [(900.0, 400.0)])[0],))
+        outcome = session.feed(2, 2 * FRAME_MS, (track_path(1, CAR, [(900.0, 400.0)])[0],))
         track = outcome.tracks[0]
         session.record_plates(track, (PlateDetection(BoundingBox(1.0, 1.0, 20.0, 8.0), 0.33),))
 
@@ -475,14 +581,13 @@ class TestPlaques:
         """Garder les plaques d'une frame à l'autre ferait afficher une plaque là
         où le modèle n'en voit plus."""
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
-        outcome = session.feed(0, 0.0, image, (track_path(1, CAR, [(900.0, 300.0)])[0],))
+        outcome = session.feed(0, 0.0, (track_path(1, CAR, [(900.0, 300.0)])[0],))
         session.record_plates(
             outcome.tracks[0], (PlateDetection(BoundingBox(1.0, 1.0, 20.0, 8.0), 0.9),)
         )
 
-        outcome = session.feed(1, FRAME_MS, image, (track_path(1, CAR, [(900.0, 350.0)])[0],))
+        outcome = session.feed(1, FRAME_MS, (track_path(1, CAR, [(900.0, 350.0)])[0],))
 
         assert outcome.tracks[0].plates == []
         # …mais le meilleur score reste dans l'agrégat de l'identité.
@@ -507,13 +612,11 @@ class TestTexteDePlaque:
         l'intérêt de la placer dans le domaine plutôt que dans l'adaptateur.
         """
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
         for index in range(3):
             outcome = session.feed(
                 index,
                 index * FRAME_MS,
-                image,
                 (track_path(1, CAR, [(900.0, 300.0 + index * 50.0)])[0],),
             )
             session.record_plates(outcome.tracks[0], (_plate(" ab-123-cd ", 0.95),))
@@ -529,30 +632,27 @@ class TestTexteDePlaque:
         signifierait qu'on publie la lecture de la frame courante.
         """
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
-        first = session.feed(0, 0.0, image, (track_path(1, CAR, [(900.0, 300.0)])[0],))
+        first = session.feed(0, 0.0, (track_path(1, CAR, [(900.0, 300.0)])[0],))
         session.record_plates(first.tracks[0], (_plate("AB123CD", 0.95),))
         assert first.tracks[0].plate_text == ""
 
-        second = session.feed(1, FRAME_MS, image, (track_path(1, CAR, [(900.0, 350.0)])[0],))
+        second = session.feed(1, FRAME_MS, (track_path(1, CAR, [(900.0, 350.0)])[0],))
         session.record_plates(second.tracks[0], (_plate("AB123CD", 0.95),))
         assert second.tracks[0].plate_text == ""
 
-        third = session.feed(2, 2 * FRAME_MS, image, (track_path(1, CAR, [(900.0, 400.0)])[0],))
+        third = session.feed(2, 2 * FRAME_MS, (track_path(1, CAR, [(900.0, 400.0)])[0],))
         assert third.tracks[0].plate_text == "AB123CD"
         assert third.tracks[0].plate_text_score == pytest.approx(0.95)
 
     def test_le_snapshot_emporte_le_texte_vote(self) -> None:
         """Sans cela, la relecture afficherait des boîtes muettes."""
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
         for index in range(3):
             outcome = session.feed(
                 index,
                 index * FRAME_MS,
-                image,
                 (track_path(1, CAR, [(900.0, 300.0 + index * 50.0)])[0],),
             )
             session.record_plates(outcome.tracks[0], (_plate("AB123CD", 0.95),))
@@ -569,13 +669,11 @@ class TestTexteDePlaque:
         ligne de code dédiée à la réhydratation.
         """
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
         for index in range(3):
             outcome = session.feed(
                 index,
                 index * FRAME_MS,
-                image,
                 (track_path(1, CAR, [(900.0, 300.0 + index * 50.0)])[0],),
             )
             session.record_plates(outcome.tracks[0], (_plate("AB123CD", 0.95),))
@@ -585,7 +683,7 @@ class TestTexteDePlaque:
         # fenêtre d'appariement de la galerie : c'est bien une reprise, pas un
         # nouveau véhicule.
         revival_ms = 3 * FRAME_MS + 1500.0
-        revived = session.feed(80, revival_ms, image, (track_path(1, CAR, [(900.0, 460.0)])[0],))
+        revived = session.feed(80, revival_ms, (track_path(1, CAR, [(900.0, 460.0)])[0],))
 
         assert revived.tracks[0].global_id == outcome.tracks[0].global_id
         assert revived.tracks[0].plate_text == "AB123CD"
@@ -593,14 +691,12 @@ class TestTexteDePlaque:
     def test_le_registre_porte_le_vote_et_non_la_derniere_lecture(self) -> None:
         """Trois `AB123CD` puis un `XY999ZZ` : le registre affiche `AB123CD`."""
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
         readings = ("AB123CD", "AB123CD", "AB123CD", "XY999ZZ")
 
         for index, text in enumerate(readings):
             outcome = session.feed(
                 index,
                 index * FRAME_MS,
-                image,
                 (track_path(1, CAR, [(900.0, 300.0 + index * 40.0)])[0],),
             )
             session.record_plates(outcome.tracks[0], (_plate(text, 0.95),))
@@ -610,12 +706,11 @@ class TestTexteDePlaque:
     def test_une_lecture_unique_ne_pose_aucun_texte(self) -> None:
         """L'invariant 4 de bout en bout : une lecture n'est pas un vote."""
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
-        outcome = session.feed(0, 0.0, image, (track_path(1, CAR, [(900.0, 300.0)])[0],))
+        outcome = session.feed(0, 0.0, (track_path(1, CAR, [(900.0, 300.0)])[0],))
         session.record_plates(outcome.tracks[0], (_plate("AB123CD", 0.99),))
 
-        outcome = session.feed(1, FRAME_MS, image, (track_path(1, CAR, [(900.0, 350.0)])[0],))
+        outcome = session.feed(1, FRAME_MS, (track_path(1, CAR, [(900.0, 350.0)])[0],))
 
         assert outcome.tracks[0].plate_text == ""
         assert session.vehicles()[0].plate_text is None
@@ -627,13 +722,11 @@ class TestTexteDePlaque:
         distinguable de « aucune plaque ».
         """
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
         for index in range(3):
             outcome = session.feed(
                 index,
                 index * FRAME_MS,
-                image,
                 (track_path(1, CAR, [(900.0, 300.0 + index * 50.0)])[0],),
             )
             session.record_plates(
@@ -648,13 +741,11 @@ class TestTexteDePlaque:
     def test_une_lecture_illisible_est_refusee_avant_le_vote(self) -> None:
         """`normalise_plate_text` rend `""` : la lecture ne vote pas du tout."""
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
         for index in range(4):
             outcome = session.feed(
                 index,
                 index * FRAME_MS,
-                image,
                 (track_path(1, CAR, [(900.0, 300.0 + index * 40.0)])[0],),
             )
             # « A1 » : deux caractères, sous le plancher de plausibilité.
@@ -675,12 +766,11 @@ class TestZones:
             "z1", points=((400.0, 200.0), (1500.0, 200.0), (1500.0, 800.0), (400.0, 800.0))
         )
         session = AnalysisSession(_config(zones=(zone,)), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
         # Démarre hors zone (x=100), puis entre.
-        session.feed(0, 0.0, image, (track_path(1, CAR, [(100.0, 300.0)])[0],))
-        session.feed(1, FRAME_MS, image, (track_path(1, CAR, [(120.0, 300.0)])[0],))
-        outcome = session.feed(2, 2 * FRAME_MS, image, (track_path(1, CAR, [(900.0, 300.0)])[0],))
+        session.feed(0, 0.0, (track_path(1, CAR, [(100.0, 300.0)])[0],))
+        session.feed(1, FRAME_MS, (track_path(1, CAR, [(120.0, 300.0)])[0],))
+        outcome = session.feed(2, 2 * FRAME_MS, (track_path(1, CAR, [(900.0, 300.0)])[0],))
 
         assert len(outcome.zone_events) == 1
         assert session.stats().by_zone["z1"].entries == 1
@@ -696,15 +786,11 @@ class TestConfigurationParDefaut:
         """
         assert SessionConfig().max_lost_ms == 2500.0
 
-    def test_les_options_de_reidentification_ont_leurs_defauts(self) -> None:
-        assert SessionConfig().reid == ReidOptions()
-
     def test_une_session_sans_geometrie_ne_compte_rien_mais_ne_leve_pas(self) -> None:
         """L'API refuse ce cas en 422 ; le domaine, lui, doit rester robuste."""
         session = AnalysisSession(SessionConfig(), FRAME_WIDTH, FRAME_HEIGHT)
-        image = _scene(texture=40)
 
-        outcome = session.feed(0, 0.0, image, (track_path(1, CAR, [(900.0, 300.0)])[0],))
+        outcome = session.feed(0, 0.0, (track_path(1, CAR, [(900.0, 300.0)])[0],))
 
         assert outcome.crossings == ()
         assert session.stats().crossings == 0
@@ -713,13 +799,14 @@ class TestConfigurationParDefaut:
 def test_une_boite_hors_image_ne_fait_pas_lever_la_session() -> None:
     """Le suivi extrapole parfois une boîte au-delà du bord de l'image.
 
-    La signature est alors refusée (`None`) et la piste reçoit une identité neuve —
-    ce qui est le comportement voulu, sans exception.
+    Elle ne pose plus aucun problème depuis ADR 0016 : le comptage ne lit plus de
+    pixels, donc il n'y a plus de recadrage à refuser. Le test reste parce qu'il
+    verrouille la robustesse, pas l'implémentation qui l'assurait.
     """
     session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
     observation = track_path(1, CAR, [(5000.0, 5000.0)])[0]
 
-    outcome = session.feed(0, 0.0, _scene(texture=40), (observation,))
+    outcome = session.feed(0, 0.0, (observation,))
 
     assert outcome.tracks[0].global_id == 1
 

@@ -16,7 +16,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 
 import { useModels } from "@/entities/model";
-import type { JobStatus } from "@/shared/api/contracts";
+import type { Job, JobStatus } from "@/shared/api/contracts";
 import { Button } from "@/shared/ui/Button";
 
 import {
@@ -56,10 +56,15 @@ export function HistoryPage() {
    * une géométrie complète dans une query string dépasserait vite la longueur
    * acceptée et serait illisible dans la barre d'adresse.
    */
-  const openInStudio = async (jobId: string, replay: boolean): Promise<void> => {
-    const loaded = await config.load(jobId);
+  const openInStudio = async (job: Job, replay: boolean): Promise<void> => {
+    const loaded = await config.load(job.jobId);
     if (loaded === null) return;
-    void navigate("/", { state: { jobId, config: loaded, replay } });
+    // `fileName` voyage avec : le studio l'affiche comme libellé de source. Sans lui,
+    // une analyse rouverte s'annoncerait « Analyse archivée » alors que le nom du
+    // fichier est justement ce qui permet de la reconnaître.
+    void navigate("/", {
+      state: { jobId: job.jobId, config: loaded, replay, fileName: job.fileName },
+    });
   };
 
   if (isLoading) {
@@ -166,6 +171,10 @@ export function HistoryPage() {
                 <Th>Statut</Th>
                 <Th>Durée</Th>
                 <Th>Images</Th>
+                {/* Ce que l'analyse a trouvé : l'information qui permet de choisir
+                    laquelle rouvrir, et qui manquait au tableau. Lue sur les colonnes
+                    dénormalisées, jamais en ouvrant le résultat. */}
+                <Th>Passages</Th>
                 <Th>Actions</Th>
               </tr>
             </thead>
@@ -194,6 +203,21 @@ export function HistoryPage() {
                     <td className="px-3 py-2 text-ink-muted tabular">
                       {job.processedFrames} / {job.totalFrames}
                     </td>
+                    <td className="px-3 py-2 tabular">
+                      {job.status === "done" ? (
+                        <>
+                          <span className="text-ink">{job.crossingsTotal}</span>
+                          <span className="block text-micro text-ink-dim">
+                            {job.trackedVehicles} suivis
+                          </span>
+                        </>
+                      ) : (
+                        // Un tiret et non « 0 » : les agrégats sont écrits en une
+                        // fois à la fin, donc zéro avant la fin voudrait dire
+                        // « aucun franchissement » au lieu de « pas encore compté ».
+                        <span className="text-ink-dim">—</span>
+                      )}
+                    </td>
                     <td className="px-3 py-2">
                       <span className="flex gap-1">
                         <Button
@@ -202,10 +226,10 @@ export function HistoryPage() {
                           disabled={job.status !== "done" || config.loading}
                           title={
                             job.status === "done"
-                              ? "Recharge le résultat et sa géométrie dans le studio"
+                              ? "Rouvre l'analyse dans le studio : chiffres, géométrie, registre et timeline, sur la vidéo resservie"
                               : "Seule une analyse terminée peut être ouverte"
                           }
-                          onClick={() => void openInStudio(job.jobId, true)}
+                          onClick={() => void openInStudio(job, true)}
                         >
                           Ouvrir
                         </Button>
@@ -216,7 +240,7 @@ export function HistoryPage() {
                           disabled={config.loading}
                           // L'infobulle énonce la règle : jamais une mutation.
                           title="Préremplit le studio avec la même configuration — crée un nouveau job, ne modifie jamais celui-ci"
-                          onClick={() => void openInStudio(job.jobId, false)}
+                          onClick={() => void openInStudio(job, false)}
                         >
                           Relancer
                         </Button>

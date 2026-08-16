@@ -63,6 +63,23 @@ export interface AnalysisSession {
   /** Signature de la géométrie au moment du lancement. */
   launchSignature: string | null;
   start: (file: File, request: AnalysisRequest, lines: readonly CountingLine[], zones: readonly Zone[]) => Promise<void>;
+  /**
+   * Adopte une analyse **déjà terminée** et charge son résultat.
+   *
+   * C'est ce qui manquait pour que l'historique tienne sa promesse. « Ouvrir »
+   * passait bien un `jobId` au Studio, mais rien ne savait quoi en faire : `jobId`
+   * n'était écrit que par `start()` et `result` n'avait aucun point d'entrée. Les
+   * deux boutons « Ouvrir » et « Relancer » avaient donc un effet identique au bit
+   * près — seule la géométrie revenait — et l'infobulle « recharge le résultat »
+   * était une fausse promesse.
+   *
+   * Ne relance rien et ne renvoie aucun fichier : le résultat est déjà sur le
+   * serveur, immuable, et se relit tel quel.
+   *
+   * Synchrone : elle pose l'identifiant et laisse le suivi faire le chargement, par
+   * le même chemin qu'à la fin d'une analyse. `result` arrive donc un peu après.
+   */
+  adopt: (jobId: string) => void;
   cancel: () => void;
   /** Suspend l'analyse en cours ; l'état vient ensuite du suivi, pas d'ici. */
   pause: () => void;
@@ -169,6 +186,25 @@ export function useAnalysisSession(): AnalysisSession {
     [],
   );
 
+  const adopt = useCallback((existingJobId: string) => {
+    setError(null);
+    setErrorCode(null);
+    setResult(null);
+    // La signature de géométrie reste nulle : elle sert à détecter qu'un tracé a
+    // bougé **depuis le lancement**, et il n'y a pas eu de lancement ici. La poser
+    // sur le tracé rechargé ferait croire à une comparaison qui n'a pas eu lieu.
+    setLaunchSignature(null);
+    // **Poser l'identifiant suffit, et c'est tout l'intérêt.** `useJobProgress`
+    // s'abonne dessus ; un job déjà terminal reçoit immédiatement `progress` puis
+    // `end`, ce qui déclenche `handleTerminal` — donc exactement le même chemin de
+    // chargement qu'à la fin d'une analyse lancée ici.
+    //
+    // Appeler `fetchResult` en plus le téléchargerait **deux fois** : sur une
+    // timeline de trente minutes, c'est plusieurs centaines de mégaoctets payés pour
+    // rien. Et deux chemins de chargement finiraient par diverger.
+    setJobId(existingJobId);
+  }, []);
+
   const cancel = useCallback(() => {
     // Envoi en cours : il suffit d'interrompre, le job n'existe pas encore.
     if (handle.current !== null) {
@@ -225,6 +261,7 @@ export function useAnalysisSession(): AnalysisSession {
     starting,
     launchSignature,
     start,
+    adopt,
     cancel,
     pause,
     resume,

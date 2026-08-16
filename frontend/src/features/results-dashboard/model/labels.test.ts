@@ -37,10 +37,21 @@ describe("classes de véhicule", () => {
     expect(classLabel("bus")).toBe("Bus");
   });
 
+  it("couvre les sept classes que le serveur sait détecter", () => {
+    // Les trois dernières sont arrivées avec ADR 0014 — l'utilisateur peut cocher
+    // vélo, personne et train. Sans leur libellé, la répartition par type afficherait
+    // « person » au milieu de « Voiture » et « Camion », ce qui se lit comme une
+    // colonne mal branchée plutôt que comme une traduction manquante.
+    expect(classLabel("bicycle")).toBe("Vélo");
+    expect(classLabel("person")).toBe("Personne");
+    expect(classLabel("train")).toBe("Train");
+  });
+
   it("laisse passer une classe inconnue au lieu de la masquer", () => {
-    // Si le serveur commence à renvoyer `train`, il faut le **voir** pour décider
-    // quoi en faire — un « Autre » fourre-tout cacherait le changement.
-    expect(classLabel("train")).toBe("train");
+    // Si le serveur commence à renvoyer une classe que l'interface ignore, il faut
+    // la **voir** pour décider quoi en faire — un « Autre » fourre-tout cacherait le
+    // changement.
+    expect(classLabel("boat")).toBe("boat");
   });
 });
 
@@ -83,18 +94,29 @@ describe("formatFrameLatency — la cadence lue dans l'autre sens", () => {
 });
 
 describe("crossingRate — le chiffre qui juge le tracé", () => {
-  it("rapporte les franchissements aux véhicules détectés", () => {
-    // 48 véhicules vus, 5 franchissements : la ligne n'est pas sur le passage du
-    // trafic. Ni « 48 » ni « 5 » ne le disent seuls.
+  it("rapporte les véhicules ayant franchi aux véhicules détectés", () => {
+    // 48 véhicules vus, 5 d'entre eux ont franchi : la ligne n'est pas sur le
+    // passage du trafic. Ni « 48 » ni « 5 » ne le disent seuls.
     expect(formatCrossingRate(crossingRate(48, 5))).toBe("10 %");
     expect(formatCrossingRate(crossingRate(20, 20))).toBe("100 %");
   });
 
-  it("n'écrête pas au-dessus de 100 %", () => {
-    // Un aller-retour compte deux fois pour un seul véhicule, et une ligne posée
-    // sur un rond-point dépasse légitimement 100 %. Écrêter masquerait le cas
-    // intéressant.
-    expect(formatCrossingRate(crossingRate(10, 25))).toBe("250 %");
+  it("reste borné à 100 % sur un aller-retour — le cas qui cassait le taux", () => {
+    // **Le test qui a changé de sens avec ADR 0014.** Il affirmait l'inverse :
+    // « n'écrête pas au-dessus de 100 % », et vérifiait que 25 franchissements pour
+    // 10 véhicules donnaient 250 %.
+    //
+    // C'était vrai du calcul et faux de la question posée. Depuis qu'on compte des
+    // passages, un aller-retour en vaut 2 pour 1 véhicule : le numérateur et le
+    // dénominateur n'avaient plus la même unité, et « 250 % des véhicules ont
+    // franchi » ne veut rien dire.
+    //
+    // Le numérateur est désormais un nombre de véhicules **distincts** ayant
+    // franchi — un sous-ensemble des véhicules vus. Le même trafic qu'avant, celui
+    // qui produisait 25 passages, donne donc au plus 100 %.
+    expect(formatCrossingRate(crossingRate(10, 10))).toBe("100 %");
+    // Et l'aller-retour d'un seul véhicule parmi dix : 2 passages, 1 véhicule.
+    expect(formatCrossingRate(crossingRate(10, 1))).toBe("10 %");
   });
 
   it("rend un tiret sans véhicule, jamais « 0 % »", () => {

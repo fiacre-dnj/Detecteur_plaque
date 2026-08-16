@@ -57,7 +57,7 @@ from traffic_analysis.features.counting.application.dto import (
     PlateGeometry,
 )
 from traffic_analysis.features.models_registry.infrastructure.plate_detector import (
-    OnnxPlateDetector,
+    UltralyticsPlateDetector,
 )
 from traffic_analysis.features.models_registry.infrastructure.plate_reader import (
     OnnxPlateReader,
@@ -368,7 +368,7 @@ def iter_frames(video: Path, limit: int, stride: int) -> Iterator[npt.NDArray[np
 
 def run_videos(
     videos: Sequence[Path],
-    detector: OnnxPlateDetector,
+    detector: UltralyticsPlateDetector,
     reader: OnnxPlateReader | None,
     *,
     frames: int,
@@ -669,7 +669,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not videos:
             print(f"Aucune vidéo trouvée dans {args.videos}.", file=sys.stderr)
             return 1
-        detector = OnnxPlateDetector(
+        detector = UltralyticsPlateDetector(
             settings.resolved_plate_model_path,
             settings.plate_confidence,
             iou=settings.plate_iou,

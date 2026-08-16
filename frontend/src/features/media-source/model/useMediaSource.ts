@@ -25,8 +25,16 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-/** D'où vient l'image affichée. */
-export type SourceKind = "file" | "demo" | "camera";
+/**
+ * D'où vient l'image affichée.
+ *
+ * `archived` est une vidéo **resservie par le serveur**, celle d'une analyse
+ * rouverte depuis l'historique. Distincte de `file` bien que les deux affichent une
+ * vidéo : elle n'a pas de `File`, donc elle ne peut pas être renvoyée pour une
+ * nouvelle analyse. Les confondre ferait proposer « Lancer l'analyse » sur une source
+ * que `POST /jobs` ne peut pas recevoir.
+ */
+export type SourceKind = "file" | "demo" | "camera" | "archived";
 
 export interface MediaSource {
   kind: SourceKind;
@@ -72,6 +80,14 @@ export interface UseMediaSourceResult {
   selectFile: (file: File) => void;
   selectDemo: () => void;
   selectCamera: () => Promise<void>;
+  /**
+   * Affiche la vidéo d'une analyse archivée, servie par le serveur.
+   *
+   * Pas de `File` et pas d'`URL.createObjectURL` : la vidéo reste sur le serveur et
+   * le navigateur la lit par plages. C'est ce qui rend le déplacement dans la
+   * timeline praticable sans retélécharger des centaines de mégaoctets.
+   */
+  selectArchived: (url: string, label: string) => void;
   clear: () => void;
 }
 
@@ -137,6 +153,18 @@ export function useMediaSource(): UseMediaSourceResult {
     setSource({ kind: "demo", url: DEMO_VIDEO_URL, label: "Vidéo de démonstration" });
   }, [stop]);
 
+  const selectArchived = useCallback(
+    (url: string, label: string) => {
+      stop();
+      setError(null);
+      // Aucun `objectUrl.current` à retenir : l'URL pointe le serveur, il n'y a
+      // rien à révoquer. La poser ici ferait révoquer une URL qui n'est pas un blob,
+      // ce qui est sans effet mais ment sur ce que le nettoyage a à faire.
+      setSource({ kind: "archived", url, label });
+    },
+    [stop],
+  );
+
   const selectCamera = useCallback(async () => {
     stop();
     setError(null);
@@ -159,7 +187,16 @@ export function useMediaSource(): UseMediaSourceResult {
     setError(null);
   }, [stop]);
 
-  return { source, error, requestingCamera, selectFile, selectDemo, selectCamera, clear };
+  return {
+    source,
+    error,
+    requestingCamera,
+    selectFile,
+    selectDemo,
+    selectCamera,
+    selectArchived,
+    clear,
+  };
 }
 
 /**

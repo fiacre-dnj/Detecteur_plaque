@@ -96,7 +96,7 @@ class TestPublication:
         assert nu.stats is not None
         assert observe.stats is not None
         assert nu.stats.crossings == observe.stats.crossings
-        assert nu.stats.unique_vehicles == observe.stats.unique_vehicles
+        assert nu.stats.tracked_vehicles == observe.stats.tracked_vehicles
         assert len(nu.timeline) == len(observe.timeline)
 
 
@@ -129,7 +129,7 @@ class TestCeQueLApercuPorte:
         final = samples[-1].stats
         assert result.stats is not None
         assert final.crossings == result.stats.crossings
-        assert final.unique_vehicles == result.stats.unique_vehicles
+        assert final.tracked_vehicles == result.stats.tracked_vehicles
         assert final.by_line == result.stats.by_line
 
     def test_les_dimensions_publiees_sont_celles_sondees_par_le_serveur(self, video: Path) -> None:

@@ -1,7 +1,17 @@
 /**
- * Le sélecteur de source : trois cartes, dont une zone de dépôt.
+ * Le choix de la source : **un bouton d'import**, posé dans la barre du studio.
  *
- * Deux détails de glisser-déposer qui ne sont pas décoratifs :
+ * C'étaient trois cartes en pleine largeur au-dessus de la vidéo. Deux d'entre elles
+ * — le clip de démonstration et la caméra — étaient désactivées, et le sont depuis
+ * assez longtemps pour que leur place ne se justifie plus : elles occupaient les deux
+ * tiers d'un bandeau permanent pour annoncer « indisponible ». Elles sont retirées de
+ * l'écran, **pas du code** : tout le chemin caméra — WebSocket, cadence, mise à
+ * l'échelle d'envoi, garde de résolution — existe, est testé, et attend une porte
+ * d'entrée. Les remettre est un composant à rebrancher, pas une fonctionnalité à
+ * réécrire.
+ *
+ * Deux détails de glisser-déposer qui ne sont pas décoratifs, et qui survivent au
+ * changement de forme :
  *
  * - `preventDefault()` sur **`dragover` autant que sur `drop`**. Sans le premier,
  *   le navigateur refuse le dépôt et **ouvre la vidéo dans l'onglet**, ce qui fait
@@ -9,55 +19,27 @@
  * - un compteur d'entrée/sortie plutôt qu'un booléen pour le surlignage :
  *   `dragleave` se déclenche en entrant dans un enfant, donc un booléen fait
  *   clignoter la bordure à chaque survol d'icône.
+ *
+ * La zone de dépôt, elle, **s'étend désormais à la scène** (`DropZone`) : viser un
+ * bouton de barre avec un fichier serait plus difficile que viser la grande surface
+ * noire juste en dessous.
  */
 
-import { Camera, FileVideo, MonitorPlay, Upload } from "lucide-react";
-import { useCallback, useId, useRef, useState } from "react";
+import { FileVideo, Upload } from "lucide-react";
+import { useCallback, useId, useRef, useState, type ReactNode } from "react";
 
-import {
-  ACCEPT_ATTRIBUTE,
-  hasAcceptedExtension,
-  type SourceKind,
-} from "../model/useMediaSource";
-
-/**
- * Sources désactivées pour l'instant : le clip de démonstration et la caméra.
- *
- * Un drapeau explicite plutôt qu'une suppression des cartes. Les retirer
- * laisserait croire que l'application ne sait pas faire, alors qu'elle sait :
- * tout le chemin caméra — WebSocket, cadence, mise à l'échelle d'envoi, garde de
- * résolution — existe et est testé. Grisées **avec leur raison**, elles disent la
- * vérité : « pas maintenant », et non « pas possible ».
- *
- * Remettre l'une des deux en service est un `false` à passer à `true`.
- */
-const DEMO_ENABLED = false;
-const CAMERA_ENABLED = false;
-
-/** Ce qu'on affiche à la place de l'aide, quand la source est mise de côté. */
-const UNAVAILABLE_HINT = "Indisponible pour l'instant";
+import { ACCEPT_ATTRIBUTE, hasAcceptedExtension } from "../model/useMediaSource";
 
 interface SourcePickerProps {
-  /** Source active, pour marquer la carte correspondante. */
-  activeKind: SourceKind | null;
+  /** Nom de la source active, affiché à côté du bouton. `null` si aucune. */
+  activeLabel: string | null;
   disabled: boolean;
-  requestingCamera: boolean;
   onFile: (file: File) => void;
-  onDemo: () => void;
-  onCamera: () => void;
 }
 
-export function SourcePicker({
-  activeKind,
-  disabled,
-  requestingCamera,
-  onFile,
-  onDemo,
-  onCamera,
-}: SourcePickerProps) {
+export function SourcePicker({ activeLabel, disabled, onFile }: SourcePickerProps) {
   const inputId = useId();
   const input = useRef<HTMLInputElement>(null);
-  const [dragDepth, setDragDepth] = useState(0);
   const [rejected, setRejected] = useState<string | null>(null);
 
   const accept = useCallback(
@@ -76,144 +58,123 @@ export function SourcePicker({
     [onFile],
   );
 
+  return (
+    <>
+      <label
+        htmlFor={inputId}
+        className={[
+          "label-caps inline-flex h-10 shrink-0 items-center gap-2 rounded-pill px-5",
+          "bg-accent text-accent-ink transition-[filter] hover:brightness-110",
+          disabled ? "pointer-events-none opacity-45" : "cursor-pointer",
+        ].join(" ")}
+      >
+        <Upload aria-hidden="true" className="size-4" />
+        {activeLabel === null ? "Importer une vidéo" : "Changer de vidéo"}
+      </label>
+      <input
+        ref={input}
+        id={inputId}
+        type="file"
+        accept={ACCEPT_ATTRIBUTE}
+        disabled={disabled}
+        className="sr-only"
+        onChange={(event) => {
+          accept(event.target.files?.[0]);
+          // Réinitialisé pour que **rechoisir le même fichier** émette un nouveau
+          // `change` : sans cela, recharger le fichier courant après un « Fermer »
+          // ne fait rien.
+          event.target.value = "";
+        }}
+      />
+
+      {activeLabel !== null && (
+        <span
+          className="inline-flex min-w-0 items-center gap-1.5 text-small text-ink-muted"
+          title={activeLabel}
+        >
+          <FileVideo aria-hidden="true" className="size-4 shrink-0 text-ink-dim" />
+          <span className="max-w-48 truncate">{activeLabel}</span>
+        </span>
+      )}
+
+      {rejected !== null && (
+        <p role="alert" className="w-full text-small text-negative">
+          {rejected}
+        </p>
+      )}
+    </>
+  );
+}
+
+interface DropZoneProps {
+  disabled: boolean;
+  onFile: (file: File) => void;
+  children: ReactNode;
+}
+
+/**
+ * Enveloppe la scène pour en faire la cible de dépôt.
+ *
+ * Séparée du bouton parce que les deux ont des tailles opposées : le bouton doit être
+ * compact dans la barre, la cible de dépôt doit être la plus grande surface de
+ * l'écran. Les fondre en un seul élément obligerait à choisir, et viser une pilule de
+ * 40 px de haut avec un fichier est un geste qu'on rate.
+ */
+export function DropZone({ disabled, onFile, children }: DropZoneProps) {
+  const [dragDepth, setDragDepth] = useState(0);
+  const [rejected, setRejected] = useState<string | null>(null);
+
   const handleDrop = useCallback(
     (event: React.DragEvent) => {
       event.preventDefault();
       setDragDepth(0);
       if (disabled) return;
-      accept(event.dataTransfer.files[0]);
+      const file = event.dataTransfer.files[0];
+      if (file === undefined) return;
+      if (!hasAcceptedExtension(file.name)) {
+        setRejected(`« ${file.name} » n'est pas une vidéo reconnue (${ACCEPT_ATTRIBUTE}).`);
+        return;
+      }
+      setRejected(null);
+      onFile(file);
     },
-    [accept, disabled],
+    [disabled, onFile],
   );
 
   return (
-    <section aria-labelledby="source-title">
-      <h2 id="source-title" className="label-micro mb-3">
-        Source à analyser
-      </h2>
+    <div
+      onDragEnter={(event) => {
+        event.preventDefault();
+        setDragDepth((depth) => depth + 1);
+      }}
+      onDragOver={(event) => {
+        // **Indispensable** : sans lui le navigateur ouvre la vidéo dans l'onglet
+        // et l'application disparaît avec son état.
+        event.preventDefault();
+      }}
+      onDragLeave={() => setDragDepth((depth) => Math.max(0, depth - 1))}
+      onDrop={handleDrop}
+      className={[
+        "relative rounded-section transition-shadow",
+        dragDepth > 0 ? "ring-2 ring-accent" : "",
+      ].join(" ")}
+    >
+      {children}
 
-      <div className="grid gap-3 sm:grid-cols-3">
-        {/* ── Fichier : la carte est aussi la zone de dépôt ─────────────── */}
-        <div
-          onDragEnter={(event) => {
-            event.preventDefault();
-            setDragDepth((depth) => depth + 1);
-          }}
-          onDragOver={(event) => {
-            // **Indispensable** : sans lui le navigateur ouvre la vidéo dans
-            // l'onglet et l'application disparaît avec son état.
-            event.preventDefault();
-          }}
-          onDragLeave={() => setDragDepth((depth) => Math.max(0, depth - 1))}
-          onDrop={handleDrop}
-          className={[
-            "rounded-card transition-colors",
-            dragDepth > 0 ? "ring-2 ring-accent" : "",
-          ].join(" ")}
-        >
-          <label
-            htmlFor={inputId}
-            aria-current={activeKind === "file" ? "true" : undefined}
-            className={[
-              "flex h-full cursor-pointer flex-col rounded-card p-4 text-start transition-colors",
-              activeKind === "file" ? "bg-elevated shadow-inset" : "bg-surface hover:bg-elevated",
-              disabled ? "cursor-not-allowed opacity-60" : "",
-            ].join(" ")}
-          >
-            {dragDepth > 0 ? (
-              <Upload aria-hidden="true" className="size-5 text-accent" />
-            ) : (
-              <FileVideo aria-hidden="true" className="size-5 text-ink-dim" />
-            )}
-            <p className="mt-3 text-caption font-bold text-ink">Fichier vidéo</p>
-            <p className="mt-0.5 text-small text-ink-dim">
-              {dragDepth > 0 ? "Relâchez pour charger" : "Glissez un clip ou cliquez"}
-            </p>
-          </label>
-          <input
-            ref={input}
-            id={inputId}
-            type="file"
-            accept={ACCEPT_ATTRIBUTE}
-            disabled={disabled}
-            className="sr-only"
-            onChange={(event) => {
-              accept(event.target.files?.[0]);
-              // Réinitialisé pour que **rechoisir le même fichier** émette un
-              // nouveau `change` : sans cela, recharger le fichier courant après
-              // un « Fermer » ne fait rien.
-              event.target.value = "";
-            }}
-          />
+      {dragDepth > 0 && (
+        <div className="pointer-events-none absolute inset-0 grid place-items-center rounded-section bg-base/70">
+          <p className="label-caps flex items-center gap-2 text-accent">
+            <Upload aria-hidden="true" className="size-5" />
+            Relâchez pour charger
+          </p>
         </div>
-
-        {/* ── Démonstration ─────────────────────────────────────────────── */}
-        <SourceCard
-          icon={MonitorPlay}
-          label="Vidéo de démonstration"
-          hint={DEMO_ENABLED ? "Un clip fourni pour essayer" : UNAVAILABLE_HINT}
-          active={activeKind === "demo"}
-          disabled={disabled || !DEMO_ENABLED}
-          onClick={onDemo}
-        />
-
-        {/* ── Caméra ────────────────────────────────────────────────────── */}
-        <SourceCard
-          icon={Camera}
-          label="Caméra"
-          hint={
-            !CAMERA_ENABLED
-              ? UNAVAILABLE_HINT
-              : requestingCamera
-                ? "Autorisation en attente…"
-                : "Comptage en direct"
-          }
-          active={activeKind === "camera"}
-          disabled={disabled || requestingCamera || !CAMERA_ENABLED}
-          onClick={onCamera}
-        />
-      </div>
+      )}
 
       {rejected !== null && (
-        <p role="alert" className="mt-3 text-small text-negative">
+        <p role="alert" className="mt-2 text-small text-negative">
           {rejected}
         </p>
       )}
-
-      {/* La conséquence d'ADR 0003, énoncée là où l'utilisateur choisit sa
-          source — pas enfouie dans une page « à propos ». */}
-      <p className="mt-3 text-small text-ink-dim">
-        Les images sont envoyées au serveur, qui réalise l'analyse.
-      </p>
-    </section>
-  );
-}
-
-interface SourceCardProps {
-  icon: typeof Camera;
-  label: string;
-  hint: string;
-  active: boolean;
-  disabled: boolean;
-  onClick: () => void;
-}
-
-function SourceCard({ icon: Icon, label, hint, active, disabled, onClick }: SourceCardProps) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-current={active ? "true" : undefined}
-      className={[
-        "rounded-card p-4 text-start transition-colors",
-        active ? "bg-elevated shadow-inset" : "bg-surface hover:bg-elevated",
-        "disabled:cursor-not-allowed disabled:opacity-60",
-      ].join(" ")}
-    >
-      <Icon aria-hidden="true" className={active ? "size-5 text-accent" : "size-5 text-ink-dim"} />
-      <p className="mt-3 text-caption font-bold text-ink">{label}</p>
-      <p className="mt-0.5 text-small text-ink-dim">{hint}</p>
-    </button>
+    </div>
   );
 }

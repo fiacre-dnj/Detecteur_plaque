@@ -31,10 +31,41 @@ export interface ReplayState {
 /**
  * Suit la position d'un élément vidéo et rend ce qu'il faut dessiner à cet instant.
  *
- * @param video L'élément dont on suit la position, ou `null`.
+ * @param videoRef La **référence** vers la balise suivie.
  * @param result Le résultat à relire, ou `null` (aucune analyse).
+ *
+ * **Une référence et non l'élément.** Le hook recevait `videoRef.current`, lu au
+ * rendu. Cela fonctionnait — mais par ricochet : remplir un `ref` ne déclenche aucun
+ * rendu, donc l'abonnement dépendait d'un rendu ultérieur provoqué par autre chose,
+ * en l'occurrence le `setScene` de `loadedmetadata`. Le jour où ce rendu-là
+ * disparaît ou change d'ordre, l'effet reste abonné à `null` et ses dépendances
+ * `[video, result]` ne bougeant plus, il ne se réabonne jamais.
+ *
+ * Le mode de panne serait silencieux, ce qui justifie de ne pas s'en remettre au
+ * hasard : `timeMs` resterait figé sur sa valeur initiale — la fin du résultat —
+ * donc l'écran afficherait les **chiffres finaux, corrects**, et immobiles. Déplacer
+ * la vidéo ne changerait aucun compteur, aucune boîte, aucune mise en évidence. Un
+ * écran juste et inerte se lit comme « la relecture n'est pas implémentée », jamais
+ * comme un abonnement raté.
+ *
+ * `TransportBar` documente longuement le même piège ; c'est son patron qui est
+ * repris ici — un état rempli par un effet de montage, quand la balise existe
+ * forcément.
+ *
+ * **Note pour qui déboguera la relecture** : `requestAnimationFrame` ne se déclenche
+ * pas dans un onglet caché (`document.hidden`). Une page pilotée sans être affichée
+ * — un navigateur sans tête, un panneau replié — voit donc les compteurs rester
+ * figés alors que `video.currentTime` avance, et le suivi paraît cassé sans l'être.
+ * `timeupdate` continue, lui, de se déclencher : c'est pourquoi la barre de
+ * transport, qui l'écoute, reste juste dans ces conditions.
  */
-export function useReplay(video: HTMLVideoElement | null, result: AnalysisResult | null) {
+export function useReplay(
+  videoRef: React.RefObject<HTMLVideoElement | null>,
+  result: AnalysisResult | null,
+) {
+  const [video, setVideo] = useState<HTMLVideoElement | null>(null);
+  useEffect(() => setVideo(videoRef.current), [videoRef]);
+
   /**
    * Position initiale : **la fin du résultat**.
    *
@@ -55,6 +86,24 @@ export function useReplay(video: HTMLVideoElement | null, result: AnalysisResult
 
     let frame = 0;
     const tick = (): void => {
+      // **Ne suivre que si la balise porte réellement un média.**
+      //
+      // `VideoScene` monte son `<video>` en permanence, même sans source : la
+      // référence n'est donc jamais nulle, et un `currentTime` de 0 sur une balise
+      // vide se lisait comme « la tête de lecture est au début ». Conséquence
+      // exacte, sur une analyse rouverte depuis l'historique dont la vidéo n'a pas
+      // été redéposée : `statsAt(result, 0)` écrasait par des zéros la position de
+      // fin posée juste au-dessus, et l'écran affichait 0 véhicule, 0 franchissement
+      // sur un résultat parfaitement intact. Le symptôme se lit comme une analyse
+      // vide, jamais comme un défaut de repère temporel.
+      //
+      // `duration` est le bon signal : `NaN` sans média, `0` sur un flux caméra.
+      // `readyState` ne suffirait pas — il repasse à 0 pendant un changement de
+      // source, ce qui ferait clignoter les compteurs.
+      if (!Number.isFinite(video.duration) || video.duration <= 0) {
+        frame = requestAnimationFrame(tick);
+        return;
+      }
       const nextMs = video.currentTime * 1000;
       // Seuil d'un dixième de milliseconde : sans lui, le bruit en virgule
       // flottante provoquerait un rendu à chaque image même sur une vidéo en pause.

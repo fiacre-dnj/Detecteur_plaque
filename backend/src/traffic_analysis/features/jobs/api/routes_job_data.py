@@ -42,7 +42,16 @@ async def list_vehicles(
     job_id: str,
     page: Annotated[PageParams, Depends(page_params)],
     label: Annotated[str | None, Query(description="Filtre par classe votée.")] = None,
-    min_reid: Annotated[int | None, Query(ge=0, description="Ré-identifications ≥ N.")] = None,
+    crossed: Annotated[
+        bool | None,
+        Query(
+            description=(
+                "Véhicules ayant franchi au moins une ligne (`true`) ou aucune "
+                "(`false`). Remplace `minReid`, disparu avec la ré-identification : "
+                "la question utile est désormais « lesquels ne sont jamais passés »."
+            )
+        ),
+    ] = None,
     has_plate: Annotated[
         bool | None, Query(description="Avec ou sans plaque **détectée**.")
     ] = None,
@@ -60,7 +69,7 @@ async def list_vehicles(
 ) -> Page[dict[str, Any]]:
     await manager.get(job_id)  # 404 explicite plutôt qu'une page vide trompeuse
     return await queries.list_vehicles(
-        job_id, page, label=label, min_reid=min_reid, has_plate=has_plate, plate_text=plate_text
+        job_id, page, label=label, crossed=crossed, has_plate=has_plate, plate_text=plate_text
     )
 
 

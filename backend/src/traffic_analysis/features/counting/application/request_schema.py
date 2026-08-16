@@ -22,10 +22,20 @@ from pydantic import Field, field_validator, model_validator
 
 from traffic_analysis.core.schemas import CamelModel
 from traffic_analysis.features.counting.application.dto import (
+    DETECTABLE_CLASS_IDS,
+    DETECTABLE_CLASSES,
+    VEHICLE_CLASS_IDS,
     AnalysisJobConfig,
     CountingLineDef,
+    DirectionRole,
     Point,
     ZoneDef,
+)
+from traffic_analysis.features.counting.domain.pacing import (
+    MAX_FPS_CAP,
+    MAX_SPEED,
+    MIN_FPS_CAP,
+    MIN_SPEED,
 )
 from traffic_analysis.features.models_registry.application.catalogue_access import (
     is_known_model,
@@ -42,7 +52,12 @@ class PointSchema(CamelModel):
 
 
 class LineSchema(CamelModel):
-    """Une ligne de comptage telle que le client la dessine."""
+    """Une ligne de comptage telle que le client la dessine.
+
+    Les quatre champs de sens décrivent, ils ne comptent pas : le serveur les
+    accepte, les persiste dans la configuration du job et les rend tels quels. Un
+    total ne dépend jamais d'un mot que l'utilisateur peut corriger après coup.
+    """
 
     id: str = Field(min_length=1, max_length=64, examples=["l1"])
     name: str = Field(default="", max_length=120, examples=["Voie nord"])
@@ -53,6 +68,16 @@ class LineSchema(CamelModel):
     zone_id: str | None = Field(default=None, max_length=64)
     a: PointSchema
     b: PointSchema
+    #: Nom du sens A→B. `""` demande à l'interface de poser son défaut géométrique,
+    #: recalculé quand la ligne bouge : figer un défaut ici le collerait à
+    #: l'orientation qu'avait la ligne au moment de l'envoi.
+    #:
+    #: Plus court que `name` (60 contre 120) parce que deux de ces libellés doivent
+    #: tenir de part et d'autre d'un trait sur la vidéo, pas dans un tableau.
+    positive_name: str = Field(default="", max_length=60, examples=["Vers le centre"])
+    negative_name: str = Field(default="", max_length=60, examples=["Vers la rocade"])
+    positive_role: DirectionRole = "neutral"
+    negative_role: DirectionRole = "neutral"
 
     def to_domain(self) -> CountingLineDef:
         return CountingLineDef(
@@ -61,6 +86,10 @@ class LineSchema(CamelModel):
             a=self.a.to_domain(),
             b=self.b.to_domain(),
             zone_id=self.zone_id,
+            positive_name=self.positive_name,
+            negative_name=self.negative_name,
+            positive_role=self.positive_role,
+            negative_role=self.negative_role,
         )
 
 
@@ -84,7 +113,6 @@ class AnalysisRequestSchema(CamelModel):
     iou_threshold: float = Field(0.45, ge=0.05, le=0.95)
     min_hits: int = Field(2, ge=1, le=10)
     max_lost_ms: float = Field(2500, ge=200, le=15000)
-    reid_min_similarity: float = Field(0.80, ge=0.50, le=0.99)
     mask_outside_zones: bool = False
     frame_stride: int = Field(1, ge=1, le=10)
     detect_plates: bool = False
@@ -104,8 +132,80 @@ class AnalysisRequestSchema(CamelModel):
         description="Échelle de la scène. Sans elle, les vitesses restent en px/s.",
         examples=[12.5],
     )
+    class_ids: list[int] = Field(
+        default_factory=lambda: list(VEHICLE_CLASS_IDS),
+        description=(
+            "Classes à détecter et à compter, par identifiant COCO. Le catalogue "
+            "cochable est publié par `GET /api/v1/models/classes`. Le défaut est "
+            "les quatre véhicules, c'est-à-dire le comportement historique."
+        ),
+        examples=[[2, 3, 5, 7]],
+    )
+    analysis_speed: float | None = Field(
+        None,
+        ge=MIN_SPEED,
+        le=MAX_SPEED,
+        description=(
+            "Cadence maximale de l'analyse, en multiples de la vitesse réelle de la "
+            "scène. `null` (le défaut) n'impose aucune borne : l'analyse va aussi "
+            "vite que la machine le permet. `1` la fait durer exactement le temps de "
+            "la vidéo, ce qui rend l'aperçu live regardable — sans bornage, un "
+            "serveur deux fois plus rapide que la scène produit un aperçu deux fois "
+            "trop rapide. Sans effet en direct, où le client cadence son envoi."
+        ),
+        examples=[1],
+    )
+    max_analysis_fps: float | None = Field(
+        None,
+        ge=MIN_FPS_CAP,
+        le=MAX_FPS_CAP,
+        description=(
+            "Plafond absolu de l'analyse, en images analysées par seconde réelle — "
+            "indépendant de la cadence de la source. `null` (le défaut) n'impose "
+            "aucune borne. Distinct de `analysisSpeed`, qui borne une vitesse "
+            "*relative* au temps de la scène : les deux peuvent être posés "
+            "ensemble, et le plus restrictif s'applique. Sans effet en direct."
+        ),
+        examples=[30],
+    )
     lines: list[LineSchema] = Field(default_factory=list)
     zones: list[ZoneSchema] = Field(default_factory=list)
+
+    @field_validator("class_ids")
+    @classmethod
+    def _selectable_classes(cls, value: list[int]) -> list[int]:
+        """Refuser une classe qu'aucun modèle du catalogue ne sait reconnaître.
+
+        Le mode de défaillance évité est muet : une classe hors COCO — une
+        charrette, un `tuk-tuk` — passerait la validation, serait transmise telle
+        quelle à `classes=` d'Ultralytics, et **ne détecterait jamais rien**. Aucune
+        erreur, aucun journal : juste un compteur à zéro qui se lit comme une panne
+        de détection alors que c'est une demande impossible.
+
+        Une liste vide est refusée pour la même raison : elle rendrait les 80 classes
+        de COCO côté Ultralytics (`classes=[]` n'est pas un filtre vide), donc des
+        piétons, des feux et des panneaux comptés comme des véhicules.
+
+        Les doublons sont écartés en gardant l'ordre : `[2, 2, 3]` est une intention
+        claire, pas une erreur qui mérite un refus.
+        """
+        unknown = sorted(set(value) - DETECTABLE_CLASS_IDS)
+        if unknown:
+            catalogue = ", ".join(f"{entry.id} ({entry.label})" for entry in DETECTABLE_CLASSES)
+            msg = (
+                f"Classes inconnues : {unknown}. Les modèles du catalogue sont "
+                f"entraînés sur COCO et ne savent reconnaître que : {catalogue}. "
+                "Une classe absente de cette liste demande un autre modèle, pas un "
+                "autre réglage."
+            )
+            raise ValueError(msg)
+        if not value:
+            msg = (
+                "Sélectionnez au moins une classe à compter : une liste vide ne "
+                "restreindrait rien et compterait les 80 classes de COCO."
+            )
+            raise ValueError(msg)
+        return list(dict.fromkeys(value))
 
     @field_validator("model_id")
     @classmethod
@@ -177,8 +277,10 @@ class AnalysisRequestSchema(CamelModel):
             plate_confidence=self.plate_confidence,
             read_plate_text=self.read_plate_text,
             pixels_per_meter=self.pixels_per_meter,
-            reid_min_similarity=self.reid_min_similarity,
             max_lost_ms=self.max_lost_ms,
             lines=tuple(line.to_domain() for line in self.lines),
             zones=tuple(zone.to_domain() for zone in self.zones),
+            class_ids=tuple(self.class_ids),
+            analysis_speed=self.analysis_speed,
+            max_analysis_fps=self.max_analysis_fps,
         )

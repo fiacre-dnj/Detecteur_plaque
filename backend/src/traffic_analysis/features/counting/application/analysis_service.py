@@ -11,7 +11,7 @@ transport, de l'orchestration et de la base.
 from __future__ import annotations
 
 from dataclasses import replace
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import TYPE_CHECKING
 
 from traffic_analysis.core.logging import get_logger
@@ -28,6 +28,7 @@ from traffic_analysis.features.counting.application.dto import (
     TimelineRow,
 )
 from traffic_analysis.features.counting.domain.models import PlateDetection, VideoInfo
+from traffic_analysis.features.counting.domain.pacing import ScenePacer
 from traffic_analysis.features.counting.domain.plate_anchor import PlateAnchor, anchor_from
 from traffic_analysis.features.counting.domain.tracking_session import AnalysisSession
 
@@ -65,6 +66,18 @@ PROGRESS_EVERY_FRAMES = 10
 #: qu'on veut borner est le débit du flux et le travail du navigateur, qui se
 #: mesurent en secondes.
 PREVIEW_MIN_INTERVAL_S = 0.2
+
+#: Intervalle d'aperçu quand l'analyse est **bridée**, en secondes.
+#:
+#: Plus serré que le régime normal, et ce n'est pas un raffinement. Un aperçu
+#: toutes les 200 ms sur une analyse bridée à 1× ne montre que cinq images de
+#: scène par seconde : la vitesse est juste, mais l'aperçu ressemble à un
+#: diaporama. Or brider est précisément la décision de *regarder* l'analyse — donc
+#: celle d'accepter deux fois plus de trames sur le flux, qui ne portent que des
+#: boîtes et des compteurs, jamais de pixels.
+#:
+#: N'élargit jamais l'intervalle du déploiement : le minimum des deux est retenu.
+PACED_PREVIEW_INTERVAL_S = 0.1
 
 type ProgressCallback = Callable[[Progress], None]
 type PreviewCallback = Callable[[PreviewSample], None]
@@ -120,6 +133,7 @@ class AnalysisService:
         on_progress: ProgressCallback | None = None,
         on_preview: PreviewCallback | None = None,
         preview_interval_s: float = PREVIEW_MIN_INTERVAL_S,
+        paced_preview_interval_s: float = PACED_PREVIEW_INTERVAL_S,
         is_cancelled: CancellationCheck | None = None,
         wait_while_paused: PauseGate | None = None,
     ) -> AnalysisResultData:
@@ -141,6 +155,22 @@ class AnalysisService:
         C'est ce qui permet de **valider** une analyse pendant qu'elle tourne :
         sans lui, rien de visuel ne quitte le serveur avant la fin. Un intervalle
         nul publie chaque frame, ce dont seuls les tests ont l'usage.
+
+        `config.analysis_speed` et `config.max_analysis_fps` **brident** la
+        boucle : elle attend entre deux images pour que le temps de scène
+        n'avance jamais plus vite que le multiple demandé du temps réel, et que
+        le serveur n'analyse jamais plus vite que le plafond absolu — le plus
+        restrictif des deux s'applique. C'est ce qui rend l'aperçu regardable, au
+        prix d'une analyse qui dure plus longtemps (`domain/pacing.py`). Une
+        analyse bridée resserre aussi son intervalle d'aperçu à
+        `paced_preview_interval_s`, sans jamais l'élargir.
+
+        **`processing_fps` d'une analyse bridée mesure le bridage, pas la
+        machine.** Le temps d'attente n'est pas retranché, contrairement au temps
+        de pause : l'attendre est du travail que l'analyse a choisi de faire, et le
+        déduire donnerait une progression dont l'échéance annoncée serait fausse
+        d'un facteur égal au bridage. Ne comparer que des runs de même cadence —
+        le banc, lui, ne bride jamais.
         """
         info = self._engine.probe(video_path)
         result = AnalysisResultData(job_id=job_id, model_id=config.model_id, video=info)
@@ -185,6 +215,38 @@ class AnalysisService:
         #: Par course, comme les politiques.
         anchors: dict[int, PlateAnchor] = {}
 
+        # `None` = pleine vitesse, le défaut. Construit ici parce que la cadence de
+        # la source ne se connaît qu'après `probe()`.
+        pacer = ScenePacer.for_video(
+            info.fps, config.frame_stride, config.analysis_speed, config.max_analysis_fps
+        )
+        if pacer is not None:
+            # `> 0` : zéro signifie « ne pas resserrer », pas « publier chaque
+            # image ». La seule valeur qui décide de l'existence de l'aperçu reste
+            # `preview_interval_s`, et un déploiement qui met ce champ à zéro ne doit
+            # pas se retrouver avec vingt-cinq trames par seconde sur le flux.
+            if paced_preview_interval_s > 0.0:
+                preview_interval_s = min(preview_interval_s, paced_preview_interval_s)
+            logger.info(
+                "analyse bridée sur le temps de la scène",
+                job_id=job_id,
+                analysis_speed=config.analysis_speed,
+                max_analysis_fps=config.max_analysis_fps,
+                video_fps=round(info.fps, 2),
+                frame_period_ms=round(pacer.period_s * 1000, 1),
+            )
+        elif config.analysis_speed is not None:
+            # Le seul cas où un bridage relatif est demandé et refusé : une source
+            # qui ne dit pas sa cadence. `max_analysis_fps`, lui, ne dépend jamais
+            # de `fps` — s'il était seul demandé, `pacer` ne serait pas `None` ici.
+            # Le dire, plutôt que d'analyser à pleine vitesse en laissant croire au
+            # bridage — l'aperçu défilerait vite et le réglage paraîtrait sans effet.
+            logger.warning(
+                "bridage relatif impossible : la source ne déclare pas de cadence",
+                job_id=job_id,
+                video_fps=info.fps,
+            )
+
         started = perf_counter()
         processed = 0
         last_preview = started
@@ -209,7 +271,7 @@ class AnalysisService:
                 if is_cancelled is not None and is_cancelled():
                     raise AnalysisCancelled
 
-            outcome = session.feed(frame.frame_index, frame.timestamp_ms, frame.image, frame.tracks)
+            outcome = session.feed(frame.frame_index, frame.timestamp_ms, frame.tracks)
 
             if detector is not None and outcome.tracks:
                 # `processed` n'est incrémenté que plus bas : il vaut donc ici
@@ -276,6 +338,20 @@ class AnalysisService:
                     pending_crossings.clear()
                     pending_zone_events.clear()
 
+            if pacer is not None:
+                # **En fin de corps de boucle, délibérément.** L'annulation et la
+                # pause sont observées en tête de l'itération suivante : attendre
+                # ici les laisse donc toutes deux reprendre la main juste après
+                # l'attente, sans troisième point de contrôle à maintenir. Le coût
+                # est une attente inutile après la dernière image — au plus une
+                # période, sur une analyse qui dure la durée de la vidéo.
+                #
+                # Les pauses sont déduites du temps écoulé : une analyse suspendue
+                # ne doit pas reprendre en rafale pour rattraper son échéance.
+                wait = pacer.wait_s(perf_counter() - started - paused_s)
+                if wait > 0.0:
+                    sleep(wait)
+
         elapsed = perf_counter() - started - paused_s
         result.processing_fps = self._fps(processed, started, paused_s)
         result.vehicles = session.vehicles()
@@ -312,7 +388,7 @@ class AnalysisService:
             frames=processed,
             duration_s=round(elapsed, 2),
             processing_fps=round(result.processing_fps, 2),
-            unique_vehicles=result.stats.unique_vehicles,
+            tracked_vehicles=result.stats.tracked_vehicles,
             crossings=result.stats.crossings,
         )
         return result
