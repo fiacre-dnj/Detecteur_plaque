@@ -26,7 +26,7 @@ import type {
 } from "@/shared/api/contracts";
 import { CANVAS, TRAJECTORY_ALPHA, classColor } from "@/shared/config/palettes";
 import { directionName, directionRole } from "@/shared/lib/directions";
-import { midpoint, positiveNormal } from "@/shared/lib/geometry";
+import { compassArrow, midpoint, positiveNormal } from "@/shared/lib/geometry";
 import { bestReadPlate, plateLabel } from "@/shared/lib/plate";
 
 import type { LineFlash } from "./lineFlashes";
@@ -66,6 +66,16 @@ export interface DrawOptions {
    * valider une géométrie.
    */
   lineFlashes: ReadonlyMap<string, LineFlash>;
+  /**
+   * Estompe le nom de la ligne et les libellés de sens — jamais le trait, les
+   * poignées, les zones ni les pistes.
+   *
+   * Pensé pour l'analyse serveur en cours : la géométrie est déjà validée à cet
+   * instant, et c'est le train de boîtes et de compteurs qui mérite l'attention.
+   * Un sens qui **vient de compter** reste net malgré tout — c'est l'événement qui
+   * justifie de regarder l'écran, pas un défaut de l'estompage.
+   */
+  dimLabels: boolean;
 }
 
 /** Dessine la scène complète, dans l'ordre imposé. */
@@ -106,7 +116,7 @@ export function drawScene(
   // deux lignes parallèles proches posaient leurs libellés dans la même bande — celui
   // du dessous de l'une sur celui du dessus de l'autre. Une passe globale est le seul
   // endroit d'où l'on peut voir la collision pour l'écarter.
-  drawLineLabels(ctx, view, options.lines, options.lineFlashes);
+  drawLineLabels(ctx, view, options.lines, options.lineFlashes, options.dimLabels);
   if (options.draft.length > 0) {
     drawDraft(ctx, view, options.draft, options.cursor);
   }
@@ -253,8 +263,10 @@ function drawLineLabels(
   view: Viewport,
   lines: readonly CountingLine[],
   flashes: ReadonlyMap<string, LineFlash>,
+  dimmed: boolean,
 ): void {
   const wanted: LabelPlacement[] = [];
+  const restingOpacity = dimmed ? DIMMED_LABEL_OPACITY : 1;
 
   // Les noms d'abord : ils sont **fixes**, donc ce sont les sens qui leur cèdent la
   // place. L'inverse ferait errer le nom loin de sa ligne.
@@ -269,19 +281,20 @@ function drawLineLabels(
       escape: null,
       size: measureLabel(ctx, line.name),
       emphasis: 0,
+      opacity: restingOpacity,
     });
   }
 
   for (const line of lines) {
     const a = toCanvas(view, line.a);
     const b = toCanvas(view, line.b);
-    const positive = directionText(line, "positive");
-    const negative = directionText(line, "negative");
+    const normal = positiveNormal(a, b);
+    const positive = directionText(line, "positive", normal);
+    const negative = directionText(line, "negative", { x: -normal.x, y: -normal.y });
     const sizes = { positive: measureLabel(ctx, positive), negative: measureLabel(ctx, negative) };
     const anchors = directionLabelAnchors(a, b, sizes);
     if (anchors === null) continue;
 
-    const normal = positiveNormal(a, b);
     const flash = flashes.get(line.id) ?? null;
     // Le flash **met en valeur le libellé qui existe déjà** au lieu d'en ajouter un
     // quatrième : c'est le sens qui vient de compter, pas une information nouvelle.
@@ -296,6 +309,9 @@ function drawLineLabels(
       escape: normal,
       size: sizes.positive,
       emphasis: lit === "positive" ? (flash?.intensity ?? 0) : 0,
+      // Un sens qui vient de compter reste net même pendant l'analyse : c'est
+      // l'événement qui justifie de regarder l'écran à cet instant précis.
+      opacity: lit === "positive" ? 1 : restingOpacity,
     });
     wanted.push({
       key: `${line.id}:negative`,
@@ -305,6 +321,7 @@ function drawLineLabels(
       escape: { x: -normal.x, y: -normal.y },
       size: sizes.negative,
       emphasis: lit === "negative" ? (flash?.intensity ?? 0) : 0,
+      opacity: lit === "negative" ? 1 : restingOpacity,
     });
   }
 
@@ -313,13 +330,20 @@ function drawLineLabels(
   }
 }
 
-/** Le libellé d'un sens tel qu'il est peint : rôle marqué, longueur bornée. */
-function directionText(line: CountingLine, sign: DirectionSign): string {
+/**
+ * Le libellé d'un sens tel qu'il est peint : rôle marqué, longueur bornée.
+ *
+ * `normal` est le vecteur **de ce sens précis** — celui du sens positif pour l'un,
+ * son opposé pour l'autre — pas une paire de glyphes figés. Une ligne tracée en
+ * diagonale a une flèche en diagonale ; deux glyphes fixes (`→`/`←`) la rendaient
+ * fausse, pas inversée, ce qui se remarque moins.
+ */
+function directionText(line: CountingLine, sign: DirectionSign, normal: Point): string {
   const role = directionRole(line, sign);
   // Le rôle est marqué par un **préfixe textuel** et non par une couleur : la couleur
   // du canvas encode déjà l'appartenance à une ligne, et lui faire dire aussi un rôle
   // rendrait les deux illisibles (ADR 0004).
-  const prefix = role === "entry" ? "→ " : role === "exit" ? "← " : "";
+  const prefix = role === "entry" || role === "exit" ? `${compassArrow(normal)} ` : "";
   return `${prefix}${truncateDirection(directionName(line, sign))}`;
 }
 
@@ -362,14 +386,20 @@ export interface LabelSize {
 }
 
 /**
- * Où poser les deux libellés de sens : de part et d'autre du milieu du trait.
+ * Où poser les deux libellés de sens : de part et d'autre du **milieu** du trait.
+ *
+ * Un placement aux extrémités a été essayé (l'un près de A comme le nom, l'autre
+ * près de B) puis abandonné : à la relecture, le milieu se lit mieux — c'est là que
+ * l'œil regarde une ligne de comptage en premier. Les collisions avec le nom de la
+ * ligne restent gérées par `resolveLabelCollisions`, qui écarte les libellés de
+ * sens **le long de leur propre normal** plutôt que de changer d'ancre.
  *
  * **Le décalage dépend de la taille de l'étiquette et de l'angle du trait**, et c'est
- * tout le correctif. Un décalage fixe de 30 px marchait sur une ligne horizontale — où
- * les deux boîtes s'éloignent par leur petit côté, 16 px de haut — et **se
- * chevauchait** dès que la ligne penchait : sur une ligne verticale, le normal est
- * horizontal, donc deux boîtes de 110 px de large se croisaient allègrement à 60 px
- * d'écart.
+ * l'essentiel du correctif. Un décalage fixe de 30 px marchait sur une ligne
+ * horizontale — où les deux boîtes s'éloignent par leur petit côté, 16 px de haut —
+ * et **se chevauchait** dès que la ligne penchait : sur une ligne verticale, le
+ * normal est horizontal, donc deux boîtes de 110 px de large se croisaient
+ * allègrement à 60 px d'écart.
  *
  * L'encombrement d'une boîte alignée sur les axes, mesuré le long d'une direction `n`,
  * vaut `|n.x|·w/2 + |n.y|·h/2`. En l'ajoutant au dégagement, l'espace entre les deux
@@ -414,6 +444,16 @@ const LABEL_FONT = "600 12px Manrope, system-ui, sans-serif";
 const LABEL_HEIGHT = 16;
 const LABEL_PADDING = 4;
 
+/**
+ * Opacité du nom de ligne et des libellés de sens pendant l'analyse serveur.
+ *
+ * Assez bas pour se retirer visuellement au profit des boîtes et des compteurs,
+ * assez haut pour rester lisible d'un coup d'œil — la géométrie reste la
+ * référence si on veut vérifier qu'une ligne est bien à sa place pendant que ça
+ * tourne.
+ */
+const DIMMED_LABEL_OPACITY = 0.4;
+
 /** Encombrement d'une étiquette avant de la peindre — l'entrée du placement. */
 export function measureLabel(ctx: CanvasRenderingContext2D, text: string): LabelSize {
   ctx.save();
@@ -441,6 +481,8 @@ export interface LabelPlacement {
   size: LabelSize;
   /** 0 à 1 : contraste inversé pour marquer le sens qui vient de compter. */
   emphasis: number;
+  /** 0 à 1 : opacité globale de l'étiquette — estompée pendant l'analyse serveur. */
+  opacity: number;
 }
 
 /** Une étiquette placée, prête à peindre : coin supérieur gauche définitif. */
@@ -530,21 +572,25 @@ function collides(corner: Point, size: LabelSize, placed: readonly PlacedLabel[]
  * `emphasis` inverse progressivement le contraste : fond dans la couleur de la ligne,
  * encre sombre. C'est ce qui marque le sens **qui vient de compter**, sans introduire
  * ni teinte nouvelle ni quatrième étiquette.
+ *
+ * `opacity` s'applique **par-dessus** : c'est l'estompage pendant l'analyse serveur
+ * (`dimLabels`), qui n'a pas à savoir si l'étiquette est en train de flasher.
  */
 function drawLabelBox(ctx: CanvasRenderingContext2D, label: PlacedLabel): void {
-  const { x, y, size, color, emphasis } = label;
+  const { x, y, size, color, emphasis, opacity } = label;
 
   ctx.save();
   ctx.font = LABEL_FONT;
   ctx.textBaseline = "bottom";
+  ctx.globalAlpha = opacity;
 
   ctx.fillStyle = CANVAS.labelBackground;
   ctx.fillRect(x, y, size.width, size.height);
   if (emphasis > 0) {
-    ctx.globalAlpha = Math.min(1, emphasis);
+    ctx.globalAlpha = opacity * Math.min(1, emphasis);
     ctx.fillStyle = color;
     ctx.fillRect(x, y, size.width, size.height);
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = opacity;
   }
   // Le filet de couleur sur le bord gauche : c'est lui qui rattache l'étiquette à sa
   // ligne quand plusieurs se côtoient — et il devient indispensable dès qu'une

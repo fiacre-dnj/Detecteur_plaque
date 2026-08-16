@@ -192,16 +192,17 @@ describe("nommage des sens", () => {
     return geometryReducer(EMPTY_GEOMETRY, { type: "addLine", width: WIDTH, height: HEIGHT });
   }
 
-  it("crée une ligne avec des noms de sens **vides**", () => {
+  it("crée une ligne avec des noms de sens **vides** et un rôle déjà tranché", () => {
     // La chaîne vide n'est pas un oubli : c'est le signal que l'interface pose son
     // défaut géométrique, recalculé quand la ligne pivote. Y écrire un libellé le
-    // figerait à l'orientation de la création.
+    // figerait à l'orientation de la création. Le rôle, lui, est déjà entrée/sortie
+    // — obligatoire depuis que le panneau ne propose plus « ni l'un ni l'autre ».
     const line = withLine().lines[0];
 
     expect(line?.positiveName).toBe("");
     expect(line?.negativeName).toBe("");
-    expect(line?.positiveRole).toBe("neutral");
-    expect(line?.negativeRole).toBe("neutral");
+    expect(line?.positiveRole).toBe("entry");
+    expect(line?.negativeRole).toBe("exit");
   });
 
   it("renomme un sens sans toucher à l'autre", () => {
@@ -219,7 +220,7 @@ describe("nommage des sens", () => {
     expect(renamed.lines[0]?.negativeName).toBe("");
   });
 
-  it("pose un rôle sans toucher à l'autre sens", () => {
+  it("pose un rôle sans changer inutilement l'autre sens déjà complémentaire", () => {
     const state = withLine();
     const id = state.lines[0]?.id ?? "";
 
@@ -231,7 +232,41 @@ describe("nommage des sens", () => {
     });
 
     expect(roled.lines[0]?.negativeRole).toBe("exit");
-    expect(roled.lines[0]?.positiveRole).toBe("neutral");
+    expect(roled.lines[0]?.positiveRole).toBe("entry");
+  });
+
+  it("**bascule automatiquement l'autre sens à l'opposé**, depuis ADR 0021", () => {
+    // Le cas qui justifie le changement : une ligne dont les deux sens disaient
+    // « entrée » ne devrait jamais exister — poser l'un des deux tranche l'autre.
+    const state = withLine();
+    const id = state.lines[0]?.id ?? "";
+
+    const bothEntry = geometryReducer(state, {
+      type: "setDirectionRole",
+      id,
+      sign: "negative",
+      role: "entry",
+    });
+
+    expect(bothEntry.lines[0]?.negativeRole).toBe("entry");
+    expect(bothEntry.lines[0]?.positiveRole).toBe("exit");
+  });
+
+  it("ne bascule rien pour un rôle neutre", () => {
+    // `neutral` n'est plus atteignable depuis le panneau, mais l'action reste
+    // générale : elle ne doit pas prêter un opposé à un rôle qui n'en a pas.
+    const state = withLine();
+    const id = state.lines[0]?.id ?? "";
+
+    const neutral = geometryReducer(state, {
+      type: "setDirectionRole",
+      id,
+      sign: "negative",
+      role: "neutral",
+    });
+
+    expect(neutral.lines[0]?.negativeRole).toBe("neutral");
+    expect(neutral.lines[0]?.positiveRole).toBe("entry");
   });
 
   it("ne touche pas aux autres lignes", () => {

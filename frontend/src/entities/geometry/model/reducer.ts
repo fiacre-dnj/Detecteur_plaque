@@ -60,13 +60,17 @@ export function defaultLine(width: number, height: number, index: number): Count
     zoneId: null,
     a: { x: width * 0.08, y },
     b: { x: width * 0.92, y },
-    // **Vides à dessein.** L'interface pose son défaut géométrique à l'affichage
-    // (`defaultDirectionNames`), recalculé quand la ligne pivote. Écrire un libellé
-    // ici le figerait à l'orientation de la création.
+    // Le nom libre n'est plus qu'un vestige de compatibilité (voir
+    // `withDirectionDefaults`) : le panneau de géométrie ne l'écrit plus jamais.
     positiveName: "",
     negativeName: "",
-    positiveRole: "neutral",
-    negativeRole: "neutral",
+    // Le rôle est **obligatoire** depuis que le panneau ne propose plus « ni
+    // entrée ni sortie ». Une paire par défaut plutôt qu'un état non tranché : une
+    // ligne fraîchement tracée a déjà un bilan entrée/sortie exploitable sans que
+    // l'utilisateur touche à rien, et il reste libre d'inverser ou de changer les
+    // deux côtés à sa guise.
+    positiveRole: "entry",
+    negativeRole: "exit",
   };
 }
 
@@ -78,6 +82,12 @@ export function defaultLine(width: number, height: number, index: number): Count
  * type promet un `DirectionRole`, et les agrégations d'entrées/sorties compareraient
  * silencieusement contre rien — un total qui reste à zéro sans qu'aucune erreur ne
  * l'explique.
+ *
+ * Le repli reste `neutral`, **délibérément différent** de `defaultLine` : deviner
+ * entrée ou sortie pour une ligne tracée avant que le choix soit obligatoire
+ * fausserait un bilan que personne n'a demandé. Le panneau de géométrie affiche
+ * alors un repère « à préciser » qui force un choix explicite au premier contact,
+ * plutôt qu'un bilan silencieusement faux.
  */
 export function withDirectionDefaults(line: CountingLine): CountingLine {
   return {
@@ -166,15 +176,32 @@ export function geometryReducer(state: GeometryState, action: GeometryAction): G
         ),
       };
 
-    case "setDirectionRole":
+    case "setDirectionRole": {
+      // Entrée et sortie sont **mutuellement exclusives** depuis ADR 0021 : une
+      // ligne à deux sens ne peut pas dire l'entrée des deux côtés à la fois.
+      // Poser un sens tranche donc l'autre automatiquement, plutôt que de laisser
+      // l'utilisateur corriger à la main un second menu que le premier choix
+      // rendait déjà évident.
+      //
+      // `neutral` ne bascule rien : ce rôle n'est plus atteignable depuis le
+      // panneau (il ne survit que sur une ligne héritée), et il n'a pas
+      // d'opposé à imposer.
+      const opposite = action.role === "entry" ? "exit" : action.role === "exit" ? "entry" : null;
       return {
         ...state,
-        lines: state.lines.map((line) =>
-          line.id === action.id
-            ? { ...line, [`${action.sign}Role`]: action.role }
-            : line,
-        ),
+        lines: state.lines.map((line) => {
+          if (line.id !== action.id) return line;
+          const chosen: CountingLine =
+            action.sign === "positive"
+              ? { ...line, positiveRole: action.role }
+              : { ...line, negativeRole: action.role };
+          if (opposite === null) return chosen;
+          return action.sign === "positive"
+            ? { ...chosen, negativeRole: opposite }
+            : { ...chosen, positiveRole: opposite };
+        }),
       };
+    }
 
     case "setLineZone":
       return {

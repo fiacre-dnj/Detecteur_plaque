@@ -99,14 +99,29 @@ describe("defaultDirectionNames — le libellé géométrique", () => {
   });
 });
 
-describe("directionName — le nom de l'utilisateur, ou le défaut", () => {
-  it("préfère le nom saisi", () => {
+describe("directionName — le rôle d'abord, un repli pour les lignes héritées", () => {
+  it("le rôle **est** le libellé, depuis ADR 0021", () => {
+    const roled = line({ positiveRole: "entry", negativeRole: "exit" });
+
+    expect(directionName(roled, "positive")).toBe("Entrée");
+    expect(directionName(roled, "negative")).toBe("Sortie");
+  });
+
+  it("le rôle l'emporte même sur un nom saisi", () => {
+    // Le panneau de géométrie n'écrit plus les deux à la fois, mais une ligne
+    // héritée peut encore porter les deux — le rôle gagne toujours.
+    const both = line({ positiveRole: "entry", positiveName: "Vieux libellé" });
+
+    expect(directionName(both, "positive")).toBe("Entrée");
+  });
+
+  it("retombe sur le nom saisi quand le rôle est neutre (ligne héritée)", () => {
     const named = line({ positiveName: "Entrée rue Foch" });
 
     expect(directionName(named, "positive")).toBe("Entrée rue Foch");
   });
 
-  it("retombe sur le défaut géométrique quand le champ est vide", () => {
+  it("retombe sur le défaut géométrique quand rôle et nom sont vides", () => {
     expect(directionName(line(), "positive")).toBe("Vers le bas");
     expect(directionName(line(), "negative")).toBe("Vers le haut");
   });

@@ -18,6 +18,7 @@ import type { Point } from "@/shared/api/contracts";
 import {
   boxCentroid,
   clampToSource,
+  compassArrow,
   distance,
   distanceToSegment,
   midpoint,
@@ -185,5 +186,37 @@ describe("utilitaires de dessin", () => {
   it("clampToSource borne à l'image et n'invente jamais de coordonnée hors cadre", () => {
     expect(clampToSource({ x: -50, y: 5000 }, 1920, 1080)).toEqual({ x: 0, y: 1080 });
     expect(clampToSource({ x: 960, y: 540 }, 1920, 1080)).toEqual({ x: 960, y: 540 });
+  });
+});
+
+describe("compassArrow — la flèche suit le tracé, pas un axe figé", () => {
+  it("rend les quatre flèches cardinales", () => {
+    expect(compassArrow({ x: 1, y: 0 })).toBe("→");
+    // `y` croît vers le bas dans le repère du canvas et de la vidéo.
+    expect(compassArrow({ x: 0, y: 1 })).toBe("↓");
+    expect(compassArrow({ x: -1, y: 0 })).toBe("←");
+    expect(compassArrow({ x: 0, y: -1 })).toBe("↑");
+  });
+
+  it("rend les quatre diagonales", () => {
+    expect(compassArrow({ x: 1, y: 1 })).toBe("↘");
+    expect(compassArrow({ x: -1, y: 1 })).toBe("↙");
+    expect(compassArrow({ x: -1, y: -1 })).toBe("↖");
+    expect(compassArrow({ x: 1, y: -1 })).toBe("↗");
+  });
+
+  it("arrondit au huitième de tour le plus proche", () => {
+    // 40° : plus près de 45° (↘) que de 0° (→).
+    const radians = (40 * Math.PI) / 180;
+    expect(compassArrow({ x: Math.cos(radians), y: Math.sin(radians) })).toBe("↘");
+  });
+
+  it("ignore la longueur du vecteur, seul l'angle compte", () => {
+    expect(compassArrow({ x: 500, y: 0 })).toBe(compassArrow({ x: 1, y: 0 }));
+  });
+
+  it("rend un glyphe neutre pour un vecteur nul", () => {
+    // Un segment de longueur nulle n'a pas de direction — pas de flèche fausse.
+    expect(compassArrow({ x: 0, y: 0 })).toBe("•");
   });
 });

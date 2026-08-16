@@ -707,6 +707,10 @@ export function StudioPage() {
                     : NO_TRAILS
                 }
                 lineFlashes={lineFlashes}
+                // Estompe le nom de ligne et les libellés de sens pendant l'analyse
+                // serveur, différée ou en direct : la géométrie est déjà validée à
+                // ce stade, c'est le train de boîtes et de compteurs qui compte.
+                analysing={busy}
                 selectedId={selectedId}
                 drawingZone={geometry.drawingZone}
                 showTrails={settings.showTrails}
@@ -874,9 +878,6 @@ export function StudioPage() {
             onSelect={(selection) => dispatch({ type: "select", selection })}
             onRenameLine={(id, name) => dispatch({ type: "renameLine", id, name })}
             onRenameZone={(id, name) => dispatch({ type: "renameZone", id, name })}
-            onRenameDirection={(id, sign, name) =>
-              dispatch({ type: "renameDirection", id, sign, name })
-            }
             onSetDirectionRole={(id, sign, role) =>
               dispatch({ type: "setDirectionRole", id, sign, role })
             }

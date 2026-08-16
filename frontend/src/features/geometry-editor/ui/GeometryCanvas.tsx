@@ -48,6 +48,15 @@ export interface GeometryCanvasProps {
   minHits: number;
   /** Lignes qui viennent de compter. Omis hors comptage. */
   lineFlashes?: ReadonlyMap<string, LineFlash>;
+  /**
+   * Une analyse serveur est en cours — différée ou en direct.
+   *
+   * Estompe le nom de la ligne et les libellés de sens (`drawScene`), jamais le
+   * reste : la géométrie est déjà validée à ce stade, c'est le train de boîtes et
+   * de compteurs qui mérite l'attention. Un sens qui vient de compter reste net
+   * malgré tout — voir `dimLabels` dans `draw.ts`.
+   */
+  analysing?: boolean;
   onSelect: (selection: { kind: "line" | "zone"; id: string } | null) => void;
   onMoveLine: (id: string, a: Point, b: Point) => void;
   onMoveZone: (id: string, points: Point[]) => void;
@@ -144,6 +153,7 @@ export function GeometryCanvas(props: GeometryCanvasProps) {
       maskOutsideZones: props.maskOutsideZones,
       minHits: props.minHits,
       lineFlashes: props.lineFlashes ?? NO_FLASHES,
+      dimLabels: props.analysing ?? false,
     });
   }, [
     sourceWidth,
@@ -160,6 +170,7 @@ export function GeometryCanvas(props: GeometryCanvasProps) {
     // s'éteindrait jamais : la boucle d'animation change la table, pas les
     // lignes, et le canvas ne redessinerait donc pas.
     props.lineFlashes,
+    props.analysing,
   ]);
 
   // Redessine à chaque changement de données **et** de brouillon.
