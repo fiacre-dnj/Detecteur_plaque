@@ -21,9 +21,10 @@
  * à compter une seconde fois, et les compteurs doubleraient sans explication.
  */
 
-import { useEffect, useRef } from "react";
+import { UploadCloud } from "lucide-react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
-import type { MediaSource } from "../model/useMediaSource";
+import { ACCEPT_ATTRIBUTE, hasAcceptedExtension, type MediaSource } from "../model/useMediaSource";
 
 interface VideoSceneProps {
   source: MediaSource | null;
@@ -33,9 +34,25 @@ interface VideoSceneProps {
   children?: React.ReactNode;
   /** Reçoit l'élément, pour que le transport s'y branche. */
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  /**
+   * Reçoit le fichier choisi dans l'invite d'import — la même scène, cliquée, sert
+   * de zone d'import quand elle n'a encore rien à montrer.
+   *
+   * Optionnel : les tests et un futur consommateur qui n'a pas d'import à offrir
+   * s'en passent, et retrouvent le texte d'invite d'avant.
+   */
+  onFile?: (file: File) => void;
+  disabled?: boolean;
 }
 
-export function VideoScene({ source, onMetadata, children, videoRef }: VideoSceneProps) {
+export function VideoScene({
+  source,
+  onMetadata,
+  children,
+  videoRef,
+  onFile,
+  disabled = false,
+}: VideoSceneProps) {
   /** `onMetadata` dans un `ref` : sinon changer la callback réabonne l'écouteur. */
   const metadataCallback = useRef(onMetadata);
   metadataCallback.current = onMetadata;
@@ -113,13 +130,102 @@ export function VideoScene({ source, onMetadata, children, videoRef }: VideoScen
         className="size-full object-contain"
       />
       {source === null ? (
-        <p className="absolute inset-0 grid place-items-center p-6 text-center text-caption text-ink-dim">
-          Choisissez une source pour afficher la scène et tracer vos lignes de
-          comptage.
-        </p>
+        onFile === undefined ? (
+          <p className="absolute inset-0 grid place-items-center p-6 text-center text-caption text-ink-dim">
+            Choisissez une source pour afficher la scène et tracer vos lignes de
+            comptage.
+          </p>
+        ) : (
+          <VideoImportPrompt onFile={onFile} disabled={disabled} />
+        )
       ) : (
         children
       )}
     </section>
+  );
+}
+
+/**
+ * L'invite d'import, posée **sur la scène elle-même** plutôt qu'au-dessus d'elle.
+ *
+ * Avant, la plus grande surface de l'écran affichait une phrase inerte et
+ * renvoyait vers un bouton minuscule dans la barre — glisser-déposer fonctionnait
+ * déjà sur toute la scène (`DropZone`), mais rien n'indiquait qu'on pouvait aussi
+ * **cliquer** ici. C'est donc la même invite qui porte les deux gestes : un
+ * `<label>` plein cadre, cliquable comme n'importe quel bouton d'import, et
+ * survolé par le halo de `DropZone` pendant un glisser.
+ */
+function VideoImportPrompt({
+  onFile,
+  disabled,
+}: {
+  onFile: (file: File) => void;
+  disabled: boolean;
+}) {
+  const inputId = useId();
+  const [rejected, setRejected] = useState<string | null>(null);
+
+  const accept = useCallback(
+    (file: File | undefined) => {
+      if (file === undefined) return;
+      if (!hasAcceptedExtension(file.name)) {
+        setRejected(`« ${file.name} » n'est pas une vidéo reconnue (${ACCEPT_ATTRIBUTE}).`);
+        return;
+      }
+      setRejected(null);
+      onFile(file);
+    },
+    [onFile],
+  );
+
+  return (
+    <div className="absolute inset-0 grid place-items-center p-6">
+      <div className="flex flex-col items-center gap-3">
+        <label
+          htmlFor={inputId}
+          className={[
+            "group flex flex-col items-center gap-3 rounded-panel border-2 border-dashed",
+            "border-line-muted px-12 py-10 text-center transition-colors",
+            disabled
+              ? "pointer-events-none opacity-45"
+              : "cursor-pointer hover:border-accent-line hover:bg-elevated/40",
+          ].join(" ")}
+        >
+          <span
+            className={[
+              "grid size-14 place-items-center rounded-pill bg-elevated text-ink-dim",
+              "transition-colors group-hover:bg-accent/15 group-hover:text-accent",
+            ].join(" ")}
+          >
+            <UploadCloud aria-hidden="true" className="size-6" />
+          </span>
+          <span className="flex flex-col gap-1">
+            <span className="label-caps text-ink">Importer une vidéo</span>
+            <span className="text-small text-ink-dim">
+              Glissez-déposez un fichier ici, ou cliquez pour parcourir
+            </span>
+          </span>
+        </label>
+        <input
+          id={inputId}
+          type="file"
+          accept={ACCEPT_ATTRIBUTE}
+          disabled={disabled}
+          className="sr-only"
+          onChange={(event) => {
+            accept(event.target.files?.[0]);
+            // Réinitialisé pour que **rechoisir le même fichier** émette un
+            // nouveau `change` : sans cela, une deuxième tentative après un refus
+            // ne fait rien.
+            event.target.value = "";
+          }}
+        />
+        {rejected !== null && (
+          <p role="alert" className="text-small text-negative">
+            {rejected}
+          </p>
+        )}
+      </div>
+    </div>
   );
 }

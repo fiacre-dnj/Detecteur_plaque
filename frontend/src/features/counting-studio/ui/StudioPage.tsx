@@ -59,7 +59,13 @@ import {
   type AnalysisSettings,
 } from "@/features/analysis-settings";
 import { GeometryCanvas, GeometryPanel, useLineFlashes } from "@/features/geometry-editor";
-import { DropZone, SourcePicker, VideoScene, useMediaSource } from "@/features/media-source";
+import {
+  DropZone,
+  SourceLabel,
+  SourcePicker,
+  VideoScene,
+  useMediaSource,
+} from "@/features/media-source";
 import {
   RealtimePanel,
   scaledSize,
@@ -150,14 +156,6 @@ export function StudioPage() {
   const [detailTab, setDetailTab] = useState("repartition");
   const [ended, setEnded] = useState(false);
   const [presetsOpen, setPresetsOpen] = useState(false);
-  /**
-   * La vidéo suit-elle l'analyse ?
-   *
-   * Activé par défaut : c'est la raison d'être de l'aperçu — voir le modèle
-   * travailler sur l'image qu'il analyse. Désactivable parce qu'on veut parfois
-   * s'arrêter sur une image pour la regarder pendant que l'analyse continue.
-   */
-  const [follow, setFollow] = useState(true);
 
   /**
    * Les réglages, relus du stockage **une seule fois** à l'initialisation.
@@ -531,11 +529,7 @@ export function StudioPage() {
    * fichier que celui envoyé, donc le temps de scène désigne exactement la même
    * image des deux côtés. Une caméra n'a pas de temps de scène commun.
    */
-  useFollowAnalysis(
-    video.current,
-    preview?.timestampMs ?? null,
-    follow && media.source?.file !== undefined,
-  );
+  useFollowAnalysis(video.current, preview?.timestampMs ?? null, media.source?.file !== undefined);
 
   /**
    * Les pistes à dessiner : le direct s'il tourne, sinon l'aperçu de l'analyse en
@@ -642,6 +636,11 @@ export function StudioPage() {
             onFile={handleFile}
           />
         }
+        // Tout à droite de la barre (`ms-auto` dans `SettingsPanels`) : une fois
+        // la vidéo choisie, c'est un repère qu'on consulte, pas un bouton qu'on
+        // reclique — il cède donc la place qui suit le bouton d'import aux trois
+        // tiroirs de réglages, qu'on ouvre bien plus souvent.
+        trailing={media.source !== null ? <SourceLabel label={media.source.label} /> : null}
         settings={settings}
         models={catalogue?.models ?? []}
         detectableClasses={detectableClasses ?? []}
@@ -655,6 +654,9 @@ export function StudioPage() {
         // résultat.
         diagnostics={liveStats?.diagnostics ?? session.result?.stats.diagnostics ?? null}
         disabled={busy}
+        // Régler la détection, le comptage ou l'affichage n'a rien à quoi
+        // s'appliquer sans source : les trois tiroirs restent grisés jusque-là.
+        hasSource={media.source !== null}
         onChange={updateSettings}
       />
 
@@ -689,7 +691,13 @@ export function StudioPage() {
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_24rem]">
         <div className="space-y-3">
           <DropZone disabled={busy} onFile={handleFile}>
-          <VideoScene source={media.source} onMetadata={handleMetadata} videoRef={video}>
+          <VideoScene
+            source={media.source}
+            onMetadata={handleMetadata}
+            videoRef={video}
+            onFile={handleFile}
+            disabled={busy}
+          >
             {scene !== null && (
               <GeometryCanvas
                 sourceWidth={scene.width}
@@ -758,35 +766,22 @@ export function StudioPage() {
                     → {sendSize.width}×{sendSize.height}
                   </p>
                 )}
-                {/* L'image analysée, pendant l'analyse. Un décalage entre la vidéo
-                    et l'overlay s'explique alors d'un coup d'œil, au lieu de se
-                    lire comme un défaut de détection. */}
-                {preview !== null && (
-                  <p className="rounded-badge bg-base/80 px-2 py-1 text-micro text-ink-muted tabular">
-                    Image {preview.frameIndex}
-                  </p>
-                )}
-                {liveStats !== null && (
-                  <p className="rounded-badge bg-base/80 px-2 py-1 text-micro text-ink-muted tabular">
-                    Véhicules : {liveStats.trackedVehicles}
-                  </p>
-                )}
               </div>
             )}
           </VideoScene>
           </DropZone>
 
-          {/* `busy && follow` et non `busy` seul : le gel de la vidéo est **voulu**
-              — `useFollowAnalysis` la cale sur l'image analysée — mais il n'est
-              subi que tant que le suivi est coché. Décocher rend donc la main,
-              conformément à la règle « désactivé ⇒ aucune écriture » du hook.
-              Griser inconditionnellement laissait l'utilisateur devant une vidéo
-              figée et des boutons morts, sans un mot d'explication. */}
+          {/* La vidéo se cale **toujours** sur l'image analysée pendant l'analyse
+              (`useFollowAnalysis`) : plus de case à décocher pour reprendre la
+              main, le gel est inconditionnel tant que ça tourne. Griser
+              inconditionnellement laissait l'utilisateur devant une vidéo figée
+              et des boutons morts, sans un mot d'explication — d'où le message
+              juste en dessous. */}
           {media.source !== null && (
             <TransportBar
               videoRef={video}
               seekable={!isCamera}
-              disabled={busy && follow}
+              disabled={busy}
               onEnded={handleEnded}
             />
           )}
@@ -795,10 +790,9 @@ export function StudioPage() {
               phrase, « la vidéo ne bouge plus et les boutons sont gris » se lit
               comme un plantage — c'est la lecture qui a produit le rapport
               « j'augmente la vitesse avant d'analyser et l'écran se fige ». */}
-          {analysing && follow && media.source?.file !== undefined && (
+          {analysing && media.source?.file !== undefined && (
             <p role="status" className="text-caption text-ink-muted">
-              Lecture suspendue : la vidéo se cale sur l'image analysée. Décochez
-              « Suivre l'analyse » pour reprendre la main.
+              Lecture suspendue : la vidéo se cale sur l'image analysée.
             </p>
           )}
 
@@ -824,19 +818,6 @@ export function StudioPage() {
               eux, restent justes — seul le dessin est suspendu.
             </p>
           )}
-
-          {analysing && media.source?.file !== undefined && (
-            <label className="flex items-center gap-2 text-small text-ink-muted">
-              <input
-                type="checkbox"
-                checked={follow}
-                onChange={(event) => setFollow(event.target.checked)}
-                className="size-4 accent-accent"
-              />
-              Suivre l'analyse — la vidéo se cale sur l'image analysée
-            </label>
-          )}
-
 
           {stale && <StaleResultBanner onRelaunch={launch} canRelaunch={canAnalyse} />}
 
@@ -1056,7 +1037,10 @@ export function StudioPage() {
         </>
       )}
 
-      {resultStats === null && (
+      {/* `media.source !== null` en plus de `resultStats === null` : sans vidéo,
+          il n'y a même pas de tracé possible, et ce squelette qui promet des
+          chiffres n'a pas sa place sur un écran d'arrivée vide. */}
+      {resultStats === null && media.source !== null && (
         <section aria-labelledby="results-title">
           <h2 id="results-title" className="label-micro mb-3">
             Résultats
@@ -1064,16 +1048,18 @@ export function StudioPage() {
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {/* Les mêmes libellés **et le même ordre** que le tableau de bord réel :
                 un écran vide qui promet des chiffres qu'on ne verra jamais est pire
-                que pas d'écran vide du tout. Les quatre cartes de tête du tableau
-                réel, donc le comptage global en premier. */}
+                que pas d'écran vide du tout. Les deux cartes de tête du tableau
+                réel, donc le bilan du carrefour en premier. */}
             <MetricCard
-              label="Véhicules détectés"
+              label="Entrées au carrefour"
               value="—"
-              hint="Un objet suivi = un véhicule, ligne franchie ou non"
+              hint="Total des passages sur les sens marqués « entrée », toutes lignes"
             />
-            <MetricCard label="Franchissements" value="—" hint="Passages observés, tous sens" />
-            <MetricCard label="Passages de véhicules" value="—" hint="Voitures, motos, bus, camions" />
-            <MetricCard label="Passages de personnes" value="—" hint="Comptées à part" />
+            <MetricCard
+              label="Objets suivis"
+              value="—"
+              hint="Pistes vivantes à cet instant"
+            />
           </div>
         </section>
       )}

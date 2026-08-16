@@ -2,8 +2,8 @@
  * Le tableau de résultats : cartes, synthèse, répartition, détail par sens.
  *
  * Un principe traverse tous ces affichages : **chaque chiffre dit d'où il vient**.
- * « Cadence (serveur) » et non « Cadence », « véhicules détectés » et non
- * « véhicules », le nom du sens plutôt qu'une flèche. Sans ces précisions, deux
+ * « Cadence (serveur) » et non « Cadence », « Entrées au carrefour » et non
+ * « Entrées », le nom du sens plutôt qu'une flèche. Sans ces précisions, deux
  * chiffres voisins qui ne mesurent pas la même chose se confondent, et l'utilisateur
  * tire une conclusion fausse sans jamais s'en douter.
  *
@@ -29,14 +29,9 @@ import {
 import {
   VEHICLE_CLASSES,
   classLabel,
-  crossingRate,
-  formatCrossingRate,
   formatFrameLatency,
   formatSceneTime,
 } from "../model/labels";
-
-/** En dessous de trois secondes de scène, un débit extrapolé n'est pas publiable. */
-const RATE_MIN_ELAPSED_MS = 3_000;
 
 interface ResultsDashboardProps {
   stats: AnalysisStats;
@@ -86,9 +81,7 @@ export function ResultsDashboard({
   cardsOnly = false,
   children,
 }: ResultsDashboardProps) {
-  const rateAvailable = stats.analysedSceneMs >= RATE_MIN_ELAPSED_MS;
   const flow = flowBalance(stats, lines);
-  const notCrossed = Math.max(0, stats.trackedVehicles - stats.crossedUnique);
 
   return (
     <div className="space-y-6">
@@ -103,82 +96,21 @@ export function ResultsDashboard({
               : "grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
           }
         >
-          {/* **La carte de tête est le comptage global**, et c'est un changement de
-              hiérarchie voulu : la question « combien de véhicules passent à ce
-              carrefour » se lit d'abord, et elle ne dépend d'aucun tracé. */}
-          <MetricCard
-            label="Véhicules détectés"
-            value={stats.trackedVehicles.toString()}
-            hint="Un objet suivi = un véhicule, ligne franchie ou non"
-          />
-          <MetricCard
-            label="Franchissements"
-            value={stats.crossings.toString()}
-            // Ce que le chiffre compte **vraiment** : des passages. Un aller-retour
-            // en vaut deux, et deux lignes en travers de la même voie en valent deux.
-            // Le dire ici évite qu'on le découvre en comparant deux tableaux.
-            hint="Passages observés, tous sens — un aller-retour compte 2"
-          />
-          {/* Les deux catégories, jamais leur somme : un piéton n'est pas un
-              véhicule de plus. Leur somme **est** « Franchissements », que le
-              serveur garantit égale. */}
-          <MetricCard
-            label="Passages de véhicules"
-            value={(stats.byCategory.vehicle ?? 0).toString()}
-            hint="Voitures, motos, bus, camions, vélos"
-          />
-          <MetricCard
-            label="Passages de personnes"
-            value={(stats.byCategory.person ?? 0).toString()}
-            hint="Comptées à part des véhicules"
-          />
           {/* « — » et non « 0 » quand aucun rôle n'est déclaré : deux zéros se
-              liraient comme « personne n'entre ni ne sort », alors que la vérité est
-              « personne ne l'a encore dit ». */}
+              liraient comme « personne n'entre », alors que la vérité est
+              « personne ne l'a encore dit » — le seul cas restant est l'absence de
+              toute ligne, le rôle étant obligatoire depuis ADR 0021. */}
           <MetricCard
-            label="Entrées"
+            label="Entrées au carrefour"
             value={flow.declared ? flow.entries.toString() : "—"}
+            // Somme des passages sur tous les sens marqués « entrée », toutes lignes
+            // confondues : c'est le nombre de véhicules qui rentrent dans le
+            // carrefour, pas seulement sur une ligne prise isolément.
             hint={
               flow.declared
-                ? "Sens marqués « entrée »"
-                : "Marquez un sens « entrée » dans Géométrie"
+                ? "Total des passages sur les sens marqués « entrée », toutes lignes"
+                : "Ajoutez une ligne dans Géométrie pour obtenir ce chiffre"
             }
-          />
-          <MetricCard
-            label="Sorties"
-            value={flow.declared ? flow.exits.toString() : "—"}
-            hint={flow.declared ? "Sens marqués « sortie »" : "Idem, côté sortie"}
-          />
-          <MetricCard
-            label="Solde"
-            value={flow.declared ? signed(flow.net) : "—"}
-            hint={flow.declared ? balanceHint(flow.net) : "Entrées moins sorties"}
-          />
-          <MetricCard
-            label="Débit estimé"
-            value={rateAvailable ? `${stats.vehiclesPerMinute}` : "—"}
-            hint={
-              rateAvailable ? "Passages par minute" : "Disponible après 3 s de flux analysé"
-            }
-          />
-          <MetricCard
-            label="Taux de franchissement"
-            value={formatCrossingRate(crossingRate(stats.trackedVehicles, stats.crossedUnique))}
-            // Ce que ni « détectés » ni « passages » ne disent seuls : la ligne
-            // est-elle posée là où le trafic passe ?
-            //
-            // `crossedUnique` et non `crossings` : les passages sont une autre unité
-            // que les véhicules, et les diviser l'un par l'autre faisait dépasser
-            // 100 % dès le premier aller-retour.
-            hint={`${stats.crossedUnique} sur ${stats.trackedVehicles} véhicules vus`}
-          />
-          <MetricCard
-            label="Sans franchissement"
-            value={notCrossed.toString()}
-            // Le complément du taux, rendu explicite parce qu'il est actionnable :
-            // un chiffre élevé dit « la ligne est mal posée » ou « beaucoup de
-            // véhicules stationnés dans le champ », pas « la détection est mauvaise ».
-            hint="Véhicules vus qui n'ont franchi aucune ligne"
           />
           <MetricCard
             label="Objets suivis"
@@ -200,11 +132,14 @@ export function ResultsDashboard({
             // pas par image.
             hint="Temps de traitement par image"
           />
+          <MetricCard
+            label="Flux analysé"
+            value={formatSceneTime(stats.analysedSceneMs)}
+            // Temps de **scène**, pas temps mural : c'est la durée de vidéo déjà
+            // traitée, pas le temps que le serveur a mis pour la traiter.
+            hint="Durée de vidéo déjà traitée par le serveur"
+          />
         </div>
-        <p className="mt-2 text-small text-ink-dim">
-          {formatSceneTime(stats.analysedSceneMs)} de flux analysé
-          {!rateAvailable && " — débit disponible après 3 s de flux"}
-        </p>
       </section>
 
       {cardsOnly ? null : (
@@ -216,17 +151,6 @@ export function ResultsDashboard({
       )}
     </div>
   );
-}
-
-/** Un entier signé — le « + » est porteur : il dit dans quel sens le solde penche. */
-function signed(value: number): string {
-  return value > 0 ? `+${value}` : value.toString();
-}
-
-function balanceHint(net: number): string {
-  if (net > 0) return "Plus d'entrées que de sorties";
-  if (net < 0) return "Plus de sorties que d'entrées";
-  return "Entrées et sorties à l'équilibre";
 }
 
 /**

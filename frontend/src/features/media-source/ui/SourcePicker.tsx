@@ -87,22 +87,33 @@ export function SourcePicker({ activeLabel, disabled, onFile }: SourcePickerProp
         }}
       />
 
-      {activeLabel !== null && (
-        <span
-          className="inline-flex min-w-0 items-center gap-1.5 text-small text-ink-muted"
-          title={activeLabel}
-        >
-          <FileVideo aria-hidden="true" className="size-4 shrink-0 text-ink-dim" />
-          <span className="max-w-48 truncate">{activeLabel}</span>
-        </span>
-      )}
-
       {rejected !== null && (
         <p role="alert" className="w-full text-small text-negative">
           {rejected}
         </p>
       )}
     </>
+  );
+}
+
+/**
+ * Le nom du fichier actif, à part du bouton d'import.
+ *
+ * Posé **tout à droite** de la barre du studio (`SettingsPanels.trailing`) plutôt
+ * qu'à côté du bouton : une fois la vidéo choisie, l'import redevient un geste
+ * occasionnel — « Changer de vidéo » — alors que les trois tiroirs de réglages
+ * sont ce qu'on ouvre le plus souvent juste après, et méritaient la place qui
+ * suit immédiatement le bouton.
+ */
+export function SourceLabel({ label }: { label: string }) {
+  return (
+    <span
+      className="inline-flex min-w-0 items-center gap-1.5 text-small text-ink-muted"
+      title={label}
+    >
+      <FileVideo aria-hidden="true" className="size-4 shrink-0 text-ink-dim" />
+      <span className="max-w-48 truncate">{label}</span>
+    </span>
   );
 }
 

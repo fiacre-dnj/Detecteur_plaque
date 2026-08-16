@@ -125,10 +125,12 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   // surprend plutôt qu'un choix. `1` fait durer l'analyse la durée de la vidéo ;
   // « Illimitée » reste un choix explicite pour qui veut ses chiffres au plus vite.
   analysisSpeed: 1,
-  // Aucun plafond absolu par défaut : la vitesse de lecture normale est déjà
-  // assurée par `analysisSpeed`. Ce réglage est un choix supplémentaire, pas un
-  // correctif — celui qui veut brider le débit du serveur lui-même le choisit.
-  maxAnalysisFps: null,
+  // 30 img/s par défaut, depuis ADR 0022 : la cadence vidéo la plus courante,
+  // qui borne le débit du serveur sans jamais le limiter en pratique sur une
+  // source à cette cadence ou en dessous. « Illimité » et « 60 img/s » restent
+  // des choix explicites pour qui filme plus vite ou veut ses chiffres au plus
+  // vite sans égard pour le partage de la machine.
+  maxAnalysisFps: 30,
   showTrails: true,
 };
 

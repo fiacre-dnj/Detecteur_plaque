@@ -396,11 +396,11 @@ describe("maxAnalysisFps — le plafond absolu de cadence", () => {
     { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
   ];
 
-  it("part sans plafond par défaut", () => {
-    // La vitesse de lecture normale est déjà assurée par `analysisSpeed` ; ce
-    // plafond est un choix supplémentaire, pas un correctif.
-    expect(DEFAULT_SETTINGS.maxAnalysisFps).toBeNull();
-    expect(toRequest(DEFAULT_SETTINGS, LINES, []).maxAnalysisFps).toBeNull();
+  it("part à 30 img/s par défaut", () => {
+    // Depuis ADR 0022 : la cadence vidéo la plus courante, qui ne borne rien en
+    // pratique sur une source à cette cadence ou en dessous.
+    expect(DEFAULT_SETTINGS.maxAnalysisFps).toBe(30);
+    expect(toRequest(DEFAULT_SETTINGS, LINES, []).maxAnalysisFps).toBe(30);
   });
 
   it("transmet un plafond choisi", () => {
@@ -442,7 +442,8 @@ describe("maxAnalysisFps — le plafond absolu de cadence", () => {
       settings: { maxAnalysisFps: 999 },
     });
 
-    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBeNull();
+    // Repli sur le défaut du module (30 img/s depuis ADR 0022), pas sur `null`.
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBe(30);
   });
 
   it("ignore un plafond d'un type faux", () => {
@@ -451,6 +452,6 @@ describe("maxAnalysisFps — le plafond absolu de cadence", () => {
       settings: { maxAnalysisFps: "30 img/s" },
     });
 
-    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBeNull();
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBe(30);
   });
 });

@@ -102,20 +102,37 @@ plus deux fois dans le même sens » si.
   analyses, la base et les poids téléchargés survivent à un redémarrage.
 - **La lecture locale d'une analyse en cours reste à vitesse normale par
   défaut.** Sans plus toucher à rien, la vidéo ne défile plus tantôt accélérée,
-  tantôt ralentie selon la charge du serveur. Un plafond **absolu**, en 30 ou
-  60 images par seconde, reste disponible en plus pour brider le débit du
-  serveur lui-même, indépendamment de la cadence de la vidéo.
+  tantôt ralentie selon la charge du serveur. Un plafond **absolu**, en 30
+  (le défaut) ou 60 images par seconde, reste disponible en plus pour brider
+  le débit du serveur lui-même, indépendamment de la cadence de la vidéo.
 - **Chaque sens de ligne est désormais obligatoirement « Entrée » ou
-  « Sortie ».** Le panneau de géométrie n'offre plus de nom libre à taper : un
-  menu déroulant à deux choix remplace le champ de texte et les trois boutons
-  de rôle facultatif. Une ligne fraîchement tracée contribue donc tout de suite
-  au bilan entrées/sorties du carrefour, sans geste supplémentaire. Choisir un
-  sens configure l'autre côté automatiquement à l'opposé, et les flèches de sens
-  (canvas et panneau) suivent désormais l'angle réel de la ligne au lieu d'un
-  glyphe figé.
+  « Sortie ».** Le panneau de géométrie n'offre plus de nom libre à taper, ni
+  de menu déroulant par sens : les deux sens s'affichent en lecture seule
+  (flèche, libellé) et un seul bouton les **inverse** — inutile de choisir
+  deux fois pour une paire qui n'a jamais que deux états possibles. Une ligne
+  fraîchement tracée contribue donc tout de suite au bilan entrées/sorties du
+  carrefour, sans geste supplémentaire. Les flèches de sens (canvas et
+  panneau) pointent désormais **exactement** perpendiculairement à la ligne,
+  à n'importe quel angle, au lieu d'un glyphe figé ou arrondi au 45° le plus
+  proche.
 - **Le nom de la ligne et les libellés de sens s'estompent pendant qu'une
   analyse tourne**, différée ou en direct, pour laisser la place aux boîtes et
   aux compteurs — sauf le sens qui vient tout juste de compter, qui reste net.
+- La vidéo locale se cale **toujours** sur l'image que le serveur analyse
+  pendant qu'une analyse tourne : la case à décocher pour reprendre la main a
+  disparu, le gel est désormais inconditionnel et expliqué à l'écran.
+- Le tableau de résultats perd la carte « Véhicules détectés » ; les repères
+  « Image … » et « Véhicules : … » affichés en surimpression de la vidéo
+  disparaissent aussi — la résolution et la cadence de lecture suffisent. La
+  durée de flux analysé devient une carte à part entière plutôt qu'une phrase
+  sous le tableau.
+- **L'entête de l'application reste visible en défilant**, et les tiroirs
+  Détection/Comptage/Affichage & analyse s'ouvrent désormais **par-dessus** la
+  page (un clic en dehors ou `Échap` les referme) au lieu de pousser la vidéo
+  et les résultats vers le bas. Ils restent grisés tant qu'aucune vidéo n'est
+  chargée. La scène vide propose une invite cliquable — glisser-déposer ou
+  clic — au lieu d'une simple phrase, et le nom du fichier importé se lit
+  désormais à l'autre bout de la barre, plutôt que juste après le bouton.
 
 ### Corrigé
 

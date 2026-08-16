@@ -15,15 +15,22 @@
  * étaient trois accordéons empilés dans un `<aside>` de 20 rem : ils occupaient en
  * permanence le quart de l'écran pour des réglages qu'on touche une fois avant de
  * lancer, et repoussaient les résultats — ce qu'on regarde vraiment — sous la ligne
- * de flottaison. Ils s'ouvrent maintenant en **tiroir pleine largeur**, ce qui leur
- * donne trois colonnes au lieu d'une, et rend la place à la scène et aux compteurs.
+ * de flottaison.
+ *
+ * Ils s'ouvrent maintenant en **tiroir flottant**, posé *par-dessus* la page
+ * plutôt que d'en pousser le contenu : un tiroir pleine largeur en flux normal a
+ * été essayé d'abord, et décalait la vidéo et les résultats de plusieurs centaines
+ * de pixels à chaque ouverture — la scène qu'on venait de tracer disparaissait de
+ * l'écran pour un réglage qu'on touche une fois. `position: absolute`, ancré sous
+ * la barre, rend la page inchangée sous le tiroir ; un clic en dehors ou `Échap`
+ * le referme, comme n'importe quel menu.
  *
  * Un seul tiroir ouvert à la fois, et **fermé par défaut** : l'écran d'arrivée doit
  * montrer la vidéo, pas un formulaire.
  */
 
 import { ChevronDown } from "lucide-react";
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import { ModelPicker } from "@/features/model-picker";
 import type { DetectableClass, Diagnostics, VehicleModel } from "@/shared/api/contracts";
@@ -79,6 +86,22 @@ interface SettingsPanelsProps {
    * `GeometryPanel` un `onOpenPresets` plutôt que la modale elle-même.
    */
   leading?: ReactNode | undefined;
+  /**
+   * Contenu placé **après** les onglets, poussé à l'extrémité de la barre
+   * (`ms-auto`) — le nom du fichier importé.
+   *
+   * Même raison d'emplacement que `leading` : le studio le fournit, cette feature
+   * ne sait pas ce qu'est une source.
+   */
+  trailing?: ReactNode | undefined;
+  /**
+   * Une source est-elle chargée ?
+   *
+   * Sans elle, régler la détection, le comptage ou l'affichage n'a rien à quoi
+   * s'appliquer : les trois tiroirs sont grisés, et un tiroir resté ouvert se
+   * referme si la source disparaît pendant qu'il l'était.
+   */
+  hasSource: boolean;
 }
 
 export function SettingsPanels({
@@ -92,10 +115,46 @@ export function SettingsPanels({
   disabled,
   onChange,
   leading,
+  trailing,
+  hasSource,
 }: SettingsPanelsProps) {
   /** `null` = tout fermé, l'état d'arrivée. */
   const [open, setOpen] = useState<PanelId | null>(null);
   const base = useId();
+  /** Racine du composant : borne le clic « en dehors » qui referme le tiroir. */
+  const root = useRef<HTMLDivElement>(null);
+
+  // Une source qui disparaît pendant qu'un tiroir est ouvert le referme : les
+  // trois panneaux n'ont alors plus rien à régler, et un tiroir grisé resté
+  // ouvert serait un formulaire qu'on ne peut plus toucher sans savoir pourquoi.
+  useEffect(() => {
+    if (!hasSource) setOpen(null);
+  }, [hasSource]);
+
+  // Le tiroir flotte **par-dessus** la page (`position: absolute`) : il n'est
+  // plus contenu par un parent qu'on pourrait cliquer pour le refermer, ni par
+  // un lecteur d'écran qui saurait qu'un clic ailleurs y met fin. Un clic hors de
+  // la racine, ou `Échap`, le referme donc explicitement — le geste attendu de
+  // n'importe quel menu.
+  useEffect(() => {
+    if (open === null) return;
+
+    const closeIfOutside = (event: PointerEvent): void => {
+      if (root.current !== null && !root.current.contains(event.target as Node)) {
+        setOpen(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") setOpen(null);
+    };
+
+    document.addEventListener("pointerdown", closeIfOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeIfOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
 
   const panels: Record<PanelId, ReactNode> = {
     detection: (
@@ -134,12 +193,14 @@ export function SettingsPanels({
           }
         />
 
-        <ClassPicker
-          classes={detectableClasses}
-          selected={settings.classIds}
-          disabled={disabled}
-          onChange={(classIds) => onChange({ classIds })}
-        />
+        <PanelGridFullRow>
+          <ClassPicker
+            classes={detectableClasses}
+            selected={settings.classIds}
+            disabled={disabled}
+            onChange={(classIds) => onChange({ classIds })}
+          />
+        </PanelGridFullRow>
 
         {/* Piloté par `plateAvailable` **seul** : la détection reste utile sans OCR,
             les rectangles jaunes valident déjà un cadrage. */}
@@ -222,7 +283,11 @@ export function SettingsPanels({
           onChange={(iouThreshold) => onChange({ iouThreshold })}
         />
 
-        {diagnostics !== null && <DiagnosticsPanel diagnostics={diagnostics} />}
+        {diagnostics !== null && (
+          <PanelGridFullRow>
+            <DiagnosticsPanel diagnostics={diagnostics} />
+          </PanelGridFullRow>
+        )}
       </PanelGrid>
     ),
     affichage: (
@@ -308,7 +373,7 @@ export function SettingsPanels({
   };
 
   return (
-    <div className="space-y-3">
+    <div ref={root} className="relative">
       <div className="flex flex-wrap items-center gap-2">
         {leading}
         {PANELS.map((panel) => {
@@ -317,6 +382,7 @@ export function SettingsPanels({
             <button
               key={panel.id}
               type="button"
+              disabled={!hasSource}
               // `aria-expanded` + `aria-controls` : l'accordéon d'origine n'avait ni
               // l'un ni l'autre, donc un lecteur d'écran annonçait un bouton sans
               // dire qu'il ouvre quelque chose, ni quoi.
@@ -327,10 +393,10 @@ export function SettingsPanels({
               onClick={() => setOpen(active ? null : panel.id)}
               className={[
                 "label-caps inline-flex h-10 items-center gap-2 rounded-pill px-4",
-                "transition-colors",
+                "transition-colors disabled:cursor-not-allowed disabled:opacity-45",
                 active
                   ? "bg-elevated text-ink shadow-card"
-                  : "bg-surface text-ink-muted hover:bg-surface-2 hover:text-ink",
+                  : "bg-surface text-ink-muted hover:enabled:bg-surface-2 hover:enabled:text-ink",
               ].join(" ")}
             >
               {panel.label}
@@ -341,8 +407,14 @@ export function SettingsPanels({
             </button>
           );
         })}
+        {trailing !== undefined && <div className="ms-auto flex items-center">{trailing}</div>}
       </div>
 
+      {/* Flotte **par-dessus** la page : `absolute`, ancré sous la barre, jamais
+          dans le flux. C'est ce qui évite qu'ouvrir un tiroir décale la vidéo et
+          les résultats de plusieurs centaines de pixels — voir la docstring du
+          fichier. `z-30` le pose sous l'entête fixe de l'application (`z-40`,
+          `AppShell`) mais au-dessus de tout le reste de la page. */}
       {open !== null && (
         <section
           id={`${base}-${open}`}
@@ -350,7 +422,10 @@ export function SettingsPanels({
           // atteignable directement, au lieu d'un bloc anonyme.
           role="region"
           aria-label={PANELS.find((panel) => panel.id === open)?.label}
-          className="rounded-section bg-surface p-4 shadow-card"
+          className={[
+            "absolute start-0 top-full z-30 mt-2 w-full max-w-xl origin-top",
+            "max-h-[70vh] overflow-y-auto rounded-panel bg-surface p-4 shadow-dialog",
+          ].join(" ")}
         >
           {panels[open]}
         </section>
@@ -360,16 +435,23 @@ export function SettingsPanels({
 }
 
 /**
- * La grille du tiroir : une colonne sur mobile, deux puis trois en largeur.
+ * La grille du tiroir : une colonne sur mobile, deux en largeur.
+ *
+ * Deux et non trois : le tiroir flotte désormais dans une largeur bornée
+ * (`max-w-xl`) plutôt que sur toute la barre — la troisième colonne n'aurait
+ * plus la place de respirer.
  *
  * `items-start` est nécessaire : sans lui, les cellules d'une même rangée s'étirent
  * à la hauteur de la plus grande, et un curseur se retrouve centré dans le vide en
  * face du sélecteur de modèle.
  */
 function PanelGrid({ children }: { children: ReactNode }) {
-  return (
-    <div className="grid items-start gap-x-6 gap-y-4 md:grid-cols-2 xl:grid-cols-3">{children}</div>
-  );
+  return <div className="grid items-start gap-x-4 gap-y-3 sm:grid-cols-2">{children}</div>;
+}
+
+/** Une cellule qui prend toute la largeur de la grille — les listes, pas les curseurs. */
+function PanelGridFullRow({ children }: { children: ReactNode }) {
+  return <div className="sm:col-span-2">{children}</div>;
 }
 
 /**
@@ -421,9 +503,9 @@ function DiagnosticsPanel({ diagnostics }: { diagnostics: Diagnostics }) {
   ];
 
   return (
-    <div className="mt-3 rounded-input bg-base p-2">
+    <div className="rounded-input bg-base p-2">
       <p className="label-micro mb-2">Diagnostic de la dernière analyse</p>
-      <dl className="space-y-1">
+      <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
         {rows.map((row) => (
           <div key={row.label} className="flex items-baseline justify-between gap-2" title={row.hint}>
             <dt className="text-micro text-ink-dim">{row.label}</dt>
