@@ -1,26 +1,17 @@
 /**
- * Les agrégations par sens : rangées, bilan entrées/sorties, matrice O-D.
+ * Les agrégations par sens : rangées, bilan entrées/sorties.
  *
- * Deux comportements sont testés pour ce qu'ils **refusent** de faire, et ce sont les
- * plus importants :
- *
- * - `flowBalance` rend `declared: false` quand aucun rôle n'est posé. Sans ce drapeau,
- *   « 0 entrée, 0 sortie » se lirait comme « aucun véhicule n'entre ni ne sort » alors
- *   que la vérité est « personne ne l'a encore dit » ;
- * - `movements` ignore un véhicule qui n'a franchi qu'une ligne. Il compte bien dans
- *   les totaux, il n'a simplement pas de trajet observable.
+ * Le comportement le plus important est testé pour ce qu'il **refuse** de faire :
+ * `flowBalance` rend `declared: false` quand aucun rôle n'est posé. Sans ce
+ * drapeau, « 0 entrée, 0 sortie » se lirait comme « aucun véhicule n'entre ni ne
+ * sort » alors que la vérité est « personne ne l'a encore dit ».
  */
 
 import { describe, expect, it } from "bun:test";
 
-import type {
-  AnalysisStats,
-  CountingLine,
-  DirectionTally,
-  VehicleRecord,
-} from "@/shared/api/contracts";
+import type { AnalysisStats, CountingLine, DirectionTally } from "@/shared/api/contracts";
 
-import { directionRows, flowBalance, movements } from "./directions";
+import { directionRows, flowBalance } from "./directions";
 
 function line(id: string, overrides: Partial<CountingLine> = {}): CountingLine {
   return {
@@ -240,105 +231,5 @@ describe("flowBalance", () => {
     );
 
     expect(balance).toMatchObject({ entries: 7, exits: 0, neutral: 5, declared: true });
-  });
-});
-
-function vehicle(globalId: number, crossings: [string, number][]): VehicleRecord {
-  return {
-    globalId,
-    label: "car",
-    firstSeenMs: 0,
-    lastSeenMs: 1_000,
-    crossedLines: crossings.map(([lineId, direction], index) => ({
-      lineId,
-      direction,
-      timestampMs: index * 100,
-    })),
-    zonesVisited: [],
-    avgSpeedPxS: null,
-    avgSpeedKmh: null,
-    bestPlateScore: null,
-    plateText: null,
-    plateTextScore: null,
-    plateUnreadReason: null,
-    plateBestWidthPx: null,
-    plateBestGuess: null,
-    plateBestGuessScore: null,
-  };
-}
-
-describe("movements — la matrice origine-destination", () => {
-  const lines = [
-    line("nord", { positiveName: "Entrée nord", negativeName: "Sortie nord" }),
-    line("est", { positiveName: "Entrée est", negativeName: "Sortie est" }),
-  ];
-
-  it("décrit un trajet comme une paire de franchissements consécutifs", () => {
-    const rows = movements([vehicle(1, [["nord", 1], ["est", -1]])], lines);
-
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      from: { lineId: "nord", sign: "positive", name: "Entrée nord" },
-      to: { lineId: "est", sign: "negative", name: "Sortie est" },
-      count: 1,
-      share: 1,
-    });
-  });
-
-  it("regroupe les véhicules qui font le même trajet", () => {
-    const rows = movements(
-      [
-        vehicle(1, [["nord", 1], ["est", -1]]),
-        vehicle(2, [["nord", 1], ["est", -1]]),
-        vehicle(3, [["est", 1], ["nord", -1]]),
-      ],
-      lines,
-    );
-
-    expect(rows).toHaveLength(2);
-    // Le mouvement dominant en tête : c'est ce qu'on cherche en ouvrant l'onglet.
-    expect(rows[0]?.count).toBe(2);
-    expect(rows[0]?.share).toBeCloseTo(2 / 3);
-    expect(rows[1]?.count).toBe(1);
-  });
-
-  it("ignore un véhicule qui n'a franchi qu'une ligne", () => {
-    // Il compte dans les totaux, il n'a simplement pas de trajet observable. Le
-    // compter ici inventerait une destination.
-    expect(movements([vehicle(1, [["nord", 1]])], lines)).toEqual([]);
-  });
-
-  it("produit deux mouvements pour trois franchissements", () => {
-    // La limite énoncée à l'écran : la somme décrit des trajets, pas des véhicules.
-    const rows = movements(
-      [vehicle(1, [["nord", 1], ["est", 1], ["nord", -1]])],
-      lines,
-    );
-
-    expect(rows.reduce((sum, row) => sum + row.count, 0)).toBe(2);
-  });
-
-  it("distingue deux sens sur la même paire de lignes", () => {
-    // « Entré par le nord, sorti par l'est » et « entré par le nord, *entré* par
-    // l'est » sont deux mouvements différents. Les fusionner effacerait les
-    // mouvements tournants, qui sont l'intérêt de la matrice.
-    const rows = movements(
-      [vehicle(1, [["nord", 1], ["est", -1]]), vehicle(2, [["nord", 1], ["est", 1]])],
-      lines,
-    );
-
-    expect(rows).toHaveLength(2);
-  });
-
-  it("ignore un mouvement dont une ligne a été retirée du tracé", () => {
-    // On ne peut plus le nommer, et lui donner un identifiant brut mélangerait deux
-    // vocabulaires dans le tableau.
-    const rows = movements([vehicle(1, [["nord", 1], ["disparue", -1]])], lines);
-
-    expect(rows).toEqual([]);
-  });
-
-  it("rend une liste vide sans véhicule", () => {
-    expect(movements([], lines)).toEqual([]);
   });
 });

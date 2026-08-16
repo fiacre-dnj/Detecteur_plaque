@@ -164,7 +164,7 @@ câblage passe par `StudioPage` — c'est pourquoi `GeometryPanel` reçoit un
 `onOpenPresets` plutôt que la modale elle-même, et pourquoi `SettingsPanels` reçoit
 un emplacement `leading` où le studio pose le bouton d'import.
 
-#### La disposition du studio, depuis le 2026-08-12 (barre flottante depuis le 2026-08-16)
+#### La disposition du studio, depuis le 2026-08-12 (barre flottante et bas de page refondu le 2026-08-16/17)
 
 ```
 [⇧ Importer]  [Détection ▾] [Comptage ▾] [Affichage & analyse ▾]  … nom du fichier →
@@ -173,9 +173,11 @@ un emplacement `leading` où le studio pose le bouton d'import.
 │ vidéo + canvas + HUD          │ RÉSULTATS         │  aside 24 rem
 │ TransportBar                  │ KPI en 2 colonnes │
 ├──────────────────────────────┴──────────────────┤
-│ CHRONOLOGIE — cliquable, déplace la vidéo         │  toujours visible
-│ [Répartition][Par ligne & sens][Mouvements]        │  onglets
-│ [Flux][Registre]                                  │
+│ RÉPARTITION — une carte par type, entrées seules  │  toujours visible
+│ STATISTIQUE — KPI de tête, une rangée par ligne,  │  une fois l'analyse
+│   comparatifs groupés en une carte                │  terminée
+│ [camembert flux/ligne] [camembert entrées/type]   │  deux colonnes
+│ REGISTRE — tableau par véhicule, export CSV/JSON  │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -197,24 +199,62 @@ plus juste après le bouton : une fois choisie, la source se consulte, elle ne s
 reclique pas.
 
 Elle est l'inverse de la précédente, où les réglages tenaient la colonne de droite
-et les résultats vivaient sous la grille. Trois conséquences à connaître :
+et les résultats vivaient sous la grille. Conséquences à connaître :
 
 - **le direct n'a plus de porte d'entrée.** Les cartes « démonstration » et
   « caméra » sont retirées de l'écran — elles étaient désactivées depuis longtemps.
   `realtime-counting`, `RealtimePanel`, `media.selectCamera` et `isCamera` sont
   **intacts** : rouvrir la porte est un `useCallback` et un bouton dans la barre ;
-- **la chronologie n'est pas dans les onglets**, délibérément : c'est un outil de
-  navigation, et l'enfouir obligerait à changer d'onglet pour se déplacer. Depuis le
-  2026-08-13 elle a quatre étages — rail de densité cliquable, bandeau de synthèse,
-  filtres ligne/sens/type, liste groupée par tranche — et chacun répond à une question
-  qu'aucun autre ne sait poser. Ses règles vivent dans
-  `timeline-replay/model/timelineFilters.ts`, testables sans DOM ; **un ensemble de
-  filtre vide signifie « tout »**, parce qu'une intersection naïve afficherait une
-  chronologie vide au premier rendu ;
-- **`Tabs` est une primitive partagée** (`shared/ui/Tabs.tsx`), avec le clavier du
-  motif ARIA — flèches, Home/Fin, un seul onglet dans l'ordre de tabulation.
-  L'accordéon maison qu'elle remplace n'avait ni `role`, ni `aria-controls`, ni
-  gestion des flèches.
+- **la chronologie cliquable a été retirée le 2026-08-17, sans remplacement.**
+  Elle avait quatre étages depuis le 2026-08-13 — rail de densité, bandeau de
+  synthèse, filtres ligne/sens/type, liste groupée — mais faisait double emploi
+  avec la barre de lecture standard pour se déplacer dans le temps, et n'ajoutait
+  que du détail brut. `timeline-replay/ui/CrossingTimeline.tsx` et
+  `model/timeline.ts`/`timelineFilters.ts` sont supprimés, pas seulement masqués ;
+- **le bas de page n'a plus d'onglets.** L'ancien `Tabs` à cinq entrées
+  (Répartition, Par ligne & sens, Mouvements, Flux, Registre) est remplacé par
+  trois sections toujours empilées, jamais en accordéon — **Répartition**
+  (`ClassEntriesGrid`, une carte par type de véhicule, valeur = entrées
+  seulement, cohérente par construction avec le KPI « Entrées au carrefour » —
+  `entriesByClass` partage son prédicat `role === "entry"` avec `flowBalance`,
+  verrouillé par un test), **Statistique** (`LineFlowDashboard`) et
+  **Registre** (`VehicleRegistry`). La matrice origine-destination
+  (« Mouvements ») et l'occupation de zone disparaissent **sans
+  reconstruction**, décision assumée : ce tableau de bord ne parle que de
+  lignes ;
+- **la Statistique est dense, pas aérée** (2026-08-17). Chaque ligne tient sur
+  **une rangée** — nom, entrées, sorties, solde signé, part du trafic, puis une
+  seule barre à deux segments — et non plus sur une carte à deux barres
+  empilées, qui laissait la moitié de la section en vide. La phrase-bilan
+  (`crossroadFlowSentence`) survit en `aria-label` de la rangée et **elle seule
+  porte la précision qui compte** : *« entrer » veut dire entrer **dans le
+  carrefour**, pas dans la rue*. Les comparatifs tiennent dans **une** carte en
+  grille, plus une `MetricCard` chacun. Deux nouveaux s'ajoutent aux trois
+  existants, et **ils ne disent pas la même chose** : `mostEnteredLine` /
+  `mostExitedLine` donnent le compte **brut** (« quelle ligne sert le plus à
+  entrer »), là où `strongestInflowLine` / `strongestOutflowLine` donnent le
+  **solde net** — une ligne qui reçoit 10 entrées et laisse ressortir 9 est la
+  plus entrée sans être le plus fort afflux, cas verrouillé par un test ;
+- **les deux graphiques sont des camemberts côte à côte** (2026-08-17), sur une
+  primitive partagée `ui/PieChart.tsx` — un SVG maison de `<path>`, légende et
+  chiffres en HTML à côté (même règle que l'ancien histogramme : jamais de
+  `<text>` SVG, que le `viewBox` mettrait à l'échelle). `LineFlowChart` ventile
+  le total par ligne, `ClassEntriesChart` les entrées par type. Le premier
+  répondait avant à « quand » (barres empilées par tranche de temps) et répond
+  désormais à « quelle part » : **`flowBucketsByLine` et le clic-pour-se-déplacer
+  sont supprimés**, pas masqués — un camembert n'a pas de position temporelle
+  sur laquelle caler la lecture, et la barre de lecture standard reste le seul
+  outil pour se déplacer dans le temps ;
+- **le Registre n'est plus « inchangé »** (2026-08-17). Le titre `<h2>Registre</h2>`
+  que `StudioPage` empilait au-dessus est retiré — `VehicleRegistry` porte déjà
+  le sien, « Registre des véhicules », et les deux se lisaient comme deux
+  sections. Le tableau gagne **Durée**, **Zones** et **Conf. détection**
+  (`bestPlateScore`, distincte de la confiance de *lecture* déjà présente : une
+  plaque peut être bien localisée et illisible, ou l'inverse), traduit le type
+  en français par `classLabel`, et colle ses en-têtes (`sticky top-0`) ;
+- **`shared/ui/Tabs.tsx` reste**, sans consommateur pour l'instant — une
+  primitive ARIA générique et accessible (flèches, Home/Fin, roving `tabIndex`),
+  gardée pour un futur besoin plutôt que supprimée pour un gain nul.
 
 ### Le contrat, pas un build
 

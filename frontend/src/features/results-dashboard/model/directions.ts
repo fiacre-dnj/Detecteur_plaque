@@ -1,5 +1,5 @@
 /**
- * Les **agrégations** par sens de ligne : totaux, bilan entrées/sorties, mouvements.
+ * Les **agrégations** par sens de ligne : totaux, bilan entrées/sorties.
  *
  * Le vocabulaire lui-même — nommer un signe, lire un rôle — vit dans
  * `shared/lib/directions.ts`, parce que quatre features en ont besoin et qu'une
@@ -14,7 +14,10 @@
  *   de relancer l'analyse. Un mot ne doit pas changer un chiffre du serveur ;
  * - la règle de classement n'existe pas en double. Le dépôt documente cette famille
  *   de bug plus que toute autre : deux copies d'une règle finissent par diverger, et
- *   c'est un passage qui change de colonne selon l'écran qui le montre.
+ *   c'est un passage qui change de colonne selon l'écran qui le montre. C'est
+ *   exactement pourquoi `isEntryRow` ci-dessous est **exportée** plutôt que
+ *   réécrite dans `entriesByClass.ts` : deux fichiers qui décident chacun ce
+ *   qu'est un sens d'entrée finiraient par diverger.
  *
  * Tout ici est **dérivé** de `stats.byLine` et de la géométrie courante, jamais
  * accumulé en parallèle (invariant 3).
@@ -26,14 +29,12 @@ import type {
   DirectionRole,
   DirectionSign,
   DirectionTally,
-  VehicleRecord,
 } from "@/shared/api/contracts";
 import {
   DIRECTION_SIGNS,
   EMPTY_DIRECTION_TALLY,
   directionName,
   directionRole,
-  signOf,
 } from "@/shared/lib/directions";
 
 /** Un sens de ligne, prêt à afficher : son identité, son rôle et ses compteurs. */
@@ -106,6 +107,16 @@ export interface FlowBalance {
 }
 
 /**
+ * Un sens marqué « entrée » — le seul prédicat qui décide ce qui compte comme une
+ * entrée, réutilisé par `flowBalance` et par `entriesByClass.ts`. L'exporter
+ * plutôt que le laisser inline est ce qui empêche les deux calculs de diverger
+ * silencieusement si l'un des deux change un jour de condition.
+ */
+export function isEntryRow(row: DirectionRow): boolean {
+  return row.role === "entry";
+}
+
+/**
  * Agrège les passages par rôle de sens.
  *
  * `declared` existe pour une raison d'honnêteté : sans rôle posé, `entries` et
@@ -121,98 +132,10 @@ export function flowBalance(stats: AnalysisStats, lines: readonly CountingLine[]
 
   for (const row of directionRows(stats, lines)) {
     if (row.role !== "neutral") declared = true;
-    if (row.role === "entry") entries += row.tally.total;
+    if (isEntryRow(row)) entries += row.tally.total;
     else if (row.role === "exit") exits += row.tally.total;
     else neutral += row.tally.total;
   }
 
   return { entries, exits, net: entries - exits, neutral, declared };
-}
-
-/** Un mouvement observé : entré par un sens, ressorti par un autre. */
-export interface Movement {
-  from: { lineId: string; sign: DirectionSign; name: string; lineName: string };
-  to: { lineId: string; sign: DirectionSign; name: string; lineName: string };
-  count: number;
-  /** Part de ce mouvement dans tous les mouvements observés. */
-  share: number;
-}
-
-/**
- * La matrice origine-destination — **la réponse directe au carrefour**.
- *
- * « Combien de véhicules entrés par la rue Nord sont ressortis par la rue Est ». Un
- * total par ligne ne peut pas y répondre : il faut savoir ce qu'un *même* véhicule a
- * franchi, et dans quel ordre.
- *
- * Dérivée de `vehicles[].crossedLines`, qui est déjà chronologique : chaque paire de
- * franchissements **consécutifs** est un mouvement. Rien de nouveau n'est transporté
- * sur le fil, et rien n'est accumulé côté serveur.
- *
- * Deux limites à énoncer plutôt qu'à masquer :
- *
- * - un véhicule qui franchit trois lignes produit **deux** mouvements, pas un. C'est
- *   le bon comportement pour un carrefour instrumenté ligne par ligne, mais cela
- *   veut dire que la somme des mouvements n'est pas un nombre de véhicules ;
- * - un véhicule qui n'a franchi qu'une ligne ne produit aucun mouvement. Il compte
- *   bien dans les totaux, il n'a simplement pas de trajet observable.
- *
- * Le registre n'existe que sur un résultat **complet** : l'aperçu SSE et le direct ne
- * le transportent pas. L'onglet le dit au lieu d'afficher une matrice vide.
- */
-export function movements(
-  vehicles: readonly VehicleRecord[],
-  lines: readonly CountingLine[],
-): Movement[] {
-  const byId = new Map(lines.map((line) => [line.id, line]));
-  const counts = new Map<string, Movement>();
-  let total = 0;
-
-  for (const vehicle of vehicles) {
-    const crossings = vehicle.crossedLines;
-    for (let index = 1; index < crossings.length; index += 1) {
-      const previous = crossings[index - 1];
-      const current = crossings[index];
-      if (previous === undefined || current === undefined) continue;
-
-      const fromLine = byId.get(previous.lineId);
-      const toLine = byId.get(current.lineId);
-      // Une ligne disparue du tracé : on ne peut plus nommer le mouvement, et lui
-      // donner son identifiant brut mélangerait deux vocabulaires dans le tableau.
-      if (fromLine === undefined || toLine === undefined) continue;
-
-      const fromSign = signOf(previous.direction);
-      const toSign = signOf(current.direction);
-      const key = `${previous.lineId}:${fromSign}>${current.lineId}:${toSign}`;
-      const existing = counts.get(key);
-      if (existing === undefined) {
-        counts.set(key, {
-          from: {
-            lineId: fromLine.id,
-            sign: fromSign,
-            name: directionName(fromLine, fromSign),
-            lineName: fromLine.name,
-          },
-          to: {
-            lineId: toLine.id,
-            sign: toSign,
-            name: directionName(toLine, toSign),
-            lineName: toLine.name,
-          },
-          count: 1,
-          share: 0,
-        });
-      } else {
-        existing.count += 1;
-      }
-      total += 1;
-    }
-  }
-
-  // La part est calculée à la fin, une fois le total connu : l'incrémenter au fil de
-  // l'eau donnerait des parts qui ne somment pas à 1.
-  const rows = [...counts.values()];
-  for (const row of rows) row.share = total === 0 ? 0 : row.count / total;
-  // Le mouvement dominant en tête : c'est celui qu'on cherche en ouvrant l'onglet.
-  return rows.sort((left, right) => right.count - left.count);
 }

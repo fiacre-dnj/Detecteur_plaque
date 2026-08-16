@@ -13,6 +13,7 @@ import {
   VEHICLE_CLASSES,
   classLabel,
   crossingRate,
+  crossroadFlowSentence,
   directionArrow,
   directionLabel,
   formatCrossingRate,
@@ -179,5 +180,47 @@ describe("plural", () => {
     expect(plural(1, "véhicule", "véhicules")).toBe("1 véhicule");
     expect(plural(2, "véhicule", "véhicules")).toBe("2 véhicules");
     expect(plural(0, "véhicule", "véhicules")).toBe("0 véhicules");
+  });
+});
+
+describe("crossroadFlowSentence — le bilan d'une ligne, du point de vue du carrefour", () => {
+  it("dit explicitement qu'on entre *dans le carrefour*, pas dans la rue", () => {
+    const sentence = crossroadFlowSentence("Ligne Nord", 12, 8);
+
+    expect(sentence).toBe(
+      "12 véhicules sont entrés dans le carrefour par « Ligne Nord », 8 en sont ressortis.",
+    );
+  });
+
+  it("accorde le singulier à un seul véhicule de chaque côté", () => {
+    expect(crossroadFlowSentence("Ligne Nord", 1, 1)).toBe(
+      "1 véhicule est entré dans le carrefour par « Ligne Nord », 1 en est ressorti.",
+    );
+  });
+
+  it("omet la sortie quand ce sens est resté neutre", () => {
+    // Ligne héritée d'avant ADR 0021 : le rôle de sortie n'a jamais été
+    // déclaré. Inventer un chiffre serait pire qu'une phrase incomplète.
+    expect(crossroadFlowSentence("Ligne Nord", 12, null)).toBe(
+      "12 véhicules sont entrés dans le carrefour par « Ligne Nord ».",
+    );
+  });
+
+  it("omet l'entrée quand ce sens est resté neutre", () => {
+    expect(crossroadFlowSentence("Ligne Nord", null, 8)).toBe(
+      "8 véhicules sont ressortis du carrefour par « Ligne Nord ».",
+    );
+  });
+
+  it("dit que le rôle n'est pas déclaré quand les deux sens sont neutres", () => {
+    expect(crossroadFlowSentence("Ligne Nord", null, null)).toBe(
+      "Le rôle des sens de « Ligne Nord » n'est pas déclaré.",
+    );
+  });
+
+  it("lit naturellement un compte à zéro, sans se lire comme une erreur", () => {
+    expect(crossroadFlowSentence("Ligne Nord", 0, 0)).toBe(
+      "0 véhicules sont entrés dans le carrefour par « Ligne Nord », 0 en sont ressortis.",
+    );
   });
 });

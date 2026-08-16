@@ -133,6 +133,29 @@ plus deux fois dans le même sens » si.
   chargée. La scène vide propose une invite cliquable — glisser-déposer ou
   clic — au lieu d'une simple phrase, et le nom du fichier importé se lit
   désormais à l'autre bout de la barre, plutôt que juste après le bouton.
+- **Le bas de l'écran, sous la vidéo, est refondu.** La chronologie cliquable
+  et ses cinq onglets (Répartition, Par ligne & sens, Mouvements, Flux,
+  Registre) laissent place à trois sections toujours visibles : une
+  **Répartition** simplifiée (une carte par type de véhicule, le nombre
+  d'entrées — cohérent par construction avec le KPI « Entrées au carrefour »),
+  une **Statistique** (le total de véhicules ayant traversé le carrefour, puis
+  une rangée compacte par ligne : entrées, sorties, solde et part du trafic),
+  et le **Registre**. La navigation par clic dans les franchissements et la
+  matrice origine-destination disparaissent sans remplacement — la barre de
+  lecture standard suffit à se déplacer dans le temps.
+- La Statistique dit désormais **quelle ligne sert le plus à entrer** et
+  **laquelle sert le plus à sortir**, en nombre de passages. C'est une autre
+  question que « le plus fort afflux », qui parle du solde : une ligne où 10
+  véhicules entrent et 9 ressortent est la plus empruntée pour entrer sans
+  remplir le carrefour pour autant.
+- Le flux par ligne et la répartition par type se lisent en **deux camemberts
+  côte à côte** plutôt qu'en barres : la part de chaque ligne et de chaque type
+  se voit d'un coup d'œil, sans comparer des barres une à une.
+- Le **registre des véhicules** est plus détaillé : durée de présence, zones
+  traversées et confiance de *détection* de la plaque (distincte de la
+  confiance de lecture) s'ajoutent aux colonnes existantes, le type de véhicule
+  s'affiche en français, et les en-têtes du tableau restent visibles pendant le
+  défilement.
 
 ### Corrigé
 

@@ -73,36 +73,36 @@ import {
   useRealtimeSession,
 } from "@/features/realtime-counting";
 import {
-  ClassBreakdown,
-  LineAndZoneDetail,
-  MovementMatrix,
+  VEHICLE_CLASSES,
+  ClassEntriesGrid,
+  LineFlowDashboard,
   ResultsDashboard,
+  entriesByClass,
 } from "@/features/results-dashboard";
-import {
-  CrossingTimeline,
-  chooseBucketMs,
-  flowBuckets,
-  useReplay,
-  vehiclesAt,
-} from "@/features/timeline-replay";
+import { useReplay, vehiclesAt } from "@/features/timeline-replay";
 import { VehicleRegistry } from "@/features/vehicle-registry";
 import { PlaybackFpsBadge, TransportBar } from "@/features/video-transport";
 import type { CrossingEvent, Point, Preset } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
 import { Button } from "@/shared/ui/Button";
-import { Tabs } from "@/shared/ui/Tabs";
 import { MetricCard } from "@/shared/ui/MetricCard";
 
 import { useAnalysisSession } from "../model/useAnalysisSession";
 import { PlaybackEndedBanner, StaleResultBanner } from "./StaleResultBanner";
 
 /**
- * L'histogramme est **chargé paresseusement** : il n'apparaît qu'après une analyse,
- * et le faire payer au premier chargement taxerait tous ceux qui n'analysent rien.
+ * Les deux graphiques sont **chargés paresseusement** : ils n'apparaissent
+ * qu'après une analyse, et les faire payer au premier chargement taxerait tous
+ * ceux qui n'analysent rien.
  */
-const FlowHistogram = lazy(() =>
-  import("@/features/results-dashboard/ui/FlowHistogram").then((module) => ({
-    default: module.FlowHistogram,
+const LineFlowChart = lazy(() =>
+  import("@/features/results-dashboard/ui/LineFlowChart").then((module) => ({
+    default: module.LineFlowChart,
+  })),
+);
+const ClassEntriesChart = lazy(() =>
+  import("@/features/results-dashboard/ui/ClassEntriesChart").then((module) => ({
+    default: module.ClassEntriesChart,
   })),
 );
 
@@ -136,24 +136,6 @@ export function StudioPage() {
   const media = useMediaSource();
   const [geometry, dispatch] = useReducer(geometryReducer, EMPTY_GEOMETRY);
   const [scene, setScene] = useState<SceneSize | null>(null);
-  /**
-   * Une vidéo est-elle **réellement chargée** ?
-   *
-   * Distinct de `scene`, qui peut être amorcé depuis les dimensions du résultat sur
-   * une analyse rouverte dont la vidéo a été purgée. Là, la géométrie s'affiche —
-   * c'est voulu — mais il n'y a nulle part où déplacer la lecture, et une
-   * chronologie cliquable qui ne déplace rien serait pire qu'une chronologie inerte
-   * qui dit pourquoi.
-   */
-  const [videoLoaded, setVideoLoaded] = useState(false);
-  /**
-   * Onglet de détail ouvert sous la vidéo.
-   *
-   * Non persisté, et par défaut la répartition : c'est la lecture la plus courante
-   * d'un résultat, et retrouver l'écran sur « Registre » après un rechargement
-   * obligerait à revenir en arrière à chaque fois.
-   */
-  const [detailTab, setDetailTab] = useState("repartition");
   const [ended, setEnded] = useState(false);
   const [presetsOpen, setPresetsOpen] = useState(false);
 
@@ -290,28 +272,6 @@ export function StudioPage() {
     void element.play().catch(() => undefined);
   }, []);
 
-  /**
-   * Déplacer la lecture à un instant précis — ce que la chronologie déclenche.
-   *
-   * **Une écriture directe sur la balise, exactement comme `replayFromStart`.**
-   * Remonter l'état de `useVideoTransport` jusqu'ici pour obtenir un `seek()` ferait
-   * re-rendre tout l'écran, `GeometryCanvas` compris, soixante fois par seconde
-   * pendant la lecture : c'est le bug de performance corrigé par `f9a4da1`, et il
-   * serait rouvert pour un geste qui n'a besoin d'aucun état. La boucle rAF de
-   * `useReplay` voit le déplacement à l'image suivante et met les compteurs à jour.
-   *
-   * Ne fait rien sans vidéo jouable : sur une analyse rouverte dont la vidéo a été
-   * purgée, `duration` vaut `NaN` et écrire `currentTime` serait sans effet — mais
-   * la chronologie est de toute façon rendue inerte dans ce cas.
-   */
-  const seekTo = useCallback((timestampMs: number) => {
-    const element = video.current;
-    if (element === null || !Number.isFinite(element.duration)) return;
-    element.pause();
-    element.currentTime = Math.max(0, timestampMs / 1000);
-    setEnded(false);
-  }, []);
-
   // La **référence**, pas `video.current` : ce dernier était lu au rendu, donc le
   // hook pouvait s'abonner à `null` et ne jamais se réabonner — la relecture restait
   // alors figée sur les chiffres finaux, justes et immobiles.
@@ -341,11 +301,6 @@ export function StudioPage() {
     (size: SceneSize) => {
       if (size.width === 0 || size.height === 0) return;
       setScene(size);
-      // Distinct de `scene`, qui peut désormais être amorcé depuis le résultat sans
-      // qu'aucune vidéo n'existe. Ce drapeau-ci dit « une vidéo est réellement
-      // chargée », donc « on peut s'y déplacer » — la question que pose la
-      // chronologie.
-      setVideoLoaded(true);
       // Un écran sans ligne ne compte rien, et l'utilisateur qui obtient zéro ne
       // devine pas que c'est parce qu'il n'a rien tracé.
       if (!hasGeometry(geometry)) {
@@ -369,7 +324,6 @@ export function StudioPage() {
     live.stop();
     dispatch({ type: "clear" });
     setScene(null);
-    setVideoLoaded(false);
     setEnded(false);
     session.reset();
   }, [session, live]);
@@ -432,12 +386,20 @@ export function StudioPage() {
     [geometry.lines],
   );
 
-  const buckets = useMemo(
+  /**
+   * La classe personne a-t-elle été cochée pour cette analyse ?
+   *
+   * Décidé ici, pas dans `results-dashboard` : cette feature ne connaît que
+   * `AnalysisStats`/`CountingLine[]`, jamais le catalogue de classes ni les
+   * réglages — même règle que `ClassPicker` dans `analysis-settings`, dont ce
+   * calcul reprend le filtre par catégorie.
+   */
+  const hasPersonClass = useMemo(
     () =>
-      session.result === null
-        ? []
-        : flowBuckets(session.result.crossings, session.result.video.durationMs),
-    [session.result],
+      (detectableClasses ?? []).some(
+        (entry) => entry.category === "person" && settings.classIds.includes(entry.id),
+      ),
+    [detectableClasses, settings.classIds],
   );
 
   const selectedId = geometry.selection.kind === "none" ? null : geometry.selection.id;
@@ -445,19 +407,6 @@ export function StudioPage() {
   const analysing = session.job !== null && !isTerminal(session.job.status);
   const busy = analysing || session.starting || live.active;
 
-  /**
-   * La chronologie peut-elle déplacer la lecture ?
-   *
-   * Trois conditions, chacune pour une raison distincte :
-   *
-   * - **une vidéo chargée**, sinon il n'y a rien à déplacer ;
-   * - **pas une caméra** : un flux direct n'a pas de position dans le temps ;
-   * - **analyse terminée**, comme demandé — et ce n'est pas qu'une règle produit.
-   *   Pendant une analyse suivie, `useFollowAnalysis` cale la vidéo sur l'image
-   *   analysée à chaque aperçu : un clic dans la chronologie serait annulé une
-   *   fraction de seconde plus tard, ce qui se lirait comme un bouton cassé.
-   */
-  const canSeekTimeline = videoLoaded && !isCamera && !busy;
   /**
    * L'analyse a échoué — **et le dire ne dépend plus de `busy`**.
    *
@@ -835,11 +784,7 @@ export function StudioPage() {
             <ResultsDashboard
               stats={resultStats.stats}
               lines={geometry.lines}
-              zones={geometry.zones}
               processingFps={resultStats.processingFps}
-              replaying={resultStats.replaying}
-              layout="column"
-              cardsOnly
             />
           )}
 
@@ -923,117 +868,60 @@ export function StudioPage() {
         </aside>
       </div>
 
-      {/* ── Sous la vidéo : la chronologie, puis les détails en onglets ──────
-          La chronologie reste **toujours visible** parce que c'est un outil de
-          navigation : l'enfouir dans un onglet obligerait à en changer pour se
-          déplacer, puis à revenir pour lire ce qu'on cherchait. Le reste — qui se
-          consulte, ne se pilote pas — passe en onglets, ce qui remplace une page de
-          quatre sections empilées par une seule zone de lecture. */}
+      {/* ── Sous la vidéo : Répartition, Statistique, Registre ──────────────
+          Remplace l'ancienne chronologie cliquable et ses cinq onglets : trop
+          de détail brut pour une lecture d'ensemble. La barre de lecture
+          standard suffit à se déplacer dans le temps ; ce qui reste ici se
+          consulte, ne se pilote plus. */}
       {session.result !== null && replay.stats !== null && (
         <>
-          <CrossingTimeline
-            events={session.result.crossings}
-            lines={geometry.lines}
-            durationMs={session.result.video.durationMs}
-            currentTimeMs={replay.timeMs}
-            // Toute la liste, et non `crossingsUpTo` : c'est un moyen de navigation,
-            // donc masquer ce qui suit la tête de lecture empêcherait précisément
-            // d'y aller. La position se lit à la mise en évidence, pas à la
-            // troncature.
-            //
-            // Inerte sans vidéo jouable : une analyse rouverte dont la vidéo a été
-            // purgée garde tous ses chiffres, mais il n'y a rien à déplacer.
-            onSeek={canSeekTimeline ? seekTo : undefined}
-            inertReason={
-              canSeekTimeline
-                ? "Le déplacement s'active une fois l'analyse terminée, avec sa vidéo."
-                : undefined
-            }
-          />
+          <ClassEntriesGrid stats={replay.stats} lines={geometry.lines} includePerson={hasPersonClass} />
 
-          <Tabs
-            label="Détail des résultats"
-            activeId={detailTab}
-            onSelect={setDetailTab}
-            tabs={[
-              {
-                id: "repartition",
-                label: "Répartition",
-                content: <ClassBreakdown stats={replay.stats} lines={geometry.lines} />,
-              },
-              {
-                id: "geometrie",
-                label: "Par ligne & sens",
-                badge: geometry.lines.length + geometry.zones.length,
-                content: (
-                  <LineAndZoneDetail
-                    stats={replay.stats}
-                    lines={geometry.lines}
-                    zones={geometry.zones}
-                    replaying
-                  />
-                ),
-              },
-              {
-                id: "mouvements",
-                label: "Mouvements",
-                content: (
-                  <MovementMatrix
-                    vehicles={vehiclesAt(session.result, replay.timeMs)}
-                    lines={geometry.lines}
-                    available
-                  />
-                ),
-              },
-              {
-                id: "flux",
-                label: "Flux",
-                content: (
-                  <Suspense fallback={<div className="h-24 rounded-card bg-surface" />}>
-                    <FlowHistogram
-                      buckets={buckets}
-                      bucketMs={chooseBucketMs(session.result.video.durationMs)}
-                      // Le même geste que la chronologie, sur l'autre lecture des
-                      // mêmes événements : le pic d'activité est justement là où
-                      // l'on veut aller.
-                      onSeek={canSeekTimeline ? seekTo : undefined}
-                    />
-                  </Suspense>
-                ),
-              },
-              {
-                id: "registre",
-                label: "Registre",
-                badge: session.result.vehicles.length,
-                content: (
-                  <VehicleRegistry
-                    result={session.result}
-                    vehicles={vehiclesAt(session.result, replay.timeMs)}
-                    lines={geometry.lines}
-                    // Suit le réglage réel : la note expliquant les px/s ne doit
-                    // apparaître que quand l'échelle manque **effectivement**.
-                    hasScale={settings.pixelsPerMeter !== null && settings.pixelsPerMeter > 0}
-                  />
-                ),
-              },
-            ]}
+          <LineFlowDashboard stats={replay.stats} lines={geometry.lines} />
+
+          {/* Deux camemberts côte à côte : la même question, « quelle part »,
+              posée sur deux axes différents — par ligne, par type de
+              véhicule. */}
+          <Suspense
+            fallback={
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="h-48 rounded-card bg-surface" />
+                <div className="h-48 rounded-card bg-surface" />
+              </div>
+            }
+          >
+            <div className="grid gap-3 sm:grid-cols-2">
+              <LineFlowChart stats={replay.stats} lines={geometry.lines} />
+              <ClassEntriesChart
+                entries={entriesByClass(replay.stats, geometry.lines)}
+                classes={hasPersonClass ? [...VEHICLE_CLASSES, "person"] : VEHICLE_CLASSES}
+              />
+            </div>
+          </Suspense>
+
+          {/* Pas de titre « Registre » ici : `VehicleRegistry` porte déjà le
+              sien (« Registre des véhicules »), et l'empiler donnait deux
+              titres pour une seule section. */}
+          <VehicleRegistry
+            result={session.result}
+            vehicles={vehiclesAt(session.result, replay.timeMs)}
+            lines={geometry.lines}
+            // Suit le réglage réel : la note expliquant les px/s ne doit
+            // apparaître que quand l'échelle manque **effectivement**.
+            hasScale={settings.pixelsPerMeter !== null && settings.pixelsPerMeter > 0}
           />
         </>
       )}
 
-      {/* Pendant l'analyse et en direct : le journal, sans onglets. Ni histogramme
-          ni registre — les deux dérivent de la timeline complète, qui n'existe qu'à
-          la fin, et un histogramme vide se lirait comme « aucun véhicule ». */}
+      {/* Pendant l'analyse et en direct : le journal, et la répartition qui se
+          met à jour en direct. Ni Statistique ni Registre : le premier
+          afficherait un solde et une fin de graphique qui ne sont pas encore
+          significatifs, le second demande le résultat complet que l'aperçu SSE
+          ne transporte pas. */}
       {session.result === null && resultStats !== null && (
         <>
-          <ClassBreakdown stats={resultStats.stats} lines={geometry.lines} />
+          <ClassEntriesGrid stats={resultStats.stats} lines={geometry.lines} includePerson={hasPersonClass} />
           <CrossingLog events={session.events} lineNames={lineNames} />
-          <LineAndZoneDetail
-            stats={resultStats.stats}
-            lines={geometry.lines}
-            zones={geometry.zones}
-            replaying={resultStats.replaying}
-          />
         </>
       )}
 

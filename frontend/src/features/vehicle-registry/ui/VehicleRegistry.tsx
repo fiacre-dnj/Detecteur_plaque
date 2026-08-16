@@ -18,7 +18,7 @@
 
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
-import { formatSceneTime, formatScore, formatSpeed } from "@/features/results-dashboard";
+import { classLabel, formatSceneTime, formatScore, formatSpeed } from "@/features/results-dashboard";
 import type { AnalysisResult, CountingLine, VehicleRecord } from "@/shared/api/contracts";
 import { classColor } from "@/shared/config/palettes";
 import { crossingDirectionName, directionArrow, lineName } from "@/shared/lib/directions";
@@ -123,9 +123,11 @@ export function VehicleRegistry({
       <thead>
         <tr className="text-start">
           <Th className="w-12">#</Th>
-          <Th className="w-24">Type</Th>
+          <Th className="w-28">Type</Th>
           <Th className="w-32">Vu de / à</Th>
+          <Th className="w-16">Durée</Th>
           <Th>Lignes franchies</Th>
+          <Th className="w-28">Zones</Th>
           <Th className="w-24">Vitesse</Th>
           {/* « Passages » remplace « Ré-id » : la ré-identification n'existe plus
               (ADR 0016), et le nombre de franchissements d'un véhicule est
@@ -136,38 +138,49 @@ export function VehicleRegistry({
               lignes casserait `ROW_HEIGHT`, dont la virtualisation dépend. `w-20`
               tenait « 71 % » mais ni `AB-123-CD` ni « illisible ». */}
           <Th className="w-28">Plaque</Th>
+          {/* Détection et lecture sont deux confiances distinctes du même
+              véhicule : `bestPlateScore` dit « à quel point le rectangle est bien
+              une plaque », `plateTextScore` dit « à quel point le texte lu est
+              fiable ». Les confondre masquerait le cas d'une plaque bien
+              localisée mais illisible, ou l'inverse. */}
+          <Th className="w-20">Conf. détection</Th>
           <Th className="w-20">Conf. lecture</Th>
         </tr>
       </thead>
       <tbody>
-        {rows.map((vehicle) => (
+        {rows.map((vehicle, index) => (
           <tr
             key={vehicle.globalId}
             style={{ height: ROW_HEIGHT }}
-            className="border-t border-line/40"
+            className={`border-t border-line/40 transition-colors hover:bg-elevated/60 ${
+              index % 2 === 1 ? "bg-elevated/20" : ""
+            }`}
           >
             <Td className="font-bold text-ink tabular">{vehicle.globalId}</Td>
             <Td>
               <span className="flex items-center gap-1.5">
                 <span
                   aria-hidden="true"
-                  className="size-2 rounded-badge"
+                  className="size-2 shrink-0 rounded-badge"
                   style={{ backgroundColor: classColor(vehicle.label) }}
                 />
-                {vehicle.label}
+                {classLabel(vehicle.label)}
               </span>
             </Td>
             <Td className="tabular">
               {formatSceneTime(vehicle.firstSeenMs)} → {formatSceneTime(vehicle.lastSeenMs)}
+            </Td>
+            <Td className="tabular text-ink-muted">
+              {formatSceneTime(vehicle.lastSeenMs - vehicle.firstSeenMs)}
             </Td>
             <Td>
               {vehicle.crossedLines.length === 0 ? (
                 <span className="text-ink-dim">—</span>
               ) : (
                 <span className="flex flex-wrap gap-1">
-                  {vehicle.crossedLines.map((crossing, index) => (
+                  {vehicle.crossedLines.map((crossing, crossingIndex) => (
                     <span
-                      key={`${crossing.lineId}-${crossing.timestampMs}-${index}`}
+                      key={`${crossing.lineId}-${crossing.timestampMs}-${crossingIndex}`}
                       // L'infobulle donne la ligne, l'instant **et** le sens nommé :
                       // c'est ce qui permet de retrouver le passage dans la vidéo.
                       title={`${lineName(lines, crossing.lineId)} à ${formatSceneTime(crossing.timestampMs)}, ${crossingDirectionName(lines, crossing.lineId, crossing.direction) ?? `sens ${directionArrow(crossing.direction)}`}`}
@@ -182,6 +195,13 @@ export function VehicleRegistry({
                     </span>
                   ))}
                 </span>
+              )}
+            </Td>
+            <Td className="text-ink-muted">
+              {vehicle.zonesVisited.length === 0 ? (
+                <span className="text-ink-dim">—</span>
+              ) : (
+                vehicle.zonesVisited.join(", ")
               )}
             </Td>
             <Td className="tabular">
@@ -240,6 +260,7 @@ export function VehicleRegistry({
                       : plateCell(vehicle.plateText, vehicle.bestPlateScore)}
               </span>
             </Td>
+            <Td className="tabular">{formatScore(vehicle.bestPlateScore)}</Td>
             <Td className="tabular">{formatScore(vehicle.plateTextScore)}</Td>
           </tr>
         ))}
@@ -372,7 +393,10 @@ function Th({ children, className = "" }: { children: React.ReactNode; className
   return (
     <th
       scope="col"
-      className={`px-3 py-2 text-start text-micro font-semibold uppercase tracking-wider text-ink-dim ${className}`}
+      // `sticky top-0` : le tableau non virtualisé peut aussi dépasser la
+      // hauteur de l'écran (400 lignes, jusqu'à 200 avant virtualisation) — les
+      // en-têtes doivent rester lisibles pendant le défilement.
+      className={`sticky top-0 z-10 bg-surface px-3 py-2.5 text-start text-micro font-semibold uppercase tracking-wider text-ink-dim ${className}`}
     >
       {children}
     </th>
@@ -380,5 +404,5 @@ function Th({ children, className = "" }: { children: React.ReactNode; className
 }
 
 function Td({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <td className={`px-3 py-1.5 text-ink-muted ${className}`}>{children}</td>;
+  return <td className={`px-3 py-2 text-ink-muted ${className}`}>{children}</td>;
 }
