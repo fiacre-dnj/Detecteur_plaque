@@ -19,6 +19,7 @@ import {
   formatCrossingRate,
   formatFrameLatency,
   formatSceneTime,
+  formatSceneTimePrecise,
   formatScore,
   formatSpeed,
   plural,
@@ -148,6 +149,33 @@ describe("formatSceneTime — millisecondes de scène", () => {
     // La confusion d'un facteur 1000 est exactement le genre d'erreur invisible
     // que ce test rend impossible : 60 000 ms = une minute.
     expect(formatSceneTime(60_000)).toBe("01:00");
+  });
+});
+
+describe("formatSceneTimePrecise — l'instant d'un franchissement", () => {
+  it("formate au dixième de seconde, virgule décimale française", () => {
+    expect(formatSceneTimePrecise(0)).toBe("00:00,0");
+    expect(formatSceneTimePrecise(75_400)).toBe("01:15,4");
+    expect(formatSceneTimePrecise(440)).toBe("00:00,4");
+  });
+
+  it("distingue deux franchissements de la même seconde", () => {
+    // La raison d'être de cette fonction : deux passages du même véhicule sur
+    // deux lignes voisines tombent dans la même seconde, et `formatSceneTime`
+    // les afficherait à la même heure — donc indistinguables.
+    expect(formatSceneTimePrecise(3_200)).not.toBe(formatSceneTimePrecise(3_700));
+  });
+
+  it("tronque au lieu d'arrondir, comme formatSceneTime", () => {
+    // Sinon un franchissement à 59 950 ms paraîtrait tomber après une fenêtre de
+    // présence qui, elle, se termine à 00:59.
+    expect(formatSceneTimePrecise(59_950)).toBe("00:59,9");
+    expect(formatSceneTime(59_950)).toBe("00:59");
+  });
+
+  it("rend --:-- pour une valeur non exploitable", () => {
+    expect(formatSceneTimePrecise(Number.NaN)).toBe("--:--");
+    expect(formatSceneTimePrecise(-1)).toBe("--:--");
   });
 });
 

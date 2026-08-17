@@ -633,7 +633,7 @@ class AnalysisSession:
             ),
         )
 
-    def vehicles(self) -> tuple[VehicleRecord, ...]:
+    def vehicles(self, *, crossed_only: bool = False) -> tuple[VehicleRecord, ...]:
         """Le registre : une ligne par véhicule **compté**, triée par numéro.
 
         Les cartes de synthèse disent *combien*, le registre dit *lesquels*. C'est
@@ -645,12 +645,27 @@ class AnalysisSession:
         a bien reçu un numéro — il lui fallait un agrégat pour voter sa plaque — mais
         elle n'est pas un véhicule. La publier remplirait le registre de fantômes que
         rien à l'écran ne justifierait.
+
+        `crossed_only` restreint aux véhicules ayant franchi au moins une ligne,
+        tous sens confondus — exactement la population que le registre affiche
+        depuis ADR 0023. Le résultat archivé, lui, garde **tout** objet suivi
+        confirmé : le filtre existe pour l'aperçu d'une analyse en cours, qui
+        republie la liste entière plusieurs fois par minute et n'a aucune raison de
+        transporter des lignes que l'écran écarte. Il ne change donc rien à ce qui
+        s'affiche, seulement à ce qui voyage — et l'égalité
+        `len(vehicles()) == tracked_vehicles` ne vaut que sans lui.
         """
         records: list[VehicleRecord] = []
         for global_id in sorted(self._aggregates):
             if not self._numbering.is_confirmed(global_id):
                 continue
             aggregate = self._aggregates[global_id]
+            # **Avant** le vote de plaque et la moyenne de vitesse, pas après : sur
+            # une scène réelle deux tiers des objets suivis n'ont franchi aucune
+            # ligne, et construire leurs enregistrements pour les jeter aussitôt
+            # taxerait chaque aperçu au profit de personne.
+            if crossed_only and not aggregate.crossings:
+                continue
             average = self._speed.average_px_s(global_id)
             reason = (
                 None

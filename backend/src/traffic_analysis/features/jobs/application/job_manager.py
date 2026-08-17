@@ -36,6 +36,7 @@ from traffic_analysis.features.counting.application.serializers import (
     serialise_result,
     serialise_stats,
     serialise_track,
+    serialise_vehicle,
     serialise_zone_event,
 )
 from traffic_analysis.features.jobs.application.progress_hub import ProgressEvent, ProgressHub
@@ -87,6 +88,7 @@ class JobManager:
         "_preparer",
         "_preview_interval_paced_s",
         "_preview_interval_s",
+        "_preview_vehicles_interval_s",
         "_repository",
         "_result_store",
         "_semaphore",
@@ -105,6 +107,7 @@ class JobManager:
         max_concurrent_jobs: int = 1,
         preview_interval_ms: int = 200,
         preview_interval_paced_ms: int = 100,
+        preview_vehicles_interval_ms: int = 1000,
     ) -> None:
         self._repository = repository
         self._result_store = result_store
@@ -125,6 +128,15 @@ class JobManager:
         # resserrer quand la cadence est bornée. `run_video` retient le minimum des
         # deux, donc un déploiement ne peut pas desserrer l'aperçu par ce champ.
         self._preview_interval_paced_s = preview_interval_paced_ms / 1000.0
+        # La cadence du **registre** dans l'aperçu, indépendante des deux
+        # précédentes : ce qu'elle borne n'est pas le même volume. Les boîtes d'une
+        # image sont une poignée ; le registre grossit avec l'analyse. `0` le retire
+        # de l'aperçu — même convention que `preview_interval_ms` ci-dessus, et à
+        # `None` près : côté service, `0.0` voudrait dire « à chaque aperçu ». Cela
+        # ne retire jamais l'aperçu lui-même, qui ne dépend que du réglage au-dessus.
+        self._preview_vehicles_interval_s: float | None = (
+            preview_vehicles_interval_ms / 1000.0 if preview_vehicles_interval_ms > 0 else None
+        )
         self._semaphore: asyncio.Semaphore | None = None
         self._cancellations: dict[str, threading.Event] = {}
         # Un événement **posé** signifie « suspendu ». Comme pour l'annulation, la
@@ -494,6 +506,7 @@ class JobManager:
                 on_preview=None if interval is None else on_preview,
                 preview_interval_s=interval or 0.0,
                 paced_preview_interval_s=self._preview_interval_paced_s,
+                preview_vehicles_interval_s=self._preview_vehicles_interval_s,
                 is_cancelled=cancellation.is_set,
                 wait_while_paused=wait_while_paused,
             )
@@ -614,6 +627,17 @@ class JobManager:
             "crossings": [serialise_crossing(event) for event in sample.crossings],
             "zoneEvents": [serialise_zone_event(event) for event in sample.zone_events],
             "stats": serialise_stats(sample.stats),
+            # Le registre en cours de constitution, par **le même sérialiseur** que
+            # le résultat final : c'est ce qui garantit que le tableau affiché
+            # pendant l'analyse et celui affiché après portent les mêmes champs, et
+            # que le navigateur n'a aucun agrégat à reconstruire de son côté.
+            #
+            # `null` veut dire **inchangé** — le registre est republié à une cadence
+            # plus lente que les boîtes — et jamais « aucun véhicule », que dit une
+            # liste vide. Le client conserve alors la dernière liste reçue.
+            "vehicles": None
+            if sample.vehicles is None
+            else [serialise_vehicle(record) for record in sample.vehicles],
         }
 
     @staticmethod

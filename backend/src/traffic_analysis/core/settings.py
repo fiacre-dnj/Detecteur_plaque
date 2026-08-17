@@ -365,6 +365,21 @@ class Settings(BaseSettings):
     #: **N'élargit jamais** `preview_interval_ms` : le minimum des deux est retenu.
     #: Un déploiement qui a délibérément desserré l'aperçu garde son arbitrage.
     preview_interval_paced_ms: int = Field(100, ge=0, le=5000)
+    #: Intervalle de republication du **registre des véhicules** dans l'aperçu, en
+    #: millisecondes. C'est lui qui permet au registre et à la statistique de se
+    #: remplir *pendant* l'analyse au lieu d'attendre la fin.
+    #:
+    #: Une cadence à part, et dix fois plus lente que celle des boîtes, parce que
+    #: les deux volumes ne se comparent pas : les pistes d'une image sont une
+    #: poignée, le registre **grossit** avec l'analyse — 350 octets par véhicule
+    #: mesurés sur les résultats archivés de ce dépôt. Le republier à la cadence des
+    #: boîtes ferait donc croître le débit du flux avec l'avancement, pour un tableau
+    #: que personne ne lit dix fois par seconde.
+    #:
+    #: `0` le retire de l'aperçu — le registre reste alors vide jusqu'à la fin —
+    #: sans retirer l'aperçu, qui dépend de `preview_interval_ms` seul. L'aperçu
+    #: **final** porte le registre quelle que soit cette valeur.
+    preview_vehicles_interval_ms: int = Field(1000, ge=0, le=30000)
     job_ttl_minutes: int = Field(1440, ge=1)
     #: Durée de vie de la **vidéo déposée**, distincte de celle du job.
     #:

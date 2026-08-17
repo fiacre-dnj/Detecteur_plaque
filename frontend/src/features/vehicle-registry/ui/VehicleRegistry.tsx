@@ -26,8 +26,19 @@
 
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
-import { classLabel, formatSceneTime, formatScore, formatSpeed } from "@/features/results-dashboard";
-import type { AnalysisResult, CountingLine, VehicleRecord } from "@/shared/api/contracts";
+import {
+  classLabel,
+  formatSceneTime,
+  formatSceneTimePrecise,
+  formatScore,
+  formatSpeed,
+} from "@/features/results-dashboard";
+import type {
+  AnalysisResult,
+  CountingLine,
+  DirectionRole,
+  VehicleRecord,
+} from "@/shared/api/contracts";
 import { classColor } from "@/shared/config/palettes";
 import { crossingDirectionName, directionArrow, lineName } from "@/shared/lib/directions";
 import { plateCell, plateTitle } from "@/shared/lib/plate";
@@ -42,6 +53,7 @@ import {
 } from "../model/exportCsv";
 import { filterByPlate } from "../model/filterPlate";
 import { plateBestGuessMessage, plateUnreadLabel, plateUnreadMessage } from "../model/plateUnread";
+import { crossingsWithRole } from "../model/roleCrossings";
 import { INITIAL_ROWS, ROW_HEIGHT, shouldVirtualise, visibleWindow } from "../model/virtualise";
 
 interface VehicleRegistryProps {
@@ -133,9 +145,25 @@ export function VehicleRegistry({
         <tr className="text-start">
           <Th className="w-12">#</Th>
           <Th className="w-28">Type</Th>
-          <Th className="w-32">Vu de / à</Th>
-          <Th className="w-16">Durée</Th>
+          {/* « Présent de / à » et non « Vu de / à » : le mot disait *que* le
+              véhicule avait été vu, pas *quoi* — et se lisait comme l'heure du
+              franchissement, que les deux colonnes « Entrée » et « Sortie »
+              portent maintenant. Ce sont les bornes de la piste dans le champ de
+              la caméra, franchissement ou pas. */}
+          <Th className="w-32">Présent de / à</Th>
+          {/* Précisé pour la même raison : la durée est un temps de **présence à
+              l'écran**, jamais un temps de trajet entre deux lignes. */}
+          <Th className="w-20">Durée à l'écran</Th>
           <Th>Lignes franchies</Th>
+          {/* Les instants des franchissements, séparés par rôle. « Lignes
+              franchies » dit *par où*, ces deux colonnes disent *quand* — l'heure
+              n'était lisible qu'en survolant chaque puce une par une.
+
+              Deux colonnes et non une : entrée et sortie répondent à deux
+              questions, et les empiler dans une cellule casserait `ROW_HEIGHT`,
+              dont la virtualisation dépend. */}
+          <Th className="w-24">Entrée</Th>
+          <Th className="w-24">Sortie</Th>
           <Th className="w-28">Zones</Th>
           <Th className="w-24">Vitesse</Th>
           {/* « Passages » remplace « Ré-id » : la ré-identification n'existe plus
@@ -206,6 +234,8 @@ export function VehicleRegistry({
                 </span>
               )}
             </Td>
+            <RoleTimeCell vehicle={vehicle} lines={lines} role="entry" />
+            <RoleTimeCell vehicle={vehicle} lines={lines} role="exit" />
             <Td className="text-ink-muted">
               {vehicle.zonesVisited.length === 0 ? (
                 <span className="text-ink-dim">—</span>
@@ -414,4 +444,61 @@ function Th({ children, className = "" }: { children: React.ReactNode; className
 
 function Td({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <td className={`px-3 py-2 text-ink-muted ${className}`}>{children}</td>;
+}
+
+/**
+ * L'instant du franchissement d'un rôle — la cellule des colonnes « Entrée » et
+ * « Sortie ».
+ *
+ * Au dixième de seconde (`formatSceneTimePrecise`), parce que deux passages du même
+ * véhicule tombent régulièrement dans la même seconde et qu'un arrondi les rendrait
+ * indistinguables.
+ *
+ * Quand un rôle porte plusieurs franchissements — aller-retour, deux lignes
+ * d'entrée en travers de la même voie, piste coupée par une occlusion (invariant 6)
+ * — la cellule montre le **premier** et annonce les autres par un « +N » : elle
+ * n'en fusionne aucun, et l'infobulle les liste tous avec leur ligne. Prendre le
+ * premier et taire le reste laisserait croire à un franchissement unique.
+ *
+ * `—` couvre **deux** cas que rien ne distingue ici, et c'est assumé : le véhicule
+ * n'a rien franchi dans ce rôle, ou la ligne qu'il a franchie n'est plus dans le
+ * tracé. Le second reste visible dans « Lignes franchies », qui affiche alors la
+ * flèche brute — les inventer une heure serait pire.
+ */
+function RoleTimeCell({
+  vehicle,
+  lines,
+  role,
+}: {
+  vehicle: VehicleRecord;
+  lines: readonly CountingLine[];
+  role: DirectionRole;
+}) {
+  const crossings = crossingsWithRole(vehicle, lines, role);
+  const first = crossings.at(0);
+
+  if (first === undefined) {
+    return (
+      <Td className="tabular">
+        <span className="text-ink-dim">—</span>
+      </Td>
+    );
+  }
+
+  const others = crossings.length - 1;
+  const title = crossings
+    .map(
+      (crossing) =>
+        `${lineName(lines, crossing.lineId)} à ${formatSceneTimePrecise(crossing.timestampMs)}`,
+    )
+    .join(" · ");
+
+  return (
+    <Td className="tabular text-ink">
+      <span title={title}>
+        {formatSceneTimePrecise(first.timestampMs)}
+        {others > 0 && <span className="ms-1 text-micro text-ink-dim">+{others}</span>}
+      </span>
+    </Td>
+  );
 }

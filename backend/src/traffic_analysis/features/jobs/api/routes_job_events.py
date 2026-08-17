@@ -58,7 +58,7 @@ SSE_HEADERS = {
         "event: preview\n"
         'data: {"jobId":"…","frameIndex":120,"timestampMs":4000.0,'
         '"frameWidth":1280,"frameHeight":720,"tracks":[…],"crossings":[…],'
-        '"zoneEvents":[…],"stats":{…}}\n\n'
+        '"zoneEvents":[…],"stats":{…},"vehicles":[…]}\n\n'
         "event: end\n"
         'data: {"jobId":"…","status":"done","progress":1.0,…}\n'
         "```\n\n"
@@ -69,6 +69,13 @@ SSE_HEADERS = {
         "`TRAFFIC_PREVIEW_INTERVAL_MS` millisecondes (0 = désactivé), n'est "
         "jamais persisté, et **un client peut l'ignorer entièrement** : la "
         "vérité de l'avancement reste `progress` et le sondage.\n\n"
+        "`vehicles` est le **registre en cours de constitution** — les mêmes "
+        "objets que `vehicles` du résultat final, restreints à ceux ayant "
+        "franchi au moins une ligne. Il est republié à sa propre cadence, "
+        "`TRAFFIC_PREVIEW_VEHICLES_INTERVAL_MS` (0 = jamais), plus lente que "
+        "celle des boîtes parce qu'il grossit avec l'analyse. **`null` signifie "
+        "« inchangé depuis l'aperçu précédent »**, jamais « aucun véhicule » — "
+        "cela, c'est une liste vide. L'aperçu final le porte toujours.\n\n"
         "L'**état courant est toujours envoyé en premier**, y compris si le job "
         "est déjà terminé — auquel cas le flux envoie `progress` puis `end` et se "
         "ferme immédiatement.\n\n"

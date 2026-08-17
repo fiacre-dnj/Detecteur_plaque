@@ -277,6 +277,25 @@ class PreviewSample:
     elles permettent au client de comparer avec ce que sa balise `<video>` lui
     rapporte et de **refuser de dessiner** en cas de désaccord, plutôt que
     d'afficher des boîtes décalées que rien n'expliquerait (invariant 13).
+
+    `vehicles` est le **registre en cours de constitution** — les mêmes
+    `VehicleRecord` que le résultat final, par le même agrégat et le même
+    sérialiseur. C'est ce qui permet au registre et à la statistique de se
+    remplir pendant l'analyse au lieu d'attendre la fin, sans qu'aucun compteur
+    soit reconstruit côté navigateur : un agrégat parallèle divergerait, et le
+    vote de plaque comme le vote de classe ne sont pas reproductibles depuis les
+    seules images échantillonnées (invariants 3 et 4).
+
+    Deux réserves portées par ce champ, et il ne faut pas les confondre :
+
+    - **`None` veut dire « inchangé », jamais « aucun véhicule »** — une liste
+      vide dit cela. Le registre entier est republié à sa propre cadence, plus
+      lente que celle des boîtes : il grossit avec l'analyse, là où les pistes
+      d'une image restent une poignée. Le client conserve alors la dernière liste
+      reçue ;
+    - il ne porte que les véhicules **ayant franchi au moins une ligne**
+      (`crossed_only`), la population que l'écran affiche depuis ADR 0023. Le
+      résultat archivé, lui, garde tout objet suivi confirmé.
     """
 
     frame_index: int
@@ -287,6 +306,9 @@ class PreviewSample:
     crossings: tuple[CrossingEvent, ...]
     zone_events: tuple[ZoneEntryEvent, ...]
     stats: AnalysisStats
+    #: Le registre à cet instant, ou `None` s'il n'a pas été republié — voir la
+    #: docstring de la classe : `None` n'est pas une liste vide.
+    vehicles: tuple[VehicleRecord, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -55,7 +55,11 @@ def video(tmp_path: Path) -> Path:
 
 
 def _run(
-    video: Path, *, interval: float = EVERY_FRAME, steps: int = 12
+    video: Path,
+    *,
+    interval: float = EVERY_FRAME,
+    steps: int = 12,
+    vehicles_interval: float | None = EVERY_FRAME,
 ) -> tuple[list[PreviewSample], AnalysisResultData]:
     samples: list[PreviewSample] = []
     service = AnalysisService(FakeEngine(_frames(steps)))
@@ -65,6 +69,10 @@ def _run(
         CONFIG,
         on_preview=samples.append,
         preview_interval_s=interval,
+        # Comme `preview_interval_s` : la valeur nulle est le seul mode
+        # déterministe, donc le seul qu'un test puisse utiliser sans faire dépendre
+        # son verdict de la vitesse de la machine.
+        preview_vehicles_interval_s=vehicles_interval,
     )
     return samples, result
 
@@ -174,6 +182,65 @@ class TestCeQueLApercuPorte:
         for sample in samples:
             derived = sum(tally.total for tally in sample.stats.by_line.values())
             assert sample.stats.crossings == derived
+
+    def test_le_dernier_apercu_porte_le_meme_registre_que_le_resultat(self, video: Path) -> None:
+        """L'égalité qui rend le tableau des véhicules affichable **pendant** l'analyse.
+
+        Le registre publié par l'aperçu est celui du résultat, aux véhicules sans
+        franchissement près — que l'écran n'affiche pas (ADR 0023). S'il s'en
+        écartait, le tableau changerait sous les yeux de l'utilisateur à la seconde
+        où l'analyse se termine, et l'écart se lirait comme un bug de comptage.
+        """
+        samples, result = _run(video)
+
+        published = samples[-1].vehicles
+        assert published is not None
+        expected = tuple(record for record in result.vehicles if record.crossed_lines)
+        assert published == expected
+        # La restriction est réelle sur cette scène : les deux véhicules franchissent,
+        # donc l'égalité ci-dessus ne serait pas une tautologie si elle échouait.
+        assert [record.global_id for record in published] == [1, 2]
+
+    def test_un_intervalle_de_registre_jamais_atteint_ne_publie_que_le_final(
+        self, video: Path
+    ) -> None:
+        """`None` veut dire « inchangé », et l'aperçu final fait exception.
+
+        Deux propriétés en une, parce qu'elles se tiennent : le registre n'est pas
+        republié à la cadence des boîtes — il grossit avec l'analyse — mais la
+        dernière liste affichée doit être exacte, sinon elle reste en retard de
+        quelques véhicules sur les compteurs posés juste à côté.
+
+        `None` **n'est pas** une liste vide : celle-là dirait « aucun véhicule n'a
+        franchi de ligne », que le client afficherait comme telle au lieu de garder
+        ce qu'il sait déjà.
+        """
+        samples, _ = _run(video, vehicles_interval=NEVER)
+
+        # Le premier le porte : sinon l'écran resterait vide pendant tout
+        # l'intervalle, au moment précis où l'on regarde si quelque chose se passe.
+        assert samples[0].vehicles is not None
+        assert samples[-1].vehicles is not None
+        assert all(sample.vehicles is None for sample in samples[1:-1])
+
+    def test_un_registre_desactive_n_enleve_pas_l_apercu(self, video: Path) -> None:
+        """Les deux réglages sont indépendants.
+
+        Couper le registre allège le flux sans toucher aux boîtes : confondre les
+        deux ferait disparaître le canvas en croyant n'alléger que le tableau.
+
+        `None` désactive, `0.0` publie à chaque aperçu — la même convention que
+        `preview_interval_s`, où le zéro publie aussi chaque image. Deux paramètres
+        voisins où le zéro voudrait dire deux choses opposées seraient un piège.
+        """
+        samples, _ = _run(video, vehicles_interval=None)
+
+        assert len(samples) > 1
+        assert all(sample.tracks != () for sample in samples[:-1])
+        # L'aperçu final garde son registre même ici, sinon la fin d'analyse
+        # afficherait un tableau vide sous des compteurs remplis.
+        assert samples[-1].vehicles is not None
+        assert all(sample.vehicles is None for sample in samples[:-1])
 
     def test_l_horodatage_est_du_temps_de_scene(self, video: Path) -> None:
         """`frame_index / fps`, jamais l'horloge murale (invariant 1).
