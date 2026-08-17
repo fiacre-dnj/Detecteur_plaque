@@ -784,6 +784,29 @@ export interface JobPreview {
   crossings: CrossingEvent[];
   zoneEvents: ZoneEntryEvent[];
   stats: AnalysisStats;
+  /**
+   * Le **registre en cours de constitution** — ce qui permet au tableau des
+   * véhicules et à la statistique de se remplir *pendant* l'analyse.
+   *
+   * Les mêmes `VehicleRecord` que le résultat final, par le même agrégat et le
+   * même sérialiseur. C'est ce qui interdit la divergence : reconstruire ces
+   * lignes côté navigateur depuis les images échantillonnées donnerait des
+   * premières/dernières apparitions arrondies à la cadence de l'aperçu, et ne
+   * saurait reproduire ni le vote de classe ni le vote de plaque (invariants 3
+   * et 4).
+   *
+   * **`null` veut dire « inchangé depuis l'aperçu précédent »**, et jamais
+   * « aucun véhicule » — cela, c'est un tableau vide. Le registre est republié à
+   * sa propre cadence, plus lente que celle des boîtes parce qu'il grossit avec
+   * l'analyse ; `useJobProgress` reporte donc la dernière liste reçue, et les
+   * consommateurs ne voient jamais ce `null`.
+   *
+   * Restreint aux véhicules ayant **franchi au moins une ligne**, tous sens
+   * confondus : exactement la population que l'écran affiche depuis ADR 0023. Le
+   * `vehicles` du résultat final, lui, porte tout objet suivi confirmé — d'où
+   * deux champs de même nom et de même forme, mais pas de même population.
+   */
+  vehicles: VehicleRecord[] | null;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

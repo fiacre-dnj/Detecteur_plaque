@@ -439,9 +439,12 @@ describe("contrat du diagnostic", () => {
 
 describe("contrat de l'aperçu d'une analyse en cours", () => {
   /**
-   * Produite par `JobManager._preview_payload` sur une analyse factice — donc
-   * par le code réellement servi, pas par une main humaine qui recopierait des
-   * noms de champs.
+   * Assemblée par `scripts/build_fixtures.py` depuis une analyse factice passée
+   * par les **vrais sérialiseurs** — pas par une main humaine qui recopierait des
+   * noms de champs. La forme des pistes, des franchissements, des compteurs et
+   * des véhicules vient donc du code réellement servi ; seul l'emballage de
+   * premier niveau est monté par le script, à l'identique de
+   * `JobManager._preview_payload`.
    */
   const preview: JobPreview = previewFixture as JobPreview;
 
@@ -455,8 +458,39 @@ describe("contrat de l'aperçu d'une analyse en cours", () => {
       "stats",
       "timestampMs",
       "tracks",
+      // Le registre en cours de constitution : ce champ est **tout** ce qui
+      // permet au tableau des véhicules de se remplir pendant l'analyse au lieu
+      // d'attendre le résultat complet.
+      "vehicles",
       "zoneEvents",
     ]);
+  });
+
+  it("décrit un véhicule exactement comme le registre du résultat", () => {
+    // La même égalité de forme que pour les pistes, et pour la même raison : le
+    // tableau affiché pendant l'analyse et celui affiché après sont **le même
+    // composant**. Un champ manquant ici — une durée, une plaque, une raison de
+    // non-lecture — donnerait une colonne vide qui se remplirait toute seule à la
+    // fin, ce qui se lit comme un bug de comptage.
+    const [live] = preview.vehicles ?? [];
+    const [archived] = result.vehicles;
+    expect(live).toBeDefined();
+    expect(archived).toBeDefined();
+    if (live === undefined || archived === undefined) return;
+
+    expect(Object.keys(live).sort()).toEqual(Object.keys(archived).sort());
+  });
+
+  it("ne publie que les véhicules ayant franchi une ligne", () => {
+    // La population que l'écran affiche (ADR 0023) — et la raison pour laquelle
+    // l'aperçu peut la republier plusieurs fois par minute sans faire grossir le
+    // flux avec l'analyse. Le résultat archivé, lui, garde tout objet suivi.
+    const live = preview.vehicles ?? [];
+    expect(live.length).toBeGreaterThan(0);
+    expect(live.every((vehicle) => vehicle.crossedLines.length > 0)).toBe(true);
+    // La restriction est réelle sur cette scène : trois objets suivis, deux qui
+    // franchissent. Sans cet écart, le test ci-dessus serait une tautologie.
+    expect(result.vehicles.length).toBeGreaterThan(live.length);
   });
 
   it("décrit une piste exactement comme la timeline, plaques comprises", () => {

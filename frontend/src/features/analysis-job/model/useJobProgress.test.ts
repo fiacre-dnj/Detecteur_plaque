@@ -10,9 +10,40 @@
 
 import { describe, expect, it } from "bun:test";
 
-import type { Job, JobStatus } from "@/shared/api/contracts";
+import type {
+  AnalysisStats,
+  Job,
+  JobPreview,
+  JobStatus,
+  VehicleRecord,
+} from "@/shared/api/contracts";
 
-import { POLL_INTERVAL_MS, mergeProgress, statusLabel } from "./useJobProgress";
+import { POLL_INTERVAL_MS, carryVehicles, mergeProgress, statusLabel } from "./useJobProgress";
+
+/** Des compteurs à zéro : aucun test de ce fichier ne les lit. */
+const STATS: AnalysisStats = {
+  trackedVehicles: 0,
+  trackedByClass: {},
+  crossings: 0,
+  crossedUnique: 0,
+  byClass: {},
+  byCategory: {},
+  byLine: {},
+  byZone: {},
+  vehiclesPerMinute: 0,
+  activeTracks: 0,
+  elapsedMs: 0,
+  analysedSceneMs: 0,
+  diagnostics: {
+    highDetections: 0,
+    lowDetections: 0,
+    maskedOut: 0,
+    containedOut: 0,
+    confirmedTracks: 0,
+    tentativeTracks: 0,
+    rescuedByLowScore: 0,
+  },
+};
 
 function job(status: JobStatus, progress: number, jobId = "j1"): Job {
   return {
@@ -115,6 +146,68 @@ describe("libellés de statut", () => {
     // L'utilisateur sait ce qu'il a fait : lui afficher « échec » serait faux, et
     // c'est déjà la règle côté serveur, qui distingue `cancelled` de `error`.
     expect(statusLabel("cancelled")).not.toContain("échec");
+  });
+});
+
+describe("carryVehicles — le registre ne clignote pas", () => {
+  /** Un aperçu minimal : seul `vehicles` est en jeu ici. */
+  function preview(vehicles: JobPreview["vehicles"], frameIndex = 0): JobPreview {
+    return {
+      jobId: "j1",
+      frameIndex,
+      timestampMs: frameIndex * 40,
+      frameWidth: 1920,
+      frameHeight: 1080,
+      tracks: [],
+      crossings: [],
+      zoneEvents: [],
+      stats: STATS,
+      vehicles,
+    };
+  }
+
+  const VEHICLE: VehicleRecord = {
+    globalId: 1,
+    label: "car",
+    firstSeenMs: 0,
+    lastSeenMs: 1_000,
+    crossedLines: [{ lineId: "l1", direction: 1, timestampMs: 500 }],
+    zonesVisited: [],
+    avgSpeedPxS: null,
+    avgSpeedKmh: null,
+    bestPlateScore: null,
+    plateText: null,
+    plateTextScore: null,
+    plateUnreadReason: null,
+    plateBestWidthPx: null,
+    plateBestGuess: null,
+    plateBestGuessScore: null,
+  };
+
+  it("garde la liste reçue quand l'aperçu suivant dit « inchangé »", () => {
+    // **Le cas normal**, pas un bord : le serveur republie le registre à une
+    // cadence dix fois plus lente que les boîtes, parce qu'il grossit avec
+    // l'analyse. Sans ce report, le tableau serait rempli une fois puis vidé neuf
+    // fois par seconde.
+    const carried = carryVehicles(preview([VEHICLE]), preview(null, 1));
+
+    expect(carried.vehicles).toEqual([VEHICLE]);
+    // Tout le reste vient bien du **nouvel** aperçu : reporter le registre ne doit
+    // pas figer l'image ni les compteurs.
+    expect(carried.frameIndex).toBe(1);
+  });
+
+  it("laisse passer une liste vide, qui n'est pas « inchangé »", () => {
+    // Les deux disent des choses opposées. Une liste vide affirme « aucun véhicule
+    // n'a franchi de ligne » — ce qui est vrai au début de toute analyse, et doit
+    // pouvoir revenir à vrai si le tracé change et qu'une relance repart de zéro.
+    expect(carryVehicles(preview([VEHICLE]), preview([], 1)).vehicles).toEqual([]);
+  });
+
+  it("reste à « rien reçu » quand le premier aperçu ne porte pas de registre", () => {
+    // `null` et non `[]` : on ne sait encore rien, et un tableau vide ferait dire à
+    // l'écran « aucun véhicule » à la place du serveur.
+    expect(carryVehicles(null, preview(null)).vehicles).toBeNull();
   });
 });
 

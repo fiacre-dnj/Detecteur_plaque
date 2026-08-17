@@ -401,14 +401,32 @@ export function StudioPage() {
    * Calculé **ici** et passé aux deux consommateurs plutôt que refait dans
    * chacun : le registre et le tableau de bord doivent parler du même ensemble,
    * sinon un véhicule est dans le total sans être dans la liste qui le justifie.
+   *
+   * **Deux sources, une seule forme.** Après l'analyse, la liste vient du résultat
+   * complet, filtrée par la tête de lecture. **Pendant**, elle vient du registre
+   * que l'aperçu SSE transporte : les mêmes `VehicleRecord`, produits par le même
+   * agrégat serveur et le même sérialiseur. C'est ce qui remplit le tableau et la
+   * statistique en cours d'analyse sans reconstruire quoi que ce soit ici — un
+   * agrégat client divergerait, et ni le vote de classe ni celui de plaque ne se
+   * refont depuis les images échantillonnées (invariants 3 et 4).
+   *
+   * Pas de `vehiclesAt` sur la branche vivante : l'aperçu *est* déjà l'état à
+   * l'instant analysé, et la vidéo locale s'y cale (`useFollowAnalysis`). Le
+   * filtrer par la tête de lecture reviendrait à filtrer par lui-même.
+   *
+   * `session.preview` et non le `preview` garde-fou du dessin : un désaccord de
+   * dimensions suspend les *boîtes*, jamais les compteurs — c'est exactement ce
+   * que dit le message affiché dans ce cas.
    */
-  const countedVehicles = useMemo(
-    () =>
-      session.result === null
-        ? []
-        : crossingVehicles(vehiclesAt(session.result, replay.timeMs)),
-    [session.result, replay.timeMs],
-  );
+  const countedVehicles = useMemo(() => {
+    if (session.result !== null) {
+      return crossingVehicles(vehiclesAt(session.result, replay.timeMs));
+    }
+    // `crossingVehicles` reste appliqué alors que le serveur a déjà restreint sa
+    // liste : le prédicat client reste l'autorité (`crossedVehicles.ts` en est le
+    // seul juge), et l'appliquer deux fois ne coûte qu'un parcours.
+    return crossingVehicles(session.preview?.vehicles ?? []);
+  }, [session.result, session.preview?.vehicles, replay.timeMs]);
 
   /**
    * La classe personne a-t-elle été cochée pour cette analyse ?
@@ -558,6 +576,22 @@ export function StudioPage() {
               replaying: true,
             }
           : null;
+
+  /**
+   * Les compteurs du **bas de page** : Statistique, camemberts, Registre.
+   *
+   * Distinct de `resultStats`, et la différence est le direct : ces trois sections
+   * parlent de véhicules autant que de passages, et le direct n'a pas de registre —
+   * pas d'aperçu SSE, donc pas de `vehicles`. Les alimenter avec ses statistiques
+   * afficherait « 0 véhicule ayant traversé » sous des franchissements qui montent,
+   * ce qui se lit comme un comptage en panne. La Répartition, elle, ne lit que
+   * `by_class` et reste donc branchée sur `resultStats` dans les trois modes.
+   *
+   * Sinon : l'aperçu pendant l'analyse, la tête de lecture après. Les deux portent
+   * la même forme, donc les sections ne connaissent pas la différence.
+   */
+  const dashboardStats =
+    session.result !== null ? replay.stats : (session.preview?.stats ?? null);
 
   /**
    * Les franchissements qui viennent d'être comptés — ceux qui font clignoter leur
@@ -899,13 +933,23 @@ export function StudioPage() {
           Remplace l'ancienne chronologie cliquable et ses cinq onglets : trop
           de détail brut pour une lecture d'ensemble. La barre de lecture
           standard suffit à se déplacer dans le temps ; ce qui reste ici se
-          consulte, ne se pilote plus. */}
-      {session.result !== null && replay.stats !== null && (
-        <>
-          <ClassEntriesGrid stats={replay.stats} lines={geometry.lines} includePerson={hasPersonClass} />
+          consulte, ne se pilote plus.
 
+          **Les quatre sections vivent maintenant pendant l'analyse**, plus
+          seulement après. Elles n'attendaient la fin que pour une raison
+          technique — l'aperçu SSE ne transportait pas de registre — et l'écran
+          affichait donc des compteurs qui montaient au-dessus d'une page vide,
+          jusqu'à ce que tout apparaisse d'un coup. Un seul jeu de sections, deux
+          sources de même forme : plus de branche « pendant » et « après » à
+          garder d'accord. */}
+      {resultStats !== null && (
+        <ClassEntriesGrid stats={resultStats.stats} lines={geometry.lines} includePerson={hasPersonClass} />
+      )}
+
+      {dashboardStats !== null && (
+        <>
           <LineFlowDashboard
-            stats={replay.stats}
+            stats={dashboardStats}
             lines={geometry.lines}
             vehicles={countedVehicles}
           />
@@ -922,9 +966,9 @@ export function StudioPage() {
             }
           >
             <div className="grid gap-3 sm:grid-cols-2">
-              <LineFlowChart stats={replay.stats} lines={geometry.lines} />
+              <LineFlowChart stats={dashboardStats} lines={geometry.lines} />
               <ClassEntriesChart
-                entries={entriesByClass(replay.stats, geometry.lines)}
+                entries={entriesByClass(dashboardStats, geometry.lines)}
                 classes={hasPersonClass ? [...VEHICLE_CLASSES, "person"] : VEHICLE_CLASSES}
               />
             </div>
@@ -944,16 +988,12 @@ export function StudioPage() {
         </>
       )}
 
-      {/* Pendant l'analyse et en direct : le journal, et la répartition qui se
-          met à jour en direct. Ni Statistique ni Registre : le premier
-          afficherait un solde et une fin de graphique qui ne sont pas encore
-          significatifs, le second demande le résultat complet que l'aperçu SSE
-          ne transporte pas. */}
+      {/* Le journal, pendant l'analyse et en direct seulement : après, la barre
+          de lecture et le registre disent la même chose en mieux. Il reste
+          **en dernier** parce qu'il défile — le mettre au-dessus repousserait
+          les sections stables hors de l'écran à chaque franchissement. */}
       {session.result === null && resultStats !== null && (
-        <>
-          <ClassEntriesGrid stats={resultStats.stats} lines={geometry.lines} includePerson={hasPersonClass} />
-          <CrossingLog events={session.events} lineNames={lineNames} />
-        </>
+        <CrossingLog events={session.events} lineNames={lineNames} />
       )}
 
       {/* `media.source !== null` en plus de `resultStats === null` : sans vidéo,

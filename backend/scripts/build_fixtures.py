@@ -164,6 +164,15 @@ def build_preview(result: dict[str, Any]) -> dict[str, Any]:
         "crossings": result["crossings"][:1],
         "zoneEvents": [],
         "stats": result["stats"],
+        # Le registre en cours de constitution, **restreint aux véhicules ayant
+        # franchi** comme le fait le vrai aperçu : c'est la population que l'écran
+        # affiche (ADR 0023), et republier les autres ferait grossir un flux qui
+        # part plusieurs fois par minute.
+        #
+        # La fixture exerce donc la liste et non le `null` que portent les aperçus
+        # intermédiaires — « inchangé depuis le précédent », jamais « aucun
+        # véhicule ». Un `null` ici ne vérifierait aucun champ.
+        "vehicles": [record for record in result["vehicles"] if record["crossedLines"]],
     }
 
 
