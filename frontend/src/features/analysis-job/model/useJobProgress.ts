@@ -56,6 +56,30 @@ export function mergeProgress(current: Job | null, incoming: Job): Job {
   return incoming.progress >= current.progress ? incoming : current;
 }
 
+/**
+ * Reporte le registre du dernier aperçu qui en portait un.
+ *
+ * Le serveur republie `vehicles` à sa **propre** cadence, plus lente que celle des
+ * boîtes : le registre grossit avec l'analyse là où les pistes d'une image restent
+ * une poignée. Les aperçus intermédiaires portent donc `null`, qui veut dire
+ * « inchangé » — **et jamais « aucun véhicule »**, ce que dirait un tableau vide.
+ *
+ * Sans ce report, le tableau des véhicules clignoterait : rempli dix fois par
+ * seconde, vidé neuf fois sur dix. C'est fait ici et non chez les consommateurs,
+ * pour qu'aucun d'eux n'ait à connaître cette convention — ni à la respecter
+ * chacun à sa manière.
+ *
+ * Fonction pure et exportée : c'est la seule règle du hook qui mérite un test sans
+ * monter de composant, comme `mergeProgress`.
+ */
+export function carryVehicles(previous: JobPreview | null, incoming: JobPreview): JobPreview {
+  if (incoming.vehicles !== null) return incoming;
+  // `?? null` plutôt que `?? []` : un tableau vide affirmerait « aucun véhicule
+  // n'a franchi de ligne », alors qu'on ne sait encore rien — l'écran doit dire
+  // qu'il attend, pas répondre à sa place.
+  return { ...incoming, vehicles: previous?.vehicles ?? null };
+}
+
 export interface JobProgressState {
   job: Job | null;
   /** Erreur de suivi — distincte de `job.error`, qui est l'échec de l'analyse. */
@@ -66,6 +90,10 @@ export interface JobProgressState {
    * Remis à `null` au statut terminal : passé ce point, la relecture du résultat
    * complet prend le relais, et laisser un aperçu vivant donnerait deux sources
    * de vérité à l'écran — dont une figée sur l'avant-dernière image.
+   *
+   * Son `vehicles` est **reporté** d'un aperçu à l'autre par `carryVehicles` : le
+   * serveur ne le republie que de loin en loin, et les consommateurs n'ont pas à
+   * connaître cette convention.
    */
   preview: JobPreview | null;
   /** Franchissements observés depuis le début de l'analyse, le plus récent en tête. */
@@ -197,7 +225,7 @@ export function useJobProgress(
     const handlePreview = (event: MessageEvent<string>): void => {
       try {
         const incoming = JSON.parse(event.data) as JobPreview;
-        setPreview(incoming);
+        setPreview((previous) => carryVehicles(previous, incoming));
         setEvents((log) => appendCrossings(log, incoming.crossings));
       } catch {
         // Rien à rattraper : le prochain aperçu arrive dans 200 ms.

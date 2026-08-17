@@ -178,5 +178,53 @@
         "l1": 0
       }
     }
-  }
+  },
+  "vehicles": [
+    {
+      "globalId": 1,
+      "label": "car",
+      "firstSeenMs": 0.0,
+      "lastSeenMs": 440.0,
+      "crossedLines": [
+        {
+          "lineId": "l1",
+          "direction": 1,
+          "timestampMs": 240.0
+        }
+      ],
+      "zonesVisited": [],
+      "avgSpeedPxS": 1250.0,
+      "avgSpeedKmh": null,
+      "bestPlateScore": 0.71,
+      "plateText": "AB-123-CD",
+      "plateTextScore": 0.93,
+      "plateUnreadReason": null,
+      "plateBestWidthPx": 64.0,
+      "plateBestGuess": null,
+      "plateBestGuessScore": null
+    },
+    {
+      "globalId": 2,
+      "label": "truck",
+      "firstSeenMs": 0.0,
+      "lastSeenMs": 440.0,
+      "crossedLines": [
+        {
+          "lineId": "l1",
+          "direction": -1,
+          "timestampMs": 280.0
+        }
+      ],
+      "zonesVisited": [],
+      "avgSpeedPxS": 1250.0,
+      "avgSpeedKmh": null,
+      "bestPlateScore": 0.71,
+      "plateText": null,
+      "plateTextScore": null,
+      "plateUnreadReason": "too_blurry",
+      "plateBestWidthPx": 64.0,
+      "plateBestGuess": null,
+      "plateBestGuessScore": null
+    }
+  ]
 }

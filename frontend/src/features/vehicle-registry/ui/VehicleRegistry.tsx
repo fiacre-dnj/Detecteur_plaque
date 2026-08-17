@@ -57,7 +57,19 @@ import { crossingsWithRole } from "../model/roleCrossings";
 import { INITIAL_ROWS, ROW_HEIGHT, shouldVirtualise, visibleWindow } from "../model/virtualise";
 
 interface VehicleRegistryProps {
-  result: AnalysisResult;
+  /**
+   * Le résultat complet, ou `null` **pendant** l'analyse.
+   *
+   * Il ne sert qu'aux exports : le tableau, lui, ne lit que `vehicles`. C'est ce
+   * qui permet au registre de se remplir en cours d'analyse, alimenté par le
+   * registre que l'aperçu SSE transporte — sans que rien ici sache d'où il vient.
+   *
+   * `null` **masque les trois boutons d'export**, et ce n'est pas une omission :
+   * un CSV produit à mi-analyse serait un fichier dont personne ne saurait ce
+   * qu'il contient — ni combien de véhicules manquent, ni lesquels. Même raison
+   * que les exports qui ignorent la recherche à l'écran.
+   */
+  result: AnalysisResult | null;
   /** Véhicules à afficher — filtrés par la tête de lecture en relecture. */
   vehicles: readonly VehicleRecord[];
   /**
@@ -131,6 +143,9 @@ export function VehicleRegistry({
           Registre des véhicules
         </h3>
         <p className="rounded-card bg-surface p-4 text-caption text-ink-dim shadow-card">
+          {/* « encore » n'est pas un mot de remplissage : le registre se remplit
+              maintenant *pendant* l'analyse, et cette phrase s'affiche donc surtout
+              sur ses premières secondes — avant le premier franchissement. */}
           Aucun véhicule n'a encore franchi de ligne. Le registre se remplit au fil de
           l'analyse — les véhicules simplement détectés, à l'arrêt ou en stationnement,
           n'y figurent pas.
@@ -328,7 +343,12 @@ export function VehicleRegistry({
             />
           </label>
           {/* Les exports restent sur `result` complet : un CSV amputé par une recherche
-              à l'écran serait un fichier dont personne ne saurait ce qu'il contient. */}
+              à l'écran serait un fichier dont personne ne saurait ce qu'il contient.
+              **La même règle explique leur absence pendant l'analyse** : `result`
+              est alors `null`, et un export à mi-parcours serait amputé de tout ce
+              qui reste à analyser, sans dire de combien. */}
+          {result !== null && (
+            <>
           <Button
             size="sm"
             variant="ghost"
@@ -368,6 +388,8 @@ export function VehicleRegistry({
           >
             JSON
           </Button>
+            </>
+          )}
         </div>
       </div>
 
