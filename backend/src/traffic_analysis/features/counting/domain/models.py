@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from traffic_analysis.features.counting.domain.geometry import Point
+from traffic_analysis.features.counting.domain.geometry import Point, distance
 
 #: Pourquoi aucune plaque n'est publiée pour un véhicule — **cinq causes, cinq
 #: gestes différents**.
@@ -235,6 +235,35 @@ class CountingLineDef:
     negative_name: str = ""
     positive_role: DirectionRole = "neutral"
     negative_role: DirectionRole = "neutral"
+    #: Longueur **réelle** du trait, en mètres. `None` = non calibrée.
+    #:
+    #: C'est la seule mesure de terrain que l'utilisateur puisse donner sans
+    #: matériel : la largeur d'une chaussée, l'écart entre deux passages piétons.
+    #: Elle donne une échelle **locale** — `longueur en pixels / longueur en
+    #: mètres` — là où le trait est posé, donc à la profondeur où les véhicules le
+    #: franchissent.
+    #:
+    #: Une échelle unique pour toute l'image ne peut pas être juste sur une caméra
+    #: inclinée : le mètre y vaut quelques pixels au loin et quelques dizaines au
+    #: premier plan. Plusieurs lignes calibrées à des profondeurs différentes
+    #: décrivent ce gradient sans qu'on ait à modéliser la perspective.
+    length_m: float | None = None
+
+    def pixel_length(self) -> float:
+        """Longueur du trait **en pixels source**."""
+        return distance(self.a, self.b)
+
+    def px_per_meter(self) -> float | None:
+        """Échelle locale de ce trait, ou `None` s'il n'est pas calibré.
+
+        `None` aussi pour une longueur nulle ou négative, et pour un trait
+        dégénéré : diviser par zéro donnerait `inf`, et une vitesse infinie
+        s'affiche comme un chiffre, pas comme une erreur.
+        """
+        if self.length_m is None or self.length_m <= 0.0:
+            return None
+        pixels = self.pixel_length()
+        return pixels / self.length_m if pixels > 0.0 else None
 
 
 @dataclass(frozen=True, slots=True)

@@ -832,6 +832,9 @@ export function StudioPage() {
               dispatch({ type: "setDirectionRole", id, sign, role })
             }
             onSetLineZone={(id, zoneId) => dispatch({ type: "setLineZone", id, zoneId })}
+            onSetLineLength={(id, lengthMeters) =>
+              dispatch({ type: "setLineLength", id, lengthMeters })
+            }
             onRemoveLine={(id) => dispatch({ type: "removeLine", id })}
             onRemoveZone={(id) => dispatch({ type: "removeZone", id })}
             onOpenPresets={() => setPresetsOpen(true)}

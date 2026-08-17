@@ -78,6 +78,20 @@ class LineSchema(CamelModel):
     negative_name: str = Field(default="", max_length=60, examples=["Vers la rocade"])
     positive_role: DirectionRole = "neutral"
     negative_role: DirectionRole = "neutral"
+    #: Longueur **réelle** du trait, en mètres. `None` = non calibrée.
+    #:
+    #: Contrairement aux quatre champs de sens, celle-ci **est** lue par le
+    #: serveur : elle donne l'échelle pixels/mètre locale qui convertit les
+    #: vitesses en km/h à la profondeur où la ligne est posée. Une longueur
+    #: corrigée demande donc une réanalyse, là où un rôle corrigé ne demande rien.
+    #:
+    #: Bornée à 500 m : au-delà, c'est une saisie erronée (un chiffre tapé deux
+    #: fois), et elle produirait des vitesses absurdement basses sans rien signaler.
+    #:
+    #: `length_meters` et non `length_m` : l'alias camelCase est **généré** du nom
+    #: Python, et `length_m` donnerait `lengthM` — un champ que le client
+    #: n'enverrait jamais, donc une calibration silencieusement ignorée.
+    length_meters: float | None = Field(default=None, gt=0.0, le=500.0, examples=[7.0])
 
     def to_domain(self) -> CountingLineDef:
         return CountingLineDef(
@@ -90,6 +104,7 @@ class LineSchema(CamelModel):
             negative_name=self.negative_name,
             positive_role=self.positive_role,
             negative_role=self.negative_role,
+            length_m=self.length_meters,
         )
 
 

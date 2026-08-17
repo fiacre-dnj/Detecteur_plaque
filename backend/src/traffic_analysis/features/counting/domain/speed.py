@@ -14,8 +14,12 @@ Deux principes gouvernent ce module :
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from traffic_analysis.features.counting.domain.geometry import Point, distance
+
+if TYPE_CHECKING:
+    from traffic_analysis.features.counting.domain.scale_field import ScaleField
 
 # Poids de la nouvelle mesure dans le lissage exponentiel. 0.3 amortit le
 # tremblement de détection tout en suivant une accélération réelle en ~5 frames.
@@ -39,6 +43,17 @@ class _IdentitySpeed:
     smoothed_px_s: float | None = None
     total_distance_px: float = 0.0
     total_duration_ms: float = 0.0
+    #: Distance cumulée en **mètres**, convertie déplacement par déplacement.
+    #:
+    #: Accumulée séparément des pixels, et c'est tout l'intérêt : chaque bout de
+    #: trajet est converti à l'échelle de *l'endroit où il a eu lieu*. Convertir
+    #: le total de pixels à la fin, avec une échelle unique, écraserait le
+    #: gradient de perspective que `ScaleField` sert précisément à décrire.
+    total_distance_m: float = 0.0
+    #: Durée des seuls déplacements qui ont pu être convertis. Distincte de
+    #: `total_duration_ms` : un trajet partiellement calibré doit rendre une
+    #: vitesse sur la portion mesurée, pas une moyenne diluée par le reste.
+    metric_duration_ms: float = 0.0
 
 
 class SpeedEstimator:
@@ -46,12 +61,19 @@ class SpeedEstimator:
 
     Par identité et non par piste : c'est ce qui permet à la vitesse moyenne du
     registre de survivre à une occlusion, comme le reste des agrégats.
+
+    `scale` est le champ d'échelle local (`ScaleField`). Absent — ou sans aucune
+    ligne calibrée — l'estimateur se comporte **exactement** comme avant : il ne
+    tient que des pixels, et la conversion en km/h reste celle de `to_kmh` avec
+    l'échelle globale. C'est ce qui rend la calibration par ligne purement
+    additive pour les configurations existantes.
     """
 
-    __slots__ = ("_states",)
+    __slots__ = ("_scale", "_states")
 
-    def __init__(self) -> None:
+    def __init__(self, scale: ScaleField | None = None) -> None:
         self._states: dict[int, _IdentitySpeed] = {}
+        self._scale = scale
 
     def observe(self, global_id: int, centroid: Point, timestamp_ms: float) -> float | None:
         """Enregistre une position et rend la vitesse lissée, ou `None`.
@@ -86,6 +108,17 @@ class SpeedEstimator:
         # intervalles réellement observés, donc jamais le saut d'une occlusion.
         state.total_distance_px += travelled
         state.total_duration_ms += elapsed_ms
+
+        # La conversion se fait **ici**, sur ce déplacement-ci, à l'échelle de son
+        # milieu — et non à la fin sur le total. Un véhicule qui s'approche de la
+        # caméra traverse plusieurs échelles ; convertir son total avec une seule
+        # d'entre elles reviendrait à annuler la calibration locale.
+        if self._scale is not None:
+            metres = self._scale.metres_between(state.last_centroid, centroid, travelled)
+            if metres is not None:
+                state.total_distance_m += metres
+                state.metric_duration_ms += elapsed_ms
+
         state.last_centroid = centroid
         state.last_timestamp_ms = timestamp_ms
 
@@ -102,6 +135,21 @@ class SpeedEstimator:
         if state is None or state.total_duration_ms <= 0:
             return None
         return state.total_distance_px / (state.total_duration_ms / _MS_PER_SECOND)
+
+    def average_kmh(self, global_id: int) -> float | None:
+        """Vitesse moyenne en km/h **mesurée**, ou `None` sans calibration locale.
+
+        Distincte de `to_kmh(average_px_s(...), échelle globale)` : celle-ci
+        n'existe que si des mètres ont réellement été cumulés, déplacement par
+        déplacement, à l'échelle de l'endroit où chacun a eu lieu. C'est la valeur
+        la plus juste que ce projet sache produire, et elle se tait plutôt que de
+        retomber sur une échelle unique — l'appelant garde ce repli sous la main.
+        """
+        state = self._states.get(global_id)
+        if state is None or state.metric_duration_ms <= 0 or state.total_distance_m <= 0:
+            return None
+        metres_per_second = state.total_distance_m / (state.metric_duration_ms / _MS_PER_SECOND)
+        return metres_per_second * _SECONDS_PER_HOUR / 1000.0
 
 
 def to_kmh(px_s: float | None, pixels_per_meter: float | None) -> float | None:

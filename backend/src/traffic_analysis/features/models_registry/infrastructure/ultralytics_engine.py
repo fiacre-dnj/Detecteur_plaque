@@ -58,38 +58,95 @@ CONFIG_DIR = Path(__file__).resolve().parents[5] / "config"
 TRACKER_CONFIG = CONFIG_DIR / "botsort_reid.yaml"
 
 
-@lru_cache(maxsize=8)
-def resolved_tracker_config(gmc_method: str) -> Path:
-    """Chemin du tracker à utiliser, compensation de mouvement imposée.
+@lru_cache(maxsize=1)
+def _base_tracker() -> dict[str, Any]:
+    """Le fichier de suivi versionné, lu une fois par processus."""
+    import yaml
+
+    loaded: dict[str, Any] = yaml.safe_load(TRACKER_CONFIG.read_text(encoding="utf-8"))
+    return loaded
+
+
+def detector_floor() -> float:
+    """Seuil de confiance à passer au **détecteur**, et non au comptage.
+
+    **C'est le mécanisme BYTE, et il était débranché.** ByteTrack — dont BoT-SORT
+    hérite — sépare les détections en deux bandes (`byte_tracker.py`, `_split`) :
+
+    - **haute** (`≥ track_high_thresh`) — première association, et seule à pouvoir
+      *créer* une piste (`new_track_thresh`) ;
+    - **basse** (`track_low_thresh < score < track_high_thresh`) — seconde
+      association, qui sert **uniquement à prolonger une piste existante**, par
+      recouvrement de boîtes seul (`iou_distance`, seuil 0,5).
+
+    Toute la valeur du tracker tient dans cette seconde bande : c'est elle qui
+    tient un véhicule dont la confiance plonge le temps d'une occlusion partielle,
+    d'un flou de mouvement ou d'un reflet.
+
+    Or Ultralytics filtre les détections **avant** que le tracker les voie : en
+    passant `conf = 0.35` (le seuil de l'utilisateur) à `track()`, rien n'atteignait
+    jamais la bande basse, qui va de 0,1 à 0,25. La seconde association était du
+    code mort, et une confiance qui plongeait une seule image coupait la piste.
+    Une piste coupée, c'est un numéro de véhicule neuf, un ré-amorçage du compteur
+    de lignes, et **un franchissement perdu** s'il tombe dans cette fenêtre.
+
+    Le détecteur reçoit donc `track_low_thresh` ; le seuil de l'utilisateur devient
+    `track_high_thresh` et `new_track_thresh` (voir `resolved_tracker_config`). La
+    création de pistes est **inchangée** — il faut toujours atteindre le seuil de
+    l'utilisateur — seule la survie d'une piste déjà née s'améliore.
+    """
+    return float(_base_tracker()["track_low_thresh"])
+
+
+@lru_cache(maxsize=32)
+def resolved_tracker_config(gmc_method: str, high_thresh: float) -> Path:
+    """Chemin du tracker à utiliser, mouvement et seuil de piste imposés.
 
     Ultralytics ne prend sa configuration de suivi **que** sous forme de chemin de
     fichier : il n'existe aucune façon de lui passer un réglage en mémoire. Rendre
-    `gmc_method` réglable demande donc d'écrire un fichier dérivé — c'est ce que
-    fait cette fonction, et c'est tout ce qu'elle fait.
+    `gmc_method` réglable — et, depuis, faire suivre le seuil de l'utilisateur
+    jusqu'au tracker — demande donc d'écrire un fichier dérivé.
 
-    Quand le réglage et le fichier de base disent déjà la même chose, **le fichier
-    de base est rendu tel quel** : pas de copie, pas de fichier temporaire, et le
-    chemin journalisé reste celui que le dépôt versionne. C'est le cas courant.
+    `high_thresh` est le seuil de confiance de la requête. Il est posé **à la fois**
+    sur `track_high_thresh` et sur `new_track_thresh`, et les deux comptent :
+
+    - `track_high_thresh` sépare les deux bandes d'association. Sans lui, toutes
+      les détections seraient « hautes » et la bande basse resterait vide, ce qui
+      est exactement la panne que `detector_floor` décrit ;
+    - `new_track_thresh` garde la **création** de pistes au seuil de l'utilisateur.
+      C'est lui qui rend le changement strictement additif : une détection faible
+      peut prolonger une piste, jamais en ouvrir une.
+
+    Quand le fichier de base dit déjà la même chose, **il est rendu tel quel** : pas
+    de copie, pas de fichier temporaire, et le chemin journalisé reste celui que le
+    dépôt versionne.
 
     L'écriture est atomique (fichier temporaire puis `replace`) parce que deux
     processus peuvent démarrer en même temps — un rechargement `--reload` en
     développement suffit — et qu'un fichier YAML lu à moitié écrit ferait échouer
     une analyse avec un message parlant de syntaxe, très loin de la cause.
 
-    `lru_cache` : le fichier est écrit une fois par valeur et par processus. La
-    valeur ne change pas en cours d'exécution, `Settings` étant `frozen`.
+    `lru_cache` : un fichier par couple (mouvement, seuil) et par processus. Le
+    seuil vient de la requête, donc quelques valeurs distinctes au plus — d'où les
+    32 entrées, contre 8 quand seul le mouvement variait.
     """
     import yaml
 
-    base: dict[str, Any] = yaml.safe_load(TRACKER_CONFIG.read_text(encoding="utf-8"))
-    if base.get("gmc_method") == gmc_method:
+    base = _base_tracker()
+    overrides = {
+        "gmc_method": gmc_method,
+        "track_high_thresh": high_thresh,
+        "new_track_thresh": high_thresh,
+    }
+    if all(base.get(key) == value for key, value in overrides.items()):
         return TRACKER_CONFIG
 
-    target = Path(tempfile.gettempdir()) / "traffic-analysis" / f"botsort-gmc-{gmc_method}.yaml"
+    slug = f"botsort-gmc-{gmc_method}-hi-{high_thresh:.2f}.yaml"
+    target = Path(tempfile.gettempdir()) / "traffic-analysis" / slug
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.with_name(f"{target.name}.{os.getpid()}.tmp")
     staging.write_text(
-        yaml.safe_dump({**base, "gmc_method": gmc_method}, sort_keys=False, allow_unicode=True),
+        yaml.safe_dump({**base, **overrides}, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
     staging.replace(target)
@@ -99,7 +156,7 @@ def resolved_tracker_config(gmc_method: str) -> Path:
 class UltralyticsEngine:
     """Détection et suivi par Ultralytics, derrière le port du domaine."""
 
-    __slots__ = ("_batch", "_imgsz", "_registry", "_tracker_config")
+    __slots__ = ("_batch", "_gmc", "_imgsz", "_registry")
 
     def __init__(
         self,
@@ -126,16 +183,22 @@ class UltralyticsEngine:
         self._registry = registry
         self._imgsz = imgsz
         self._batch = max(1, batch)
-        self._tracker_config = (
-            TRACKER_CONFIG if gmc_method is None else resolved_tracker_config(gmc_method)
-        )
+        # Le mouvement seul est un réglage de déploiement ; le fichier de suivi, lui,
+        # ne peut plus être résolu ici : il porte désormais le seuil de confiance de
+        # **la requête** (voir `detector_floor`). Il est donc résolu par course.
+        self._gmc = gmc_method if gmc_method is not None else str(_base_tracker()["gmc_method"])
         logger.info(
             "moteur configuré",
-            gmc=gmc_method or "fichier de base",
-            tracker=str(self._tracker_config),
+            gmc=self._gmc,
+            tracker=str(TRACKER_CONFIG),
+            detector_floor=detector_floor(),
             imgsz=self._imgsz,
             batch=self._batch,
         )
+
+    def _tracker_for(self, spec: EngineSpec) -> Path:
+        """Le fichier de suivi de cette course : mouvement de déploiement, seuil de requête."""
+        return resolved_tracker_config(self._gmc, spec.confidence)
 
     def probe(self, video_path: Path) -> VideoInfo:
         """Dimensions, cadence et nombre d'images — et validation de format.
@@ -176,8 +239,14 @@ class UltralyticsEngine:
             results = model.track(
                 source=str(video_path),
                 stream=True,
-                tracker=str(self._tracker_config),
-                conf=spec.confidence,
+                tracker=str(self._tracker_for(spec)),
+                # **Le plancher du détecteur, pas le seuil de l'utilisateur.** Ce
+                # dernier est passé au tracker comme `track_high_thresh` /
+                # `new_track_thresh` : la création de pistes reste à son niveau,
+                # mais les détections faibles atteignent enfin la seconde
+                # association, qui prolonge une piste dont la confiance plonge.
+                # Voir `detector_floor` pour la panne que cela corrige.
+                conf=detector_floor(),
                 iou=spec.iou,
                 classes=list(spec.class_ids),
                 # **NMS inter-classes**, et c'est le piège 5 de prompt/13. Le NMS
@@ -222,7 +291,7 @@ class UltralyticsEngine:
         # Pas de lot ici, et il n'y en aura jamais : en direct les images arrivent
         # une par une, et attendre d'en avoir plusieurs échangerait exactement ce
         # que ce mode vend — la latence — contre du débit dont il n'a que faire.
-        return UltralyticsStream(self._registry, spec, self._tracker_config, self._imgsz)
+        return UltralyticsStream(self._registry, spec, self._tracker_for(spec), self._imgsz)
 
 
 class UltralyticsStream:
@@ -265,7 +334,10 @@ class UltralyticsStream:
             # ne serait jamais suivi.
             persist=True,
             tracker=str(self._tracker_config),
-            conf=self._spec.confidence,
+            # Le même plancher qu'en différé, et pour la même raison : les deux
+            # modes doivent suivre à l'identique, sinon un même tracé ne donne pas
+            # les mêmes chiffres selon qu'on rejoue un fichier ou qu'on filme.
+            conf=detector_floor(),
             iou=self._spec.iou,
             classes=list(self._spec.class_ids),
             # Voir le mode différé : NMS inter-classes, sinon une camionnette

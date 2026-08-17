@@ -162,6 +162,24 @@ plus deux fois dans le même sens » si.
   de la position de son prédécesseur et pouvait se voir attribuer un
   franchissement qu'il n'avait pas fait. Les deux sont corrigés ; les totaux
   d'une même vidéo réanalysée peuvent donc monter **et** descendre.
+- **Le suivi ne lâche plus un véhicule dont la détection faiblit un instant.**
+  Le détecteur ne rejetait rien en dessous du seuil de confiance choisi, ce qui
+  privait le suivi du mécanisme prévu pour traverser une occlusion partielle, un
+  flou de mouvement ou un reflet. Un véhicule dont la confiance plongeait le
+  temps d'une image voyait sa piste coupée : il était alors compté deux fois, et
+  son franchissement pouvait être perdu. Mesuré sur une vidéo de trafic réelle :
+  **21 % d'observations suivies en plus, aucun nouveau véhicule inventé, et neuf
+  pistes fragmentées en moins** (92 → 83 objets suivis) pour un total de
+  franchissements identique. Le seuil de confiance garde exactement le même sens
+  pour vous : à partir de quand un objet devient un véhicule suivi.
+- **Les vitesses peuvent enfin s'afficher en km/h de façon fiable.** Chaque ligne
+  de comptage accepte sa **longueur réelle** (« cette ligne fait 7 m »), ce qui
+  donne une échelle mesurée à l'endroit précis où les véhicules la franchissent.
+  Une seule échelle pour toute l'image ne pouvait pas convenir : sur une caméra
+  inclinée, un mètre vaut quelques pixels au loin et quelques dizaines au premier
+  plan — un facteur près de 4 mesuré entre deux lignes d'une même scène. Le
+  réglage global existant continue de fonctionner à l'identique si vous ne
+  renseignez aucune longueur.
 - **Le registre ne liste plus que les véhicules ayant franchi une ligne**, tous
   sens confondus. Les véhicules simplement détectés — à l'arrêt, en
   stationnement, ou vus quelques images dans un coin du champ — n'y figuraient
