@@ -13,8 +13,9 @@ from __future__ import annotations
 import os
 import tempfile
 from functools import lru_cache
+from math import ceil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from traffic_analysis.core.errors import UnsupportedMediaError
 from traffic_analysis.core.logging import get_logger
@@ -153,6 +154,25 @@ def resolved_tracker_config(gmc_method: str, high_thresh: float) -> Path:
     return target
 
 
+def _first_analysed_index(start_ms: float, fps: float, stride: int) -> int:
+    """Index de la première image à analyser pour une borne de début donnée.
+
+    **Doit rester d'accord avec le filtre d'`AnalysisService`**, qui garde les
+    images dont `timestamp_ms >= start_ms`. Comme `timestamp_ms = index / fps`,
+    cela donne `index >= start_ms × fps / 1000` ; et comme seules les images
+    d'index multiple de `stride` sont analysées, on remonte au multiple suivant.
+
+    Se tromper d'un cran ne lève rien : trop bas, l'application rejetterait les
+    premières images décodées (du travail perdu, invisible) ; trop haut, la fenêtre
+    perdrait une image que l'utilisateur a demandée, et personne ne le verrait
+    jamais. D'où le calcul explicite, testé, plutôt qu'une soustraction au vol.
+    """
+    if start_ms <= 0.0 or fps <= 0.0:
+        return 0
+    first = ceil(start_ms * fps / 1000.0)
+    return ceil(first / max(1, stride)) * max(1, stride)
+
+
 class UltralyticsEngine:
     """Détection et suivi par Ultralytics, derrière le port du domaine."""
 
@@ -230,12 +250,29 @@ class UltralyticsEngine:
 
         Un bail pour toute l'itération : deux `track()` simultanés sur la même
         instance partageraient l'état de suivi et mélangeraient deux vidéos.
+
+        **Deux chemins, un seul contrat.** Sans début demandé, la vidéo part au
+        chargeur d'Ultralytics, qui la décode par lots et sait la lire vite. Avec un
+        début, ce chargeur ne sert plus à rien : il **ne sait pas se déplacer** —
+        `LoadImagesAndVideos` ouvre à zéro et avance —, donc analyser à partir de la
+        cinquantième minute d'un fichier d'une heure coûterait cinquante minutes
+        d'inférence sur des images jetées. Le second chemin décode alors lui-même,
+        après un déplacement, et confie les images une par une au modèle, exactement
+        comme le fait déjà le temps réel.
+
+        Ce que les deux chemins garantissent identiquement, et qu'il ne faut pas
+        casser : `frame_index` est l'index **dans le fichier**, donc `timestamp_ms`
+        reste du temps de scène absolu. Une fenêtre ne décale aucun horodatage.
         """
         info = self.probe(video_path)
         stride = max(1, spec.frame_stride)
+        first_index = _first_analysed_index(spec.start_ms, info.fps, stride)
 
         with self._registry.lease(spec.model_id) as model:
             reset_trackers(model)
+            if first_index > 0:
+                yield from self._iter_seeked(model, video_path, info, spec, stride, first_index)
+                return
             results = model.track(
                 source=str(video_path),
                 stream=True,
@@ -281,6 +318,110 @@ class UltralyticsEngine:
                     image=result.orig_img,
                     tracks=_to_observations(result),
                 )
+
+    def _iter_seeked(
+        self,
+        model: Any,  # noqa: ANN401 — un `YOLO` n'est pas typé
+        video_path: Path,
+        info: VideoInfo,
+        spec: EngineSpec,
+        stride: int,
+        first_index: int,
+    ) -> Iterator[EngineFrame]:
+        """Décode à partir de `first_index` et suit image par image.
+
+        Le déplacement se fait en deux temps, et le second n'est pas une précaution
+        de style : `CAP_PROP_POS_FRAMES` est **approximatif** sur plusieurs
+        conteneurs — FFmpeg se pose sur l'image-clé précédente, et certains
+        démultiplexeurs dépassent la cible. On lit donc la position réellement
+        atteinte, on repart de zéro si elle a dépassé, puis on avance par `grab()`,
+        qui démultiplexe sans convertir en tableau : quelques dizaines d'images de
+        rattrapage coûtent bien moins qu'une seule inférence.
+
+        Ce module a déjà payé une panne silencieuse de cette famille (le
+        `parents[5]` de `CONFIG_DIR`) : un déplacement approximatif accepté sans
+        vérification donnerait des `frame_index` faux, donc des horodatages faux,
+        donc des vitesses et des franchissements datés à côté — sans qu'aucune
+        exception ne le signale.
+        """
+        import cv2
+
+        capture = cv2.VideoCapture(str(video_path))
+        try:
+            if not capture.isOpened():
+                raise UnsupportedMediaError("Ce fichier n'a pas pu être ouvert comme une vidéo.")
+
+            capture.set(cv2.CAP_PROP_POS_FRAMES, first_index)
+            position = int(capture.get(cv2.CAP_PROP_POS_FRAMES))
+            if position > first_index:
+                capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                position = 0
+            while position < first_index and capture.grab():
+                position += 1
+            if position != first_index:
+                # La vidéo est plus courte que la borne demandée. Rendre un flux
+                # vide plutôt que lever : c'est `AnalysisService` qui décide du
+                # message, il connaît la durée **et** les deux bornes, là où
+                # l'adaptateur ne verrait qu'une lecture qui s'arrête.
+                logger.warning(
+                    "déplacement impossible : la vidéo s'arrête avant la borne demandée",
+                    wanted_index=first_index,
+                    reached_index=position,
+                )
+                return
+
+            logger.info(
+                "analyse démarrée après déplacement",
+                start_ms=round(spec.start_ms),
+                first_index=first_index,
+                frame_stride=stride,
+            )
+
+            index = first_index
+            while True:
+                ok, decoded = capture.read()
+                if not ok:
+                    return
+                # `read()` est typé « n'importe quel dtype » par les stubs d'OpenCV.
+                # Il rend en pratique du `uint8` BGR, exactement comme `orig_img` de
+                # l'autre chemin — d'où le recadrage de type, et pas une conversion :
+                # copier chaque image coûterait plus que toute la lecture.
+                image = cast("npt.NDArray[np.uint8]", decoded)
+                results = model.track(
+                    source=image,
+                    # Les **mêmes** arguments que le chemin sans déplacement, à
+                    # l'unique exception de la source. Toute divergence ici ferait
+                    # qu'un même tracé compterait différemment selon qu'on analyse
+                    # depuis le début ou depuis une borne — précisément le genre
+                    # d'écart que le partage des schémas de requête existe pour
+                    # empêcher entre le différé et le direct.
+                    persist=True,
+                    tracker=str(self._tracker_for(spec)),
+                    conf=detector_floor(),
+                    iou=spec.iou,
+                    classes=list(spec.class_ids),
+                    agnostic_nms=True,
+                    device=self._registry.device(),
+                    half=self._registry.half(),
+                    imgsz=self._imgsz,
+                    verbose=False,
+                )
+                yield EngineFrame(
+                    frame_index=index,
+                    # Absolu, depuis le début du **fichier** : c'est ce qui fait
+                    # qu'une fenêtre ne décale aucun horodatage.
+                    timestamp_ms=index / info.fps * 1000.0,
+                    image=image,
+                    tracks=_to_observations(results[0]),
+                )
+                # `grab()` et non `read()` : les images sautées par le pas d'analyse
+                # n'ont pas à être converties en tableau.
+                for _ in range(stride - 1):
+                    if not capture.grab():
+                        return
+                index += stride
+        finally:
+            capture.release()
 
     def open_stream(self, spec: EngineSpec) -> UltralyticsStream:
         """Ouvre un flux persistant pour le temps réel.

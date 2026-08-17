@@ -185,6 +185,18 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* Une modale se centre — et il faut le **redemander**.
+     Le navigateur centre un `<dialog>:modal` par un `margin: auto` posé dans sa
+     feuille de style par défaut. Or le *preflight* de Tailwind met `margin: 0`
+     sur tous les éléments, ce qui l'écrase : les modales se collaient donc en
+     haut à gauche de l'écran, celle des presets comme celle du lancement.
+     La règle vaut pour `:modal` seulement, c'est-à-dire pour un dialogue ouvert
+     par `showModal()` : un `<dialog>` non modal est un panneau posé dans le
+     flux, et le centrer sur l'écran n'aurait aucun sens. */
+  dialog:modal {
+    margin: auto;
+  }
+
   /* Focus visible et cohérent : c'est une exigence d'accessibilité, pas une
      option. L'anneau utilise l'accent, qui est justement fonctionnel. */
   :focus-visible {
@@ -220,5 +232,70 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--color-ink-dim);
+  }
+
+  /* ── Les deux poignées de l'intervalle d'analyse ────────────────────────────
+     Deux `<input type="range">` **superposés** sur le même rail, et non un
+     composant maison : c'est la seule construction qui donne gratuitement le
+     clavier (flèches, Origine/Fin, PagePrec/PageSuiv), les rôles ARIA et le
+     retour de valeur que les lecteurs d'écran annoncent. Une paire de `<div>`
+     glissables serait plus simple à styler et inutilisable sans souris.
+
+     Le prix à payer est ici : superposés, le second input capterait tous les
+     clics du premier. On rend donc la piste transparente aux pointeurs et on la
+     redonne **au curseur seul**, ce qui n'est atteignable que par pseudo-élément
+     — donc pas depuis une classe utilitaire. Les deux préfixes sont obligatoires
+     et non redondants : WebKit et Firefox ne reconnaissent pas le sélecteur de
+     l'autre, et un navigateur qui ne comprend pas la règle rend simplement la
+     poignée inerte à la souris, sans que rien ne le signale. */
+  .range-handle {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    margin: 0;
+    appearance: none;
+    background: transparent;
+    pointer-events: none;
+  }
+
+  .range-handle::-webkit-slider-thumb {
+    appearance: none;
+    pointer-events: auto;
+    width: 0.875rem;
+    height: 1.25rem;
+    border: 2px solid var(--color-base);
+    border-radius: 0.25rem;
+    background: var(--color-accent);
+    cursor: ew-resize;
+  }
+
+  .range-handle::-moz-range-thumb {
+    pointer-events: auto;
+    width: 0.875rem;
+    height: 1.25rem;
+    border: 2px solid var(--color-base);
+    border-radius: 0.25rem;
+    background: var(--color-accent);
+    cursor: ew-resize;
+  }
+
+  .range-handle:disabled::-webkit-slider-thumb {
+    background: var(--color-line-muted);
+    cursor: not-allowed;
+  }
+
+  .range-handle:disabled::-moz-range-thumb {
+    background: var(--color-line-muted);
+    cursor: not-allowed;
+  }
+
+  /* La piste native est masquée : le rail visible est le `<div>` dessous, seul
+     capable de peindre la bande retenue entre les deux poignées. */
+  .range-handle::-webkit-slider-runnable-track {
+    background: transparent;
+  }
+
+  .range-handle::-moz-range-track {
+    background: transparent;
   }
 }

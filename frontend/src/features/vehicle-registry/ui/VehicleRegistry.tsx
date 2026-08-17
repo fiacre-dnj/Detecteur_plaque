@@ -27,7 +27,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  classLabel,
   formatSceneTime,
   formatSceneTimePrecise,
   formatScore,
@@ -40,6 +39,7 @@ import type {
   VehicleRecord,
 } from "@/shared/api/contracts";
 import { classColor } from "@/shared/config/palettes";
+import { classLabel } from "@/shared/lib/classes";
 import { crossingDirectionName, directionArrow, lineName } from "@/shared/lib/directions";
 import { plateCell, plateTitle } from "@/shared/lib/plate";
 import { Button } from "@/shared/ui/Button";

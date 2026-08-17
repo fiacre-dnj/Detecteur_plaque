@@ -181,7 +181,7 @@ un emplacement `leading` où le studio pose le bouton d'import.
 │   comparatifs groupés en une carte                │  l'analyse et après
 │ [camembert flux/ligne] [camembert entrées/type]   │  deux colonnes
 │ REGISTRE — tableau par véhicule, export CSV/JSON  │  exports à la fin
-│ FRANCHISSEMENTS — journal, pendant l'analyse seule │
+│ FRANCHISSEMENTS — chronologie, analyse d'un fichier │  ni après, ni en direct
 └──────────────────────────────────────────────────┘
 ```
 
@@ -317,6 +317,63 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
   dans le champ**), parce que « Vu de / à » et « Durée » se lisaient comme l'heure
   et le temps du franchissement — exactement ce que les deux nouvelles colonnes
   portent ;
+- **les Franchissements sont une chronologie, plus un tableau** (2026-08-17).
+  `CrossingLog` est **supprimé**, remplacé par
+  `analysis-job/ui/CrossingTimeline.tsx` et son modèle
+  `model/crossingTimeline.ts`. Le tableau posait un fait par rangée sans rien dire
+  de ce qui se lit *entre* deux faits ; les relations sont maintenant calculées en
+  un parcours et rendues sur une colonne vertébrale, groupée par tranches de temps.
+  Six points qui ne se devinent pas :
+  - **`gapMs`** donne le rythme — quatre passages en 1,5 s et quatre passages en
+    deux minutes s'affichaient identiquement. `null` sur le plus ancien du journal,
+    où ce qui précède a pu être oublié : un « +0,0 s » s'y lirait comme une
+    simultanéité ;
+  - **`previous` relie une sortie à l'entrée du même véhicule**, ce qui donne le
+    **temps de traversée du carrefour** — la seule mesure de ce genre que
+    l'interface produise. Elle serait plausible et fausse si elle liait deux
+    véhicules, d'où un test dédié ;
+  - **`passageIndex`** dit « 2ᵉ passage » là où un aller-retour se lisait comme un
+    doublon d'affichage (invariant 6) ;
+  - **les compteurs de la section sont ceux du journal, pas de l'analyse**, et la
+    borne est **annoncée** dès qu'elle est atteinte. L'ancienne version affichait
+    `events.length` comme un total : il plafonnait donc à `LOG_LIMIT` (200) en
+    silence sous un tableau de bord qui continuait de monter (invariant 3) ;
+  - **les tranches de temps sont adaptatives** (`chooseBucketMs`, échelle 5 s →
+    10 min, cible ~4 passages par tranche) et **alignées sur des bornes rondes** :
+    à 10 s fixes, un journal étalé sur trente minutes produirait jusqu'à 180
+    en-têtes pour 200 événements, et « 00:17 → 00:31 » ne se relie à rien sur la
+    barre de lecture. Les tranches vides ne sont pas rendues ;
+  - **le rôle du sens est l'information de tête**, lu sur le tracé courant comme au
+    registre — « sens + » était le contrat machine. Entrée et sortie se distinguent
+    par le **poids et l'angle de la flèche**, jamais par une teinte : la couleur
+    encode déjà la ligne au nœud et la classe au véhicule ;
+  - **la flèche est pivotée à l'angle réel du tracé** (`crossingHeadingDeg`), pas un
+    pictogramme d'entrée ou de sortie. Deux `LogIn`/`LogOut` tenaient cette place et
+    redisaient en image ce que le mot à côté disait déjà ; une flèche
+    perpendiculaire au trait dit ce que le mot ne dit pas — **par où**. C'est la
+    même flèche, au même angle, que celle du panneau de géométrie et du canvas :
+    `positiveNormal` puis `arrowRotationDeg`, les fonctions partagées, **jamais une
+    perpendiculaire recalculée** — `shared/lib/geometry.ts` documente le mode de
+    panne, un signe inversé donne des sens faux sous des totaux justes. `ArrowUp` +
+    rotation CSS et non un glyphe unicode, qui ne pivote qu'à 45° près. Sans angle
+    calculable — ligne retirée du tracé, segment dégénéré — **aucune flèche** : une
+    `ArrowUp` droite affirmerait « vers le haut », un angle que personne n'a mesuré.
+    Un test reconstruit le vecteur depuis l'angle et demande à `sideOfLine` de quel
+    côté on tombe ;
+
+  Trois précisions sur le périmètre : les filtres rôle/ligne sont un outil de
+  **lecture** et non de navigation — aucun clic ne déplace la tête de lecture, ce
+  qui était le double emploi ayant fait retirer l'ancienne chronologie cliquable ;
+  la section est masquée **en direct** (`!live.active`), parce que
+  `session.events` vient du suivi SSE d'un *job* et qu'en caméra elle affichait son
+  vide pour toute la session, sous des compteurs qui montaient ; et **aucune région
+  `aria-live`**, qui ferait d'un lecteur d'écran un métronome sur un carrefour
+  chargé ;
+- **`classLabel` et `VEHICLE_CLASSES` ont déménagé dans `shared/lib/classes.ts`**,
+  pour la même raison que `shared/lib/directions.ts` : quatre features nomment une
+  classe, et une feature n'importe jamais une autre feature. Tant qu'ils vivaient
+  dans `results-dashboard/model/labels.ts`, la chronologie écrivait `car #12` là où
+  le registre écrivait `Voiture` pour le même véhicule — invariant 12 ;
 - **`shared/ui/Tabs.tsx` reste**, sans consommateur pour l'instant — une
   primitive ARIA générique et accessible (flèches, Home/Fin, roving `tabIndex`),
   gardée pour un futur besoin plutôt que supprimée pour un gain nul.
@@ -618,6 +675,37 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     §4 visait réellement (l'écriture sur disque, pas la lecture d'un résultat
     déjà là).
     [ADR 0027](docs/adr/0027-la-limite-de-debit-globale-exempte-la-lecture-d-un-job.md).
+20. **Une analyse peut ne porter que sur une fenêtre de la vidéo.** « Lancer
+    l'analyse serveur » ouvre désormais une modale — toute la vidéo, à partir de la
+    position de lecture, entre deux moments précis, ou annuler — et deux poignées
+    glissables dessinent l'intervalle **sur la barre de lecture**. `startMs` /
+    `endMs` (ms de temps de scène, `0` / `null` par défaut, fin **exclue**)
+    voyagent dans `AnalysisRequest`. Cinq points qui ne se devinent pas :
+    - **les horodatages restent absolus** : une analyse lancée à 00:34 date son
+      premier franchissement à 00:34. Les décaler à zéro ferait sauter la vidéo
+      locale au mauvais endroit pendant toute l'analyse — elle se cale sur le temps
+      de scène de l'aperçu — et rendrait deux fenêtres du même clip incomparables ;
+    - **la fenêtre est tranchée par `AnalysisService`, pas par l'adaptateur.**
+      `EngineSpec.start_ms` n'est qu'un **indice de performance** : le `FakeEngine`
+      l'ignore et produit les mêmes chiffres. C'est ce qui évite un troisième
+      exemplaire du bug « vert en CI, faux en production » ;
+    - **le déplacement, lui, doit vivre dans l'adaptateur.** `LoadImagesAndVideos`
+      d'Ultralytics ne sait pas se déplacer, donc `iter_video` a un **second
+      chemin** — OpenCV décode après `CAP_PROP_POS_FRAMES`, puis rattrape par
+      `grab()` et **vérifie où il est tombé** (le déplacement est approximatif sur
+      plusieurs conteneurs, et l'accepter sans vérifier donnerait des horodatages
+      faux sans lever). Il y a donc **trois** `model.track()` dans ce module, ce que
+      `test_engine_arguments.py` compte exprès ;
+    - **une fenêtre vide est refusée, pas rendue en compteurs à zéro** : le schéma
+      refuse une fin qui ne suit pas le début, et `run_video` refuse — après avoir
+      sondé la vidéo — une fenêtre hors du fichier (`empty_analysis_range`) ;
+    - **l'intervalle n'est pas persisté** et vit dans `entities/analysis-range` : il
+      décrit *cette* vidéo, donc `resetForNewSource` le remet à neuf comme la
+      géométrie. Le direct n'en a rien (un flux n'a ni début ni fin), et
+      `launchSignature` ne le compare pas — un résultat reste juste pour sa fenêtre,
+      qui est **rappelée sous le bouton de lancement**.
+
+    [ADR 0028](docs/adr/0028-analyser-une-fenetre-de-la-video.md).
 
 ## Les vitesses en km/h : la calibration est **par ligne**
 

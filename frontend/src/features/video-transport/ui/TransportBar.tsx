@@ -23,8 +23,11 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import type { AnalysisRange } from "@/entities/analysis-range";
+
 import { PLAYBACK_RATES, formatRate, formatTime, hasSeekableDuration } from "../model/formatTime";
 import { useVideoTransport } from "../model/useVideoTransport";
+import { RangeSelector } from "./RangeSelector";
 
 interface TransportBarProps {
   /**
@@ -49,6 +52,24 @@ interface TransportBarProps {
   disabled?: boolean;
   /** Fin de lecture — le studio y affiche son bandeau de relecture. */
   onEnded?: () => void;
+  /**
+   * L'intervalle qui sera analysé, dessiné sous la barre de position.
+   *
+   * `undefined` (avec `onRangeChange`) masque le sélecteur : le direct n'a pas
+   * d'intervalle à choisir, et un rail inerte y annoncerait un réglage inexistant.
+   */
+  range?: AnalysisRange | undefined;
+  onRangeChange?: ((range: AnalysisRange) => void) | undefined;
+  /**
+   * Grise le **sélecteur d'intervalle** seul, sans figer la lecture.
+   *
+   * Distinct de `disabled`, et la distinction a un sens précis : pendant une
+   * analyse, se déplacer dans la vidéo reste utile — on regarde l'aperçu — mais
+   * déplacer les bornes ne l'est plus, elles sont déjà parties au serveur. Les
+   * confondre interdirait la lecture ou laisserait croire qu'on peut encore
+   * changer la fenêtre en cours de route.
+   */
+  rangeDisabled?: boolean;
 }
 
 export function TransportBar({
@@ -56,6 +77,9 @@ export function TransportBar({
   seekable = true,
   disabled = false,
   onEnded,
+  range,
+  onRangeChange,
+  rangeDisabled = false,
 }: TransportBarProps) {
   /**
    * L'élément, une fois monté.
@@ -93,6 +117,21 @@ export function TransportBar({
             {formatTime(transport.currentTime)} / {formatTime(transport.duration)}
           </time>
         </div>
+      )}
+
+      {/* Le sélecteur d'intervalle **sous** la barre de position, pas ailleurs :
+          les deux partagent la même largeur donc la même échelle, et c'est cet
+          alignement qui fait qu'une borne se lit comme un endroit de la vidéo
+          plutôt que comme un nombre. Il suit `showTimeline` pour la même raison
+          qu'elle existe : sans durée exploitable, une borne n'a aucune position. */}
+      {showTimeline && range !== undefined && onRangeChange !== undefined && (
+        <RangeSelector
+          range={range}
+          duration={transport.duration}
+          currentTime={transport.currentTime}
+          disabled={inert || rangeDisabled}
+          onChange={onRangeChange}
+        />
       )}
 
       <div className="flex flex-wrap items-center gap-1">

@@ -11,13 +11,7 @@ import { describe, expect, it } from "bun:test";
 
 import type { CrossingEvent } from "@/shared/api/contracts";
 
-import {
-  LOG_LIMIT,
-  appendCrossings,
-  directionLabel,
-  formatSceneTime,
-  lineLabel,
-} from "./previewLog";
+import { LOG_LIMIT, appendCrossings, formatSceneTime } from "./previewLog";
 
 function crossing(
   globalId: number,
@@ -94,18 +88,9 @@ describe("formatSceneTime", () => {
   });
 });
 
-describe("libellés", () => {
-  it("nomme les deux sens sans les confondre", () => {
-    expect(directionLabel(1)).toBe("sens +");
-    expect(directionLabel(-1)).toBe("sens −");
-  });
-
-  it("retombe sur l'identifiant d'une ligne effacée depuis", () => {
-    // L'événement a bien eu lieu : le masquer creuserait un écart inexpliqué
-    // entre le journal et le total.
-    const names = new Map([["l1", "Voie nord"]]);
-
-    expect(lineLabel("l1", names)).toBe("Voie nord");
-    expect(lineLabel("l9", names)).toBe("l9");
-  });
-});
+/*
+ * Les tests de `directionLabel` et `lineLabel` sont partis avec les fonctions.
+ * Ce qui les remplace est couvert par `crossingTimeline.test.ts` : le rôle du sens
+ * lu sur le tracé courant, et le repli d'une ligne retirée du tracé — qui reste
+ * affichée sans que son rôle soit inventé.
+ */

@@ -70,6 +70,12 @@ const REQUEST: AnalysisRequest = {
   // effet en direct de toute façon : c'est le client qui cadence son envoi.
   analysisSpeed: null,
   maxAnalysisFps: null,
+  // Sans effet en direct non plus, et pour une raison plus radicale : un flux
+  // caméra n'a ni début ni fin à borner. Les deux champs voyagent quand même,
+  // parce que le direct envoie **exactement** la requête du différé — c'est ce
+  // partage qui garantit qu'un même tracé compte pareil dans les deux modes.
+  startMs: 0,
+  endMs: null,
   lines: [LINE],
   zones: [ZONE],
 };

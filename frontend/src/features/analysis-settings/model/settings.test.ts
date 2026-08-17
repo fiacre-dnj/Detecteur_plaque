@@ -244,6 +244,38 @@ describe("toRequest — la traduction vers le serveur", () => {
     expect(request.lines).toEqual(LINES);
     expect(request.zones).toEqual([]);
   });
+
+  it("analyse toute la vidéo quand aucun intervalle n'est demandé", () => {
+    // Le défaut du quatrième argument **est** le comportement d'avant : qui ne
+    // touche pas à l'intervalle retrouve exactement les chiffres qu'il avait.
+    const request = toRequest(DEFAULT_SETTINGS, LINES, []);
+
+    expect(request.startMs).toBe(0);
+    expect(request.endMs).toBeNull();
+  });
+
+  it("transmet les deux bornes d'un intervalle", () => {
+    const request = toRequest(DEFAULT_SETTINGS, LINES, [], {
+      startMs: 34_000,
+      endMs: 300_000,
+    });
+
+    expect(request.startMs).toBe(34_000);
+    expect(request.endMs).toBe(300_000);
+  });
+
+  it("écarte un intervalle que le serveur refuserait en 422", () => {
+    // Dernier filet avant l'envoi, comme pour les cadences : le serveur refuse un
+    // début négatif et une fin qui précède le début, et un 422 sur un écran dont
+    // toutes les valeurs paraissent valides n'aide personne. `clampRange` les a
+    // normalement déjà rattrapés — ce garde couvre le chemin qui l'aurait évité.
+    const invalide = toRequest(DEFAULT_SETTINGS, LINES, [], { startMs: -10, endMs: -1 });
+    expect(invalide.startMs).toBe(0);
+    expect(invalide.endMs).toBeNull();
+
+    const inverse = toRequest(DEFAULT_SETTINGS, LINES, [], { startMs: 5_000, endMs: 2_000 });
+    expect(inverse.endMs).toBeNull();
+  });
 });
 
 describe("défauts alignés sur le serveur", () => {

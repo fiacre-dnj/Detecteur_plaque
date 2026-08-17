@@ -11,9 +11,11 @@ transport, de l'orchestration et de la base.
 from __future__ import annotations
 
 from dataclasses import replace
+from math import ceil
 from time import perf_counter, sleep
 from typing import TYPE_CHECKING
 
+from traffic_analysis.core.errors import ValidationAppError
 from traffic_analysis.core.logging import get_logger
 from traffic_analysis.features.counting.application.dto import (
     TIMELINE_WARNING_THRESHOLD,
@@ -205,8 +207,34 @@ class AnalysisService:
         info = self._engine.probe(video_path)
         result = AnalysisResultData(job_id=job_id, model_id=config.model_id, video=info)
 
-        total = self._expected_frames(info.frame_count, config.frame_stride)
+        total = self._expected_frames(info, config.frame_stride, config.start_ms, config.end_ms)
         self._warn_if_timeline_is_huge(job_id, total)
+        if config.start_ms > 0.0 or config.end_ms is not None:
+            if total == 0:
+                # Refusé **avant** d'analyser, et non rendu en compteurs à zéro.
+                # C'est le seul contrôle de fenêtre qui ne peut pas vivre dans le
+                # schéma de requête : lui ne connaît pas la durée du fichier, qui
+                # n'existe qu'une fois la vidéo reçue et sondée. Sans ce refus, une
+                # borne posée au-delà de la fin — un preset rejoué sur un clip plus
+                # court, une saisie d'un chiffre de trop — produirait un job
+                # « terminé » et parfaitement vide, indiscernable d'une panne de
+                # détection.
+                duration_ms = info.frame_count / info.fps * 1000.0 if info.fps > 0 else 0.0
+                msg = (
+                    "L'intervalle demandé ne contient aucune image de cette vidéo : "
+                    f"elle dure {duration_ms / 1000:.1f} s et l'analyse était bornée "
+                    f"à [{config.start_ms / 1000:.1f} s ; "
+                    + ("fin]" if config.end_ms is None else f"{config.end_ms / 1000:.1f} s]")
+                    + ". Corrigez les bornes, ou analysez toute la vidéo."
+                )
+                raise ValidationAppError(msg, code="empty_analysis_range")
+            logger.info(
+                "analyse restreinte à une fenêtre de la vidéo",
+                job_id=job_id,
+                start_ms=round(config.start_ms),
+                end_ms=None if config.end_ms is None else round(config.end_ms),
+                expected_frames=total,
+            )
 
         detector = self._plate_detector if config.detect_plates else None
         if config.detect_plates and (detector is None or not detector.available):
@@ -304,6 +332,26 @@ class AnalysisService:
                 # résultat que plus personne n'attend.
                 if is_cancelled is not None and is_cancelled():
                     raise AnalysisCancelled
+
+            # ── La fenêtre d'analyse, tranchée **ici** et pas dans l'adaptateur ──
+            #
+            # C'est la couche qui voit les horodatages de tous les moteurs, donc la
+            # seule où la règle puisse être unique et testée sans GPU. `EngineSpec`
+            # porte bien `start_ms`, mais uniquement pour qu'un adaptateur puisse
+            # éviter de décoder ce qui précède : un moteur qui l'ignore rend les
+            # mêmes chiffres, simplement plus lentement. Cette symétrie est ce qui
+            # empêche la fenêtre de devenir une de ces divergences que le moteur
+            # factice ne traverse jamais.
+            #
+            # **La fin sort de la boucle**, elle ne saute pas l'image : refermer le
+            # générateur arrête le décodage du moteur, ce qui est tout l'intérêt de
+            # borner une analyse à cinq minutes d'un fichier d'une heure. La borne
+            # est **exclue** — deux fenêtres adjacentes ne partagent donc aucune
+            # image, et ne comptent pas deux fois ce qui se passe à leur jointure.
+            if config.end_ms is not None and frame.timestamp_ms >= config.end_ms:
+                break
+            if frame.timestamp_ms < config.start_ms:
+                continue
 
             outcome = session.feed(frame.frame_index, frame.timestamp_ms, frame.tracks)
 
@@ -636,15 +684,41 @@ class AnalysisService:
         return tuple(updated)
 
     @staticmethod
-    def _expected_frames(frame_count: int, stride: int) -> int:
+    def _expected_frames(
+        info: VideoInfo, stride: int, start_ms: float = 0.0, end_ms: float | None = None
+    ) -> int:
         """Nombre d'images **analysées**, pas d'images du fichier.
 
         C'est l'unité de la barre de progression : diviser par `frame_count` avec
         un pas de 3 la ferait plafonner à 33 %.
+
+        La **fenêtre** entre dans le calcul, et ce n'est pas un raffinement : sans
+        elle, une analyse bornée à cinq minutes d'un fichier d'une heure
+        s'arrêterait à 8 % en annonçant « terminé », ce qui se lit comme une
+        analyse tronquée par une panne. Les bornes sont converties en index par la
+        cadence — le seul chemin possible, l'utilisateur choisissant ses bornes sur
+        une barre de lecture qui ne connaît que des secondes.
+
+        Une source sans cadence exploitable rend la fenêtre incalculable ; on
+        retombe alors sur le compte complet, qui surestime. Une barre qui n'atteint
+        pas 100 % est moins trompeuse qu'une barre qui le dépasse — `Progress.ratio`
+        borne déjà le second cas, et le premier reste rare.
         """
-        if frame_count <= 0:
+        stride = max(1, stride)
+        if info.frame_count <= 0:
             return 0
-        return max(1, frame_count // max(1, stride))
+        total = max(1, info.frame_count // stride)
+        if info.fps <= 0.0 or (start_ms <= 0.0 and end_ms is None):
+            return total
+
+        # Les images analysées sont les multiples de `stride`. On borne donc leur
+        # **ordinal** `k`, pas leur index : c'est `k` que compte la progression.
+        per_ms = info.fps / 1000.0
+        first_index = ceil(start_ms * per_ms) if start_ms > 0.0 else 0
+        last_index = info.frame_count if end_ms is None else ceil(end_ms * per_ms)
+        low = ceil(first_index / stride)
+        high = min(total, ceil(last_index / stride))
+        return max(0, high - low)
 
     @staticmethod
     def _fps(processed: int, started: float, paused_s: float = 0.0) -> float:

@@ -57,18 +57,13 @@ export function formatSceneTime(timestampMs: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${tenths}`;
 }
 
-/** Le sens tel qu'on l'affiche : le signe du côté d'arrivée d'une ligne A→B. */
-export function directionLabel(direction: number): string {
-  return direction >= 0 ? "sens +" : "sens −";
-}
-
-/**
- * Nom de la ligne, ou son identifiant si elle n'est plus tracée.
+/*
+ * `directionLabel` (« sens + » / « sens − ») et `lineLabel` vivaient ici et sont
+ * **supprimés**, pas masqués.
  *
- * Le repli sur l'identifiant est délibéré : un franchissement dont la ligne a été
- * supprimée depuis reste un événement réel du serveur. L'afficher sans nom vaut
- * mieux que le masquer, ce qui creuserait un écart inexpliqué avec le total.
+ * Le premier affichait le contrat machine à un humain qui regarde un carrefour : la
+ * chronologie nomme désormais le **rôle** du sens — « Entrée », « Sortie » — que
+ * `shared/lib/directions.ts` lit sur le tracé courant. Le second dupliquait le repli
+ * « nom, sinon identifiant » de `lineName` du même module, et obligeait l'appelant à
+ * bâtir une table de noms qui perdait la couleur et les rôles de la ligne.
  */
-export function lineLabel(lineId: string, names: ReadonlyMap<string, string>): string {
-  return names.get(lineId) ?? lineId;
-}

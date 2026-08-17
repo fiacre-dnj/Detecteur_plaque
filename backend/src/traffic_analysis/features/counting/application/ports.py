@@ -43,6 +43,18 @@ class EngineSpec:
     iou: float
     class_ids: tuple[int, ...]
     frame_stride: int = 1
+    #: Temps de scène (ms) avant lequel il est **inutile** de décoder.
+    #:
+    #: C'est un indice de performance, **jamais la règle de comptage**. La fenêtre
+    #: analysée est tranchée par `AnalysisService` sur les horodatages qu'un moteur
+    #: rapporte, donc un adaptateur qui ignore ce champ — le `FakeEngine` de la CI,
+    #: par exemple — produit exactement les mêmes chiffres, simplement plus
+    #: lentement. Un adaptateur qui l'honore ne doit **pas** décaler ses
+    #: horodatages : ils restent absolus depuis le début du fichier.
+    #:
+    #: Il n'y a pas de `end_ms` en face, et l'asymétrie est voulue : la fin s'obtient
+    #: en refermant le générateur, ce que la boucle d'analyse fait déjà en sortant.
+    start_ms: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
