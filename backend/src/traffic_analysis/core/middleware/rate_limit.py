@@ -48,9 +48,20 @@ class Rule:
     """Une limite : `count` requêtes par `per_seconds`, sur les chemins donnés.
 
     `prefixes` vide signifie « toutes les requêtes » — c'est la limite globale.
+
+    `exempt_get_prefixes` retire des **lectures** de cette règle, jamais des
+    écritures : voir ADR 0027. La relecture d'une analyse archivée déclenche à
+    elle seule une vingtaine de requêtes en quelques secondes — configuration,
+    statut, flux d'événements, résultat, et surtout la vidéo, que le navigateur
+    demande **par plages** (une quinzaine mesurées pour un seul clip). Aucune de
+    ces lectures ne coûte au serveur ce que `prompt/06` §4 cherche à limiter — le
+    dépôt d'une vidéo, qui écrit sur le disque avant même que le sémaphore
+    n'entre en jeu — et les compter contre le même quota que ce dépôt revient à
+    brider une fonctionnalité déjà livrée (rouvrir un résultat) avec la règle
+    pensée pour une autre (empêcher l'abus de l'ingestion).
     """
 
-    __slots__ = ("count", "methods", "per_seconds", "prefixes")
+    __slots__ = ("count", "exempt_get_prefixes", "methods", "per_seconds", "prefixes")
 
     def __init__(
         self,
@@ -59,13 +70,19 @@ class Rule:
         *,
         prefixes: tuple[str, ...] = (),
         methods: tuple[str, ...] = (),
+        exempt_get_prefixes: tuple[str, ...] = (),
     ) -> None:
         self.count = count
         self.per_seconds = per_seconds
         self.prefixes = prefixes
         self.methods = methods
+        self.exempt_get_prefixes = exempt_get_prefixes
 
     def matches(self, path: str, method: str) -> bool:
+        # Vérifié **avant** `methods` et `prefixes` : une exemption doit gagner
+        # même sur une règle qui, par ailleurs, matcherait toutes les méthodes.
+        if method == "GET" and any(path.startswith(prefix) for prefix in self.exempt_get_prefixes):
+            return False
         if self.methods and method not in self.methods:
             return False
         if not self.prefixes:
