@@ -589,6 +589,61 @@ class TestBandeMorte:
         assert event.direction == DESCENDING
         assert counter.by_line["l1"].positive.total == 1
 
+    def test_une_piste_nee_dans_la_bande_qui_traverse_compte_une_fois(self) -> None:
+        """**Le franchissement que la bande morte avalait en silence.**
+
+        La piste naît à 3 px du trait — dans la bande de ±10 px d'une boîte 80×60 —
+        puis descend franchement de l'autre côté. Avant le rattrapage, son premier
+        côté *tranché* servait d'amorçage et le franchissement disparaissait : le
+        compteur rendait 0 pour un véhicule qui traverse à l'écran.
+
+        Ce n'est pas un cas de laboratoire. La bande vaut un quart de demi-boîte,
+        donc ±50 px pour un poids lourd de 400 px : tout véhicule qui entre dans le
+        champ près du trait, et toute piste recréée après une occlusion à cet
+        endroit, tombait dedans. C'est le cas dominant en trafic dense.
+        """
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+
+        events = self._hover(counter, [-3.0, +20.0, +45.0, +70.0], size=(80.0, 60.0))
+
+        assert len(events) == 1, "une piste née dans la bande franchit quand même"
+        event = events[0]
+        assert isinstance(event, CrossingEvent)
+        assert event.direction == DESCENDING
+
+    def test_une_piste_nee_dans_la_bande_du_meme_cote_ne_compte_pas(self) -> None:
+        """Le pendant du test précédent, et la borne qui l'empêche d'inventer.
+
+        La piste naît à +2 px — sous le trait — et s'en éloigne toujours plus. Elle
+        n'a jamais changé de côté : le rattrapage compare les deux côtés et ne
+        trouve rien à compter. Sans cette comparaison, toute piste née dans la
+        bande produirait un franchissement à sa sortie.
+        """
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+
+        assert self._hover(counter, [+2.0, +90.0, +150.0], size=(80.0, 60.0)) == []
+        assert counter.by_line["l1"].total == 0
+
+    def test_le_rattrapage_respecte_les_extremites_du_segment(self) -> None:
+        """Le rattrapage n'est pas une porte dérobée : il exige la même intersection.
+
+        Même trajet que le rattrapage nominal, mais à x=3000 — au-delà de
+        l'extrémité de la ligne, qui s'arrête à x=1920. Le côté de la *droite*
+        bascule, le segment tracé n'est jamais coupé, et rien ne doit être compté
+        (piège 7 de prompt/13).
+        """
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        track = session_track(track_path(1, CAR, [(3000.0, 497.0)])[0], hits=5)
+        events: list[object] = []
+        for index, y in enumerate([497.0, 520.0, 545.0]):
+            if index > 0:
+                track.previous_centroid = track.centroid
+                track.box = box_at((3000.0, y))
+                track.centroid = track.box.centroid
+            events.extend(counter.observe((track,), index * 33.0, index))
+
+        assert events == []
+
     def test_la_bande_suit_la_taille_du_vehicule(self) -> None:
         """Un écart de 15 px : dans la bande d'un camion, hors de celle d'une moto.
 
@@ -605,6 +660,87 @@ class TestBandeMorte:
         # et rien n'est encore décidé — ce qui est le bon comportement : à cette
         # échelle, 15 px ne prouvent pas de quel côté est le véhicule.
         assert self._hover(gros, trajet, size=(400.0, 200.0)) == []
+
+
+class TestIdentifiantDePisteRecycle:
+    """Un `track_id` réémis ne doit **rien** hériter du véhicule précédent.
+
+    L'état géométrique du compteur est volontairement conservé au-delà de la mort
+    d'une piste (piège 11 de prompt/13) : une piste réactivée sous `max_lost_ms`
+    doit retrouver son côté, sinon elle repart en amorçage et son premier
+    franchissement au retour est perdu.
+
+    Mais la clé était `(track_id, ligne)`, et Ultralytics **recycle** ses
+    identifiants. Au-delà de `max_lost_ms` la session donne un numéro de véhicule
+    neuf au même `track_id` : le compteur, lui, retrouvait le côté et la dernière
+    position de l'ancien occupant. Le segment testé reliait alors le dernier point
+    du véhicule A au premier point du véhicule B — un bond qui traverse le trait —
+    et un **franchissement fantôme** était émis pour un véhicule qui n'avait rien
+    franchi.
+
+    Le numéro de véhicule entre donc dans la clé. Une réactivation courte garde le
+    même numéro, donc la même mémoire ; un recyclage en donne un neuf, donc un
+    amorçage — ce qui est le comportement juste, puisque c'est un autre véhicule.
+    """
+
+    def _drive(
+        self,
+        counter: LineCrossingCounter,
+        *,
+        track_id: int,
+        global_id: int,
+        ys: list[float],
+        start_frame: int,
+    ) -> list[object]:
+        track = session_track(
+            track_path(track_id, CAR, [(900.0, ys[0])])[0], hits=5, global_id=global_id
+        )
+        events: list[object] = []
+        for index, y in enumerate(ys):
+            if index > 0:
+                track.previous_centroid = track.centroid
+                track.box = box_at((900.0, y))
+                track.centroid = track.box.centroid
+            frame = start_frame + index
+            events.extend(counter.observe((track,), frame * 33.0, frame))
+        return events
+
+    def test_un_identifiant_recycle_n_emet_pas_de_franchissement_fantome(self) -> None:
+        """Aucun des deux véhicules ne franchit ; le total doit rester à zéro.
+
+        A longe la ligne par au-dessus et s'arrête ; B — même `track_id`, numéro
+        neuf — naît **en dessous** et s'en éloigne. Avant la correction, B héritait
+        du côté de A et le compteur émettait un passage descendant.
+        """
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+
+        self._drive(
+            counter, track_id=7, global_id=1, ys=[380.0, 400.0, 420.0, 440.0], start_frame=0
+        )
+        assert counter.by_line["l1"].total == 0
+
+        fantome = self._drive(
+            counter, track_id=7, global_id=2, ys=[620.0, 660.0, 700.0], start_frame=10
+        )
+
+        assert fantome == [], "un identifiant recyclé ne franchit pas pour son prédécesseur"
+        assert counter.by_line["l1"].total == 0
+
+    def test_une_piste_reactivee_garde_sa_memoire(self) -> None:
+        """La contrepartie : même numéro de véhicule, donc mémoire conservée.
+
+        C'est la raison d'être d'un état non purgé (piège 11). La piste s'amorce
+        au-dessus du trait, disparaît le temps d'une occlusion courte — la session
+        lui rend le **même** numéro — et franchit au retour. Le franchissement doit
+        être compté : sans mémoire, elle repartirait en amorçage et il serait perdu.
+        """
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+
+        self._drive(counter, track_id=7, global_id=1, ys=[380.0, 420.0], start_frame=0)
+        retour = self._drive(counter, track_id=7, global_id=1, ys=[560.0, 620.0], start_frame=8)
+
+        assert len(retour) == 1, "une piste réactivée franchit encore"
+        assert counter.by_line["l1"].positive.total == 1
 
 
 class TestQuasiFranchissements:

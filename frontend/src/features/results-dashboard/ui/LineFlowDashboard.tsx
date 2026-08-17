@@ -18,8 +18,9 @@
  * ici** — décision assumée : ce tableau de bord ne parle que de lignes.
  */
 
-import type { AnalysisStats, CountingLine } from "@/shared/api/contracts";
+import type { AnalysisStats, CountingLine, VehicleRecord } from "@/shared/api/contracts";
 
+import { enteringVehicleCount } from "../model/crossedVehicles";
 import { directionRows, isEntryRow } from "../model/directions";
 import {
   busiestLine,
@@ -35,10 +36,21 @@ import { crossroadFlowSentence } from "../model/labels";
 interface LineFlowDashboardProps {
   stats: AnalysisStats;
   lines: readonly CountingLine[];
+  /**
+   * Les véhicules visibles à la tête de lecture — **déjà filtrés** sur « a
+   * franchi au moins une ligne » par l'appelant, comme le registre.
+   *
+   * Le chiffre de tête en dérive plutôt que de lire `stats.trackedVehicles` :
+   * ce dernier compte tout objet suivi confirmé, stationnement compris, et
+   * affichait 106 sous 28 entrées sur la même analyse.
+   */
+  vehicles: readonly VehicleRecord[];
 }
 
-export function LineFlowDashboard({ stats, lines }: LineFlowDashboardProps) {
+export function LineFlowDashboard({ stats, lines, vehicles }: LineFlowDashboardProps) {
   if (lines.length === 0) return null;
+
+  const entered = enteringVehicleCount(vehicles, lines);
 
   const busiest = busiestLine(stats, lines);
   const mostEntered = mostEnteredLine(stats, lines);
@@ -82,11 +94,18 @@ export function LineFlowDashboard({ stats, lines }: LineFlowDashboardProps) {
         Statistique
       </h2>
 
+      {/* **Des véhicules distincts entrés, pas des passages.** Un véhicule qui
+          entre deux fois compte 1 ici et 2 dans « Entrées au carrefour » : deux
+          questions, deux unités, et on ne les divise jamais l'une par l'autre
+          (invariant 3). */}
       <div className="flex flex-wrap items-baseline justify-between gap-2 rounded-card bg-surface p-3 shadow-card">
-        <span className="label-micro">Véhicules ayant traversé le carrefour</span>
-        <span className="text-[1.75rem] font-bold leading-tight text-ink tabular">
-          {stats.trackedVehicles}
+        <span className="min-w-0">
+          <span className="label-micro block">Véhicules ayant traversé le carrefour</span>
+          <span className="text-micro text-ink-dim">
+            Entrés par une ligne — le stationnement et les sorties seules sont exclus
+          </span>
         </span>
+        <span className="text-[1.75rem] font-bold leading-tight text-ink tabular">{entered}</span>
       </div>
 
       <ul className="overflow-hidden rounded-card bg-surface shadow-card">

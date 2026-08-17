@@ -77,6 +77,7 @@ import {
   ClassEntriesGrid,
   LineFlowDashboard,
   ResultsDashboard,
+  crossingVehicles,
   entriesByClass,
 } from "@/features/results-dashboard";
 import { useReplay, vehiclesAt } from "@/features/timeline-replay";
@@ -384,6 +385,29 @@ export function StudioPage() {
   const lineNames = useMemo(
     () => new Map(geometry.lines.map((line) => [line.id, line.name])),
     [geometry.lines],
+  );
+
+  /**
+   * Les véhicules **du trafic**, à la tête de lecture : vus, et ayant franchi
+   * au moins une ligne.
+   *
+   * Les deux filtres se composent et aucun n'est facultatif : `vehiclesAt` cale
+   * le registre sur la vidéo (afficher les 400 véhicules d'un clip à la dixième
+   * seconde ferait mentir le tableau), `crossingVehicles` écarte le
+   * stationnement. Sans le second, le registre publiait des lignes à « — » que
+   * rien ne permettait de vérifier, et le chiffre de tête annonçait 106 objets
+   * suivis sous 28 entrées.
+   *
+   * Calculé **ici** et passé aux deux consommateurs plutôt que refait dans
+   * chacun : le registre et le tableau de bord doivent parler du même ensemble,
+   * sinon un véhicule est dans le total sans être dans la liste qui le justifie.
+   */
+  const countedVehicles = useMemo(
+    () =>
+      session.result === null
+        ? []
+        : crossingVehicles(vehiclesAt(session.result, replay.timeMs)),
+    [session.result, replay.timeMs],
   );
 
   /**
@@ -877,7 +901,11 @@ export function StudioPage() {
         <>
           <ClassEntriesGrid stats={replay.stats} lines={geometry.lines} includePerson={hasPersonClass} />
 
-          <LineFlowDashboard stats={replay.stats} lines={geometry.lines} />
+          <LineFlowDashboard
+            stats={replay.stats}
+            lines={geometry.lines}
+            vehicles={countedVehicles}
+          />
 
           {/* Deux camemberts côte à côte : la même question, « quelle part »,
               posée sur deux axes différents — par ligne, par type de
@@ -904,7 +932,7 @@ export function StudioPage() {
               titres pour une seule section. */}
           <VehicleRegistry
             result={session.result}
-            vehicles={vehiclesAt(session.result, replay.timeMs)}
+            vehicles={countedVehicles}
             lines={geometry.lines}
             // Suit le réglage réel : la note expliquant les px/s ne doit
             // apparaître que quand l'échelle manque **effectivement**.

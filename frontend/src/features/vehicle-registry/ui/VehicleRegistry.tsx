@@ -6,6 +6,14 @@
  * peut pointer une ligne, retrouver le véhicule dans la vidéo, et confirmer. Sans
  * lui, « 47 véhicules » est un acte de foi.
  *
+ * **Il ne publie que les véhicules ayant franchi au moins une ligne**, tous sens
+ * confondus — le filtre est appliqué par l'appelant (`crossingVehicles` dans
+ * `StudioPage`), qui le partage avec le chiffre de tête du tableau de bord pour
+ * que les deux parlent du même ensemble. Le serveur, lui, publie tout objet suivi
+ * confirmé : stationnement compris. Ces lignes-là n'avaient que des « — » dans
+ * « Lignes franchies » et « Passages », donc rien à vérifier — exactement ce que
+ * ce tableau existe pour permettre.
+ *
  * Trois comportements d'affichage, chacun pour une raison mesurée :
  * - **12 lignes puis « Afficher les N restants »** : le registre est sous les
  *   cartes, et déployer 400 lignes par défaut repousserait tout le reste hors écran ;
@@ -111,8 +119,9 @@ export function VehicleRegistry({
           Registre des véhicules
         </h3>
         <p className="rounded-card bg-surface p-4 text-caption text-ink-dim shadow-card">
-          Aucun véhicule identifié pour l'instant. Le registre se remplit au fil de
-          l'analyse.
+          Aucun véhicule n'a encore franchi de ligne. Le registre se remplit au fil de
+          l'analyse — les véhicules simplement détectés, à l'arrêt ou en stationnement,
+          n'y figurent pas.
         </p>
       </section>
     );

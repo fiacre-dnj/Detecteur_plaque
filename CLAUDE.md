@@ -305,6 +305,17 @@ Chacun est un bug déjà payé.
      compte. Un aller-retour compte **2**, deux lignes en travers de la même voie
      comptent **2**, une occlusion qui coupe une piste compte **2**.
 
+   **Ce que l'écran met en avant a changé le 2026-08-17** ([ADR
+   0023](docs/adr/0023-un-vehicule-compte-est-un-vehicule-qui-franchit.md)) : le
+   serveur publie toujours tout objet suivi confirmé, mais le **registre** et le KPI
+   « Véhicules ayant traversé le carrefour » ne montrent que les véhicules ayant
+   **franchi**. Le KPI compte les véhicules distincts **entrés** (sens `entry`), le
+   registre ceux ayant franchi une ligne dans **n'importe quel** sens. Les deux
+   prédicats vivent dans `results-dashboard/model/crossedVehicles.ts` et sont
+   **calculés côté client** : c'est ce qui rend le basculement d'un sens
+   entrée ↔ sortie instantané. `len(vehicles()) == tracked_vehicles` reste vrai
+   côté serveur et ne l'est plus à l'écran.
+
    Le garde d'ADR 0009 est **supprimé**, plus débranché : `dedupe_by_identity`,
    `reid_count` et `reid_hits` n'existent plus. `domain/reid.py` non plus — il est
    remplacé par `domain/track_numbering.py`, qui numérote et vote la classe, sans
@@ -602,6 +613,24 @@ Avant la bande, ils différaient de quatre.
 **L'horodatage d'un passage est celui de la sortie de bande**, pas du contact avec le
 trait : mesuré jusqu'à **2,2 s** de retard pour un gros véhicule abordant une ligne
 presque parallèlement. Le comptage est juste, sa date est tardive.
+
+**La bande avait un angle mort, corrigé le 2026-08-17** ([ADR
+0023](docs/adr/0023-un-vehicule-compte-est-un-vehicule-qui-franchit.md)) : une piste
+qui **naît dans la bande** n'a pas de côté tranché, et son premier côté tranché
+servait d'*amorçage* — le franchissement était perdu, en silence. Le compteur retient
+désormais la dernière position d'avant-amorçage et son côté **brut** ; si la piste se
+range du côté opposé, le franchissement est compté, sous les deux mêmes conditions
+géométriques qu'un franchissement ordinaire. Cela concerne tout véhicule entrant dans
+le champ près du trait, et toute piste recréée après une occlusion à cet endroit —
+donc **le cas dominant en trafic dense**.
+
+**Et un identifiant de piste recyclé fabriquait des fantômes.** `_LineState` est clé
+par `(track_id, global_id, ligne)` et **pas** par `(track_id, ligne)` : Ultralytics
+recycle ses identifiants, et l'ancienne clé rendait au nouveau véhicule le côté et la
+dernière position de son prédécesseur — le segment testé reliait le dernier point de A
+au premier point de B, traversait le trait, et comptait un passage que personne
+n'avait fait. Une réactivation courte garde le même `global_id`, donc la même mémoire :
+le piège 11 de `prompt/13` reste couvert.
 
 ## Pièges d'environnement de cette machine
 

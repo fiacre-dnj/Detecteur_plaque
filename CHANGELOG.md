@@ -151,6 +151,30 @@ plus deux fois dans le même sens » si.
 - Le flux par ligne et la répartition par type se lisent en **deux camemberts
   côte à côte** plutôt qu'en barres : la part de chaque ligne et de chaque type
   se voit d'un coup d'œil, sans comparer des barres une à une.
+- **Deux franchissements sur trois manquaient à l'appel dans un cas précis, et
+  un quatrième était inventé dans un autre.** Un véhicule dont le suivi
+  *commence* tout près d'une ligne — parce qu'il entre dans le champ à cet
+  endroit, ou parce qu'une occlusion vient de couper sa piste — n'était pas
+  compté quand il franchissait : la zone d'insensibilité qui entoure chaque
+  trait servait alors de point de départ au lieu de point de passage. C'est le
+  cas le plus fréquent en trafic dense. À l'inverse, quand le suivi réattribuait
+  le numéro interne d'un véhicule disparu à un nouveau venu, celui-ci héritait
+  de la position de son prédécesseur et pouvait se voir attribuer un
+  franchissement qu'il n'avait pas fait. Les deux sont corrigés ; les totaux
+  d'une même vidéo réanalysée peuvent donc monter **et** descendre.
+- **Le registre ne liste plus que les véhicules ayant franchi une ligne**, tous
+  sens confondus. Les véhicules simplement détectés — à l'arrêt, en
+  stationnement, ou vus quelques images dans un coin du champ — n'y figuraient
+  qu'avec des « — » dans « Lignes franchies » et « Passages », donc sans rien
+  qui permette de les vérifier.
+- **« Véhicules ayant traversé le carrefour » compte désormais les véhicules
+  entrés**, et non tous les objets suivis. Sur une même analyse, ce chiffre
+  annonçait 106 juste au-dessus d'une répartition qui totalisait 28 entrées :
+  les deux étaient justes dans leur unité, mais se lisaient comme une
+  contradiction. Un véhicule qui entre deux fois compte pour un seul véhicule
+  ici, et pour deux passages dans « Entrées au carrefour ».
+- Basculer un sens de ligne entre entrée et sortie met à jour ces chiffres
+  **immédiatement**, sans relancer l'analyse.
 - Le **registre des véhicules** est plus détaillé : durée de présence, zones
   traversées et confiance de *détection* de la plaque (distincte de la
   confiance de lecture) s'ajoutent aux colonnes existantes, le type de véhicule
