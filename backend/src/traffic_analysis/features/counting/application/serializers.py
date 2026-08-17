@@ -272,7 +272,6 @@ def serialise_stats(stats: AnalysisStats) -> dict[str, Any]:
         "analysedSceneMs": _pixel(stats.analysed_scene_ms),
         "diagnostics": {
             "highDetections": stats.diagnostics.high_detections,
-            "lowDetections": stats.diagnostics.low_detections,
             "maskedOut": stats.diagnostics.masked_out,
             "containedOut": stats.diagnostics.contained_out,
             "confirmedTracks": stats.diagnostics.confirmed_tracks,

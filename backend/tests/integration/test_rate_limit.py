@@ -93,6 +93,24 @@ class TestLimiteGlobale:
         assert response.headers["x-content-type-options"] == "nosniff"
         assert response.headers["x-frame-options"] == "DENY"
 
+    async def test_rouvrir_un_job_ne_consomme_pas_le_quota_global(
+        self, limited_client: AsyncClient
+    ) -> None:
+        """ADR 0027, sur l'application réelle : trois requêtes de quota, dix lectures.
+
+        Le job n'existe pas — chaque lecture répond 404, pas 200 — mais ce n'est
+        pas ce qui est vérifié ici : un 404 prouve que le middleware a laissé
+        passer la requête jusqu'à la route, ce qu'un 429 aurait empêché. Le quota
+        de trois posé par `limited_client` reste ensuite intact pour `/health`.
+        """
+        for _ in range(10):
+            response = await limited_client.get("/api/v1/jobs/inconnu/config")
+            assert response.status_code != 429
+
+        for _ in range(3):
+            assert (await limited_client.get(HEALTH)).status_code == 200
+        assert (await limited_client.get(HEALTH)).status_code == 429
+
 
 class TestDesactivation:
     async def test_une_limite_a_zero_desactive_le_garde_fou(self, settings: Settings) -> None:
@@ -196,3 +214,72 @@ class TestFenetreGlissante:
 
         for instant in range(30):
             assert limiter._register("ip", "/api/v1/jobs/abc", "GET", float(instant)) is None
+
+    def test_les_lectures_d_un_job_sont_exemptees_de_la_regle_globale(self) -> None:
+        """ADR 0027 : rouvrir une analyse archivée ne doit pas épuiser le quota global.
+
+        Mesuré sur l'application réelle : une vingtaine de requêtes en quelques
+        secondes pour un seul clic sur « Ouvrir », dont une quinzaine pour la seule
+        vidéo — que le navigateur charge par plages. Sans cette exemption, la
+        fonctionnalité même que l'historique promet épuisait le quota prévu pour
+        l'ingestion.
+        """
+
+        async def _noop(scope: object, receive: object, send: object) -> None: ...
+
+        limiter = RateLimitMiddleware(
+            _noop,  # type: ignore[arg-type]
+            rules=[Rule(1, 60.0, exempt_get_prefixes=("/api/v1/jobs/",))],
+        )
+
+        # Quinze plages vidéo, un statut, une config, un résultat : aucun n'entame
+        # le quota d'une seule place.
+        for path in (
+            "/api/v1/jobs/abc/input",
+            "/api/v1/jobs/abc/input",
+            "/api/v1/jobs/abc",
+            "/api/v1/jobs/abc/config",
+            "/api/v1/jobs/abc/result",
+            "/api/v1/jobs/abc/events",
+        ):
+            assert limiter._register("ip", path, "GET", 0.0) is None
+
+        # La règle reste bien vivante : une autre route en consomme le seul crédit.
+        assert limiter._register("ip", "/api/v1/health/live", "GET", 0.0) is None
+        assert limiter._register("ip", "/api/v1/health/live", "GET", 0.5) is not None
+
+    def test_la_liste_des_jobs_reste_comptee(self) -> None:
+        """`GET /jobs` (sans identifiant) n'est **pas** exempté.
+
+        Seules les lectures d'un job précis le sont : la liste paginée de
+        l'historique n'a jamais fait partie de la rafale mesurée, et l'exempter
+        aussi élargirait la portée du correctif sans raison mesurée.
+        """
+
+        async def _noop(scope: object, receive: object, send: object) -> None: ...
+
+        limiter = RateLimitMiddleware(
+            _noop,  # type: ignore[arg-type]
+            rules=[Rule(1, 60.0, exempt_get_prefixes=("/api/v1/jobs/",))],
+        )
+
+        assert limiter._register("ip", "/api/v1/jobs", "GET", 0.0) is None
+        assert limiter._register("ip", "/api/v1/jobs", "GET", 0.5) is not None
+
+    def test_seules_les_lectures_sont_exemptees(self) -> None:
+        """Déposer, annuler, suspendre ou reprendre un job restent comptés.
+
+        L'exemption vise la relecture d'un résultat, pas les écritures : une
+        exemption qui porterait aussi sur `POST`/`DELETE` retirerait la protection
+        que `POST /jobs` a précisément sa propre règle pour assurer.
+        """
+
+        async def _noop(scope: object, receive: object, send: object) -> None: ...
+
+        limiter = RateLimitMiddleware(
+            _noop,  # type: ignore[arg-type]
+            rules=[Rule(1, 60.0, exempt_get_prefixes=("/api/v1/jobs/",))],
+        )
+
+        assert limiter._register("ip", "/api/v1/jobs/abc", "DELETE", 0.0) is None
+        assert limiter._register("ip", "/api/v1/jobs/abc/pause", "POST", 0.5) is not None

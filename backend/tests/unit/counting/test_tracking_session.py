@@ -551,6 +551,54 @@ class TestStatistiques:
         assert stats.diagnostics.confirmed_tracks == 0
         assert stats.diagnostics.tentative_tracks == 1
 
+    def test_le_diagnostic_range_les_observations_de_part_et_d_autre_du_seuil(self) -> None:
+        """Les deux compteurs de score, **qui ne valaient plus jamais autre chose que zéro**.
+
+        Personne ne les renseignait : le domaine annonçait que l'adaptateur le ferait
+        « s'il peut les observer », et l'adaptateur ne l'a jamais fait. Conséquence
+        visible à l'écran, sur *toutes* les analyses : le panneau de diagnostic
+        affichait deux zéros et déclenchait son alerte « aucune détection, à aucun
+        seuil » — un message alarmant, faux, qui envoyait chercher le défaut dans la
+        vidéo alors que le comptage marchait.
+
+        Ce que mesure `rescued_by_low_score` est la bande basse de BoT-SORT en train de
+        travailler : une observation sous le seuil de l'utilisateur prolonge une piste
+        sans jamais en ouvrir une (ADR 0024).
+        """
+        session = AnalysisSession(_config(confidence_threshold=0.5), FRAME_WIDTH, FRAME_HEIGHT)
+
+        # Trois images au-dessus du seuil, deux en dessous — la piste survit aux
+        # secondes grâce à la bande basse, ce que le diagnostic doit rendre lisible.
+        forte = track_path(1, CAR, [(900.0, 300.0)] * 3, score=0.9)
+        faible = track_path(1, CAR, [(900.0, 320.0)] * 2, score=0.2)
+        for index, observation in enumerate([*forte, *faible]):
+            session.feed(index, index * FRAME_MS, (observation,))
+
+        diagnostics = session.stats().diagnostics
+        assert diagnostics.high_detections == 3
+        assert diagnostics.rescued_by_low_score == 2
+
+    def test_une_observation_masquee_n_est_comptee_qu_une_fois(self) -> None:
+        """Elle appartient à `masked_out`, pas aux compteurs de score.
+
+        Sinon le même rejet apparaîtrait dans deux lignes du panneau, et la somme des
+        chiffres cesserait de décrire un chemin — ce que le diagnostic est.
+        """
+        session = AnalysisSession(
+            _config(zones=(make_zone("z1"),), mask_outside_zones=True),
+            FRAME_WIDTH,
+            FRAME_HEIGHT,
+        )
+
+        # Hors de la zone par défaut (400..1500 × 200..800) : l'observation est
+        # masquée avant d'atteindre le suivi.
+        session.feed(0, 0.0, (track_path(1, CAR, [(100.0, 100.0)], score=0.9)[0],))
+
+        diagnostics = session.stats().diagnostics
+        assert diagnostics.masked_out == 1
+        assert diagnostics.high_detections == 0
+        assert diagnostics.rescued_by_low_score == 0
+
     def test_le_diagnostic_explique_une_ligne_restee_a_zero(self) -> None:
         """Une ligne à `0` dit si personne ne passe, ou si le trait est mal posé.
 

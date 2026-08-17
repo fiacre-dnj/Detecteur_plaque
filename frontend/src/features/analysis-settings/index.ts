@@ -14,4 +14,10 @@ export {
 
 export { downloadNotice } from "./model/launchNotice";
 
+export {
+  type PlateCapability,
+  type PlateHealth,
+  plateCapability,
+} from "./model/plateCapability";
+
 export { SettingsPanels } from "./ui/SettingsPanels";

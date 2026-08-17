@@ -153,10 +153,12 @@ describe("formatSceneTime — millisecondes de scène", () => {
 });
 
 describe("formatSceneTimePrecise — l'instant d'un franchissement", () => {
-  it("formate au dixième de seconde, virgule décimale française", () => {
-    expect(formatSceneTimePrecise(0)).toBe("00:00,0");
-    expect(formatSceneTimePrecise(75_400)).toBe("01:15,4");
-    expect(formatSceneTimePrecise(440)).toBe("00:00,4");
+  it("formate au dixième de seconde, comme le journal des franchissements", () => {
+    // Le point et non la virgule décimale : `previewLog.formatSceneTime` écrit
+    // `00:12.4` depuis l'origine, et les deux se lisent sur le même écran.
+    expect(formatSceneTimePrecise(0)).toBe("00:00.0");
+    expect(formatSceneTimePrecise(75_400)).toBe("01:15.4");
+    expect(formatSceneTimePrecise(440)).toBe("00:00.4");
   });
 
   it("distingue deux franchissements de la même seconde", () => {
@@ -169,7 +171,7 @@ describe("formatSceneTimePrecise — l'instant d'un franchissement", () => {
   it("tronque au lieu d'arrondir, comme formatSceneTime", () => {
     // Sinon un franchissement à 59 950 ms paraîtrait tomber après une fenêtre de
     // présence qui, elle, se termine à 00:59.
-    expect(formatSceneTimePrecise(59_950)).toBe("00:59,9");
+    expect(formatSceneTimePrecise(59_950)).toBe("00:59.9");
     expect(formatSceneTime(59_950)).toBe("00:59");
   });
 

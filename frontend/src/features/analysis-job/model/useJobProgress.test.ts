@@ -36,7 +36,6 @@ const STATS: AnalysisStats = {
   analysedSceneMs: 0,
   diagnostics: {
     highDetections: 0,
-    lowDetections: 0,
     maskedOut: 0,
     containedOut: 0,
     confirmedTracks: 0,

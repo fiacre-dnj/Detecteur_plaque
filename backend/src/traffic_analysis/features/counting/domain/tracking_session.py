@@ -87,6 +87,15 @@ class SessionConfig:
     #: numéro** : un identifiant de piste réémis par le tracker après ce délai
     #: désigne un autre véhicule.
     max_lost_ms: float = 2500.0
+    #: Le seuil de confiance de l'utilisateur, **pour le diagnostic seul**.
+    #:
+    #: Le comptage ne le lit pas : il arrive au domaine déjà appliqué, puisque c'est
+    #: le tracker qui décide avec lui ce qui devient une piste (`track_high_thresh` /
+    #: `new_track_thresh`, ADR 0024). Mais lui seul permet de ranger une observation
+    #: suivie dans « au-dessus du seuil » ou « rattrapée par la bande basse » — la
+    #: distinction que le panneau de diagnostic affiche, et qui était impossible à
+    #: établir sans cette valeur. Le défaut est celui du schéma de requête.
+    confidence_threshold: float = 0.35
     pixels_per_meter: float | None = None
     #: La lecture du texte de plaque tourne-t-elle réellement ?
     #:
@@ -163,9 +172,11 @@ class AnalysisSession:
         "_counter",
         "_first_timestamp_ms",
         "_frame_index",
+        "_high_detections",
         "_last_timestamp_ms",
         "_masked_out",
         "_numbering",
+        "_rescued_by_low_score",
         "_speed",
         "_tracks",
         "_zones",
@@ -204,6 +215,12 @@ class AnalysisSession:
         # suppression silencieuse serait aussi opaque que le doublon qu'elle évite,
         # et c'est ce chiffre qui permettra de savoir si le seuil est bien réglé.
         self._contained_out = 0
+        # Les deux compteurs de score, en **observations suivies** et non en images :
+        # un même véhicule vu sur trente images pèse trente. C'est voulu — la question
+        # à laquelle ils répondent est « le suivi tient-il malgré des scores qui
+        # plongent ? », qui se mesure sur des observations.
+        self._high_detections = 0
+        self._rescued_by_low_score = 0
 
     def feed(
         self,
@@ -217,6 +234,10 @@ class AnalysisSession:
         # porte une identité et un franchissement qu'aucune suppression ultérieure
         # ne pourrait défaire.
         kept = self._mask(self._drop_contained(observations))
+        # Rangé **après** le masque et le doublon, pour que le diagnostic parle des
+        # observations qui ont réellement nourri le suivi : une boîte masquée est déjà
+        # comptée par `masked_out`, la compter deux fois brouillerait la lecture.
+        self._count_scores(kept)
         active = self._advance_tracks(kept, timestamp_ms)
 
         # Abandonner les pistes silencieuses **avant** de numéroter : c'est ce qui
@@ -260,6 +281,27 @@ class AnalysisSession:
         )
 
     # ── Étapes de `feed` ─────────────────────────────────────────────────────
+
+    def _count_scores(self, observations: Sequence[TrackObservation]) -> None:
+        """Range chaque observation suivie de part et d'autre du seuil utilisateur.
+
+        **Le diagnostic n'a rien d'autre à observer.** Depuis ADR 0024 le détecteur
+        reçoit le plancher du tracker et non le seuil de l'utilisateur : les
+        détections faibles arrivent donc jusqu'au suivi, où elles prolongent une piste
+        sans jamais en ouvrir une. Celles qui n'ont été associées à aucune piste ne
+        sortent pas d'Ultralytics — il ne rend que les boîtes porteuses d'un
+        identifiant — donc « détections faibles jetées » n'est mesurable nulle part, et
+        le compteur qui prétendait le faire est supprimé.
+
+        Ce qui reste est mesurable et utile : combien d'observations tenaient le seuil,
+        et combien étaient **en dessous**, c'est-à-dire autant de pistes qui se
+        seraient coupées en deux sans la bande basse.
+        """
+        for observation in observations:
+            if observation.score >= self._config.confidence_threshold:
+                self._high_detections += 1
+            else:
+                self._rescued_by_low_score += 1
 
     def _mask(self, observations: Sequence[TrackObservation]) -> tuple[TrackObservation, ...]:
         """Filtre les détections hors zone quand le masque est actif.
@@ -616,10 +658,18 @@ class AnalysisSession:
             elapsed_ms=analysed_ms,
             analysed_scene_ms=analysed_ms,
             diagnostics=Diagnostics(
-                # Les détections fortes et faibles n'existent qu'avant le seuil du
-                # moteur : le domaine ne les voit pas, et inventer un chiffre
-                # serait pire que rendre zéro. L'adaptateur les renseignera s'il
-                # peut les observer.
+                # **Renseignés depuis le domaine, et c'est nouveau.** Le commentaire
+                # d'avant annonçait que l'adaptateur les remplirait « s'il peut les
+                # observer » : il ne l'a jamais fait, donc le panneau de diagnostic
+                # affichait deux zéros immuables et son alerte « aucune détection, à
+                # aucun seuil » se déclenchait sur *toutes* les analyses — un message
+                # alarmant et faux, qui envoyait chercher le bug dans la vidéo.
+                #
+                # Ce que le domaine peut observer est plus étroit que ce que ces noms
+                # promettaient, et c'est ce qui a fait supprimer `low_detections` :
+                # après le suivi, une détection non associée n'existe plus.
+                high_detections=self._high_detections,
+                rescued_by_low_score=self._rescued_by_low_score,
                 masked_out=self._masked_out,
                 contained_out=self._contained_out,
                 confirmed_tracks=confirmed,

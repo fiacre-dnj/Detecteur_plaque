@@ -224,6 +224,11 @@ class AnalysisJobConfig:
             mask_outside_zones=self.mask_outside_zones,
             min_hits=self.min_hits,
             max_lost_ms=self.max_lost_ms,
+            # Transmis pour le **diagnostic** seul : le comptage ne le lit pas, le
+            # seuil étant déjà appliqué par le tracker. C'est lui qui permet de dire
+            # d'une observation suivie si elle tenait le seuil ou si elle a été
+            # rattrapée par la bande basse (ADR 0024).
+            confidence_threshold=self.confidence_threshold,
             pixels_per_meter=self.pixels_per_meter,
         )
 

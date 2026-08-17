@@ -404,16 +404,20 @@ describe("contrat du registre des véhicules", () => {
 });
 
 describe("contrat du diagnostic", () => {
-  it("expose les huit mesures qui rendent un comptage explicable", () => {
+  it("expose les sept mesures qui rendent un comptage explicable", () => {
     // Ce bloc n'est pas décoratif : « le compte est faux » n'est diagnosticable
     // que si l'on voit si un véhicule manquant n'a jamais été détecté, l'a été
     // faiblement, n'était pas confirmé, ou a été masqué par une zone — et, dans
     // l'autre sens, si un véhicule compté en trop était un doublon inclus.
+    //
+    // `lowDetections` a disparu (ADR 0024) : il prétendait mesurer des
+    // détections jetées avant le suivi, une quantité qu'aucun adaptateur n'a
+    // jamais su observer — `rescuedByLowScore` porte désormais le même rôle,
+    // mesurable celui-là.
     expect(Object.keys(result.stats.diagnostics).sort()).toEqual([
       "confirmedTracks",
       "containedOut",
       "highDetections",
-      "lowDetections",
       "maskedOut",
       "nearMisses",
       "rescuedByLowScore",

@@ -304,12 +304,27 @@ def _rate_limit_rules(settings: Settings) -> list[Rule]:
     - **le handshake WebSocket** n'est vu par aucun autre garde-fou — le
       middleware CORS ne voit jamais passer un handshake.
 
+    La limite **globale**, elle, exempte les lectures d'un job précis
+    (`GET /jobs/{id}...`) — voir ADR 0027. Mesuré : rouvrir une seule analyse
+    archivée déclenche une vingtaine de requêtes en quelques secondes, dont une
+    quinzaine rien que pour la vidéo, que le navigateur charge par plages. Sans
+    l'exemption, l'action même que l'historique promet — revoir un résultat —
+    épuisait le quota prévu pour l'ingestion, et laissait le studio bloqué sur un
+    écran vide sans le moindre message. L'exemption ne porte que sur `GET` :
+    déposer, annuler, suspendre ou reprendre un job restent comptés.
+
     Une limite à `0` est **omise** plutôt que posée à zéro : une règle à zéro
     refuserait tout, ce qui est l'inverse de « désactivée ».
     """
     rules: list[Rule] = []
     if settings.rate_limit_per_minute > 0:
-        rules.append(Rule(settings.rate_limit_per_minute, 60.0))
+        rules.append(
+            Rule(
+                settings.rate_limit_per_minute,
+                60.0,
+                exempt_get_prefixes=(f"{API_V1_PREFIX}/jobs/",),
+            )
+        )
     if settings.rate_limit_jobs_per_minute > 0:
         rules.append(
             Rule(
