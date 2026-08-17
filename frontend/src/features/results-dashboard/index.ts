@@ -8,6 +8,13 @@ export {
   isEntryRow,
 } from "./model/directions";
 
+export {
+  crossingVehicles,
+  enteringVehicleCount,
+  hasCrossedAnyLine,
+  hasEnteredCrossroad,
+} from "./model/crossedVehicles";
+
 export { entriesByClass } from "./model/entriesByClass";
 
 export {

@@ -104,13 +104,28 @@ def _near_miss_ratio(track: SessionTrack, line: CountingLineDef) -> float:
 
 @dataclass(slots=True)
 class _LineState:
-    """Ce que le compteur retient d'un couple (piste, ligne) — de la géométrie seule.
+    """Ce que le compteur retient d'un triplet (piste, véhicule, ligne).
 
-    Aucune comptabilité ici. Cet état n'est **jamais purgé**, y compris quand la
-    session abandonne la piste : le tracker peut réactiver un identifiant, et une
-    mémoire effacée ferait repartir la piste en amorçage — son premier
-    franchissement au retour serait alors perdu (piège 11 de prompt/13). Il est
-    borné par le nombre de pistes du clip, pas par sa durée.
+    Aucune comptabilité ici — de la géométrie seule.
+
+    **La clé porte le numéro de véhicule en plus de l'identifiant de piste**, et
+    ce n'est pas une précaution théorique : sans lui, un `track_id` réémis par le
+    tracker pour un *autre* véhicule héritait du côté et de la dernière position
+    du précédent. Le segment testé reliait alors le dernier point du véhicule A
+    au premier point du véhicule B — un bond qui traverse le trait — et le
+    compteur émettait un **franchissement fantôme** pour un véhicule qui n'avait
+    rien franchi. Mesuré : véhicule A qui longe la ligne par le haut, véhicule B
+    qui naît en dessous, aucun des deux ne franchit, et le total montait à 1.
+    C'est le mode de panne le plus coûteux en trafic dense, où les occlusions
+    tuent et ressuscitent les pistes en permanence.
+
+    L'état reste **jamais purgé** dans sa fenêtre : une piste réactivée sous
+    `max_lost_ms` garde son `global_id`, donc sa clé, donc sa mémoire — la raison
+    d'origine (piège 11 de prompt/13, « ne pas repartir en amorçage ») est
+    intégralement préservée. Au-delà, la session donne un numéro neuf, et repartir
+    en amorçage est alors le comportement **juste** : c'est un autre véhicule.
+
+    Borné par le nombre de pistes du clip, pas par sa durée.
     """
 
     # Dernier côté **tranché** — c'est-à-dire observé hors de la bande morte. `0`
@@ -140,6 +155,25 @@ class _LineState:
     # jour ? ». Un véhicule qui longe la ligne puis s'éloigne finit loin, et n'a
     # rien d'un franchissement manqué.
     last_ratio: float = float("inf")
+    # Dernière position vue **avant tout amorçage**, avec son côté de la *droite*
+    # (sans bande morte). Ces deux champs ne servent qu'une fois, et ils rattrapent
+    # un franchissement que la bande morte faisait disparaître en silence.
+    #
+    # Le cas : une piste qui **naît dans la bande**. Elle n'a pas de côté tranché,
+    # donc l'étape 2 renonce ; à l'image suivante, la voici franchement d'un côté,
+    # et l'étape 3 s'en sert comme *amorçage* — le franchissement est perdu, alors
+    # que les deux positions encadrent le trait. Ce n'est pas un cas de laboratoire :
+    # la bande vaut un quart de demi-boîte, soit ±50 px pour un poids lourd de
+    # 400 px, et toute piste qui apparaît dans cette fenêtre — véhicule entrant dans
+    # le champ près du trait, piste recréée après une occlusion — était muette.
+    #
+    # Le côté **brut** et non tranché : dans la bande, c'est la seule information
+    # disponible. Elle ne sert jamais à *compter* seule — il faut en plus une
+    # intersection de segments franche — donc le bruit qui a motivé la bande morte
+    # (ADR 0018) ne peut pas la déclencher : un véhicule qui frémit autour du trait
+    # revient toujours du côté d'où il vient, et les côtés égaux ne comptent rien.
+    origin_side: int = 0
+    origin_centroid: Point | None = None
 
 
 class LineCrossingCounter:
@@ -173,7 +207,10 @@ class LineCrossingCounter:
         self._lines = tuple(lines)
         self._zones = {zone.id: zone for zone in zones}
         self._min_hits = min_hits
-        self._state: dict[tuple[int, str], _LineState] = {}
+        # Clé : (identifiant de piste, numéro de véhicule, ligne). Voir `_LineState`
+        # — le numéro de véhicule est ce qui empêche un `track_id` recyclé d'hériter
+        # de la géométrie du véhicule précédent et d'émettre un fantôme.
+        self._state: dict[tuple[int, int, str], _LineState] = {}
         # Les véhicules ayant fait bouger un compteur. **La source du badge ✓**, et
         # sa seule raison d'exister depuis qu'il n'y a plus de déduplication :
         # cesser de le remplir ferait disparaître le ✓ de l'overlay, ce qui se
@@ -242,7 +279,7 @@ class LineCrossingCounter:
         long, contre une inférence par image.
         """
         counts = {line.id: 0 for line in self._lines}
-        for (track_id, line_id), state in self._state.items():
+        for (track_id, _global_id, line_id), state in self._state.items():
             if state.crossed or track_id in ignore:
                 continue
             if state.last_ratio <= NEAR_MISS_RATIO:
@@ -258,7 +295,7 @@ class LineCrossingCounter:
         frame_index: int,
         events: list[CrossingEvent],
     ) -> None:
-        state = self._state.setdefault((track.track_id, line.id), _LineState())
+        state = self._state.setdefault((track.track_id, track.global_id, line.id), _LineState())
 
         # 0. Mémoire du diagnostic, tenue à **chaque** image observée — donc avant
         #    les trois retours anticipés ci-dessous. Les écrire après perdrait
@@ -286,6 +323,15 @@ class LineCrossingCounter:
         #    qui permet au segment de la sortie de bande d'enjamber le trait.
         side = self._settled_side(track, line)
         if side == 0:
+            # Tant que la piste n'a pas de côté tranché, on retient sa dernière
+            # position et le côté **brut** de la droite. C'est la seule mémoire qui
+            # permette de rattraper, à la sortie de bande, le franchissement d'une
+            # piste née dedans — voir `_LineState.origin_side`.
+            if state.side == 0:
+                offset = signed_line_offset(line.a, line.b, track.centroid)
+                if offset != 0.0:
+                    state.origin_side = 1 if offset > 0.0 else -1
+                    state.origin_centroid = track.centroid
             return
 
         # 3. Amorçage : une piste vue pour la première fois déjà au-delà d'une
@@ -295,6 +341,24 @@ class LineCrossingCounter:
         if state.side == 0:
             state.side = side
             state.settled_centroid = track.centroid
+            # **Sauf** si la piste est née dans la bande, du côté opposé à celui où
+            # elle vient de se ranger : les deux positions encadrent alors le trait,
+            # et le franchissement a bien été *observé*, simplement à cheval sur la
+            # bande. Les mêmes deux conditions géométriques que l'étape 4 — portée et
+            # intersection franche — donc rien de plus permissif qu'un franchissement
+            # ordinaire, seulement une origine qu'on avait jetée.
+            if (
+                state.origin_side != 0
+                and state.origin_side != side
+                and state.origin_centroid is not None
+                and self._crossing_is_in_scope(track, line)
+                and segments_intersect(state.origin_centroid, track.centroid, line.a, line.b)
+            ):
+                if confirmed:
+                    events.append(self._tally(track, line, side, timestamp_ms, frame_index))
+                    state.crossed = True
+                else:
+                    state.pending_direction = side
             return
 
         if side == state.side:
