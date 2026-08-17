@@ -134,6 +134,33 @@ class TestDepot:
         assert response.status_code == 422
         assert "ligne" in response.json()["detail"]
 
+    async def test_un_intervalle_inverse_est_refuse(self, client: AsyncClient) -> None:
+        """Une fenêtre dont la fin précède le début n'analyserait aucune image.
+
+        Même famille que le refus ci-dessus : elle rendrait un écran de zéros, qui
+        se lit comme une panne de détection. Refuser tôt, en nommant les deux
+        bornes, laisse une correction possible — l'utilisateur ne voit à l'écran
+        que des `mm:ss` et ne saurait pas laquelle des deux est fautive.
+        """
+        result = await _post_job(client, startMs=5000, endMs=2000)
+
+        assert result["status_code"] == 422
+        assert "intervalle" in result["body"]["detail"].lower()
+
+    async def test_une_fenetre_valide_est_acceptee_et_persistee(self, client: AsyncClient) -> None:
+        """Les bornes doivent **survivre** au dépôt, pas seulement le passer.
+
+        C'est ce que « Relancer » depuis l'historique relit : une fenêtre acceptée
+        puis perdue dans `config_json` relancerait l'analyse sur toute la vidéo, en
+        affichant la fenêtre d'origine dans l'écran de configuration.
+        """
+        result = await _post_job(client, startMs=1000, endMs=2000)
+        assert result["status_code"] == 202
+
+        config = await client.get(f"/api/v1/jobs/{result['body']['jobId']}/config")
+        assert config.json()["configJson"]["startMs"] == 1000
+        assert config.json()["configJson"]["endMs"] == 2000
+
     async def test_une_ligne_referencant_une_zone_inconnue_est_refusee(
         self, client: AsyncClient
     ) -> None:

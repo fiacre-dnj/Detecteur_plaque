@@ -18,6 +18,7 @@
  * repart des défauts et l'utilisateur ne remarque rien.
  */
 
+import { FULL_RANGE, type AnalysisRange } from "@/entities/analysis-range";
 import type { AnalysisRequest, CountingLine, Zone } from "@/shared/api/contracts";
 
 /**
@@ -214,6 +215,7 @@ export function toRequest(
   settings: AnalysisSettings,
   lines: readonly CountingLine[],
   zones: readonly Zone[],
+  range: AnalysisRange = FULL_RANGE,
 ): AnalysisRequest {
   return {
     modelId: settings.modelId,
@@ -243,9 +245,43 @@ export function toRequest(
     analysisSpeed: isSupportedSpeed(settings.analysisSpeed) ? settings.analysisSpeed : null,
     // Même logique que pour `analysisSpeed` : hors bornes ⇒ aucun plafond.
     maxAnalysisFps: isSupportedFpsCap(settings.maxAnalysisFps) ? settings.maxAnalysisFps : null,
+    // **L'intervalle n'est pas persisté avec les autres réglages, et c'est
+    // délibéré.** Les bornes décrivent *cette* vidéo — « de 00:34 à 05:00 » n'a
+    // aucun sens sur le fichier suivant, et une fenêtre héritée d'une vidéo
+    // précédente analyserait un morceau que personne n'a choisi. Elles voyagent
+    // donc en argument, depuis l'état du studio, remis à neuf à chaque source.
+    //
+    // Bornes négatives écartées plutôt que corrigées : `clampRange` les a déjà
+    // ramenées, et ce garde-ci n'existe que pour que le serveur ne reçoive jamais
+    // ce que son schéma refuse en 422 — même rôle que pour les cadences.
+    ...analysisWindow(range),
     lines: [...lines],
     zones: [...zones],
   };
+}
+
+/**
+ * Les deux bornes de la fenêtre, sous la forme **exacte** que le serveur accepte.
+ *
+ * Dernier filet avant l'envoi, comme pour les cadences : le schéma refuse un début
+ * négatif (`ge=0`), une fin nulle ou négative (`gt=0`) et une fin qui n'est pas
+ * strictement après le début. `clampRange` a normalement déjà tout rattrapé — ce
+ * garde couvre le chemin qui l'aurait évité, et un 422 sur un écran dont toutes les
+ * valeurs paraissent valides est précisément ce que ce projet cherche à ne pas
+ * produire.
+ *
+ * **Le début est normalisé d'abord, et c'est ce qui rend le garde correct.**
+ * Comparer la fin au `startMs` *brut* laissait passer `{-10 ; -1}` : la fin est bien
+ * après le début, et pourtant les deux valeurs sont refusées. C'est la version
+ * précédente de ce code, attrapée par le test.
+ */
+function analysisWindow(range: AnalysisRange): { startMs: number; endMs: number | null } {
+  const startMs = Number.isFinite(range.startMs) && range.startMs > 0 ? range.startMs : 0;
+  const endMs =
+    range.endMs !== null && Number.isFinite(range.endMs) && range.endMs > startMs
+      ? range.endMs
+      : null;
+  return { startMs, endMs };
 }
 
 /**

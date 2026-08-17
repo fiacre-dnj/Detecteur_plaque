@@ -183,6 +183,29 @@ class AnalysisRequestSchema(CamelModel):
         ),
         examples=[30],
     )
+    start_ms: float = Field(
+        0.0,
+        ge=0.0,
+        description=(
+            "Début de la fenêtre analysée, en millisecondes de **temps de scène** — "
+            "c'est-à-dire la position sur la barre de lecture, pas un index d'image. "
+            "`0` (le défaut) analyse depuis le début. Les horodatages publiés restent "
+            "absolus : une fenêtre qui démarre à 34 s date son premier franchissement "
+            "à 34 s et non à 0. Sans effet en direct."
+        ),
+        examples=[34000],
+    )
+    end_ms: float | None = Field(
+        None,
+        gt=0.0,
+        description=(
+            "Fin de la fenêtre analysée, en millisecondes de temps de scène. `null` "
+            "(le défaut) analyse jusqu'au bout. **Borne exclue** : deux fenêtres "
+            "adjacentes ne partagent donc aucune image, et ne comptent pas deux fois "
+            "ce qui se passe à leur jointure. Sans effet en direct."
+        ),
+        examples=[300000],
+    )
     lines: list[LineSchema] = Field(default_factory=list)
     zones: list[ZoneSchema] = Field(default_factory=list)
 
@@ -272,6 +295,19 @@ class AnalysisRequestSchema(CamelModel):
                 )
                 raise ValueError(msg)
 
+        if self.end_ms is not None and self.end_ms <= self.start_ms:
+            # Cinquième refus, même famille que les quatre autres : une fenêtre vide
+            # ou inversée n'analyserait aucune image et rendrait des compteurs à
+            # zéro, ce qui se lit comme une panne de détection. Le message donne les
+            # deux bornes, parce que l'utilisateur ne voit à l'écran que des
+            # `mm:ss` et ne saurait pas laquelle des deux corriger.
+            msg = (
+                f"L'intervalle demandé est vide : il se termine à {self.end_ms:.0f} ms "
+                f"alors qu'il commence à {self.start_ms:.0f} ms. La fin doit être "
+                "strictement après le début."
+            )
+            raise ValueError(msg)
+
         if not self.lines and not self.zones:
             msg = (
                 "Une analyse sans ligne ni zone ne produirait aucun compteur. "
@@ -298,4 +334,6 @@ class AnalysisRequestSchema(CamelModel):
             class_ids=tuple(self.class_ids),
             analysis_speed=self.analysis_speed,
             max_analysis_fps=self.max_analysis_fps,
+            start_ms=self.start_ms,
+            end_ms=self.end_ms,
         )

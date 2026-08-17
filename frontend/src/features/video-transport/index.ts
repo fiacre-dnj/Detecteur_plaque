@@ -17,4 +17,5 @@ export {
 } from "./model/useVideoTransport";
 
 export { PlaybackFpsBadge } from "./ui/PlaybackFpsBadge";
+export { RangeSelector } from "./ui/RangeSelector";
 export { TransportBar } from "./ui/TransportBar";

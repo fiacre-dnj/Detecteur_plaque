@@ -357,6 +357,30 @@ export interface AnalysisRequest {
    * Borné à [1 ; 240] par le serveur. Sans effet en direct.
    */
   maxAnalysisFps: number | null;
+  /**
+   * Début de la fenêtre analysée, en millisecondes de **temps de scène**.
+   *
+   * `0` — le défaut — analyse depuis le début. C'est la position sur la barre de
+   * lecture, pas un index d'image : le navigateur n'expose aucune cadence par
+   * fichier, donc un index n'aurait rien à quoi se rattacher côté client.
+   *
+   * **Les horodatages publiés restent absolus.** Une analyse lancée à 34 s date son
+   * premier franchissement à 34 s, jamais à 0 — c'est ce qui permet à la vidéo
+   * locale de se caler sur l'aperçu sans rien recalculer, et à deux analyses de
+   * fenêtres différentes de rester comparables.
+   *
+   * Sans effet en direct : un flux caméra n'a ni début ni fin à choisir.
+   */
+  startMs: number;
+  /**
+   * Fin de la fenêtre analysée, en millisecondes de temps de scène. `null` — le
+   * défaut — analyse jusqu'au bout.
+   *
+   * **Borne exclue** : deux fenêtres adjacentes ne partagent donc aucune image, et
+   * qui découpe une longue vidéo en tranches ne compte pas deux fois ce qui se
+   * passe à leur jointure.
+   */
+  endMs: number | null;
   lines: CountingLine[];
   zones: Zone[];
 }

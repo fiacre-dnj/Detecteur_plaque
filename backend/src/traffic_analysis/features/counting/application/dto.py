@@ -205,6 +205,27 @@ class AnalysisJobConfig:
     #:
     #: **Sans effet en direct**, comme `analysis_speed`.
     max_analysis_fps: float | None = None
+    #: Début de la fenêtre analysée, en **temps de scène** (ms). `0.0` = le début.
+    #:
+    #: Du temps de scène et non un index d'image, pour la même raison que tous les
+    #: horodatages métier (invariant 1) : l'utilisateur choisit sa borne sur la
+    #: barre de lecture du navigateur, qui ne connaît que des secondes, et un index
+    #: dépendrait d'une cadence que le navigateur n'expose pas.
+    #:
+    #: **La fenêtre ne décale rien.** Les horodatages publiés restent absolus,
+    #: comptés depuis le début du fichier : un franchissement à 01:12 d'une analyse
+    #: lancée à 00:34 est daté 01:12, jamais 00:38. C'est ce qui permet à la vidéo
+    #: locale de se caler sur l'aperçu sans rien recalculer, et à deux analyses de
+    #: fenêtres différentes de rester comparables.
+    #:
+    #: **Sans effet en direct** : un flux caméra n'a ni début ni fin à choisir.
+    start_ms: float = 0.0
+    #: Fin de la fenêtre analysée, en temps de scène (ms). `None` = jusqu'au bout.
+    #:
+    #: **Borne exclue** : une image dont l'horodatage l'atteint n'est plus analysée.
+    #: Incluse, une fenêtre `[0 ; 1000]` et une fenêtre `[1000 ; 2000]` partageraient
+    #: l'image de 1000 ms, donc compteraient deux fois ce qui s'y passe.
+    end_ms: float | None = None
 
     def engine_spec(self) -> EngineSpec:
         """Ce que le moteur doit savoir : les seuils **vivants** de la requête."""
@@ -214,6 +235,13 @@ class AnalysisJobConfig:
             iou=self.iou_threshold,
             class_ids=self.class_ids,
             frame_stride=self.frame_stride,
+            # Le début seul descend jusqu'au moteur, et c'est une **optimisation**,
+            # pas la règle : c'est `AnalysisService` qui tranche la fenêtre, sur des
+            # horodatages, pour tous les moteurs. L'adaptateur s'en sert seulement
+            # pour ne pas décoder ni inférer ce qui précède. La fin, elle, n'a
+            # besoin de personne : refermer le générateur suffit à arrêter le
+            # décodage.
+            start_ms=self.start_ms,
         )
 
     def session_config(self) -> SessionConfig:
