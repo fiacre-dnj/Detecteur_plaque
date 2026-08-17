@@ -36,6 +36,7 @@ const LINE: CountingLine = {
   negativeName: "",
   positiveRole: "neutral" as const,
   negativeRole: "neutral" as const,
+  lengthMeters: null,
   a: { x: 400, y: 200 },
   b: { x: 1200, y: 600 },
 };

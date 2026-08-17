@@ -326,6 +326,7 @@ describe("nommage des sens", () => {
       negativeName: "",
       positiveRole: "neutral",
       negativeRole: "neutral",
+      lengthMeters: null,
     });
   });
 
@@ -342,6 +343,7 @@ describe("nommage des sens", () => {
       negativeName: "Sortie",
       positiveRole: "entry",
       negativeRole: "exit",
+      lengthMeters: null,
     };
 
     expect(withDirectionDefaults(named)).toEqual(named);
@@ -358,6 +360,7 @@ describe("déplacement — le décalage de préhension", () => {
     negativeName: "",
     positiveRole: "neutral" as const,
     negativeRole: "neutral" as const,
+    lengthMeters: null,
     a: { x: 100, y: 500 },
     b: { x: 900, y: 500 },
   };
@@ -407,6 +410,7 @@ describe("signature de géométrie — la détection d'un résultat obsolète", 
     negativeName: "",
     positiveRole: "neutral" as const,
     negativeRole: "neutral" as const,
+    lengthMeters: null,
     a: { x: 0, y: 600 },
     b: { x: 1920, y: 600 },
   };
@@ -512,6 +516,7 @@ describe("mise à l'échelle d'un preset", () => {
       negativeName: "",
       positiveRole: "neutral" as const,
       negativeRole: "neutral" as const,
+      lengthMeters: null,
       a: { x: 100, y: 200 },
       b: { x: 300, y: 200 },
     };

@@ -51,6 +51,8 @@ interface GeometryPanelProps {
   onRenameLine: (id: string, name: string) => void;
   onRenameZone: (id: string, name: string) => void;
   onSetDirectionRole: (id: string, sign: DirectionSign, role: DirectionRole) => void;
+  /** Longueur réelle du trait, en mètres. `null` efface la calibration. */
+  onSetLineLength: (id: string, lengthMeters: number | null) => void;
   onSetLineZone: (id: string, zoneId: string | null) => void;
   onRemoveLine: (id: string) => void;
   onRemoveZone: (id: string) => void;
@@ -188,7 +190,10 @@ export function GeometryPanel(props: GeometryPanelProps) {
               </div>
 
               {selection.kind === "line" && selection.id === line.id && (
-                <DirectionFields line={line} onSetDirectionRole={props.onSetDirectionRole} />
+                <>
+                  <DirectionFields line={line} onSetDirectionRole={props.onSetDirectionRole} />
+                  <LengthField line={line} onSetLineLength={props.onSetLineLength} />
+                </>
               )}
             </li>
           ))}
@@ -302,6 +307,70 @@ function DirectionFields({
  * mot « Entrée »/« Sortie » à côté dit ce qu'elle signifie. Une icône
  * supplémentaire n'ajoutait qu'une convention à retenir.
  */
+/**
+ * La longueur **réelle** du trait — la seule calibration que ce projet demande.
+ *
+ * **Pourquoi par ligne et non une échelle globale.** Une caméra de trafic regarde
+ * la chaussée en biais : un mètre y vaut quelques pixels au fond de l'image et
+ * quelques dizaines au premier plan. Un réglage unique est donc juste à une
+ * profondeur et faux partout ailleurs. La longueur d'un trait, elle, donne une
+ * échelle mesurée **là où ce trait est posé** — c'est-à-dire là où les véhicules
+ * le franchissent, donc là où leur vitesse nous intéresse.
+ *
+ * Ce champ est **le seul de la ligne que le serveur interprète**. Les noms et les
+ * rôles ne font que traverser et se corrigent après coup ; une longueur corrigée
+ * demande une réanalyse, et l'indice le dit.
+ *
+ * Vide = non calibrée, et surtout pas zéro : les vitesses restent alors en px/s
+ * plutôt que d'être converties à tort. Un chiffre en km/h sans calibration est
+ * une invention que l'utilisateur prendrait au sérieux.
+ */
+function LengthField({
+  line,
+  onSetLineLength,
+}: {
+  line: CountingLine;
+  onSetLineLength: (id: string, lengthMeters: number | null) => void;
+}) {
+  const pixels = Math.hypot(line.b.x - line.a.x, line.b.y - line.a.y);
+  const scale = line.lengthMeters !== null && line.lengthMeters > 0
+    ? pixels / line.lengthMeters
+    : null;
+
+  return (
+    <div className="mt-1 ps-6 pe-1">
+      <label className="flex items-center gap-2">
+        <span className="shrink-0 text-micro text-ink-dim">Longueur réelle</span>
+        <input
+          type="number"
+          min={0}
+          step={0.5}
+          value={line.lengthMeters ?? ""}
+          placeholder="—"
+          onChange={(event) => {
+            const raw = event.target.value.trim();
+            const parsed = Number(raw);
+            // Vide, illisible ou non strictement positif ⇒ pas de calibration.
+            // `Number("")` vaut 0, d'où le test sur la chaîne avant le nombre.
+            onSetLineLength(
+              line.id,
+              raw === "" || !Number.isFinite(parsed) || parsed <= 0 ? null : parsed,
+            );
+          }}
+          aria-label={`Longueur réelle de ${line.name}, en mètres`}
+          className="w-20 rounded-input bg-surface-2 px-1.5 py-0.5 text-micro text-ink"
+        />
+        <span className="shrink-0 text-micro text-ink-dim">m</span>
+      </label>
+      <p className="mt-0.5 text-micro text-ink-dim">
+        {scale === null
+          ? "Sans longueur, les vitesses restent en px/s."
+          : `${Math.round(pixels)} px mesurés — ${scale.toFixed(1)} px/m ici. Vitesses en km/h.`}
+      </p>
+    </div>
+  );
+}
+
 function DirectionRoleRow({
   line,
   sign,

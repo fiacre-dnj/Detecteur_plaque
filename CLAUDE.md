@@ -520,6 +520,34 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     [ADR 0022](docs/adr/0022-le-plafond-absolu-vaut-30-img-s-par-defaut.md) change
     à son tour le défaut.
 
+## Les vitesses en km/h : la calibration est **par ligne**
+
+`to_kmh` n'invente jamais une distance : sans échelle, le registre reste en px/s.
+Mais une échelle **unique pour toute l'image ne peut pas être juste** — une caméra
+de trafic regarde en biais, donc un mètre vaut quelques pixels au fond et quelques
+dizaines devant. Mesuré sur une vidéo du dépôt, à largeur supposée égale sur les
+quatre lignes : **37 à 143 px/m, un facteur 3,9**.
+
+Chaque ligne porte donc `lengthMeters` (`length_m` au domaine), sa longueur réelle
+— une largeur de chaussée, un passage piéton. `domain/scale_field.py` en tire
+l'échelle **locale** et retient la **ligne calibrée la plus proche** (distance au
+*segment*, pas à sa droite). Pas d'interpolation entre deux lignes : elle
+inventerait une échelle que personne n'a mesurée.
+
+La conversion se fait **déplacement par déplacement**, à l'échelle du milieu de
+chaque segment ; les mètres sont cumulés à part des pixels. Convertir le total à
+la fin annulerait la calibration locale pour un véhicule qui change de profondeur.
+
+Trois points à ne pas confondre :
+
+- **c'est purement additif** — sans ligne calibrée, `ScaleField` retombe sur le
+  curseur global et l'estimateur se comporte exactement comme avant ;
+- **la mesure locale l'emporte sur le curseur global**, jamais l'inverse ;
+- **`lengthMeters` est le seul champ de ligne que le serveur interprète.** Un rôle
+  ou un nom se corrige sans réanalyser ; **une longueur, non.**
+
+[ADR 0025](docs/adr/0025-la-calibration-se-fait-par-ligne.md).
+
 ## Mesurer avant d'optimiser l'ANPR
 
 `backend/scripts/anpr_bench.py` est le banc. Il existe parce qu'aucun chiffre des
@@ -623,6 +651,26 @@ range du côté opposé, le franchissement est compté, sous les deux mêmes con
 géométriques qu'un franchissement ordinaire. Cela concerne tout véhicule entrant dans
 le champ près du trait, et toute piste recréée après une occlusion à cet endroit —
 donc **le cas dominant en trafic dense**.
+
+**Le mécanisme BYTE du tracker était débranché**, et c'est la troisième cause de
+franchissement perdu ([ADR
+0024](docs/adr/0024-le-detecteur-descend-sous-le-seuil-de-l-utilisateur.md)).
+BoT-SORT range les détections en deux bandes : la **haute** associe et crée des
+pistes, la **basse** (`track_low_thresh` → `track_high_thresh`) sert *uniquement*
+à prolonger une piste dont la confiance plonge. Or Ultralytics filtre **avant** le
+tracker, et le projet lui passait `conf = confidence_threshold` (0,35) : rien ne
+tombait jamais dans la bande 0,10–0,25, et la seconde association était du code
+mort. Une confiance qui plonge une image coupait la piste → identifiant neuf →
+ré-amorçage du compteur → franchissement perdu, **et** véhicule compté deux fois.
+
+Désormais le détecteur reçoit `track_low_thresh`, et le seuil de l'utilisateur
+part dans le fichier de suivi dérivé sur `track_high_thresh` **et**
+`new_track_thresh`. Cette seconde clé est ce qui rend le changement **strictement
+additif** : une détection faible prolonge une piste, elle n'en ouvre jamais.
+Mesuré sur vidéo réelle : **+21 % d'observations suivies, pistes distinctes
+inchangées, franchissements 61 → 61, objets suivis 92 → 83** (−9 pistes
+fragmentées). `confidence_threshold` ne filtre donc plus le détecteur : il décide
+ce qui *devient* une piste.
 
 **Et un identifiant de piste recyclé fabriquait des fantômes.** `_LineState` est clé
 par `(track_id, global_id, ligne)` et **pas** par `(track_id, ligne)` : Ultralytics

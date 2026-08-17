@@ -267,6 +267,23 @@ export interface CountingLine {
   negativeName: string;
   positiveRole: DirectionRole;
   negativeRole: DirectionRole;
+  /**
+   * Longueur **réelle** du trait, en mètres. `null` = non calibrée.
+   *
+   * **Le seul champ de ligne que le serveur interprète vraiment.** Les noms et
+   * les rôles ne font que traverser ; celui-ci donne l'échelle pixels/mètre
+   * locale — `longueur en pixels / longueur en mètres` — à la profondeur où la
+   * ligne est posée, et c'est elle qui convertit les vitesses en km/h.
+   *
+   * Une échelle unique pour toute l'image ne peut pas être juste sur une caméra
+   * inclinée : le mètre y vaut quelques pixels au loin et quelques dizaines au
+   * premier plan. Plusieurs lignes calibrées à des profondeurs différentes
+   * décrivent ce gradient sans modéliser la perspective.
+   *
+   * Conséquence à connaître : corriger une longueur **demande une réanalyse**,
+   * là où corriger un rôle est instantané.
+   */
+  lengthMeters: number | null;
 }
 
 export interface Zone {

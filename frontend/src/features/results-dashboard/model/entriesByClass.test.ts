@@ -27,6 +27,7 @@ function line(id: string, overrides: Partial<CountingLine> = {}): CountingLine {
     negativeName: "",
     positiveRole: "neutral",
     negativeRole: "neutral",
+    lengthMeters: null,
     ...overrides,
   };
 }

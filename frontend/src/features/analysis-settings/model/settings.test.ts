@@ -171,6 +171,7 @@ describe("toRequest — la traduction vers le serveur", () => {
       negativeName: "",
       positiveRole: "neutral" as const,
       negativeRole: "neutral" as const,
+      lengthMeters: null,
       a: { x: 0, y: 100 },
       b: { x: 200, y: 100 },
     },
@@ -303,7 +304,7 @@ describe("classIds dans la requête", () => {
   // Une ligne quelconque : `toRequest` en exige une, mais aucun de ces tests ne
   // parle de géométrie.
   const LINES = [
-    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 }, lengthMeters: null },
   ];
 
   it("part avec les quatre véhicules par défaut", () => {
@@ -326,7 +327,7 @@ describe("classIds dans la requête", () => {
 
 describe("analysisSpeed — la cadence d'analyse", () => {
   const LINES = [
-    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 }, lengthMeters: null },
   ];
 
   it("part en temps réel par défaut", () => {
@@ -393,7 +394,7 @@ describe("analysisSpeed — la cadence d'analyse", () => {
 
 describe("maxAnalysisFps — le plafond absolu de cadence", () => {
   const LINES = [
-    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 }, lengthMeters: null },
   ];
 
   it("part à 30 img/s par défaut", () => {
