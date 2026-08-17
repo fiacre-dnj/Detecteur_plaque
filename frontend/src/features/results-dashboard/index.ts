@@ -37,6 +37,7 @@ export {
   formatCrossingRate,
   formatFrameLatency,
   formatSceneTime,
+  formatSceneTimePrecise,
   formatScore,
   formatSpeed,
   plural,

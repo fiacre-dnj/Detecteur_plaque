@@ -79,6 +79,23 @@ PREVIEW_MIN_INTERVAL_S = 0.2
 #: N'élargit jamais l'intervalle du déploiement : le minimum des deux est retenu.
 PACED_PREVIEW_INTERVAL_S = 0.1
 
+#: Intervalle de republication du **registre** dans l'aperçu, en secondes.
+#:
+#: Une cadence à part, et bien plus lente que celle des boîtes, parce que les deux
+#: charges n'ont rien de comparable. Les pistes d'une image sont une poignée et leur
+#: nombre ne dépend pas de la durée de l'analyse ; le registre, lui, **grossit** —
+#: 350 octets par véhicule mesurés sur les résultats archivés de ce dépôt, soit
+#: 35 ko pour cent véhicules. Le republier dix fois par seconde ferait grimper le
+#: flux SSE avec l'avancement de l'analyse, jusqu'à mettre le navigateur à genoux sur
+#: une vidéo longue — et pour rien : un tableau de véhicules n'a pas besoin de
+#: rafraîchir dix fois par seconde pour se lire comme vivant.
+#:
+#: `None` désactive la republication : le registre reste alors vide jusqu'à la fin de
+#: l'analyse, comme avant qu'elle existe. `0.0`, comme pour l'intervalle d'aperçu,
+#: publie à **chaque** aperçu — le seul mode déterministe, donc celui des tests.
+#: L'aperçu **final** porte le registre dans tous les cas.
+PREVIEW_VEHICLES_INTERVAL_S = 1.0
+
 type ProgressCallback = Callable[[Progress], None]
 type PreviewCallback = Callable[[PreviewSample], None]
 type CancellationCheck = Callable[[], bool]
@@ -134,6 +151,7 @@ class AnalysisService:
         on_preview: PreviewCallback | None = None,
         preview_interval_s: float = PREVIEW_MIN_INTERVAL_S,
         paced_preview_interval_s: float = PACED_PREVIEW_INTERVAL_S,
+        preview_vehicles_interval_s: float | None = PREVIEW_VEHICLES_INTERVAL_S,
         is_cancelled: CancellationCheck | None = None,
         wait_while_paused: PauseGate | None = None,
     ) -> AnalysisResultData:
@@ -155,6 +173,18 @@ class AnalysisService:
         C'est ce qui permet de **valider** une analyse pendant qu'elle tourne :
         sans lui, rien de visuel ne quitte le serveur avant la fin. Un intervalle
         nul publie chaque frame, ce dont seuls les tests ont l'usage.
+
+        L'aperçu porte aussi le **registre** — `PreviewSample.vehicles` —, mais à
+        sa propre cadence, `preview_vehicles_interval_s`, bien plus lente : les
+        échantillons intermédiaires portent `None`, qui veut dire « inchangé » et
+        jamais « aucun véhicule ». Même convention de valeurs que l'intervalle
+        d'aperçu — `0.0` publie à chaque aperçu, `None` ne publie jamais. C'est ce
+        champ qui permet au registre et à la statistique de se remplir pendant
+        l'analyse sans que le flux grossisse avec elle. L'aperçu **final** le porte
+        toujours, quel que soit
+        l'intervalle : sans lui, la dernière liste affichée serait celle d'un
+        échantillon quelconque, et son écart avec le résultat se lirait comme un
+        bug de comptage — même raison que la progression finale obligatoire.
 
         `config.analysis_speed` et `config.max_analysis_fps` **brident** la
         boucle : elle attend entre deux images pour que le temps de scène
@@ -250,6 +280,10 @@ class AnalysisService:
         started = perf_counter()
         processed = 0
         last_preview = started
+        # `None` et non `started` : le **premier** aperçu doit porter le registre,
+        # sinon l'écran reste vide une seconde entière au démarrage — le moment
+        # précis où l'on regarde si quelque chose se passe.
+        last_vehicles_preview: float | None = None
         # Temps passé en pause, retranché de la mesure de cadence : une analyse
         # suspendue vingt minutes n'a pas ralenti, elle a attendu.
         paused_s = 0.0
@@ -320,6 +354,22 @@ class AnalysisService:
                 now = perf_counter()
                 if now - last_preview >= preview_interval_s:
                     last_preview = now
+                    # Le registre suit sa **propre** échéance, plus lente : le
+                    # construire et le sérialiser à chaque aperçu ferait grossir le
+                    # flux avec l'avancement de l'analyse. `None` dit « inchangé »,
+                    # et le client garde alors la dernière liste reçue.
+                    #
+                    # **`None` désactive, `0.0` publie à chaque aperçu** — la même
+                    # convention que `preview_interval_s`, délibérément : deux
+                    # paramètres voisins où le zéro voudrait dire deux choses
+                    # opposées seraient un piège garanti.
+                    vehicles = None
+                    if preview_vehicles_interval_s is not None and (
+                        last_vehicles_preview is None
+                        or now - last_vehicles_preview >= preview_vehicles_interval_s
+                    ):
+                        last_vehicles_preview = now
+                        vehicles = session.vehicles(crossed_only=True)
                     # `session.stats()` n'est calculé **que** lorsqu'on publie :
                     # l'appeler à chaque frame pour le jeter aussitôt taxerait
                     # l'analyse au profit de personne.
@@ -333,6 +383,7 @@ class AnalysisService:
                             crossings=tuple(pending_crossings),
                             zone_events=tuple(pending_zone_events),
                             stats=session.stats(),
+                            vehicles=vehicles,
                         )
                     )
                     pending_crossings.clear()
@@ -378,6 +429,15 @@ class AnalysisService:
                     crossings=tuple(pending_crossings),
                     zone_events=tuple(pending_zone_events),
                     stats=result.stats,
+                    # **Toujours**, quel que soit l'intervalle, et pour la même
+                    # raison que la progression finale : sans lui la dernière liste
+                    # affichée serait celle d'un échantillon quelconque, en retard
+                    # de quelques véhicules sur les compteurs voisins.
+                    #
+                    # Filtré depuis `result.vehicles` plutôt que reconstruit :
+                    # `session.vehicles()` vient d'être appelé, et le refaire
+                    # revoterait chaque plaque pour un résultat identique.
+                    vehicles=tuple(record for record in result.vehicles if record.crossed_lines),
                 )
             )
 

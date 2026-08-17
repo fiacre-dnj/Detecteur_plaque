@@ -251,7 +251,23 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
   sections. Le tableau gagne **Durée**, **Zones** et **Conf. détection**
   (`bestPlateScore`, distincte de la confiance de *lecture* déjà présente : une
   plaque peut être bien localisée et illisible, ou l'inverse), traduit le type
-  en français par `classLabel`, et colle ses en-têtes (`sticky top-0`) ;
+  en français par `classLabel`, et colle ses en-têtes (`sticky top-0`).
+  **Il dit désormais *quand*, et pas seulement *par où*** : deux colonnes
+  **Entrée** et **Sortie** portent l'instant du franchissement, au **dixième de
+  seconde** (`formatSceneTimePrecise`) — deux passages du même véhicule sur deux
+  lignes voisines tombent régulièrement dans la même seconde, et `formatSceneTime`
+  les affichait à la même heure. Le rôle est lu sur le **tracé courant** par
+  `vehicle-registry/model/roleCrossings.ts`, donc basculer un sens
+  entrée ↔ sortie déplace l'heure de colonne sans réanalyser ; une ligne retirée
+  du tracé n'est **pas** rangée par défaut dans « entrée » et la cellule se tait.
+  Un rôle qui porte plusieurs franchissements — aller-retour, deux lignes en
+  travers de la même voie, piste coupée par une occlusion (invariant 6) — affiche
+  le premier instant et annonce les autres par « +N », jamais fusionnés. Les deux
+  en-têtes de gauche sont renommés dans le même mouvement : **« Présent de / à »**
+  et **« Durée à l'écran »** (`firstSeenMs → lastSeenMs`, un temps de **présence
+  dans le champ**), parce que « Vu de / à » et « Durée » se lisaient comme l'heure
+  et le temps du franchissement — exactement ce que les deux nouvelles colonnes
+  portent ;
 - **`shared/ui/Tabs.tsx` reste**, sans consommateur pour l'instant — une
   primitive ARIA générique et accessible (flèches, Home/Fin, roving `tabIndex`),
   gardée pour un futur besoin plutôt que supprimée pour un gain nul.

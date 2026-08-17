@@ -264,5 +264,6 @@ def build_container(
             max_concurrent_jobs=settings.max_concurrent_jobs,
             preview_interval_ms=settings.preview_interval_ms,
             preview_interval_paced_ms=settings.preview_interval_paced_ms,
+            preview_vehicles_interval_ms=settings.preview_vehicles_interval_ms,
         ),
     )

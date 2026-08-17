@@ -17,6 +17,8 @@ export {
   plateUnreadMessage,
 } from "./model/plateUnread";
 
+export { type VehicleCrossing, crossingsWithRole } from "./model/roleCrossings";
+
 export {
   INITIAL_ROWS,
   OVERSCAN,

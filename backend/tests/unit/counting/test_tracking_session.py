@@ -356,6 +356,53 @@ class TestNumerotationDesVehicules:
         assert len(session.vehicles()) == stats.tracked_vehicles
         assert [record.global_id for record in session.vehicles()] == [1, 2]
 
+    def test_crossed_only_ne_garde_que_les_vehicules_qui_ont_franchi(self) -> None:
+        """Le filtre de l'aperçu — la population que l'écran affiche (ADR 0023).
+
+        Il existe pour ce qui **voyage**, pas pour ce qui s'affiche : l'aperçu
+        d'une analyse en cours republie le registre entier plusieurs fois par
+        minute, et sur une scène réelle deux tiers des objets suivis n'ont franchi
+        aucune ligne — ils sont stationnés, ou hors du tracé.
+
+        L'égalité `len(vehicles()) == tracked_vehicles` du test précédent ne vaut
+        donc **pas** sous ce filtre, et c'est exactement pourquoi il est explicite.
+        """
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+
+        # La piste 1 traverse la ligne ; la piste 2 reste immobile loin d'elle.
+        for index in range(10):
+            session.feed(
+                index,
+                index * FRAME_MS,
+                (
+                    track_path(1, CAR, [(900.0, 300.0 + index * 50.0)])[0],
+                    track_path(2, TRUCK, [(150.0, 150.0)])[0],
+                ),
+            )
+
+        assert [record.global_id for record in session.vehicles()] == [1, 2]
+        assert [record.global_id for record in session.vehicles(crossed_only=True)] == [1]
+
+    def test_crossed_only_rend_les_memes_enregistrements_que_sans_filtre(self) -> None:
+        """Le filtre **retire des lignes, il n'en modifie aucune**.
+
+        C'est ce qui autorise l'aperçu et le résultat final à afficher le même
+        tableau : si le filtre changeait un champ — une vitesse moyenne, un vote de
+        plaque — le registre changerait sous les yeux de l'utilisateur à la fin de
+        l'analyse, et l'écart se lirait comme un bug de comptage.
+        """
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+        for index in range(10):
+            session.feed(
+                index,
+                index * FRAME_MS,
+                (track_path(1, CAR, [(900.0, 300.0 + index * 50.0)])[0],),
+            )
+
+        assert session.vehicles(crossed_only=True) == tuple(
+            record for record in session.vehicles() if record.crossed_lines
+        )
+
 
 class TestMasqueDeZone:
     def test_une_observation_hors_zone_ne_cree_aucune_piste(self) -> None:

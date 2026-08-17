@@ -90,6 +90,7 @@ async def _manager(
     engine: FakeEngine | None = None,
     hub: ProgressHub | None = None,
     preview_interval_ms: int = 0,
+    preview_vehicles_interval_ms: int = 1000,
     preparer: FakePreparer | None = None,
 ) -> tuple[JobManager, InMemoryJobRepository, FileResultStore]:
     """Gestionnaire de test. **Aperçu désactivé par défaut** : les scénarios de
@@ -106,6 +107,7 @@ async def _manager(
         preparer=preparer,
         max_concurrent_jobs=1,
         preview_interval_ms=preview_interval_ms,
+        preview_vehicles_interval_ms=preview_vehicles_interval_ms,
     )
     manager.bind_loop(asyncio.get_running_loop())
     return manager, repository, store
@@ -364,7 +366,90 @@ class TestApercu:
             "crossings",
             "zoneEvents",
             "stats",
+            # Le registre en cours de constitution : c'est lui qui remplit le
+            # tableau des véhicules et la statistique **pendant** l'analyse.
+            "vehicles",
         }
+
+    async def test_un_apercu_porte_le_registre_puis_dit_inchange(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """Le premier aperçu porte le registre ; les suivants disent « inchangé ».
+
+        Les deux moitiés comptent. Sans la première, l'écran resterait vide la
+        première seconde — le moment précis où l'on regarde si quelque chose se
+        passe. Sans la seconde, une liste qui grossit avec l'analyse repartirait sur
+        le flux dix fois par seconde.
+
+        `None` **n'est pas** une liste vide : celle-là dirait « aucun véhicule n'a
+        franchi de ligne », et le client l'afficherait comme telle au lieu de garder
+        ce qu'il sait déjà.
+        """
+        hub = ProgressHub()
+        # Un intervalle de registre très long : tout aperçu après le premier doit
+        # donc dire « inchangé », ce qui rend le test indépendant de la vitesse de
+        # la machine — aucune borne en nombre d'itérations.
+        manager, _, _ = await _manager(
+            tmp_path,
+            clock,
+            hub=hub,
+            preview_interval_ms=1,
+            preview_vehicles_interval_ms=30_000,
+        )
+        received: list[Any] = []
+
+        async def collect() -> None:
+            async for event in hub.subscribe("job-1"):
+                received.append(event)
+
+        collector = asyncio.create_task(collect())
+        await _submit(manager, tmp_path)
+        await _await_status(manager, "job-1")
+        async with asyncio.timeout(2.0):
+            await collector
+
+        previews = [event.payload for event in received if event.kind == "preview"]
+        assert previews[0]["vehicles"] is not None
+        # Le dernier est l'aperçu **final**, obligatoire : il porte toujours le
+        # registre, quel que soit l'intervalle, pour que la liste affichée à la fin
+        # ne soit pas celle d'un échantillon quelconque.
+        assert previews[-1]["vehicles"] is not None
+        assert all(payload["vehicles"] is None for payload in previews[1:-1])
+
+    async def test_un_intervalle_de_registre_nul_laisse_l_apercu_intact(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """`0` retire le registre de l'aperçu, **jamais l'aperçu**.
+
+        Les deux réglages sont indépendants : confondre les deux ferait disparaître
+        les boîtes du canvas en croyant n'alléger que le tableau.
+        """
+        hub = ProgressHub()
+        manager, _, _ = await _manager(
+            tmp_path,
+            clock,
+            hub=hub,
+            preview_interval_ms=1,
+            preview_vehicles_interval_ms=0,
+        )
+        received: list[Any] = []
+
+        async def collect() -> None:
+            async for event in hub.subscribe("job-1"):
+                received.append(event)
+
+        collector = asyncio.create_task(collect())
+        await _submit(manager, tmp_path)
+        await _await_status(manager, "job-1")
+        async with asyncio.timeout(2.0):
+            await collector
+
+        previews = [event.payload for event in received if event.kind == "preview"]
+        assert previews != []
+        # L'aperçu final fait exception, et c'est délibéré : il porte le registre
+        # même ici, sinon la fin d'analyse afficherait un tableau vide sous des
+        # compteurs remplis.
+        assert all(payload["vehicles"] is None for payload in previews[:-1])
 
     async def test_un_apercu_n_est_jamais_le_dernier_etat_connu_du_job(
         self, tmp_path: Path, clock: FrozenClock

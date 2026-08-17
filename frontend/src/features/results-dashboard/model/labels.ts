@@ -68,6 +68,36 @@ export function formatSceneTime(ms: number): string {
 }
 
 /**
+ * Formate un **instant** de scène en `mm:ss,d` — au dixième de seconde.
+ *
+ * Distinct de `formatSceneTime`, et les deux cohabitent pour une raison précise :
+ * une **fenêtre de présence** (« vu de 00:55 à 01:02 ») se lit à la seconde, mais
+ * un **franchissement** est un événement ponctuel, et deux passages du même
+ * véhicule sur deux lignes voisines tombent régulièrement dans la même seconde.
+ * Arrondir les afficherait à la même heure, donc indistinguables, alors que le
+ * dixième dit lequel a eu lieu d'abord — la seule information qui permette de
+ * retrouver le passage dans la vidéo.
+ *
+ * La virgule et non le point : c'est un séparateur décimal, et l'interface parle
+ * français (invariant 12).
+ *
+ * **Ce n'est pas une heure d'horloge.** C'est du temps de scène (invariant 1) :
+ * `frame_index / fps`, compté depuis le début de la vidéo.
+ */
+export function formatSceneTimePrecise(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "--:--";
+  // Tronqué et non arrondi, pour rester cohérent avec `formatSceneTime` : un
+  // franchissement à 59 950 ms doit s'afficher 00:59,9 et non 01:00,0, sinon il
+  // paraît tomber après une fenêtre de présence qui, elle, se termine à 00:59.
+  const tenths = Math.floor(ms / 100);
+  const minutes = Math.floor(tenths / 600);
+  const seconds = Math.floor(tenths / 10) % 60;
+  return `${minutes.toString().padStart(2, "0")}:${seconds
+    .toString()
+    .padStart(2, "0")},${tenths % 10}`;
+}
+
+/**
  * Formate une vitesse selon l'échelle disponible.
  *
  * Trois cas distincts, et les confondre serait mentir : `km/h` quand l'échelle

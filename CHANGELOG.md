@@ -198,6 +198,15 @@ plus deux fois dans le même sens » si.
   confiance de lecture) s'ajoutent aux colonnes existantes, le type de véhicule
   s'affiche en français, et les en-têtes du tableau restent visibles pendant le
   défilement.
+- Le registre gagne deux colonnes, **Entrée** et **Sortie**, qui donnent
+  l'instant du franchissement au dixième de seconde — deux passages du même
+  véhicule sur deux lignes voisines tombaient jusqu'ici dans la même seconde
+  affichée. Basculer un sens entrée ↔ sortie déplace l'heure de colonne sans
+  relancer l'analyse.
+- **Le registre et la statistique se remplissent désormais pendant l'analyse**,
+  et non plus seulement à la fin : l'aperçu en direct porte le registre des
+  véhicules ayant déjà franchi une ligne, à une cadence plus lente que celle des
+  boîtes pour ne pas alourdir le flux à mesure qu'il grossit.
 
 ### Corrigé
 
