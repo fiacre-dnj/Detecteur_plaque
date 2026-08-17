@@ -14,7 +14,9 @@ import type { CountingLine } from "@/shared/api/contracts";
 
 import {
   crossingDirectionName,
+  crossingHeadingDeg,
   directionArrow,
+  directionHeadingDeg,
   directionName,
   directionRole,
   lineName,
@@ -203,5 +205,115 @@ describe("roleLabel", () => {
     expect(roleLabel("neutral")).toBeNull();
     expect(roleLabel("entry")).toBe("entrée");
     expect(roleLabel("exit")).toBe("sortie");
+  });
+});
+
+/*
+ * L'angle de la flèche de sens.
+ *
+ * Ces tests vivaient dans `analysis-job/model/crossingTimeline.test.ts`, où la
+ * fonction était née. Elle a déménagé ici quand un deuxième — puis un troisième —
+ * écran en a eu besoin : le panneau de géométrie, la chronologie des franchissements
+ * et les puces « Lignes franchies » du registre. C'est le même angle pour les trois,
+ * et c'est précisément ce que ce fichier verrouille.
+ */
+describe("directionHeadingDeg — la flèche prend l'angle du tracé", () => {
+  function segment(a: { x: number; y: number }, b: { x: number; y: number }): CountingLine {
+    return line({ a, b });
+  }
+
+  /**
+   * L'angle ramené dans `]−180, 180]`.
+   *
+   * `rotate(-180deg)` et `rotate(180deg)` sont la **même** rotation, et c'est
+   * l'arithmétique du zéro négatif qui décide laquelle sort : le normal d'une ligne
+   * horizontale porte un `x` valant `-0`, ce qui fait basculer `atan2` de `π` à `−π`.
+   * Assertionner la valeur brute figerait ce détail sans rapport avec ce qu'on veut
+   * vérifier — et normaliser dans `directionHeadingDeg` ferait diverger son chiffre
+   * de celui d'`arrowRotationDeg` pour une flèche identique à l'écran.
+   */
+  function rotation(deg: number | null): number {
+    if (deg === null) return Number.NaN;
+    const wrapped = ((deg % 360) + 360) % 360;
+    return wrapped > 180 ? wrapped - 360 : wrapped;
+  }
+
+  it("pointe perpendiculairement au trait, du côté d'arrivée", () => {
+    // Une ligne horizontale se franchit **verticalement** : c'est ce que montre le
+    // canvas, et c'est la seule raison d'être de cette flèche.
+    const horizontal = segment({ x: 0, y: 0 }, { x: 100, y: 0 });
+
+    // Le côté positif d'une ligne tracée vers la droite est **en bas** (y descend
+    // dans le repère de la vidéo) : la flèche est à 180° d'une flèche vers le haut.
+    expect(rotation(directionHeadingDeg(horizontal, "positive"))).toBe(180);
+    expect(rotation(directionHeadingDeg(horizontal, "negative"))).toBe(0);
+  });
+
+  it("suit la ligne quand on la fait pivoter", () => {
+    // **Le comportement attendu** : l'angle n'est pas une constante par sens, c'est
+    // celui du tracé. Pivoter la ligne de 45° pivote la flèche d'autant.
+    const droit = segment({ x: 0, y: 0 }, { x: 100, y: 0 });
+    const oblique = segment({ x: 0, y: 0 }, { x: 100, y: 100 });
+
+    // 180° puis 225° — écrit −135°, la même rotation. La flèche a bien pivoté de 45°.
+    expect(rotation(directionHeadingDeg(droit, "positive"))).toBe(180);
+    expect(rotation(directionHeadingDeg(oblique, "positive"))).toBeCloseTo(-135, 6);
+  });
+
+  it("oppose exactement les deux sens d'une même ligne", () => {
+    const oblique = segment({ x: 20, y: 90 }, { x: 130, y: 15 });
+
+    const positive = directionHeadingDeg(oblique, "positive") ?? 0;
+    const negative = directionHeadingDeg(oblique, "negative") ?? 0;
+
+    expect(Math.abs(Math.abs(positive - negative) - 180)).toBeCloseTo(0, 6);
+  });
+
+  it("**mène bien du côté d'arrivée**, et pas du côté opposé", () => {
+    // Le test qui compte, et le mode de panne qu'il attrape : un signe inversé ferait
+    // pointer chaque flèche à l'envers sous des rôles et des totaux par ailleurs
+    // justes — la panne silencieuse que `geometry.ts` documente, et le risque exact
+    // que crée la négation du sens négatif.
+    //
+    // On reconstruit le vecteur depuis l'angle (l'inverse d'`arrowRotationDeg`), on
+    // avance depuis le milieu du segment, et on demande à `sideOfLine` — la formule du
+    // backend — de quel côté on est tombé.
+    const oblique = segment({ x: 20, y: 90 }, { x: 130, y: 15 });
+    const middle = { x: 75, y: 52.5 };
+
+    for (const [sign, expected] of [
+      ["positive", 1],
+      ["negative", -1],
+    ] as const) {
+      const radians = ((directionHeadingDeg(oblique, sign) ?? 0) * Math.PI) / 180;
+      const arrived = {
+        x: middle.x + Math.sin(radians) * 30,
+        y: middle.y - Math.cos(radians) * 30,
+      };
+
+      expect(sideOfLine(oblique.a, oblique.b, arrived)).toBe(expected);
+    }
+  });
+
+  it("n'invente pas d'angle sur un segment de longueur nulle", () => {
+    // `arrowRotationDeg` y rendrait `0`, soit une flèche vers le haut affirmée sans
+    // mesure. Une ligne qu'on vient de commencer à tracer est dans ce cas.
+    expect(directionHeadingDeg(segment({ x: 50, y: 50 }, { x: 50, y: 50 }), "positive")).toBeNull();
+  });
+});
+
+describe("crossingHeadingDeg — l'angle depuis un franchissement", () => {
+  const lines = [line({ id: "l1", a: { x: 0, y: 0 }, b: { x: 100, y: 0 } })];
+
+  it("donne le même angle que directionHeadingDeg, par le signe du franchissement", () => {
+    expect(crossingHeadingDeg(lines, "l1", 1)).toBe(directionHeadingDeg(lines[0]!, "positive"));
+    expect(crossingHeadingDeg(lines, "l1", -1)).toBe(directionHeadingDeg(lines[0]!, "negative"));
+  });
+
+  it("rend null pour une ligne retirée du tracé", () => {
+    // Même repli que `crossingDirectionName`, et pour la même raison : la géométrie ne
+    // dit plus rien. L'appelant montre alors la flèche brute de la convention serveur,
+    // qui ne prétend décrire aucun angle.
+    expect(crossingHeadingDeg(lines, "disparue", 1)).toBeNull();
   });
 });

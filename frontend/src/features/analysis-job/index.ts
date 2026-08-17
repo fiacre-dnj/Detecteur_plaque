@@ -25,7 +25,6 @@ export {
   bucketiseCrossings,
   chooseBucketMs,
   crossingFacets,
-  crossingHeadingDeg,
   describeCrossings,
   filterCrossings,
   formatBucketRange,

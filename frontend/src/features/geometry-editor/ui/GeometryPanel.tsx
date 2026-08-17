@@ -27,8 +27,7 @@
 import { ArrowUp, ArrowUpDown, Bookmark, Plus, Square, Trash2 } from "lucide-react";
 
 import type { CountingLine, DirectionRole, DirectionSign, Zone } from "@/shared/api/contracts";
-import { directionRole } from "@/shared/lib/directions";
-import { arrowRotationDeg, positiveNormal } from "@/shared/lib/geometry";
+import { directionHeadingDeg, directionRole } from "@/shared/lib/directions";
 import type { Selection } from "@/entities/geometry";
 
 interface GeometryPanelProps {
@@ -257,7 +256,6 @@ function DirectionFields({
   line: CountingLine;
   onSetDirectionRole: (id: string, sign: DirectionSign, role: DirectionRole) => void;
 }) {
-  const normal = positiveNormal(line.a, line.b);
   const positiveRole = directionRole(line, "positive");
   const negativeRole = directionRole(line, "negative");
   // `neutral` n'est plus atteignable depuis ce panneau, mais une ligne tracée
@@ -280,7 +278,6 @@ function DirectionFields({
               line={line}
               sign={sign}
               role={sign === "positive" ? positiveRole : negativeRole}
-              normal={normal}
             />
           ))}
         </ul>
@@ -375,27 +372,35 @@ function DirectionRoleRow({
   line,
   sign,
   role,
-  normal,
 }: {
   line: CountingLine;
   sign: DirectionSign;
   role: DirectionRole;
-  normal: { x: number; y: number };
 }) {
-  const direction = sign === "positive" ? normal : { x: -normal.x, y: -normal.y };
+  // `directionHeadingDeg` **et pas** une négation du normal écrite ici : c'est la
+  // fonction partagée qui décide de cet angle, et elle sert aussi à la chronologie
+  // des franchissements et aux puces du registre. Trois écrans, une flèche — la
+  // négation en double était exactement le signe qu'on inverse sans le remarquer,
+  // mode de panne que `shared/lib/geometry.ts` documente.
+  const headingDeg = directionHeadingDeg(line, sign);
 
   return (
     <li className="flex items-center gap-1.5 rounded-input bg-surface-2 px-2 py-1">
       {/* La flèche dit **quel** sens dans la convention du canvas — pivotée à
-          l'angle **exact** du tracé (`arrowRotationDeg`), pas arrondie au
-          huitième de tour le plus proche comme le ferait un glyphe unicode.
-          Sans elle, l'utilisateur ne saurait pas laquelle des deux rangées
-          correspond à quel côté. */}
-      <ArrowUp
-        aria-hidden="true"
-        className="size-3.5 shrink-0"
-        style={{ color: line.color, transform: `rotate(${arrowRotationDeg(direction)}deg)` }}
-      />
+          l'angle **exact** du tracé, pas arrondie au huitième de tour le plus
+          proche comme le ferait un glyphe unicode. Sans elle, l'utilisateur ne
+          saurait pas laquelle des deux rangées correspond à quel côté.
+
+          Un segment de longueur nulle — une ligne qu'on vient de commencer à
+          tracer — n'a pas d'angle : aucune flèche plutôt qu'une flèche vers le
+          haut, qui affirmerait une orientation que personne n'a mesurée. */}
+      {headingDeg !== null && (
+        <ArrowUp
+          aria-hidden="true"
+          className="size-3.5 shrink-0"
+          style={{ color: line.color, transform: `rotate(${headingDeg}deg)` }}
+        />
+      )}
       <span className="min-w-0 truncate text-micro text-ink">
         {role === "entry" ? "Entrée" : role === "exit" ? "Sortie" : "À préciser"}
       </span>

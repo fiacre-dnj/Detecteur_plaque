@@ -19,7 +19,7 @@ import type {
   DirectionTally,
 } from "@/shared/api/contracts";
 
-import { defaultDirectionNames } from "./geometry";
+import { arrowRotationDeg, defaultDirectionNames, positiveNormal } from "./geometry";
 
 /** Les deux sens, dans l'ordre d'affichage : le positif d'abord, comme la flèche. */
 export const DIRECTION_SIGNS: readonly DirectionSign[] = ["positive", "negative"];
@@ -89,7 +89,60 @@ export function lineName(lines: readonly CountingLine[], lineId: string): string
   return lines.find((candidate) => candidate.id === lineId)?.name ?? lineId;
 }
 
-/** Flèche du sens : **quel** sens dans la convention du canvas, pas ce qu'il signifie. */
+/**
+ * Angle, en degrés, d'une flèche qui pointe dans le sens du franchissement.
+ *
+ * **Le seul endroit qui décide de cet angle**, et c'est tout l'intérêt : la même
+ * valeur sert au panneau de géométrie, à la chronologie des franchissements et aux
+ * puces du registre. Trois écrans, une flèche — sinon le même passage pointerait à
+ * trois angles différents selon l'endroit où on le regarde.
+ *
+ * Un franchissement traverse la ligne **perpendiculairement** au trait, vers le côté
+ * d'arrivée : le sens positif suit `positiveNormal`, le négatif son opposé. L'angle
+ * est donc celui du trait tourné d'un quart de tour — une ligne horizontale se
+ * franchit verticalement, exactement ce que montre le canvas.
+ *
+ * `null` sur un segment de longueur nulle : aucune orientation n'existe, et
+ * `arrowRotationDeg` y rendrait `0`, soit une flèche vers le haut affirmée sans
+ * mesure. L'appelant n'affiche alors pas de flèche pivotée.
+ *
+ * La négation du sens négatif vit **ici et nulle part ailleurs**. Elle était écrite en
+ * clair dans `GeometryPanel`, et `geometry.ts` documente précisément ce mode de
+ * panne : un signe inversé fait pointer les flèches à l'envers sous des rôles et des
+ * totaux par ailleurs justes, sans que rien ne plante.
+ */
+export function directionHeadingDeg(line: CountingLine, sign: DirectionSign): number | null {
+  const normal = positiveNormal(line.a, line.b);
+  if (normal.x === 0 && normal.y === 0) return null;
+  return arrowRotationDeg(sign === "positive" ? normal : { x: -normal.x, y: -normal.y });
+}
+
+/**
+ * Angle de la flèche d'un franchissement, à partir de son signe et de sa ligne.
+ *
+ * Même forme et même repli que `crossingDirectionName`, volontairement : `null` quand
+ * la ligne est inconnue — un franchissement archivé dont la ligne a été retirée du
+ * tracé. L'appelant montre alors la flèche brute de la convention serveur
+ * (`directionArrow`), qui ne prétend décrire aucune géométrie, plutôt qu'une icône
+ * non pivotée qui affirmerait « vers le haut ».
+ */
+export function crossingHeadingDeg(
+  lines: readonly CountingLine[],
+  lineId: string,
+  direction: number,
+): number | null {
+  const line = lines.find((candidate) => candidate.id === lineId);
+  return line === undefined ? null : directionHeadingDeg(line, signOf(direction));
+}
+
+/**
+ * Flèche du sens : **quel** sens dans la convention du canvas, pas ce qu'il signifie.
+ *
+ * Un glyphe unicode ne pivote qu'à 45° près : il ne sert donc que de **repli**, quand
+ * la géométrie ne permet aucun angle mesuré (`crossingHeadingDeg` rend `null`). Partout
+ * où la ligne est connue, c'est une icône pivotée à l'angle réel du trait qui
+ * s'affiche.
+ */
 export function directionArrow(direction: number): string {
   return direction > 0 ? "↑" : "↓";
 }
