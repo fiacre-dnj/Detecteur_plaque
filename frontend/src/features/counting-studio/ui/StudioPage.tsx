@@ -49,8 +49,17 @@ import {
 } from "@/entities/geometry";
 import { preloadModel, useDetectableClasses, useModels } from "@/entities/model";
 import {
-  CrossingLog,
+  FULL_RANGE,
+  clampRange,
+  formatTimecode,
+  isFullRange,
+  secondsToMs,
+  type AnalysisRange,
+} from "@/entities/analysis-range";
+import {
+  CrossingTimeline,
   JobProgressBar,
+  LaunchDialog,
   inputVideoUrl,
   useFollowAnalysis,
 } from "@/features/analysis-job";
@@ -78,7 +87,6 @@ import {
   useRealtimeSession,
 } from "@/features/realtime-counting";
 import {
-  VEHICLE_CLASSES,
   ClassEntriesGrid,
   LineFlowDashboard,
   ResultsDashboard,
@@ -90,6 +98,7 @@ import { VehicleRegistry } from "@/features/vehicle-registry";
 import { PlaybackFpsBadge, TransportBar } from "@/features/video-transport";
 import type { CrossingEvent, Point, Preset } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
+import { VEHICLE_CLASSES } from "@/shared/lib/classes";
 import { Button } from "@/shared/ui/Button";
 import { MetricCard } from "@/shared/ui/MetricCard";
 
@@ -144,6 +153,30 @@ export function StudioPage() {
   const [scene, setScene] = useState<SceneSize | null>(null);
   const [ended, setEnded] = useState(false);
   const [presetsOpen, setPresetsOpen] = useState(false);
+
+  /**
+   * La portion de vidéo qui sera analysée, et l'ouverture de la modale qui la choisit.
+   *
+   * **Détenue ici et nulle part ailleurs**, pour la même raison que la géométrie :
+   * trois features s'en servent — le lecteur la dessine, la modale la fait choisir,
+   * l'envoi la transporte — et aucune n'a le droit d'importer les autres.
+   *
+   * **Jamais persistée**, contrairement aux réglages d'analyse. « De 00:34 à 05:00 »
+   * décrit *cette* vidéo ; relue au chargement suivant, la même fenêtre découperait
+   * un autre fichier au hasard. Elle est donc remise à neuf par `resetForNewSource`,
+   * comme la géométrie qui est en pixels de la source.
+   */
+  const [range, setRange] = useState<AnalysisRange>(FULL_RANGE);
+  const [launchOpen, setLaunchOpen] = useState(false);
+  /**
+   * Position de lecture **figée à l'ouverture** de la modale.
+   *
+   * Un instantané et non un abonnement : `useVideoTransport` vit dans `TransportBar`
+   * précisément pour que ses soixante mises à jour par seconde ne re-rendent pas
+   * tout le studio, canvas compris. Remonter la position ici annulerait ce gain
+   * pour un chiffre qu'on ne lit qu'une fois, au moment du clic.
+   */
+  const [launchTimeMs, setLaunchTimeMs] = useState(0);
 
   /**
    * Les réglages, relus du stockage **une seule fois** à l'initialisation.
@@ -331,6 +364,11 @@ export function StudioPage() {
     dispatch({ type: "clear" });
     setScene(null);
     setEnded(false);
+    // L'intervalle avec le reste : il est en temps de **cette** vidéo. Hérité d'un
+    // fichier précédent, il découperait le nouveau à un endroit que personne n'a
+    // choisi — et une borne au-delà de sa durée le ferait refuser en 422, sur un
+    // écran dont toutes les valeurs paraissent valides.
+    setRange(FULL_RANGE);
     session.reset();
   }, [session, live]);
 
@@ -359,21 +397,48 @@ export function StudioPage() {
     media.clear();
   }, [media, resetForNewSource]);
 
+  /**
+   * Le lancement **effectif** — ce que la modale déclenche, et ce que les deux
+   * bandeaux de relance appellent directement.
+   *
+   * Les bandeaux (« résultat périmé », « modèle indisponible ») ne repassent pas par
+   * la modale, et c'est voulu : ils relancent *la même* analyse après un changement
+   * de géométrie ou un préchargement, sur l'intervalle déjà choisi. Redemander la
+   * portion à chaque relance ferait cliquer deux fois pour répéter un geste.
+   */
   const launch = useCallback(() => {
     const file = media.source?.file;
     if (file === undefined || !serverReady) return;
 
+    setLaunchOpen(false);
     setEnded(false);
     void session.start(
       file,
       // `toRequest` est le seul endroit qui traduit les réglages en requête : il
       // résout `confidenceThreshold: null` en défaut, met l'échelle nulle à `null`,
       // et désactive le masque quand aucune zone n'existe.
-      toRequest(settings, geometry.lines, geometry.zones),
+      toRequest(settings, geometry.lines, geometry.zones, range),
       geometry.lines,
       geometry.zones,
     );
-  }, [media.source, serverReady, settings, geometry, session]);
+  }, [media.source, serverReady, settings, geometry, session, range]);
+
+  /**
+   * Ouvre la modale, en y **figeant la position de lecture** du moment.
+   *
+   * C'est le seul endroit qui lit `video.current.currentTime`, et c'est une lecture
+   * unique : le studio ne s'abonne pas à la position pour ne pas se re-rendre
+   * soixante fois par seconde. `clampRange` est rejoué à l'ouverture parce que la
+   * durée peut n'avoir été connue qu'après la saisie d'un intervalle — sur une vidéo
+   * lente à charger, les métadonnées arrivent après le premier réglage.
+   */
+  const openLaunch = useCallback(() => {
+    const element = video.current;
+    const durationMs = secondsToMs(element?.duration ?? 0);
+    setLaunchTimeMs(secondsToMs(element?.currentTime ?? 0));
+    setRange((previous) => clampRange(previous, durationMs));
+    setLaunchOpen(true);
+  }, []);
 
   /**
    * Le résultat décrit-il encore la géométrie affichée ?
@@ -387,10 +452,12 @@ export function StudioPage() {
     return geometrySignature(geometry.lines, geometry.zones) !== session.launchSignature;
   }, [session.launchSignature, session.result, geometry.lines, geometry.zones]);
 
-  const lineNames = useMemo(
-    () => new Map(geometry.lines.map((line) => [line.id, line.name])),
-    [geometry.lines],
-  );
+  /*
+   * `lineNames` — une table `id → nom` bâtie pour le seul journal — est
+   * **supprimée** : la chronologie reçoit `geometry.lines` en entier, parce qu'elle
+   * nomme le *rôle* du sens (« Entrée », « Sortie ») et colore son nœud à la couleur
+   * de la ligne. Ni l'un ni l'autre ne se lit dans une table de noms.
+   */
 
   /**
    * Les véhicules **du trafic**, à la tête de lecture : vus, et ayant franchi
@@ -804,6 +871,16 @@ export function StudioPage() {
               seekable={!isCamera}
               disabled={busy}
               onEnded={handleEnded}
+              // Le direct n'a pas d'intervalle à choisir : un flux caméra n'a ni
+              // début ni fin, et le serveur ignore les deux bornes en temps réel.
+              // Les omettre masque le rail plutôt que d'afficher un réglage sans
+              // effet — la panne la plus démoralisante d'une interface.
+              range={isCamera ? undefined : range}
+              onRangeChange={isCamera ? undefined : setRange}
+              // Grisé pendant l'analyse **seule** : se déplacer dans la vidéo reste
+              // utile pour regarder l'aperçu, déplacer les bornes ne l'est plus —
+              // elles sont déjà parties au serveur.
+              rangeDisabled={busy}
             />
           )}
 
@@ -925,15 +1002,35 @@ export function StudioPage() {
             </p>
           )}
 
+          {/* Le bouton **ouvre la question** au lieu d'y répondre tout seul.
+              Il répondait « depuis le début », toujours — alors qu'on arrive
+              ici après avoir fait défiler la vidéo jusqu'à l'endroit qui pose
+              problème. L'intervalle retenu est rappelé sous le bouton : sans
+              lui, un intervalle posé puis oublié ferait analyser un morceau
+              qu'on croit entier, et les compteurs bas paraîtraient faux. */}
           <Button
             variant="primary"
             className="w-full"
             disabled={!canAnalyse}
-            onClick={launch}
+            onClick={openLaunch}
             title={analyseTooltip(serverReady, media.source?.file !== undefined, geometry, busy)}
           >
             Lancer l'analyse serveur
           </Button>
+
+          {!isFullRange(range) && !busy && (
+            <p className="text-caption text-ink-dim">
+              Portion retenue :{" "}
+              <span className="text-ink tabular">
+                {/* Écrit sans la durée de la vidéo, délibérément : la remonter
+                    jusqu'ici obligerait le studio à s'abonner à la balise, donc
+                    à se re-rendre avec elle. « jusqu'à la fin » dit la même
+                    chose qu'un chiffre qu'on ne peut lire sans ce coût. */}
+                {formatTimecode(range.startMs)} →{" "}
+                {range.endMs === null ? "la fin" : formatTimecode(range.endMs)}
+              </span>
+            </p>
+          )}
 
           {media.source !== null && (
             <Button variant="ghost" className="w-full" onClick={handleClose} disabled={busy}>
@@ -1002,12 +1099,20 @@ export function StudioPage() {
         </>
       )}
 
-      {/* Le journal, pendant l'analyse et en direct seulement : après, la barre
-          de lecture et le registre disent la même chose en mieux. Il reste
-          **en dernier** parce qu'il défile — le mettre au-dessus repousserait
-          les sections stables hors de l'écran à chaque franchissement. */}
-      {session.result === null && resultStats !== null && (
-        <CrossingLog events={session.events} lineNames={lineNames} />
+      {/* La chronologie, **pendant l'analyse d'un fichier seulement** : après, la
+          barre de lecture et le registre disent la même chose en mieux. Elle reste
+          **en dernier** parce qu'elle défile — la mettre au-dessus repousserait
+          les sections stables hors de l'écran à chaque franchissement.
+
+          `!live.active` est nouveau et corrige un panneau vide par construction :
+          `session.events` vient du suivi SSE d'un **job**, et le direct n'en a pas.
+          En caméra, la section s'affichait donc avec son « aucun franchissement pour
+          l'instant » pour toute la session, sous des compteurs qui montaient — ce qui
+          se lit comme un comptage en panne. Le direct n'a pas de journal, et c'est ce
+          qu'il faut dire en n'affichant rien plutôt qu'un vide qui ne se remplira
+          jamais. */}
+      {session.result === null && resultStats !== null && !live.active && (
+        <CrossingTimeline events={session.events} lines={geometry.lines} live={analysing} />
       )}
 
       {/* `media.source !== null` en plus de `resultStats === null` : sans vidéo,
@@ -1041,6 +1146,27 @@ export function StudioPage() {
           — liste réseau comprise — dont personne n'a besoin avant le clic.
           Aucun `fallback` visible : un squelette derrière une modale fermée
           n'aurait rien à montrer. */}
+      {/* La modale de lancement, montée seulement une fois ouverte — même règle
+          que celle des presets. Elle n'est **pas** chargée paresseusement, elle :
+          c'est le passage obligé de l'action principale de l'écran, et faire
+          attendre un aller-retour réseau au clic sur « Lancer » échangerait un
+          gain invisible contre une latence sur le geste le plus fréquent.
+
+          `durationMs` est relue de la balise à l'ouverture, comme la position :
+          la remonter en état obligerait le studio à s'abonner au transport, ce
+          que `TransportBar` existe justement pour éviter. */}
+      {launchOpen && (
+        <LaunchDialog
+          open={launchOpen}
+          durationMs={secondsToMs(video.current?.duration ?? 0)}
+          currentTimeMs={launchTimeMs}
+          range={range}
+          onRangeChange={setRange}
+          onLaunch={launch}
+          onCancel={() => setLaunchOpen(false)}
+        />
+      )}
+
       {presetsOpen && (
         <Suspense fallback={null}>
           <PresetDialog

@@ -17,13 +17,29 @@ export {
   useJobProgress,
   type JobProgressState,
 } from "./model/useJobProgress";
+export { LOG_LIMIT, appendCrossings, formatSceneTime } from "./model/previewLog";
 export {
-  LOG_LIMIT,
-  appendCrossings,
-  directionLabel,
-  formatSceneTime,
-  lineLabel,
-} from "./model/previewLog";
+  BUCKET_LADDER,
+  BUCKET_TARGET_PER_GROUP,
+  NO_CROSSING_FILTER,
+  bucketiseCrossings,
+  chooseBucketMs,
+  crossingFacets,
+  crossingHeadingDeg,
+  describeCrossings,
+  filterCrossings,
+  formatBucketRange,
+  formatDuration,
+  isFilterEmpty,
+  passageNote,
+  type CrossingBucket,
+  type CrossingEntry,
+  type CrossingFilter,
+  type LineFacet,
+  type PreviousPassage,
+  type RoleFilter,
+} from "./model/crossingTimeline";
 export { SEEK_TOLERANCE_MS, shouldSeek, useFollowAnalysis } from "./model/useFollowAnalysis";
-export { CrossingLog } from "./ui/CrossingLog";
+export { CrossingTimeline } from "./ui/CrossingTimeline";
 export { JobProgressBar } from "./ui/JobProgressBar";
+export { LaunchDialog } from "./ui/LaunchDialog";

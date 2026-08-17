@@ -28,8 +28,6 @@ export {
 } from "./model/highlights";
 
 export {
-  VEHICLE_CLASSES,
-  classLabel,
   crossingRate,
   crossroadFlowSentence,
   directionArrow,
@@ -41,7 +39,6 @@ export {
   formatScore,
   formatSpeed,
   plural,
-  type VehicleClass,
 } from "./model/labels";
 
 export { ClassEntriesChart } from "./ui/ClassEntriesChart";

@@ -10,8 +10,8 @@
  */
 
 import { classColor } from "@/shared/config/palettes";
+import { classLabel } from "@/shared/lib/classes";
 
-import { classLabel } from "../model/labels";
 import { PieChart } from "./PieChart";
 
 interface ClassEntriesChartProps {

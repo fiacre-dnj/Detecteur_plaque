@@ -14,10 +14,10 @@
  */
 
 import type { AnalysisStats, CountingLine } from "@/shared/api/contracts";
+import { VEHICLE_CLASSES, classLabel } from "@/shared/lib/classes";
 import { MetricCard } from "@/shared/ui/MetricCard";
 
 import { entriesByClass } from "../model/entriesByClass";
-import { VEHICLE_CLASSES, classLabel } from "../model/labels";
 
 interface ClassEntriesGridProps {
   stats: AnalysisStats;
