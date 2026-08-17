@@ -655,8 +655,8 @@ export interface ZoneTally {
  * par une zone.
  */
 export interface Diagnostics {
+  /** Observations suivies dont le score atteint le seuil de l'utilisateur. */
   highDetections: number;
-  lowDetections: number;
   maskedOut: number;
   /**
    * Boîtes écartées parce qu'incluses dans une autre — la cabine d'un
@@ -666,6 +666,15 @@ export interface Diagnostics {
   containedOut: number;
   confirmedTracks: number;
   tentativeTracks: number;
+  /**
+   * Observations suivies dont le score est **sous** le seuil de l'utilisateur.
+   *
+   * Depuis ADR 0024, ces observations ne sont plus jetées par le détecteur : elles
+   * prolongent une piste dont la confiance plonge, sans jamais en ouvrir une. Un
+   * chiffre élevé n'est pas un problème, c'est ce mécanisme qui travaille —
+   * remplace `lowDetections`, qui prétendait mesurer des détections jetées
+   * *avant* le suivi, une quantité qu'aucun adaptateur n'a jamais su observer.
+   */
   rescuedByLowScore: number;
   /**
    * **Quasi-franchissements par ligne** : pistes éteintes à portée d'une ligne sans

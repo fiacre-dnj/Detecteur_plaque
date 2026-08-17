@@ -29,6 +29,11 @@
  * `result.stats` : elles suivent la tête de lecture, donc reculer dans la vidéo fait
  * baisser les chiffres. Sans cela, l'image et les nombres racontent deux histoires
  * différentes.
+ *
+ * **Pendant** l'analyse, la même règle vaut avec une autre source : tout le bas de
+ * page lit l'aperçu SSE — compteurs *et* registre des véhicules — parce que la vidéo
+ * locale se cale sur l'image analysée. Une seule sélection, `dashboardStats`, pour
+ * que les deux phases ne soient pas deux branches à garder d'accord (ADR 0026).
  */
 
 import { Suspense, lazy, useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
@@ -652,8 +657,17 @@ export function StudioPage() {
         models={catalogue?.models ?? []}
         detectableClasses={detectableClasses ?? []}
         plateAvailable={catalogue?.plateAvailable ?? false}
+        // **De `/health` et non du catalogue de modèles** : c'est le seul endroit qui
+        // porte le verdict de l'auto-test — poids présents, chargement en échec —,
+        // l'état qui laissait cocher l'ANPR pour qu'elle ne rende jamais rien.
+        // `undefined` (santé pas encore reçue) devient `null` : « pas encore testé »,
+        // qui n'est pas un échec et ne doit rien désactiver.
+        plateLoadable={health?.plateLoadable ?? null}
         plateOcrAvailable={catalogue?.plateOcrAvailable ?? false}
         hasZones={geometry.zones.length > 0}
+        // Pour nommer les lignes des quasi-franchissements dans le diagnostic : le
+        // serveur les publie par identifiant, et un identifiant ne dit rien à l'œil.
+        lines={geometry.lines}
         // Le diagnostic **vivant** pendant l'analyse, celui de la dernière sinon :
         // comprendre pendant que ça tourne pourquoi un véhicule n'est pas compté —
         // masqué, pas confirmé, écarté — au lieu de l'apprendre à la fin. `null`

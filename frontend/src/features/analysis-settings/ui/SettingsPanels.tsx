@@ -33,8 +33,14 @@ import { ChevronDown } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import { ModelPicker } from "@/features/model-picker";
-import type { DetectableClass, Diagnostics, VehicleModel } from "@/shared/api/contracts";
+import type {
+  CountingLine,
+  DetectableClass,
+  Diagnostics,
+  VehicleModel,
+} from "@/shared/api/contracts";
 
+import { plateCapability } from "../model/plateCapability";
 import {
   ANALYSIS_FPS_CAPS,
   ANALYSIS_SPEEDS,
@@ -64,6 +70,15 @@ interface SettingsPanelsProps {
   /** Faux quand le serveur signale le modèle de **détection** de plaques absent. */
   plateAvailable: boolean;
   /**
+   * Le détecteur de plaques a-t-il passé l'auto-test du serveur ? `null` = non testé.
+   *
+   * Le troisième état de l'ANPR, et le seul qui trompe : poids **présents** et
+   * chargement en échec. Sans ce drapeau, la case restait cochable, l'analyse payait
+   * une inférence par véhicule et par image, et aucune plaque ne sortait jamais.
+   * Voir `model/plateCapability.ts`, qui tranche les trois états en un endroit.
+   */
+  plateLoadable: boolean | null;
+  /**
    * Faux quand le modèle de **lecture** ou son dictionnaire manque.
    *
    * Distinct de `plateAvailable` : ce sont deux artefacts, et « détection sans lecture »
@@ -73,6 +88,14 @@ interface SettingsPanelsProps {
   plateOcrAvailable: boolean;
   /** Vrai s'il existe au moins une zone : « ignorer hors zone » en dépend. */
   hasZones: boolean;
+  /**
+   * Le tracé courant, **pour nommer les lignes du diagnostic** — les
+   * quasi-franchissements sont publiés par identifiant de ligne.
+   *
+   * Le type vient du contrat partagé, pas d'une autre feature : `analysis-settings`
+   * ne connaît ni l'éditeur de géométrie ni le tableau de bord.
+   */
+  lines: readonly CountingLine[];
   /** Diagnostic de la dernière analyse, `null` avant. */
   diagnostics: Diagnostics | null;
   disabled: boolean;
@@ -109,8 +132,10 @@ export function SettingsPanels({
   models,
   detectableClasses,
   plateAvailable,
+  plateLoadable,
   plateOcrAvailable,
   hasZones,
+  lines,
   diagnostics,
   disabled,
   onChange,
@@ -156,6 +181,15 @@ export function SettingsPanels({
     };
   }, [open]);
 
+  // Les trois états de l'ANPR tranchés **une fois**, en dehors du rendu : la case
+  // de détection, celle de lecture et leurs deux phrases décrivent le même serveur,
+  // et les faire décider séparément les laisserait se contredire.
+  const plates = plateCapability({
+    available: plateAvailable,
+    loadable: plateLoadable,
+    ocrAvailable: plateOcrAvailable,
+  });
+
   const panels: Record<PanelId, ReactNode> = {
     detection: (
       <PanelGrid>
@@ -177,10 +211,19 @@ export function SettingsPanels({
           bounds={BOUNDS.confidenceThreshold}
           disabled={disabled}
           format={(value) => `${Math.round(value * 100)} %`}
+          // **Ce seuil ne filtre plus le détecteur.** Il décide ce qui *devient* une
+          // piste ; les détections plus faibles continuent d'arriver au suivi, où
+          // elles prolongent une piste dont la confiance plonge — sans jamais en
+          // ouvrir une. Le dire ici est ce qui évite de le baisser pour « détecter
+          // plus » : ce que cela change, c'est le nombre de pistes créées, donc de
+          // véhicules comptés.
           hint={
-            settings.confidenceThreshold === null
+            "Décide ce qui devient une piste, pas ce que le détecteur voit : une " +
+            "détection plus faible prolonge encore une piste existante, elle n'en " +
+            "crée jamais. " +
+            (settings.confidenceThreshold === null
               ? "Suit le défaut du modèle sélectionné."
-              : "Valeur explicite : conservée au changement de modèle."
+              : "Valeur explicite : conservée au changement de modèle.")
           }
           onChange={(confidenceThreshold) => onChange({ confidenceThreshold })}
           // **Le bouton « Défaut » est le chemin de retour.** Avant lui, c'était le
@@ -202,17 +245,16 @@ export function SettingsPanels({
           />
         </PanelGridFullRow>
 
-        {/* Piloté par `plateAvailable` **seul** : la détection reste utile sans OCR,
-            les rectangles jaunes valident déjà un cadrage. */}
+        {/* **Trois états, pas deux** : absent, présent mais illisible, disponible.
+            Le deuxième est celui qui trompait — poids en place, chargement en échec,
+            case cochable et aucune plaque en sortie. `plateCapability` le tranche, et
+            l'ANPR reste indépendante de l'OCR : les rectangles seuls valident déjà un
+            cadrage. */}
         <Toggle
           label="Repérer les plaques (ANPR)"
           checked={settings.detectPlates}
-          disabled={disabled || !plateAvailable}
-          hint={
-            plateAvailable
-              ? "Recadre chaque véhicule suivi et y localise sa plaque — plus lent, mais les recadrages d'une même image partent groupés."
-              : "Le modèle de plaques n'est pas installé sur ce serveur."
-          }
+          disabled={disabled || !plates.canDetect}
+          hint={plates.detectHint}
           onChange={(detectPlates) => onChange({ detectPlates })}
         />
 
@@ -223,7 +265,11 @@ export function SettingsPanels({
             bounds={BOUNDS.plateConfidence}
             disabled={disabled}
             format={(value) => `${Math.round(value * 100)} %`}
-            hint="Seule la meilleure plaque de chaque véhicule est retenue : monter ce seuil en garde moins, pas de plus précises."
+            // Mesuré : sur 538 détections réelles, 112 étaient la boîte du véhicule
+            // entier — dont certaines à 0,87 de confiance, donc **inatteignables par
+            // un seuil**. C'est le filtre de forme qui les écarte, et le dire ici
+            // évite de monter ce curseur en espérant gagner en justesse.
+            hint="Seule la meilleure plaque de chaque véhicule est retenue : monter ce seuil en garde moins, pas de plus précises. Les boîtes de forme impossible sont écartées avant, quel que soit leur score."
             onChange={(plateConfidence) => onChange({ plateConfidence })}
           />
         )}
@@ -234,15 +280,28 @@ export function SettingsPanels({
           <Toggle
             label="Lire le texte des plaques (OCR)"
             checked={settings.readPlateText}
-            disabled={disabled || !plateOcrAvailable}
-            hint={
-              plateOcrAvailable
-                ? "Le texte affiché est voté sur toute la vie du véhicule, pas lu sur une seule image — et il est conservé en base avec le résultat."
-                : "Le modèle de lecture n'est pas installé sur ce serveur : les plaques sont encadrées, leur texte n'est pas lu."
-            }
+            disabled={disabled || !plates.canRead}
+            hint={plates.readHint}
             onChange={(readPlateText) => onChange({ readPlateText })}
           />
         )}
+
+        {/* **Déplacé depuis « Affichage & analyse »**, où il n'avait rien à faire :
+            ce réglage ne change pas ce qu'on voit, il change ce que le détecteur
+            reçoit — donc les chiffres. Sa place est ici, à côté du seuil de confiance
+            et des classes, et le diagnostic de comptage compte d'ailleurs ce qu'il a
+            retiré (« Masquées par une zone »). */}
+        <Toggle
+          label="Ignorer hors zone"
+          checked={settings.maskOutsideZones}
+          disabled={disabled || !hasZones}
+          hint={
+            hasZones
+              ? "Le détecteur ne reçoit que l'intérieur des zones : ce qui passe dehors n'est ni détecté, ni suivi, ni compté."
+              : "Tracez d'abord une zone : sans zone, il n'y aurait rien à garder."
+          }
+          onChange={(maskOutsideZones) => onChange({ maskOutsideZones })}
+        />
       </PanelGrid>
     ),
     comptage: (
@@ -253,7 +312,11 @@ export function SettingsPanels({
           bounds={BOUNDS.minHits}
           disabled={disabled}
           format={(value) => `${value} image${value > 1 ? "s" : ""}`}
-          hint="Plus haut = moins de faux positifs, mais les véhicules rapides peuvent être manqués."
+          // Ce que « compté » veut dire précisément : entrer dans les véhicules
+          // suivis et dans le registre. Une piste plus courte a bien existé — elle a
+          // reçu un numéro dès sa première image, ce qui explique les trous dans la
+          // suite des numéros — mais elle n'est pas un véhicule.
+          hint="Nombre d'images qu'une piste doit vivre pour devenir un véhicule — compté dans les totaux et listé au registre. Plus haut = moins de faux positifs, mais les véhicules rapides peuvent être manqués."
           onChange={(minHits) => onChange({ minHits })}
         />
 
@@ -263,7 +326,11 @@ export function SettingsPanels({
           bounds={BOUNDS.maxLostMs}
           disabled={disabled}
           format={(value) => `${(value / 1000).toFixed(1)} s`}
-          hint="Silence au-delà duquel une piste est abandonnée. Un véhicule masqué plus longtemps recommence en tant que nouveau véhicule."
+          // La contrepartie est dite parce qu'elle est **assumée** et verrouillée par
+          // un test : un numéro ne revient jamais en arrière, donc une occlusion trop
+          // longue donne un véhicule de plus. C'est le prix d'un comptage qui ne
+          // fusionne jamais deux véhicules par erreur.
+          hint="Silence au-delà duquel une piste est abandonnée. Un véhicule masqué plus longtemps repart comme un véhicule neuf — il compte alors pour deux, et c'est préférable à deux véhicules fusionnés en un."
           onChange={(maxLostMs) => onChange({ maxLostMs })}
         />
 
@@ -283,9 +350,27 @@ export function SettingsPanels({
           onChange={(iouThreshold) => onChange({ iouThreshold })}
         />
 
+        {/* **Ce qui n'est pas réglable, et pourquoi.** Ces deux mécanismes décident
+            de franchissements que l'utilisateur voit à l'écran ; sans un mot ici, un
+            passage compté une seule fois là où l'œil en voit trois, ou daté deux
+            secondes trop tard, se lit comme un bug. Leurs valeurs sont mesurées et
+            non devinées : c'est ce qui justifie de ne pas les exposer. */}
+        <PanelGridFullRow>
+          <p className="rounded-input bg-base p-2 text-micro text-ink-dim">
+            <strong className="text-ink-muted">Décidé pour vous.</strong> Une bande
+            morte entoure chaque trait — un quart de demi-boîte du véhicule — pour
+            qu'un véhicule arrêté sur la ligne ne compte pas trois fois. Elle a un
+            prix : l'instant publié est celui de la <em>sortie</em> de bande, jusqu'à
+            deux secondes après le contact pour un gros véhicule qui aborde le trait
+            presque parallèlement. Une piste qui naît dans la bande est rattrapée,
+            donc un véhicule qui entre dans le champ juste au bord du trait est bien
+            compté.
+          </p>
+        </PanelGridFullRow>
+
         {diagnostics !== null && (
           <PanelGridFullRow>
-            <DiagnosticsPanel diagnostics={diagnostics} />
+            <DiagnosticsPanel diagnostics={diagnostics} lines={lines} />
           </PanelGridFullRow>
         )}
       </PanelGrid>
@@ -296,19 +381,12 @@ export function SettingsPanels({
           label="Trajectoires"
           checked={settings.showTrails}
           disabled={false}
+          // Le seul réglage de ce panneau qui soit **purement** de l'affichage : il
+          // ne part pas au serveur, ne touche aucun chiffre, et reste donc actif
+          // pendant une analyse. « Ignorer hors zone » vivait ici et a rejoint
+          // Détection, dont il modifie l'entrée.
+          hint="Dessine le chemin parcouru par chaque véhicule. N'affecte que le canvas : aucun chiffre ne change."
           onChange={(showTrails) => onChange({ showTrails })}
-        />
-
-        <Toggle
-          label="Ignorer hors zone"
-          checked={settings.maskOutsideZones}
-          disabled={disabled || !hasZones}
-          hint={
-            hasZones
-              ? "Le détecteur ne reçoit que l'intérieur des zones."
-              : "Tracez d'abord une zone : sans zone, il n'y aurait rien à garder."
-          }
-          onChange={(maskOutsideZones) => onChange({ maskOutsideZones })}
         />
 
         <Slider
@@ -317,7 +395,11 @@ export function SettingsPanels({
           bounds={BOUNDS.frameStride}
           disabled={disabled}
           format={(value) => (value === 1 ? "toutes" : `1 sur ${value}`)}
-          hint="« Toutes » donne le comptage le plus fiable ; augmenter le pas accélère sur une machine sans GPU, au prix de véhicules rapides manqués."
+          // Précision qui manquait : sauter des images ne décale **pas** les
+          // horodatages — ils restent `index d'image / fps`, donc du temps de scène —
+          // mais il raccourcit la trajectoire vue par le compteur, et c'est ainsi
+          // qu'un franchissement se perd.
+          hint="« Toutes » donne le comptage le plus fiable ; augmenter le pas accélère sur une machine sans GPU, au prix de véhicules rapides manqués. Les horodatages restent justes dans tous les cas."
           onChange={(frameStride) => onChange({ frameStride })}
         />
 
@@ -331,9 +413,14 @@ export function SettingsPanels({
           options={ANALYSIS_SPEEDS}
           value={settings.analysisSpeed}
           disabled={disabled}
+          // Depuis que le registre et la statistique se remplissent pendant
+          // l'analyse, borner la cadence ne sert plus seulement à regarder les
+          // boîtes : c'est ce qui laisse le temps de lire une ligne du tableau au
+          // moment où le véhicule correspondant passe à l'écran — la vérification que
+          // le registre existe pour permettre.
           hint={
             settings.analysisSpeed === null
-              ? "Sans borne, l'aperçu défile aussi vite que le serveur analyse — 1,7× la vitesse réelle sur cette machine. Bornez-la pour suivre l'analyse à l'œil."
+              ? "Sans borne, l'aperçu défile aussi vite que le serveur analyse — 1,7× la vitesse réelle sur cette machine. Bornez-la pour suivre l'analyse à l'œil, boîtes, compteurs et registre compris."
               : "Une cadence maximale : l'analyse attend entre deux images, sans jamais dépasser cette vitesse — ni l'atteindre si la machine ne suit pas. Les compteurs sont identiques."
           }
           onChange={(analysisSpeed) => onChange({ analysisSpeed })}
@@ -357,15 +444,19 @@ export function SettingsPanels({
         />
 
         <Slider
-          label="Échelle (px/m)"
+          label="Échelle globale (px/m)"
           value={settings.pixelsPerMeter ?? 0}
           bounds={BOUNDS.pixelsPerMeter}
           disabled={disabled}
           format={(value) => (value === 0 ? "non définie" : `${value} px/m`)}
-          // Sans échelle, les vitesses restent en px/s **plutôt que d'être
-          // converties à tort** en km/h : un chiffre en km/h sans calibration est
-          // une invention que l'utilisateur prendrait au sérieux.
-          hint="Sans échelle, les vitesses restent en pixels par seconde au lieu d'être converties en km/h."
+          // Deux choses à dire, et la seconde est récente. **Sans échelle**, les
+          // vitesses restent en px/s plutôt que converties à tort : un km/h sans
+          // calibration est une invention que l'utilisateur prendrait au sérieux.
+          // **Avec une échelle unique**, elle ne peut pas être juste partout — une
+          // caméra de trafic regarde en biais, et 37 à 143 px/m ont été mesurés sur
+          // les quatre lignes d'une même vidéo, un facteur 3,9. D'où le renvoi vers
+          // la longueur par ligne, qui l'emporte localement quand elle est saisie.
+          hint="Repli pour toute l'image : sans elle, les vitesses restent en pixels par seconde. Une caméra qui regarde en biais ne peut pas avoir une échelle unique — donnez plutôt sa longueur réelle à chaque ligne dans le panneau Géométrie, la mesure locale l'emporte alors sur ce curseur."
           onChange={(value) => onChange({ pixelsPerMeter: value === 0 ? null : value })}
         />
       </PanelGrid>
@@ -461,22 +552,30 @@ function PanelGridFullRow({ children }: { children: ReactNode }) {
  * faiblement, confirmée en piste, ou écartée par une zone. Lire les quatre chiffres
  * dans cet ordre indique **où** la perte a lieu.
  */
-function DiagnosticsPanel({ diagnostics }: { diagnostics: Diagnostics }) {
+function DiagnosticsPanel({
+  diagnostics,
+  lines,
+}: {
+  diagnostics: Diagnostics;
+  lines: readonly CountingLine[];
+}) {
   const rows: { label: string; value: number; hint: string }[] = [
     {
       label: "Détections retenues",
       value: diagnostics.highDetections,
-      hint: "Au-dessus du seuil de confiance.",
+      hint: "Au-dessus du seuil : elles associent et peuvent créer une piste.",
     },
     {
       label: "Détections faibles",
-      value: diagnostics.lowDetections,
-      hint: "Sous le seuil : baisser « Confiance véhicules » les récupérerait.",
-    },
-    {
-      label: "Récupérées de justesse",
       value: diagnostics.rescuedByLowScore,
-      hint: "Rattachées à une piste existante malgré un score faible.",
+      // **Ce chiffre ne signale plus une perte.** Depuis ADR 0024, le détecteur
+      // reçoit le plancher du tracker et non le seuil de l'utilisateur : ces
+      // détections ne sont plus jetées, elles descendent jusqu'au suivi, où elles
+      // prolongent une piste dont la confiance plonge sans jamais en ouvrir une —
+      // le mécanisme qui était débranché, et qui coupait des pistes en deux (donc
+      // perdait des franchissements *et* comptait des véhicules deux fois). Un
+      // chiffre élevé ici n'est plus un problème : c'est ce mécanisme qui travaille.
+      hint: "Sous le seuil : elles prolongent une piste existante sans jamais en ouvrir une — c'est le mécanisme qui évite qu'une piste se coupe en deux quand la confiance plonge un instant.",
     },
     {
       label: "Pistes confirmées",
@@ -513,7 +612,7 @@ function DiagnosticsPanel({ diagnostics }: { diagnostics: Diagnostics }) {
           </div>
         ))}
       </dl>
-      {diagnostics.highDetections === 0 && diagnostics.lowDetections === 0 ? (
+      {diagnostics.highDetections === 0 && diagnostics.rescuedByLowScore === 0 ? (
         // **Le cinquième cas**, et le seul que les quatre chiffres n'expliquent
         // pas : zéro détection à *tous* les seuils. Ce n'est alors pas un réglage
         // trop strict — baisser la confiance n'y changera rien, et c'est
@@ -536,6 +635,63 @@ function DiagnosticsPanel({ diagnostics }: { diagnostics: Diagnostics }) {
           non confirmé, soit masqué par une zone. Ces chiffres disent lequel.
         </p>
       )}
+
+      <NearMisses nearMisses={diagnostics.nearMisses} lines={lines} />
+    </div>
+  );
+}
+
+/**
+ * Les quasi-franchissements — **le seul chiffre qui juge le tracé**.
+ *
+ * Le serveur les publie depuis longtemps (`diagnostics.nearMisses`, par ligne) et
+ * plus rien ne les affichait : ils vivaient sur les cartes de ligne du tableau de
+ * bord, supprimées par la refonte du bas de page. Le diagnostic de comptage est
+ * leur place naturelle — c'est déjà l'endroit où l'on vient comprendre un compteur
+ * qui paraît faux.
+ *
+ * Ce qu'ils séparent, et que rien d'autre ne sépare : une ligne à zéro parce que
+ * personne ne passe, et une ligne à zéro parce qu'elle est posée là où le suivi
+ * s'arrête. Les deux affichent le même compteur et appellent des gestes opposés.
+ *
+ * **Ils ne s'ajoutent à aucun total** et n'affirment pas qu'un véhicule est passé :
+ * il a pu faire demi-tour ou stationner. Ils disent que le tracé et le suivi se
+ * sont manqués de peu — moins d'une demi-boîte.
+ */
+function NearMisses({
+  nearMisses,
+  lines,
+}: {
+  nearMisses: Record<string, number> | undefined;
+  lines: readonly CountingLine[];
+}) {
+  // `undefined` vient d'un résultat archivé avant que le champ existe ; un objet
+  // vide, d'une analyse qui n'en a relevé aucun. Les deux ne méritent rien à
+  // l'écran, mais pour deux raisons différentes.
+  const entries = Object.entries(nearMisses ?? {}).filter(([, count]) => count > 0);
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="mt-2 border-t border-line/40 pt-2">
+      <p className="label-micro mb-1">Quasi-franchissements</p>
+      <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
+        {entries.map(([lineId, count]) => (
+          <div key={lineId} className="flex items-baseline justify-between gap-2">
+            {/* Le nom si la ligne existe encore, l'identifiant sinon : un
+                quasi-franchissement sur une ligne supprimée depuis reste un fait
+                réel de l'analyse, et le masquer creuserait un écart inexpliqué. */}
+            <dt className="truncate text-micro text-ink-dim">
+              {lines.find((line) => line.id === lineId)?.name ?? lineId}
+            </dt>
+            <dd className="text-micro font-bold text-warning tabular">{count}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-1 text-micro text-ink-dim">
+        Pistes éteintes à moins d'une demi-boîte d'un trait, sans l'avoir franchi.
+        Elles ne comptent dans aucun total : elles disent que le tracé est posé là où
+        le suivi s'arrête, pas qu'un véhicule a été manqué.
+      </p>
     </div>
   );
 }

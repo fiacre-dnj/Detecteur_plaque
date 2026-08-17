@@ -32,7 +32,10 @@ même tracé donne les mêmes chiffres dans les deux :
   **aperçu** échantillonné (`event: preview`, ~5 Hz) : la vidéo locale se cale
   sur l'image analysée et le navigateur y dessine les boîtes, les compteurs et
   les franchissements du serveur **pendant** l'analyse
-  ([ADR 0006](docs/adr/0006-apercu-live-des-analyses.md)) ;
+  ([ADR 0006](docs/adr/0006-apercu-live-des-analyses.md)). Il porte aussi le
+  **registre** des véhicules, à une cadence propre et plus lente (1 s), ce qui
+  fait vivre les quatre sections du bas de page pendant l'analyse
+  ([ADR 0026](docs/adr/0026-le-registre-se-remplit-pendant-l-analyse.md)) ;
 - **direct** : frames JPEG sur WebSocket, une image en vol à la fois.
 
 En différé **seulement**, une passe ANPR optionnelle localise les plaques puis en
@@ -69,7 +72,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1303 tests
+uv run pytest                                                            # 1351 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -83,7 +86,7 @@ uv run python scripts/audit_lignes.py                # « pourquoi cette ligne e
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 595 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 628 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -173,13 +176,35 @@ un emplacement `leading` où le studio pose le bouton d'import.
 │ vidéo + canvas + HUD          │ RÉSULTATS         │  aside 24 rem
 │ TransportBar                  │ KPI en 2 colonnes │
 ├──────────────────────────────┴──────────────────┤
-│ RÉPARTITION — une carte par type, entrées seules  │  toujours visible
-│ STATISTIQUE — KPI de tête, une rangée par ligne,  │  une fois l'analyse
-│   comparatifs groupés en une carte                │  terminée
+│ RÉPARTITION — une carte par type, entrées seules  │  les quatre sections
+│ STATISTIQUE — KPI de tête, une rangée par ligne,  │  vivent PENDANT
+│   comparatifs groupés en une carte                │  l'analyse et après
 │ [camembert flux/ligne] [camembert entrées/type]   │  deux colonnes
-│ REGISTRE — tableau par véhicule, export CSV/JSON  │
+│ REGISTRE — tableau par véhicule, export CSV/JSON  │  exports à la fin
+│ FRANCHISSEMENTS — journal, pendant l'analyse seule │
 └──────────────────────────────────────────────────┘
 ```
+
+**Les quatre sections se mettent à jour en direct depuis le 2026-08-17** ([ADR
+0026](docs/adr/0026-le-registre-se-remplit-pendant-l-analyse.md)) : l'aperçu SSE
+transporte désormais le registre (`JobPreview.vehicles`), les mêmes
+`VehicleRecord` que le résultat final par le même sérialiseur. Un seul jeu de
+composants, deux sources de même forme — `dashboardStats` dans `StudioPage`
+choisit l'aperçu pendant, la tête de lecture après. Trois points qui ne se
+devinent pas :
+
+- **le registre est republié dix fois moins souvent que les boîtes** (1 s contre
+  100 ms) : il **grossit** avec l'analyse, à ~350 octets par véhicule, là où les
+  pistes d'une image restent une poignée. Les aperçus intermédiaires portent
+  `vehicles: null`, qui veut dire **« inchangé »** et jamais « aucun véhicule »
+  — `carryVehicles` reporte la dernière liste, une fois, pour qu'aucun
+  consommateur n'ait à connaître la convention ;
+- **les trois boutons d'export restent masqués tant que l'analyse tourne**
+  (`result` est `null`) : un CSV à mi-parcours serait amputé sans dire de
+  combien. Même règle que les exports qui ignorent la recherche par plaque ;
+- **le direct (caméra) ne gagne rien**, faute d'aperçu SSE donc de registre.
+  Seule la Répartition, qui ne lit que `by_class`, reste servie dans les trois
+  modes.
 
 Le tiroir ouvrait initialement **en flux normal**, pleine largeur — il grandissait
 la page et poussait la vidéo et les résultats de plusieurs centaines de pixels vers
@@ -188,6 +213,30 @@ ancré sous la barre, `z-30`) : la page ne bouge plus quand on l'ouvre. Un clic 
 dehors ou `Échap` le referme. L'entête de l'application (`AppShell`) est fixée en
 haut de l'écran (`sticky top-0 z-40`) pour la même raison de fond — rester
 atteignable pendant que la page défile en dessous.
+
+#### Ce que portent les trois tiroirs, depuis le 2026-08-17
+
+Le contenu a été **réaligné sur le code réellement exécuté** : plusieurs textes
+décrivaient un comportement d'avant ADR 0024 et ADR 0025, et deux chiffres du
+diagnostic n'étaient renseignés par personne.
+
+- **Détection** — modèle, confiance véhicules, classes à compter, ANPR, confiance
+  plaques, OCR, **et « Ignorer hors zone »**, qui vivait dans « Affichage » alors
+  qu'il ne change pas ce qu'on voit mais ce que le détecteur reçoit, donc les
+  chiffres. Deux textes étaient devenus faux : la confiance ne filtre plus le
+  détecteur (elle décide ce qui *devient* une piste), et « Repérer les plaques »
+  connaît désormais les **trois** états du serveur — absent, présent mais illisible
+  (`plateAvailable && plateLoadable === false`), disponible. Le deuxième laissait
+  cocher une option qui ralentissait l'analyse sans jamais rendre une plaque ;
+  `model/plateCapability.ts` le tranche en un endroit, testé ;
+- **Comptage** — images avant comptage, survie d'une piste perdue, seuil IoU, un
+  encart « décidé pour vous » qui énonce la bande morte et son coût (l'horodatage
+  est celui de la *sortie* de bande), le diagnostic, et les
+  **quasi-franchissements**, redevenus visibles ;
+- **Affichage & analyse** — trajectoires (le seul réglage purement visuel), pas
+  d'analyse, les deux cadences, et l'**échelle globale** px/m, désormais présentée
+  pour ce qu'elle est depuis ADR 0025 : un repli, que la longueur d'une ligne
+  l'emporte localement dès qu'elle est saisie.
 
 Les trois boutons du tiroir sont **grisés tant qu'aucune vidéo n'est chargée** :
 régler la détection, le comptage ou l'affichage n'a rien à quoi s'appliquer sans
@@ -535,6 +584,40 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     axe de bridage, dont
     [ADR 0022](docs/adr/0022-le-plafond-absolu-vaut-30-img-s-par-defaut.md) change
     à son tour le défaut.
+18. **L'aperçu porte le registre, à une cadence à part.** Les quatre sections du
+    bas de page — Répartition, Statistique, camemberts, Registre — se remplissent
+    **pendant** l'analyse et non plus à la fin. Ce n'était pas un choix
+    d'ergonomie : `JobPreview` ne portait pas de `vehicles`, et l'écran montrait
+    donc des compteurs qui montaient au-dessus d'une page vide. Rien n'est
+    reconstruit côté navigateur — ce serait un agrégat parallèle, donc condamné à
+    diverger (invariant 3), et ni le vote de classe ni celui de plaque ne se
+    refont depuis des images échantillonnées (invariant 4). Trois réserves
+    portent le compromis : le registre est republié **dix fois moins souvent** que
+    les boîtes parce qu'il grossit avec l'analyse (~350 o/véhicule mesurés) et
+    `null` veut dire **« inchangé »**, jamais « aucun véhicule » ; il est
+    restreint aux véhicules **ayant franchi**, la population qu'ADR 0023 affiche
+    déjà ; et l'aperçu **final** le porte toujours, même réglage coupé, sinon la
+    dernière liste serait celle d'un échantillon quelconque. Les exports restent
+    masqués jusqu'à la fin.
+    [ADR 0026](docs/adr/0026-le-registre-se-remplit-pendant-l-analyse.md).
+19. **La limite de débit globale n'inclut plus la lecture d'un job.** « Ouvrir »
+    depuis l'historique reconstruit tout le studio — vidéo, géométrie, les quatre
+    sections de résultat — et c'était déjà vrai côté code. Testé en conditions
+    réelles (navigateur piloté contre le vrai serveur), ce parcours échouait par
+    intermittence, **en silence** : une seule réouverture déclenche une vingtaine
+    de requêtes en quelques secondes — quinze rien que pour la vidéo, chargée
+    **par plages** par le navigateur — et la limite globale (60/minute par
+    défaut) les comptait toutes sans exception. Une fois le quota épuisé,
+    `EventSource` retente sans jamais alerter (délibéré, voir `useJobProgress`)
+    et peut ne plus jamais reprendre le dessus : le studio reste bloqué sur son
+    écran d'avant-analyse, sans le moindre message. La limite exempte désormais
+    les **lectures** (`GET`) de `/jobs/{id}/…` — configuration, statut,
+    résultat, vidéo, flux d'événements — jamais les écritures : déposer,
+    annuler, suspendre ou reprendre un job restent comptés, et `POST /jobs`
+    garde en plus sa propre règle à 10/minute, la protection que `prompt/06`
+    §4 visait réellement (l'écriture sur disque, pas la lecture d'un résultat
+    déjà là).
+    [ADR 0027](docs/adr/0027-la-limite-de-debit-globale-exempte-la-lecture-d-un-job.md).
 
 ## Les vitesses en km/h : la calibration est **par ligne**
 
@@ -605,7 +688,10 @@ uv run python scripts/audit_lignes.py <job_id> --json out/audit.json
 ```
 
 **2. Les quasi-franchissements**, `diagnostics.nearMisses`, par ligne, publiés dans
-les stats et affichés sur la carte de la ligne concernée. Une piste qui s'éteint à
+les stats et affichés **dans le tiroir « Comptage »**, sous le diagnostic. Ils ont
+passé quelques jours invisibles : ils vivaient sur les cartes de ligne du tableau de
+bord, que la refonte du bas de page a remplacées par des rangées compactes, et rien
+ne les avait repris. Une piste qui s'éteint à
 moins d'une **demi-boîte** d'un trait sans jamais le franchir. Le seuil est relatif à
 la boîte du véhicule et non en pixels, pour qu'il veuille dire la même chose en 720p
 et en 4K, et les pistes **encore vivantes** en sont exclues — approcher n'est pas
@@ -623,6 +709,28 @@ mouraient à ~33 px du trait. Le comptage était juste ; le tracé ne l'était p
 **Un quasi-franchissement ne s'ajoute à aucun total** et n'affirme pas qu'un
 véhicule est passé : le véhicule a pu faire demi-tour ou stationner. Il dit que le
 tracé et le suivi se sont manqués de peu.
+
+**3. Les deux compteurs de score, vivants depuis le 2026-08-17.**
+`highDetections` et `rescuedByLowScore` valaient `0` sur **toutes** les analyses
+jamais produites : le domaine annonçait en commentaire que l'adaptateur les
+renseignerait « s'il peut les observer », et l'adaptateur ne l'a jamais fait. Le
+panneau affichait donc deux zéros immuables — et surtout son alerte « aucune
+détection, à aucun seuil », qui se déclenchait à chaque analyse et envoyait chercher
+le défaut dans la vidéo alors que le comptage marchait.
+
+Ils sont comptés dans `AnalysisSession._count_scores`, en **observations suivies** et
+non en images, de part et d'autre de `confidence_threshold` — que `SessionConfig`
+transporte désormais *pour le diagnostic seul*, le comptage ne le lisant jamais
+(le tracker l'a déjà appliqué, ADR 0024). `rescuedByLowScore` mesure donc la bande
+basse de BoT-SORT en train de travailler : mesuré sur `video_7.mp4`, **11 263
+observations au-dessus du seuil pour 3 972 en dessous**, soit un quart des
+observations qui prolongent une piste sans jamais en ouvrir une.
+
+`lowDetections` est **supprimé** du domaine et du contrat, pas laissé à zéro : après
+le suivi, une détection non associée n'existe plus — Ultralytics ne rend que les
+boîtes porteuses d'un identifiant — donc ce chiffre prétendait mesurer
+l'inobservable. Un compteur affiché qui ne peut pas bouger se lit comme « aucune
+détection faible », l'inverse de la vérité.
 
 ## « Ce véhicule est compté deux fois »
 
@@ -687,6 +795,15 @@ Mesuré sur vidéo réelle : **+21 % d'observations suivies, pistes distinctes
 inchangées, franchissements 61 → 61, objets suivis 92 → 83** (−9 pistes
 fragmentées). `confidence_threshold` ne filtre donc plus le détecteur : il décide
 ce qui *devient* une piste.
+
+Conséquence sur le diagnostic de comptage (panneau « Détection ») : `low_detections`
+prétendait mesurer des détections jetées *avant* le suivi — une quantité qu'aucun
+adaptateur n'a jamais su observer, si bien que ce champ valait `0` sur **toutes**
+les analyses jamais produites et déclenchait l'alerte « aucune détection, à aucun
+seuil » à chaque fois. Il est supprimé, remplacé par `rescued_by_low_score` compté
+sur les **observations suivies** (`Diagnostics`, `AnalysisSession._count_scores`) :
+un chiffre élevé n'y signale plus une perte, c'est le mécanisme ci-dessus qui
+travaille.
 
 **Et un identifiant de piste recyclé fabriquait des fantômes.** `_LineState` est clé
 par `(track_id, global_id, ligne)` et **pas** par `(track_id, ligne)` : Ultralytics
@@ -804,7 +921,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1303 (1 skip) | 595 |
+| Nombre | 1351 (1 skip) | 628 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

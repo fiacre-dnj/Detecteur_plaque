@@ -669,11 +669,27 @@ class Diagnostics:
     champs sont sa source.
     """
 
+    #: Observations suivies dont le score atteint le seuil de l'utilisateur.
+    #:
+    #: Des **observations**, pas des détections brutes, et la nuance est tout ce qui
+    #: rend ce chiffre honnête : après le suivi, une détection qui n'a été associée à
+    #: aucune piste n'existe plus — Ultralytics ne rend que les boîtes porteuses d'un
+    #: identifiant. Le compteur `low_detections` d'avant prétendait donc mesurer
+    #: quelque chose d'inobservable, et valait `0` sur toutes les analyses jamais
+    #: produites. Il est supprimé plutôt que laissé à zéro : un chiffre affiché qui ne
+    #: peut pas bouger se lit comme une absence de détections faibles.
     high_detections: int = 0
-    low_detections: int = 0
     masked_out: int = 0
     confirmed_tracks: int = 0
     tentative_tracks: int = 0
+    #: Observations suivies dont le score est **sous** le seuil de l'utilisateur.
+    #:
+    #: C'est la bande basse de BoT-SORT en train de faire son travail : une détection
+    #: faible ne crée jamais de piste, mais elle en prolonge une dont la confiance
+    #: plonge. Chacune de ces observations est une piste qui, sans elle, se serait
+    #: coupée en deux — donc un franchissement possiblement perdu **et** un véhicule
+    #: compté deux fois (ADR 0024). Un chiffre élevé n'est pas un problème : c'est le
+    #: mécanisme qui rattrape.
     rescued_by_low_score: int = 0
     #: Boîtes écartées parce qu'entièrement incluses dans une autre — la cabine
     #: d'un semi-remorque dans la boîte du véhicule entier. Publié plutôt que

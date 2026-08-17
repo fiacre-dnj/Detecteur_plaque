@@ -71,7 +71,6 @@ function stats(
     analysedSceneMs: 60_000,
     diagnostics: {
       highDetections: 0,
-      lowDetections: 0,
       maskedOut: 0,
       containedOut: 0,
       confirmedTracks: 0,

@@ -1398,8 +1398,7 @@
     "elapsedMs": 440.0,
     "analysedSceneMs": 440.0,
     "diagnostics": {
-      "highDetections": 0,
-      "lowDetections": 0,
+      "highDetections": 36,
       "maskedOut": 0,
       "containedOut": 0,
       "confirmedTracks": 3,

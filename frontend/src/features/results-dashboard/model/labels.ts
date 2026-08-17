@@ -78,8 +78,10 @@ export function formatSceneTime(ms: number): string {
  * dixième dit lequel a eu lieu d'abord — la seule information qui permette de
  * retrouver le passage dans la vidéo.
  *
- * La virgule et non le point : c'est un séparateur décimal, et l'interface parle
- * français (invariant 12).
+ * Le point et non la virgule décimale française, **par alignement** : le journal
+ * des franchissements (`analysis-job/model/previewLog.ts`) écrit `00:12.4` depuis
+ * l'origine, et les deux se lisent sur le même écran. Deux ponctuations pour le
+ * même instant se remarquent bien plus qu'un séparateur non francisé.
  *
  * **Ce n'est pas une heure d'horloge.** C'est du temps de scène (invariant 1) :
  * `frame_index / fps`, compté depuis le début de la vidéo.
@@ -94,7 +96,7 @@ export function formatSceneTimePrecise(ms: number): string {
   const seconds = Math.floor(tenths / 10) % 60;
   return `${minutes.toString().padStart(2, "0")}:${seconds
     .toString()
-    .padStart(2, "0")},${tenths % 10}`;
+    .padStart(2, "0")}.${tenths % 10}`;
 }
 
 /**
