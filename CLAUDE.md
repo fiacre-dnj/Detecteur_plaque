@@ -347,19 +347,8 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
     registre — « sens + » était le contrat machine. Entrée et sortie se distinguent
     par le **poids et l'angle de la flèche**, jamais par une teinte : la couleur
     encode déjà la ligne au nœud et la classe au véhicule ;
-  - **la flèche est pivotée à l'angle réel du tracé** (`crossingHeadingDeg`), pas un
-    pictogramme d'entrée ou de sortie. Deux `LogIn`/`LogOut` tenaient cette place et
-    redisaient en image ce que le mot à côté disait déjà ; une flèche
-    perpendiculaire au trait dit ce que le mot ne dit pas — **par où**. C'est la
-    même flèche, au même angle, que celle du panneau de géométrie et du canvas :
-    `positiveNormal` puis `arrowRotationDeg`, les fonctions partagées, **jamais une
-    perpendiculaire recalculée** — `shared/lib/geometry.ts` documente le mode de
-    panne, un signe inversé donne des sens faux sous des totaux justes. `ArrowUp` +
-    rotation CSS et non un glyphe unicode, qui ne pivote qu'à 45° près. Sans angle
-    calculable — ligne retirée du tracé, segment dégénéré — **aucune flèche** : une
-    `ArrowUp` droite affirmerait « vers le haut », un angle que personne n'a mesuré.
-    Un test reconstruit le vecteur depuis l'angle et demande à `sideOfLine` de quel
-    côté on tombe ;
+  - **la flèche est pivotée à l'angle réel du tracé**, pas un pictogramme d'entrée ou
+    de sortie — voir « Une flèche, trois écrans » ci-dessous ;
 
   Trois précisions sur le périmètre : les filtres rôle/ligne sont un outil de
   **lecture** et non de navigation — aucun clic ne déplace la tête de lecture, ce
@@ -377,6 +366,41 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
 - **`shared/ui/Tabs.tsx` reste**, sans consommateur pour l'instant — une
   primitive ARIA générique et accessible (flèches, Home/Fin, roving `tabIndex`),
   gardée pour un futur besoin plutôt que supprimée pour un gain nul.
+
+#### Une flèche, trois écrans — `directionHeadingDeg`
+
+Trois endroits affichent le sens d'un franchissement, et ils montrent tous la
+**même flèche au même angle** : le panneau de géométrie (`DirectionRoleRow`), la
+chronologie des franchissements (`RolePill`) et les puces « Lignes franchies » du
+registre (`CrossingArrow`). L'angle est celui du **tracé réel** — la
+perpendiculaire au trait, orientée du côté d'arrivée — et non un pictogramme
+conventionnel : c'est ce qui permet de relier une rangée de tableau au trait qu'on
+voit sur la vidéo, ce qu'aucune icône « entrée » ou « sortie » ne permet.
+
+`shared/lib/directions.ts` en est le **seul** juge, `directionHeadingDeg(line,
+sign)` — plus `crossingHeadingDeg(lines, lineId, direction)`, même forme et même
+repli que `crossingDirectionName`. Quatre points qui ne se devinent pas :
+
+- **la négation du sens négatif vit là et nulle part ailleurs.** Elle était écrite
+  en clair dans `GeometryPanel`, et c'est exactement le signe qu'on inverse sans le
+  remarquer : `shared/lib/geometry.ts` documente le mode de panne — des flèches à
+  l'envers sous des rôles et des totaux par ailleurs justes, sans rien qui plante.
+  Un test reconstruit le vecteur depuis l'angle rendu et demande à `sideOfLine` —
+  la formule du backend — de quel côté on tombe ;
+- **`ArrowUp` + rotation CSS, jamais un glyphe unicode.** `↑ ↗ →` ne pivotent qu'à
+  45° près : sur une ligne oblique, « presque perpendiculaire » est précisément ce
+  qui fait douter du sens affiché ;
+- **sans angle calculable, pas d'angle inventé.** `null` sur un segment dégénéré
+  (une ligne qu'on vient de commencer à tracer) ou une ligne retirée du tracé
+  depuis l'analyse. Les deux consommateurs traitent ce cas différemment, et c'est
+  le texte voisin qui tranche : la chronologie n'affiche **aucune** flèche parce
+  que son libellé de repli est déjà « sens ↑ », le registre retombe sur le
+  **glyphe** parce que le sien est l'identifiant de la ligne, où retirer la flèche
+  ferait disparaître le sens ;
+- **`-180°` et `180°` sont la même rotation**, et c'est le zéro négatif du normal
+  d'une ligne horizontale qui décide laquelle sort d'`atan2`. Les tests normalisent
+  ; la fonction, non — normaliser ferait diverger son chiffre de celui
+  d'`arrowRotationDeg` pour une flèche identique à l'écran.
 
 ### Le contrat, pas un build
 

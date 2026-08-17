@@ -24,6 +24,7 @@
  *   est simplement dans une autre unité.
  */
 
+import { ArrowUp } from "lucide-react";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -40,7 +41,12 @@ import type {
 } from "@/shared/api/contracts";
 import { classColor } from "@/shared/config/palettes";
 import { classLabel } from "@/shared/lib/classes";
-import { crossingDirectionName, directionArrow, lineName } from "@/shared/lib/directions";
+import {
+  crossingDirectionName,
+  crossingHeadingDeg,
+  directionArrow,
+  lineName,
+} from "@/shared/lib/directions";
 import { plateCell, plateTitle } from "@/shared/lib/plate";
 import { Button } from "@/shared/ui/Button";
 
@@ -236,12 +242,16 @@ export function VehicleRegistry({
                       // L'infobulle donne la ligne, l'instant **et** le sens nommé :
                       // c'est ce qui permet de retrouver le passage dans la vidéo.
                       title={`${lineName(lines, crossing.lineId)} à ${formatSceneTime(crossing.timestampMs)}, ${crossingDirectionName(lines, crossing.lineId, crossing.direction) ?? `sens ${directionArrow(crossing.direction)}`}`}
-                      className="rounded-badge bg-elevated px-1.5 py-0.5 text-micro"
+                      className="inline-flex items-center gap-1 rounded-badge bg-elevated px-1.5 py-0.5 text-micro"
                     >
+                      <CrossingArrow
+                        lines={lines}
+                        lineId={crossing.lineId}
+                        direction={crossing.direction}
+                      />
                       {/* Le **nom du sens** plutôt que le nom de la ligne : c'est lui
                           qui dit où va le véhicule, et c'est la question du registre.
                           La ligne reste dans l'infobulle. */}
-                      {directionArrow(crossing.direction)}{" "}
                       {crossingDirectionName(lines, crossing.lineId, crossing.direction) ??
                         lineName(lines, crossing.lineId)}
                     </span>
@@ -447,6 +457,49 @@ export function VehicleRegistry({
         </p>
       )}
     </section>
+  );
+}
+
+/**
+ * La flèche d'une puce de « Lignes franchies », **pivotée à l'angle réel du tracé**.
+ *
+ * Elle remplace le glyphe `↑` / `↓`, qui disait seulement « sens positif » ou « sens
+ * négatif » — le contrat machine, invérifiable devant une image. Une flèche
+ * perpendiculaire au trait dit ce que le nom du sens ne dit pas : **par où**. C'est le
+ * même angle, par la même fonction partagée, que celui du panneau de géométrie, du
+ * canvas et de la chronologie des franchissements — trois écrans, une flèche.
+ *
+ * `ArrowUp` pivotée en CSS et non un glyphe unicode, qui ne tourne qu'à 45° près : sur
+ * une ligne oblique, « presque perpendiculaire » est précisément ce qui fait douter du
+ * sens affiché.
+ *
+ * **Repli sur le glyphe quand la ligne n'est plus dans le tracé** — et non l'absence de
+ * flèche comme dans la chronologie. La différence tient au texte à côté : là-bas le
+ * libellé de repli est « sens ↑ », qui porte déjà le glyphe ; ici c'est l'identifiant
+ * de la ligne, donc retirer la flèche ferait disparaître le sens de la puce.
+ */
+function CrossingArrow({
+  lines,
+  lineId,
+  direction,
+}: {
+  lines: readonly CountingLine[];
+  lineId: string;
+  direction: number;
+}) {
+  const headingDeg = crossingHeadingDeg(lines, lineId, direction);
+
+  if (headingDeg === null) {
+    return <span aria-hidden="true">{directionArrow(direction)}</span>;
+  }
+
+  return (
+    <ArrowUp
+      aria-hidden="true"
+      size={10}
+      className="shrink-0"
+      style={{ transform: `rotate(${headingDeg}deg)` }}
+    />
   );
 }
 

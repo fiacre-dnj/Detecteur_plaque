@@ -32,14 +32,14 @@
  * contredirait le tableau de bord juste au-dessus.
  */
 
-import type {
-  CountingLine,
-  CrossingEvent,
-  DirectionRole,
-  DirectionSign,
-} from "@/shared/api/contracts";
-import { directionArrow, directionName, directionRole, signOf } from "@/shared/lib/directions";
-import { arrowRotationDeg, positiveNormal } from "@/shared/lib/geometry";
+import type { CountingLine, CrossingEvent, DirectionRole } from "@/shared/api/contracts";
+import {
+  directionArrow,
+  directionHeadingDeg,
+  directionName,
+  directionRole,
+  signOf,
+} from "@/shared/lib/directions";
 
 /**
  * Le passage précédent du même véhicule, tel que la chronologie le voit.
@@ -123,7 +123,7 @@ export function describeCrossings(
       // rôle que personne n'a déclaré. Même règle que `crossingsWithRole` au registre.
       directionName:
         line === undefined ? `sens ${directionArrow(event.direction)}` : directionName(line, sign),
-      headingDeg: line === undefined ? null : crossingHeadingDeg(line, sign),
+      headingDeg: line === undefined ? null : directionHeadingDeg(line, sign),
       lineName: line?.name ?? event.lineId,
       lineColor: line?.color ?? null,
       // `Math.max(0, …)` : deux franchissements de la même image portent le même
@@ -148,31 +148,6 @@ export function describeCrossings(
   }
 
   return built.reverse();
-}
-
-/**
- * L'angle, en degrés, d'une flèche qui pointe dans le sens du franchissement.
- *
- * **Le même calcul que le panneau de géométrie et le canvas**, aux mêmes fonctions
- * partagées près (`positiveNormal` puis `arrowRotationDeg`) : c'est ce qui garantit
- * que la flèche d'une rangée du journal et celle du trait à l'écran pointent au même
- * endroit. Recalculer une perpendiculaire ici ferait vivre la même règle à deux
- * endroits, et `shared/lib/geometry.ts` documente précisément ce mode de panne — un
- * signe inversé donne des sens faux sous des totaux justes, sans que rien ne plante.
- *
- * Le franchissement traverse la ligne **perpendiculairement** au trait, vers le côté
- * d'arrivée : le sens positif suit `positiveNormal`, le négatif son opposé. L'angle
- * est donc celui du trait tourné d'un quart de tour, ce qui est exactement ce qu'on
- * voit sur le canvas — une ligne horizontale se franchit verticalement.
- *
- * `null` sur un segment de longueur nulle : aucune orientation n'existe, et
- * `arrowRotationDeg` y rendrait `0`, soit une flèche vers le haut affirmée sans
- * mesure.
- */
-export function crossingHeadingDeg(line: CountingLine, sign: DirectionSign): number | null {
-  const normal = positiveNormal(line.a, line.b);
-  if (normal.x === 0 && normal.y === 0) return null;
-  return arrowRotationDeg(sign === "positive" ? normal : { x: -normal.x, y: -normal.y });
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
