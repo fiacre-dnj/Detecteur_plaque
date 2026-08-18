@@ -633,6 +633,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         intra_op_threads=settings.resolved_plate_ocr_intra_op_threads,
         variants=settings.plate_ocr_variants,
         dynamic_width=settings.plate_ocr_dynamic_width,
+        left_insets=settings.plate_ocr_left_insets if settings.plate_ocr_variants else (),
     )
 
     mosaic_side = args.mosaic_side if args.mosaic_side is not None else settings.plate_mosaic_side
@@ -648,6 +649,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "minWidthPx": args.min_width,
             "ocrMinTextScore": settings.plate_ocr_min_text_score,
             "ocrVariants": settings.plate_ocr_variants,
+            # Écrit dans le rapport pour la même raison que `RenderParams` : deux
+            # exécutions avec des rognages différents ne mesurent pas la même chaîne,
+            # et un `--compare` comparerait deux inconnues.
+            "ocrLeftInsets": list(settings.plate_ocr_left_insets),
         },
     }
     report: dict[str, Any] = {"context": context}

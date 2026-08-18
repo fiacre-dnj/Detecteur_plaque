@@ -151,11 +151,12 @@ class PlateTextVote:
     def text(self) -> str | None:
         """Texte publiable, ou `None` tant qu'aucun candidat ne convainc.
 
-        **Deux voies, dans cet ordre.** La chaîne entière d'abord : trois conditions
-        cumulatives écartant chacune un mode d'erreur distinct — l'accord minimal
-        écarte la lecture unique (invariant 4), la confiance cumulée écarte deux
-        hésitations concordantes, la domination écarte le tirage au sort entre deux
-        graphies proches.
+        **Deux voies, dans cet ordre.** La chaîne entière d'abord, par
+        `_consolidated` : les trois conditions cumulatives de toujours — l'accord
+        minimal écarte la lecture unique (invariant 4), la confiance cumulée écarte
+        deux hésitations concordantes, la domination écarte le tirage au sort entre
+        deux graphies proches — appliquées à un décompte qui ne fait plus concourir
+        une lecture partielle contre la lecture complète dont elle est un morceau.
 
         Le consensus par caractère ensuite, **et seulement si la première voie a
         refusé**. Le cas qu'il rattrape est exactement celui que la domination
@@ -166,22 +167,15 @@ class PlateTextVote:
         tranche la case litigieuse avec la seule chose qui la départage : la
         confiance que le modèle a donnée à chacun.
 
-        **Il ne peut rien inventer** : `_consensus` refuse toute chaîne que personne
-        n'a lue. Sans cette garde, deux lectures franchement différentes de même
-        longueur produiraient une chimère — un texte jamais vu, composé des
-        caractères gagnants de chacune — et publier une plaque que personne n'a lue
-        est précisément le pire résultat possible.
+        **Aucune des deux voies ne peut rien inventer** : toutes deux refusent une
+        chaîne que personne n'a lue. Sans cette garde, deux lectures franchement
+        différentes de même longueur produiraient une chimère — un texte jamais vu,
+        composé des caractères gagnants de chacune — et publier une plaque que
+        personne n'a lue est précisément le pire résultat possible.
         """
-        leader = self.leader
-        if not leader:
-            return None
-        if self.reads.get(leader, 0) >= MIN_AGREEING_READS:
-            accumulated = self.accumulated[leader]
-            if (
-                accumulated >= MIN_ACCUMULATED_SCORE
-                and accumulated >= self._runner_up_score(leader) * DOMINANCE_RATIO
-            ):
-                return leader
+        consolidated = self._consolidated()
+        if consolidated is not None:
+            return consolidated[0]
         consensus = self._consensus()
         return consensus[0] if consensus is not None else None
 
@@ -196,17 +190,102 @@ class PlateTextVote:
         rendre la moyenne de la chaîne gagnante mentirait — elle ignorerait les
         lectures divergentes, alors que c'est justement leur existence qui rend ce
         texte moins sûr que l'autre voie ne l'aurait dit.
+
+        **Le score de la voie consolidée est celui des lectures directes du gagnant**,
+        jamais de son soutien consolidé. Le soutien sert à *choisir* quel texte
+        publier ; il ne dit rien de la confiance avec laquelle ce texte-là a été lu, et
+        y mêler la confiance d'un morceau plus court gonflerait un chiffre affiché à
+        l'écran.
         """
-        published = self.text
-        if published is not None and published != self.leader:
-            consensus = self._consensus()
-            if consensus is not None:
-                return consensus[1]
+        consolidated = self._consolidated()
+        if consolidated is not None:
+            return consolidated[1]
+        consensus = self._consensus()
+        if consensus is not None:
+            return consensus[1]
         leader = self.leader
         reads = self.reads.get(leader, 0)
         if not leader or reads == 0:
             return 0.0
         return self.accumulated[leader] / reads
+
+    def _consolidated(self) -> tuple[str, float] | None:
+        """Le gagnant une fois les lectures **partielles** reversées à la complète.
+
+        **C'est le correctif du « on n'a récupéré que la moitié du texte ».** `R606L`
+        n'est pas une plaque rivale de `AR606L` : c'est la même plaque, lue à un
+        caractère près. Le décompte d'origine les opposait, et la partielle gagnait —
+        parce qu'elle est lue **plus souvent** : elle sort de tous les prétraitements,
+        là où la complète ne sort que des meilleurs. Mesuré de bout en bout sur une
+        vidéo réelle, le serveur publiait `R606` pour une plaque `苏A·R606L` dont il
+        avait par ailleurs la lecture complète en magasin.
+
+        Un candidat reçoit donc la confiance cumulée de tous les candidats dont il est
+        un **sur-texte contigu**, puis les trois conditions de publication de toujours
+        s'appliquent à ce total.
+
+        **Deux gardes, et la seconde est celle qui empêche l'inverse du bug.** Un
+        caractère parasite de tête — l'idéogramme de province lu comme un `T`, donnant
+        `TA96886` là où `A96886` est juste — fabrique lui aussi un sur-texte, qui
+        aspirerait les voix du bon :
+
+        - **un sur-texte ne reçoit rien tant qu'il n'a pas ses propres
+          `MIN_AGREEING_READS`.** C'est la règle que tout ce fichier applique déjà —
+          une lecture unique est la lecture de la frame courante (invariant 4) — et
+          elle suffit ici : un caractère parasite ne survient que sur la variante qui
+          l'a fabriqué, donc une fois, alors qu'un vrai caractère de plus est relu à
+          chaque image où la plaque est lisible ;
+        - **la domination ne se joue que contre de vrais rivaux**, c'est-à-dire les
+          candidats qui ne sont ni un morceau ni une extension du gagnant. Compter un
+          morceau de soi-même comme rival rendrait la garde ininterprétable : plus la
+          plaque est lue, moins elle pourrait être publiée.
+
+        **Sans relation de sous-texte, cette méthode est exactement l'ancien code** —
+        `support` vaut `accumulated`, `reads_eff` vaut `reads`, et le gagnant est
+        `leader`. C'est ce qui rend le changement additif, et c'est verrouillé par un
+        test.
+        """
+        if not self.accumulated:
+            return None
+
+        support: dict[str, float] = {}
+        reads_eff: dict[str, int] = {}
+        for candidate in self.accumulated:
+            donors = self._donors(candidate) if self.reads[candidate] >= MIN_AGREEING_READS else ()
+            support[candidate] = self.accumulated[candidate] + sum(
+                self.accumulated[donor] for donor in donors
+            )
+            reads_eff[candidate] = self.reads[candidate] + sum(self.reads[d] for d in donors)
+
+        # À soutien égal, le plus long gagne : il porte strictement plus
+        # d'information, et le départage doit être déterministe pour qu'une
+        # relecture du même clip publie la même plaque (invariant 4).
+        winner = max(support, key=lambda text: (support[text], len(text)))
+        if reads_eff[winner] < MIN_AGREEING_READS or support[winner] < MIN_ACCUMULATED_SCORE:
+            return None
+        rival = max(
+            (
+                score
+                for other, score in support.items()
+                if other != winner and other not in winner and winner not in other
+            ),
+            default=0.0,
+        )
+        if support[winner] < rival * DOMINANCE_RATIO:
+            return None
+        return winner, self.accumulated[winner] / self.reads[winner]
+
+    def _donors(self, candidate: str) -> tuple[str, ...]:
+        """Les candidats dont `candidate` est un sur-texte contigu.
+
+        Contigu — `in` et non une sous-séquence — délibérément : `A6L` est une
+        sous-séquence de `AR606L` sans en être une lecture partielle plausible, alors
+        qu'un caractère manqué **au bord** est précisément le mode de panne mesuré.
+        Accepter les sous-séquences ferait donner ses voix à n'importe quoi.
+        """
+        return tuple(
+            other for other in self.accumulated if other != candidate and other in candidate
+        )
 
     def _consensus(self) -> tuple[str, float] | None:
         """Le texte reconstruit position par position, ou `None` s'il ne convainc pas.
@@ -264,13 +343,21 @@ class PlateTextVote:
         qu'on affiche, s'arrêter est une décision sur ce qu'on dépense. On accepte
         d'afficher un texte qu'on continue de vérifier ; on ne cesse de vérifier que
         lorsque vérifier ne peut plus rien changer.
+
+        **Le sujet de la question est le texte publié, pas le meneur direct.** Depuis
+        que `_consolidated` peut publier autre chose que `leader`, mélanger les deux
+        rendrait ce prédicat incohérent avec `score` — et les trois seuils ne
+        parleraient plus du même candidat. Les lectures et la domination sont donc
+        celles du texte qu'on s'apprête à afficher, et le soutien consolidé n'entre
+        pas dans le calcul : arrêter de lire est une décision qui doit se prendre sur
+        ce qu'on a réellement lu de **ce** texte.
         """
-        leader = self.leader
-        if not leader or self.reads.get(leader, 0) < STOP_MIN_READS:
+        published = self.text
+        if published is None or self.reads.get(published, 0) < STOP_MIN_READS:
             return False
         if self.score < STOP_MIN_MEAN_SCORE:
             return False
-        return self.accumulated[leader] >= self._runner_up_score(leader) * STOP_DOMINANCE
+        return self.accumulated[published] >= self._runner_up_score(published) * STOP_DOMINANCE
 
     def _runner_up_score(self, leader: str) -> float:
         """Confiance cumulée du meilleur **autre** candidat, `0` s'il n'y en a pas.

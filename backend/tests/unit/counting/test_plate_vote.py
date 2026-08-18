@@ -126,6 +126,127 @@ class TestPublication:
         assert vote.leader == "AB123CD"
 
 
+class TestLecturesPartielles:
+    """Une lecture partielle **renforce** la lecture complète, elle ne la concurrence pas.
+
+    C'est le correctif du « on n'a récupéré que la moitié du texte ». `R606L` n'est pas
+    une plaque rivale d'`AR606L` : c'est la même plaque, lue à un caractère près. Le
+    décompte d'origine les opposait et la partielle gagnait — parce qu'elle est lue
+    **plus souvent**, sortant de tous les prétraitements là où la complète ne sort que
+    des meilleurs. Mesuré de bout en bout, le serveur publiait `R606` pour une plaque
+    `苏A·R606L` dont il avait par ailleurs la lecture complète en magasin.
+    """
+
+    def test_la_complete_l_emporte_meme_lue_moins_souvent(self) -> None:
+        vote = PlateTextVote()
+        for _ in range(5):
+            vote.observe("R606L", 0.90)
+        for _ in range(2):
+            vote.observe("AR606L", 0.85)
+
+        assert vote.text == "AR606L"
+
+    def test_le_score_publie_est_celui_des_lectures_directes(self) -> None:
+        """Le soutien sert à **choisir**, jamais à annoncer une confiance.
+
+        Y mêler la confiance d'un morceau plus court gonflerait un chiffre affiché.
+        """
+        vote = PlateTextVote()
+        for _ in range(5):
+            vote.observe("R606L", 0.90)
+        for _ in range(2):
+            vote.observe("AR606L", 0.80)
+
+        assert vote.text == "AR606L"
+        assert vote.score == 0.80
+
+    def test_un_caractere_parasite_de_tete_n_aspire_pas_les_voix(self) -> None:
+        """La garde qui empêche l'inverse du bug, et elle est le vrai risque.
+
+        L'idéogramme de province lu comme un `T` fabrique `TA96886` là où `A96886` est
+        juste : c'est un **sur-texte** lui aussi. Il ne reçoit rien parce qu'il n'a pas
+        ses deux lectures propres — un parasite ne survient que sur la variante qui l'a
+        fabriqué, un vrai caractère de plus est relu à chaque image lisible.
+        """
+        vote = PlateTextVote()
+        for _ in range(4):
+            vote.observe("A96886", 0.90)
+        vote.observe("TA96886", 0.95)
+
+        assert vote.text == "A96886"
+
+    def test_un_sur_texte_deux_fois_lu_recoit_le_soutien(self) -> None:
+        """La contrepartie assumée du test précédent : deux lectures suffisent.
+
+        C'est la règle de tout ce fichier — une lecture unique est la lecture de la
+        frame courante — et non un seuil de plus à régler.
+        """
+        vote = PlateTextVote()
+        for _ in range(3):
+            vote.observe("96886", 0.90)
+        for _ in range(2):
+            vote.observe("A96886", 0.88)
+
+        assert vote.text == "A96886"
+
+    def test_sans_relation_de_sous_texte_rien_ne_change(self) -> None:
+        """Le changement est **additif** : deux vraies rivales se disputent comme avant."""
+        vote = PlateTextVote()
+        for _ in range(3):
+            vote.observe("AB123CD", 0.90)
+        vote.observe("XY999ZZ", 0.70)
+
+        assert vote.text == "AB123CD"
+
+    def test_deux_vraies_rivales_a_egalite_ne_publient_toujours_rien(self) -> None:
+        """La domination continue de refuser le tirage au sort entre deux vraies rivales.
+
+        Deux longueurs différentes exprès : à longueur égale c'est le consensus par
+        caractère qui tranche, et c'est son rôle — le vérifier ici ne dirait rien de la
+        consolidation. Ce que ce test verrouille est que la consolidation ne
+        **court-circuite pas** le refus : sans relation de sous-texte, elle ne reverse
+        aucune voix, donc rien ne domine et rien n'est publié.
+        """
+        vote = PlateTextVote()
+        for _ in range(2):
+            vote.observe("AB123CD", 0.90)
+        for _ in range(2):
+            vote.observe("XY999Z", 0.88)
+
+        assert vote.text is None
+
+    def test_la_consolidation_ne_publie_que_du_deja_lu(self) -> None:
+        """Deux partielles complémentaires ne se recollent **pas** en une chimère.
+
+        `AR606` et `606L` se chevauchent et suggèrent `AR606L` — mais personne n'a lu
+        `AR606L`, et publier une plaque que personne n'a lue est le pire résultat
+        possible. La consolidation ne reverse des voix qu'à des candidats **existants**.
+        """
+        vote = PlateTextVote()
+        for _ in range(3):
+            vote.observe("AR606", 0.90)
+        for _ in range(3):
+            vote.observe("606L", 0.90)
+
+        assert vote.text in {"AR606", "606L", None}
+        assert vote.text != "AR606L"
+
+    def test_le_gagnant_reste_le_meme_d_une_relecture_a_l_autre(self) -> None:
+        """À soutien égal, le plus long gagne — un départage **déterministe**.
+
+        Un tri instable ferait publier une plaque différente d'une relecture à l'autre,
+        ce que l'invariant 4 existe pour empêcher.
+        """
+        first = PlateTextVote()
+        second = PlateTextVote()
+        for text, score in (("R606L", 0.9), ("AR606L", 0.9), ("R606L", 0.9), ("AR606L", 0.9)):
+            first.observe(text, score)
+        for text, score in (("AR606L", 0.9), ("R606L", 0.9), ("AR606L", 0.9), ("R606L", 0.9)):
+            second.observe(text, score)
+
+        assert first.text == second.text == "AR606L"
+
+
 class TestScore:
     def test_le_score_est_la_moyenne_jamais_la_somme(self) -> None:
         """Un score de confiance supérieur à 1 sur le fil est un bug visible."""

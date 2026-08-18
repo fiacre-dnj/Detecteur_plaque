@@ -162,6 +162,9 @@ def build_container(
         intra_op_threads=settings.resolved_plate_ocr_intra_op_threads,
         variants=settings.plate_ocr_variants,
         dynamic_width=settings.plate_ocr_dynamic_width,
+        # `plate_ocr_variants` reste le commutateur maître : couper les variantes doit
+        # tout couper, sinon « désactivé pour comparer » ne compare pas ce qu'on croit.
+        left_insets=settings.plate_ocr_left_insets if settings.plate_ocr_variants else (),
     )
     model_service = ModelService(
         registry,

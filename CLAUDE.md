@@ -72,7 +72,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1351 tests
+uv run pytest                                                            # 1483 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -583,13 +583,21 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     - **~150 px, le seuil de fiabilité** — en dessous, elle essaie et se trompe
       souvent.
 
-    L'échelle de vérité terrain : 8/8 lectures justes à 320 px, 4/8 à 64 px,
-    **0/8 à 48 px** — rejouable par `scripts/anpr_bench.py --truth-ladder`.
-    Entre 64 et 150 px, l'OCR travaille mais son vote est incertain, et c'est
-    précisément là que `PlateTextVote` gagne sa place.
+    L'échelle de vérité terrain : 8/8 lectures justes à 320 px, **7/8 à 64 px**
+    depuis ADR 0029 (4/8 avant), **0/8 à 48 px** — rejouable par
+    `scripts/anpr_bench.py --truth-ladder`. Entre 64 et 150 px, l'OCR travaille
+    mais son vote est incertain, et c'est précisément là que `PlateTextVote`
+    gagne sa place.
+
+    **L'échelle synthétique n'est pas un juge suffisant, et ADR 0029 l'a payé.**
+    Elle rend des plaques françaises trop propres : couper CLAHE y gagne quatre
+    lectures et en perd sur de vraies vignettes, parce qu'il n'y a là que du bruit
+    à amplifier alors qu'il rattrape le contraste d'une vraie prise de vue. Tout
+    réglage de contraste ou de prétraitement se tranche sur des vignettes réelles,
+    l'échelle ne servant qu'à vérifier qu'on n'a rien cassé au cas latin.
 
     L'OCR relit une identité seulement si la nouvelle vignette bat la meilleure
-    déjà lue de 25 % en **qualité = largeur × netteté**.
+    déjà lue en **qualité = largeur × netteté**.
 13. **Un échec porte son message et son code.** Une `AppError` fait traverser
     `detail` et `code` jusqu'à l'écran ; tout le reste garde la phrase générique,
     parce qu'un `RuntimeError` porte des chemins serveur. Le modèle est **chargé
@@ -730,6 +738,43 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       qui est **rappelée sous le bouton de lancement**.
 
     [ADR 0028](docs/adr/0028-analyser-une-fenetre-de-la-video.md).
+21. **La plaque perdait son premier caractère, pour trois raisons distinctes.** Le
+    registre affichait `606L` pour une plaque `苏A·R606L`, **à 81 % de confiance** —
+    un texte tronqué présenté comme lu, ce qui est pire qu'un refus. Les trois
+    causes, et l'ordre d'importance n'est pas celui qu'on devine :
+    - **le vote était affamé.** `plate_ocr_quality_improvement` valait `1.25`, donc
+      une plaque n'était relue que si la vignette battait la meilleure de 25 % en
+      largeur × netteté : deux ou trois lectures sur la vie d'un véhicule, réparties
+      sur quatre graphies voisines, donc aucune ne pouvait dominer. **C'est le seul
+      changement nécessaire et suffisant** sur le cas mesuré : à `1.0`, le serveur
+      publie `AR606L`. Son raisonnement d'origine était déjà couvert par
+      `plate_ocr_skip_iou`, et il ne coûte rien — un vote qui converge déclenche
+      `stop_when_confident`, qui arrête le *détecteur*, le vrai goulot ;
+    - **un caractère hors alphabet mange son voisin.** `en_PP-OCRv3_rec` ne connaît
+      que l'ASCII imprimable ; l'idéogramme de province d'une plaque chinoise n'a
+      aucune classe où aller, et le CTC doit bien émettre quelque chose pour ces pas
+      de temps. `LEFT_INSET_FRACTIONS = (0.14, 0.22)` ajoute deux variantes rognées
+      à gauche, dans le **même** lot. Vignettes justes 8 → 17 sur 40, et l'échelle
+      latine — le contrôle indépendant, sans idéogramme — 39 → 43 sur 56, dont
+      **4/8 → 7/8 au palier 64 px**. L'ajout est strictement additif : sur une plaque
+      latine la variante coupe un vrai caractère, rend une chaîne plus courte, et la
+      confiance cumulée la fait perdre ;
+    - **une lecture partielle concurrençait la complète, et gagnait.** `R606L` n'est
+      pas une rivale d'`AR606L`, c'en est un morceau — mais elle est lue **plus
+      souvent**, parce qu'elle sort de tous les prétraitements. `_consolidated`
+      reverse la confiance d'un sous-texte contigu à son sur-texte. Deux gardes, et
+      la seconde est celle qui empêche l'inverse du bug : un sur-texte ne reçoit rien
+      tant qu'il n'a pas ses propres `MIN_AGREEING_READS` (sinon `TA96886`, où le `T`
+      est l'idéogramme mal lu, aspirerait les voix d'`A96886`), et la domination ne se
+      joue que contre de **vrais** rivaux. Sans relation de sous-texte, c'est
+      exactement l'ancien code, ce qui est verrouillé par un test.
+
+    **Quatre pistes plausibles ont été mesurées et rejetées** — élargir le recadrage
+    (la hauteur d'entrée étant fixe à 48 px, élargir *rétrécit* les glyphes : 8 → 0
+    sur 40), un consensus spatial des caractères, trois réglages « gratuits », et un
+    filtre d'attachement contre les fausses détections sur l'habillage vidéo. Ne pas
+    les re-proposer sans lire l'ADR : chacune a sa mesure.
+    [ADR 0029](docs/adr/0029-la-plaque-perdait-son-premier-caractere.md).
 
 ## Les vitesses en km/h : la calibration est **par ligne**
 
@@ -1033,7 +1078,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1351 (1 skip) | 628 |
+| Nombre | 1483 (1 skip) | 628 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

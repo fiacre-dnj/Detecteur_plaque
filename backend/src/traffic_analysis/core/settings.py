@@ -313,7 +313,26 @@ class Settings(BaseSettings):
     #: politique dépensait son budget sur la première vignette venue — souvent
     #: minuscule et floue — alors que le véhicule offrirait deux secondes plus tard
     #: une vignette deux fois plus large.
-    plate_ocr_quality_improvement: float = Field(1.25, ge=1.0, le=10.0)
+    #:
+    #: **`1.0` — donc désactivé — depuis ADR 0029, et c'est une mesure qui l'a
+    #: décidé.** À `1.25`, ce garde *affamait le vote* : sur une fenêtre de vraie
+    #: circulation, le serveur publiait `R606` pour une plaque `苏A·R606L`, ou plus
+    #: rien du tout. La raison est arithmétique — `PlateTextVote` exige deux lectures
+    #: concordantes, une confiance cumulée de 1,2 et une domination de 1,5, et une
+    #: exigence d'amélioration de 25 % à chaque relecture ne laissait que deux ou
+    #: trois lectures sur toute la vie d'un véhicule. Réparties sur quatre graphies
+    #: voisines, aucune ne pouvait dominer. À `1.0`, la même fenêtre publie
+    #: `AR606L`, la vérité terrain.
+    #:
+    #: Le raisonnement d'origine n'était pas faux, il était **déjà couvert** :
+    #: `plate_ocr_skip_iou` interdit déjà de relire le recadrage figé d'un véhicule
+    #: arrêté au feu, qui est le cas où la confiance se gonflerait pour rien.
+    #:
+    #: **Et cela ne coûte pas plus cher.** L'analyse de la même fenêtre n'a pas
+    #: ralenti — la mesure la donne même plus rapide, parce qu'un vote qui converge
+    #: déclenche `stop_when_confident`, lequel arrête le *détecteur* de plaques,
+    #: c'est-à-dire le vrai goulot (ADR 0015).
+    plate_ocr_quality_improvement: float = Field(1.0, ge=1.0, le=10.0)
     #: Au-dessus de cette IoU avec la dernière boîte lue, on ne relit pas. Protège
     #: surtout la *justesse* du vote : cent recadrages identiques d'un véhicule
     #: arrêté au feu ne feraient que gonfler la confiance d'un texte peut-être faux.
@@ -327,6 +346,22 @@ class Settings(BaseSettings):
     #: lot : le surcoût est celui de quelques lignes de tenseur, pas d'une inférence
     #: de plus. À désactiver seulement pour comparer.
     plate_ocr_variants: bool = True
+    #: Fractions rognées **à gauche**, une variante de lecture par valeur.
+    #:
+    #: Elles existent pour un caractère de tête absent de l'alphabet du modèle — un
+    #: idéogramme de province chinois, un blason régional : le CTC doit émettre
+    #: quelque chose pour ces pas de temps, et ce quelque chose mange la lettre
+    #: voisine. Mesuré sur 40 vignettes de vraie circulation, la chaîne rendait la
+    #: plaque **moins sa première lettre** (`96886` pour `苏A·96886`) à 0,90 de
+    #: confiance ; le même recadrage privé de son bord gauche rend `A96886` à 0,97.
+    #: Lectures exactes 8/40 → 17/40, plaques publiées justes 1/6 → 3/6, et
+    #: l'échelle synthétique **latine** — le contrôle indépendant, sans idéogramme —
+    #: passe de 40 à 43 sur 56.
+    #:
+    #: Vide désactive la famille. Le coût est de deux lignes de tenseur dans le lot
+    #: déjà envoyé, soit ~38 ms par lecture là où le détecteur de plaques en coûte
+    #: 700 : le rapport reste celui d'ADR 0015.
+    plate_ocr_left_insets: tuple[float, ...] = (0.14, 0.22)
     #: Négocier la largeur du tenseur avec le lot au lieu des 320 px de PP-OCR. Une
     #: plaque européenne tient en 226 px — 30 % de convolutions en moins — et une
     #: plaque très large cesse d'être comprimée. Repli à 320 si un export refusait

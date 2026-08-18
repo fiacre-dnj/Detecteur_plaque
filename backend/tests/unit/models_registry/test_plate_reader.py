@@ -25,6 +25,7 @@ import pytest
 
 from traffic_analysis.features.counting.application.dto import BoundingBox
 from traffic_analysis.features.models_registry.infrastructure.plate_reader import (
+    MIN_VARIANT_WIDTH_PX,
     REC_HARD_MAX_WIDTH,
     REC_HEIGHT,
     REC_MAX_WIDTH,
@@ -45,6 +46,8 @@ from traffic_analysis.features.models_registry.infrastructure.plate_reader impor
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import numpy.typing as npt
 
 #: Alphabet minuscule : indice 0 = blanc, puis A, B, C, D.
 CHARSET = ("", "A", "B", "C", "D")
@@ -343,6 +346,95 @@ class TestChoixDeVariante:
         complet = Reading(text="AB123CD", score=0.85, char_scores=(0.85,) * 7)
         assert complet.total > court.total
         assert complet.score < court.score
+
+
+class TestRognageDeGauche:
+    """Les variantes rognées à gauche, et le fait qu'elles ne retirent jamais rien.
+
+    Elles existent pour un caractère de tête absent de l'alphabet du modèle — un
+    idéogramme de province chinois : le CTC doit émettre quelque chose pour ces pas
+    de temps, et ce quelque chose **mange la lettre voisine**. Mesuré sur 40
+    vignettes de vraie circulation, la chaîne rendait `96886` pour `苏A·96886`, à
+    0,90 de confiance ; le même recadrage privé de son bord gauche rend `A96886` à
+    0,97.
+
+    Ces tests portent sur `_prepare`, qui n'a besoin ni de poids ni d'onnxruntime :
+    `_clahe` reste `None` tant que le modèle n'est pas chargé, et la chaîne de
+    prétraitement le supporte exprès.
+    """
+
+    @staticmethod
+    def _reader(tmp_path: Path, **kwargs: object) -> OnnxPlateReader:
+        return OnnxPlateReader(tmp_path / "absent.onnx", tmp_path / "absent.txt", **kwargs)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _image() -> npt.NDArray[np.uint8]:
+        """Une plaque de synthèse dont le bord gauche est **noir** et le reste clair.
+
+        C'est ce contraste qui rend le rognage vérifiable sans lire de texte : une
+        variante qui a réellement coupé son bord gauche ne contient plus de colonne
+        sombre.
+        """
+        image = np.full((60, 200, 3), 200, dtype=np.uint8)
+        image[10:50, 10:28] = 0
+        return image
+
+    BOX = BoundingBox(x=10.0, y=10.0, width=180.0, height=40.0)
+
+    def test_une_variante_de_plus_par_fraction(self, tmp_path: Path) -> None:
+        sans = self._reader(tmp_path, left_insets=())
+        avec = self._reader(tmp_path, left_insets=(0.14, 0.22))
+
+        base = sans._prepare(self._image(), self.BOX)
+        etendu = avec._prepare(self._image(), self.BOX)
+
+        assert len(etendu) == len(base) + 2
+
+    def test_la_variante_a_bien_perdu_son_bord_gauche(self, tmp_path: Path) -> None:
+        """Le contrôle qui vaut la mesure : la colonne sombre a disparu."""
+        reader = self._reader(tmp_path, left_insets=(0.30,))
+        variants = reader._prepare(self._image(), self.BOX)
+
+        # La dernière variante est celle du rognage : 30 % de 180 px = 54 px, donc
+        # au-delà des 18 px de bande sombre.
+        assert variants[0].min() == 0
+        assert variants[-1].min() > 0
+
+    def test_sans_fraction_le_comportement_est_celui_d_avant(self, tmp_path: Path) -> None:
+        """L'ajout doit pouvoir être annulé exactement, pour comparer au banc."""
+        reader = self._reader(tmp_path, left_insets=())
+        variants = reader._prepare(self._image(), self.BOX)
+
+        assert len(variants) == 2  # base + encart, pas d'angle sur une image droite
+
+    def test_le_commutateur_maitre_des_variantes_les_coupe_aussi(self, tmp_path: Path) -> None:
+        """`variants=False` doit tout couper, sinon « désactivé » ne compare rien."""
+        reader = self._reader(tmp_path, variants=False, left_insets=(0.14, 0.22))
+        assert len(reader._prepare(self._image(), self.BOX)) == 1
+
+    def test_les_fractions_absurdes_sont_ecartees_a_la_construction(self, tmp_path: Path) -> None:
+        """Une fraction nulle donnerait une copie de la base : une inférence pour rien."""
+        reader = self._reader(tmp_path, left_insets=(0.0, -0.2, 0.95, 1.5, 0.14, 0.14))
+        assert reader._left_insets == (0.14,)
+
+    def test_une_vignette_trop_etroite_ne_donne_pas_de_variante_degeneree(
+        self, tmp_path: Path
+    ) -> None:
+        """Rogner 60 % d'une vignette de 70 px laisserait 28 colonnes : inexploitable."""
+        image = np.full((30, 80, 3), 180, dtype=np.uint8)
+        reader = self._reader(tmp_path, left_insets=(0.60,))
+        box = BoundingBox(x=0.0, y=0.0, width=70.0, height=24.0)
+
+        variants = reader._prepare(image, box)
+        assert all(variant.shape[1] >= MIN_VARIANT_WIDTH_PX for variant in variants)
+
+    def test_toutes_les_variantes_sortent_en_trois_canaux(self, tmp_path: Path) -> None:
+        """La tête de reconnaissance attend `(3, 48, W)` : un gris planterait le lot."""
+        reader = self._reader(tmp_path, left_insets=(0.14, 0.22))
+        for variant in reader._prepare(self._image(), self.BOX):
+            assert variant.ndim == 3
+            assert variant.shape[2] == 3
+            assert variant.dtype == np.uint8
 
 
 class TestAsProbabilities:

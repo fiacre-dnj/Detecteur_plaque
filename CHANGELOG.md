@@ -210,6 +210,28 @@ plus deux fois dans le même sens » si.
 
 ### Corrigé
 
+- **La plaque ne perd plus son premier caractère.** Le registre affichait `606L`
+  pour une plaque `苏A·R606L`, à 81 % de confiance de lecture : un texte tronqué,
+  présenté avec l'assurance d'un texte lu. Le serveur publie désormais `AR606L`.
+  Trois causes distinctes, corrigées toutes les trois :
+  - **la lecture n'avait pas le droit de recommencer.** Une plaque n'était relue
+    que si la nouvelle image de la plaque était nettement meilleure que la
+    précédente, ce qui ne laissait que deux ou trois lectures par véhicule —
+    jamais assez pour que le vote tranche entre des graphies voisines. C'est le
+    changement décisif, et il ne ralentit pas l'analyse : une plaque reconnue plus
+    tôt arrête plus tôt le travail coûteux ;
+  - **un caractère que le modèle ne connaît pas mangeait la lettre voisine.**
+    L'idéogramme de province d'une plaque chinoise n'existe dans aucune classe du
+    modèle de lecture, et le caractère juste à côté en faisait les frais. Mesuré
+    sur 40 images de plaques réelles : lectures exactes 8 → 17. Le contrôle sur des
+    plaques **françaises**, qui n'ont aucun idéogramme, s'améliore aussi — 39 → 43
+    lectures justes sur 56, dont 4/8 → 7/8 pour les plaques de 64 px de large ;
+  - **une lecture incomplète concurrençait la lecture complète**, et gagnait, parce
+    qu'elle sort plus souvent. Elle la renforce désormais : plaques justes 1 sur 6
+    → 3 sur 6.
+
+  Le surcoût de lecture est réel (1,9×) et invisible à l'usage : l'analyse tourne à
+  la même cadence.
 - **La vidéo déposée est réellement supprimée au bout d'une heure.** Le réglage
   l'annonçait depuis le début, mais rien ne l'appliquait : les images restaient
   vingt-quatre heures, comme le reste de l'analyse. Le résultat, lui, se consulte

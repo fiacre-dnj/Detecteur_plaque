@@ -96,6 +96,40 @@ MAX_SKEW_DEG = 25.0
 INSET_VERTICAL = 0.08
 INSET_HORIZONTAL = 0.03
 
+#: Fractions rognées **à gauche seulement**, chacune donnant une variante de plus.
+#:
+#: **C'est la variante la plus payante de tout le dispositif, et sa raison est mesurée.**
+#: Le modèle est `en_PP-OCRv3_rec` : son alphabet est l'ASCII imprimable, et rien
+#: d'autre. Une plaque dont le premier caractère n'appartient pas à cet alphabet — un
+#: idéogramme de province chinois, un blason régional — ne se lit pas « en moins » :
+#: le CTC doit bien émettre quelque chose pour ces pas de temps, et ce quelque chose
+#: **contamine le caractère voisin**. Mesuré sur 40 vignettes de vraie circulation
+#: (`苏A·96886`, `苏A·R606L`, …) : la chaîne rendait `96886` et `R606L`, c'est-à-dire
+#: la plaque **moins sa première lettre**, avec une confiance de 0,90 qui ne
+#: signalait rien. Le même recadrage privé de son bord gauche rend `A96886` à 0,97.
+#:
+#: Deux fractions et non une, parce que la largeur de la cellule à retirer dépend du
+#: nombre de caractères de la plaque, que l'on ne connaît pas : 0,14 ≈ une cellule
+#: d'une plaque à sept cases, 0,22 ≈ une cellule d'une plaque courte. C'est le
+#: décodage qui départage, à confiance cumulée, comme pour toutes les variantes.
+#:
+#: **Les valeurs ne sont pas le maximum d'un balayage**, délibérément : sur ce corpus
+#: `(0,16 ; 0,22)` publiait une plaque juste de plus, et `(0,16 ; 0,24)` la reperdait.
+#: Un point de pourcentage qui fait basculer un résultat sur six plaques est du
+#: surajustement, pas une mesure. `(0,14 ; 0,22)` est au milieu de la zone plate
+#: (14–22 % rendent tous 2 à 4 plaques justes sur 6, contre 1 sans rognage) **et**
+#: le meilleur sur le contrôle indépendant — l'échelle de vérité terrain synthétique,
+#: qui n'a aucun idéogramme, passe de 40 à 43 lectures justes sur 56.
+#:
+#: **Rien n'est retiré au cas latin.** Sur une plaque française, rogner 14 % coupe le
+#: premier caractère, la variante rend une chaîne plus courte, et la confiance
+#: cumulée la fait perdre. Une variante ne peut que gagner ou être ignorée.
+LEFT_INSET_FRACTIONS: tuple[float, ...] = (0.14, 0.22)
+
+#: Sous cette largeur, une variante rognée n'a plus assez de colonnes pour valoir
+#: une inférence : on ne la construit pas.
+MIN_VARIANT_WIDTH_PX = 32
+
 
 @dataclass(frozen=True, slots=True)
 class Reading:
@@ -354,6 +388,7 @@ class OnnxPlateReader:
         "_clahe",
         "_dynamic_width",
         "_intra_op_threads",
+        "_left_insets",
         "_loaded",
         "_lock",
         "_min_score",
@@ -370,6 +405,7 @@ class OnnxPlateReader:
         intra_op_threads: int = 0,
         variants: bool = True,
         dynamic_width: bool = True,
+        left_insets: Sequence[float] = LEFT_INSET_FRACTIONS,
     ) -> None:
         self._path = model_path
         self._charset_path = charset_path
@@ -377,6 +413,10 @@ class OnnxPlateReader:
         self._intra_op_threads = intra_op_threads
         self._variants = variants
         self._dynamic_width = dynamic_width
+        # Triées et dédoublonnées : deux fractions égales coûteraient deux inférences
+        # pour un tenseur identique, et l'ordre décide de rien d'autre que de la
+        # lisibilité des journaux.
+        self._left_insets = tuple(sorted({float(f) for f in left_insets if 0.0 < float(f) < 0.9}))
         self._loaded: tuple[Any, tuple[str, ...]] | None = None
         self._checked = False
         self._clahe: Any = None
@@ -621,17 +661,24 @@ class OnnxPlateReader:
         sur un recadrage de 60 px de large la chrominance sous-échantillonnée en 4:2:0
         par le codec n'apporte que du bruit.
 
-        Deux variantes s'ajoutent quand elles ont une chance de changer quelque chose,
-        jamais autrement — une variante identique à la première coûterait une inférence
-        pour rien :
+        Les variantes ne s'ajoutent que lorsqu'elles ont une chance de changer quelque
+        chose, jamais autrement — une variante identique à la première coûterait une
+        inférence pour rien :
 
         - **redressée**, si et seulement si un angle exploitable a été mesuré ;
         - **encart**, qui rogne le cadre de la plaque. Le détecteur cadre le rectangle
-          entier, liseré compris, et ce liseré entre dans les pas de temps du CTC.
+          entier, liseré compris, et ce liseré entre dans les pas de temps du CTC ;
+        - **rognées à gauche**, une par fraction de `LEFT_INSET_FRACTIONS`. Elles
+          existent pour un caractère de tête que l'alphabet du modèle ne contient pas
+          — un idéogramme de province — et qui, faute de classe où aller, contamine la
+          lettre voisine. C'est la variante la plus payante du dispositif, et sa
+          docstring de constante porte la mesure.
 
         C'est le décodage qui départage, à confiance cumulée : on ne cherche pas à
         savoir *a priori* laquelle est la bonne, on les lit et on garde celle qui a lu
-        le plus de caractères le plus sûrement.
+        le plus de caractères le plus sûrement. Une variante qui coupe un vrai
+        caractère rend donc une chaîne plus courte, et **perd** — c'est ce qui rend
+        l'ajout strictement additif.
         """
         height, width = image.shape[:2]
         x1 = max(0, int(box.x))
@@ -657,6 +704,11 @@ class OnnxPlateReader:
         right = crop_width - left
         if bottom - top >= MIN_PLATE_HEIGHT_PX and right - left >= MIN_PLATE_WIDTH_PX:
             variants.append(self._finish(_as_u8(grey[top:bottom, left:right])))
+
+        for fraction in self._left_insets:
+            cut = int(crop_width * fraction)
+            if crop_width - cut >= MIN_VARIANT_WIDTH_PX:
+                variants.append(self._finish(_as_u8(grey[:, cut:])))
         return tuple(variants)
 
     def _finish(self, source: npt.NDArray[np.uint8]) -> npt.NDArray[np.uint8]:
