@@ -210,6 +210,13 @@ plus deux fois dans le même sens » si.
 
 ### Corrigé
 
+- **L'analyse avec repérage de plaques est deux fois plus rapide.** Activer les
+  plaques et la lecture du texte faisait chuter la cadence bien plus que nécessaire :
+  le repérage relançait le calcul **une fois par véhicule** au lieu d'une fois par
+  image. Mesuré sur une vidéo réelle avec quatre véhicules à l'écran, plaques et
+  lecture actives : **5,8 → 10,6 images analysées par seconde**, soit une analyse qui
+  passe de 5 min 39 à 3 min 06 pour la même séquence. Aucun chiffre ne change —
+  mêmes véhicules comptés, mêmes franchissements, même plaque publiée.
 - **La plaque ne perd plus son premier caractère.** Le registre affichait `606L`
   pour une plaque `苏A·R606L`, à 81 % de confiance de lecture : un texte tronqué,
   présenté avec l'assurance d'un texte lu. Le serveur publie désormais `AR606L`.

@@ -612,12 +612,20 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     CPU.** Ce n'est pas une incohérence, c'est une mesure : `onnxruntime` n'a pas de
     provider CUDA ici, donc tout ONNX est cloué au CPU — mais PP-OCRv3 rec est un
     modèle CTC qu'Ultralytics ne sait pas charger, et son seul équivalent `.pt`
-    imposerait PaddlePaddle (600 Mo, refusé en ADR 0007). L'arbitrage penche
-    franchement : l'OCR coûte 66 ms par vignette contre 702 pour l'ancien détecteur,
-    rapport 10,7 à 1 — **optimiser l'OCR ne rend rien de perceptible.** Les poids
-    véhicules, eux, étaient déjà des `.pt` par nécessité (`track()` a besoin de
-    BoT-SORT + ReID + GMC).
-    [ADR 0015](docs/adr/0015-le-detecteur-de-plaques-en-pt.md).
+    imposerait PaddlePaddle (600 Mo, refusé en ADR 0007). Les poids véhicules, eux,
+    étaient déjà des `.pt` par nécessité (`track()` a besoin de BoT-SORT + ReID + GMC).
+
+    **Le rapport de coût entre les deux s'est inversé, et la phrase qui vivait ici
+    est maintenant fausse.** Elle disait « l'OCR coûte 66 ms par vignette contre 702
+    pour l'ancien détecteur, rapport 10,7 à 1 — optimiser l'OCR ne rend rien de
+    perceptible ». Deux changements l'ont retournée : ADR 0015 a divisé le détecteur
+    par ~15 en le passant sur GPU, et ADR 0029 a porté le lot d'OCR de 3 à 5
+    variantes. Mesuré après ADR 0030, par image analysée : **OCR 262 ms (60 %)**,
+    suivi des véhicules 90 ms (21 %), détection de plaques 81 ms (19 %). **C'est
+    l'OCR qu'il faut optimiser maintenant**, et le seul levier structurel restant est
+    de la recouvrir avec le travail GPU — elle est aujourd'hui sérialisée avec lui.
+    [ADR 0015](docs/adr/0015-le-detecteur-de-plaques-en-pt.md),
+    [ADR 0030](docs/adr/0030-le-detecteur-de-plaques-payait-une-inference-par-vehicule.md).
 16. **Un objet suivi est un véhicule, et les sens de ligne portent un nom.** La galerie
     de ré-identification est supprimée : elle relâchait une identité puis la
     ré-attachait, donc le même `#1` réapparaissait au milieu d'une vidéo et faussait le
@@ -775,6 +783,31 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     filtre d'attachement contre les fausses détections sur l'habillage vidéo. Ne pas
     les re-proposer sans lire l'ADR : chacune a sa mesure.
     [ADR 0029](docs/adr/0029-la-plaque-perdait-son-premier-caractere.md).
+22. **Le détecteur de plaques paie une inférence par image, plus une par véhicule.**
+    `detect_many` découpait le travail en paquets de `side²` recadrages — le côté de
+    la mosaïque d'ADR 0008 — et le défaut `side = 1` faisait donc *un paquet par
+    véhicule*, c'est-à-dire un `predict` par piste. La docstring du module annonçait
+    pourtant le bon comportement depuis ADR 0015. Rien ne levait, aucun chiffre publié
+    ne changeait : seule la cadence était deux fois trop basse. Mesuré à 3,7 véhicules
+    par image : **217 → 107 ms par image sur l'étage**, et **5,84 → 10,63 img/s de
+    bout en bout** avec ANPR et OCR actives, à comptages et plaques identiques.
+    Quatre points qui ne se devinent pas :
+    - **le lot est une dimension de tenseur, pas de pixels.** Chaque recadrage garde
+      son letterbox 640×640, donc rien n'est troqué contre du rappel — contrairement
+      à la mosaïque, qui rétrécit les plaques dans l'entrée du réseau (côté 2 : 3,4×
+      pour −16 %). La mosaïque reste intacte pour les machines sans GPU ;
+    - **les boîtes ne sont pas identiques au bit près** : sur 240 véhicules, aucune
+      plaque gagnée ni perdue, mais une IoU de 0,943 au minimum. L'ancien chemin
+      passait par un redimensionnement de mosaïque *avant* le letterbox ; le lot n'a
+      plus que le letterbox, donc un rééchantillonnage de moins. Une comparaison au
+      pixel près entre deux versions échouera, et c'est attendu ;
+    - **grouper l'OCR de la même façon est 1,6× plus LENT** (380 contre 232 ms) :
+      `batch_width` aligne tout le lot sur la vignette la plus large. Un appel par
+      piste est la bonne forme, il ne faut pas la « corriger » ;
+    - **un test compte les appels à `predict`**, parce qu'une régression rendrait
+      exactement les mêmes boîtes deux fois plus lentement.
+
+    [ADR 0030](docs/adr/0030-le-detecteur-de-plaques-payait-une-inference-par-vehicule.md).
 
 ## Les vitesses en km/h : la calibration est **par ligne**
 
