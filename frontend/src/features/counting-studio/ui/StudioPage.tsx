@@ -108,7 +108,9 @@ import { VEHICLE_CLASSES } from "@/shared/lib/classes";
 import { Button } from "@/shared/ui/Button";
 import { MetricCard } from "@/shared/ui/MetricCard";
 
+import { analysisSummaryRows } from "../model/analysisSummary";
 import { useAnalysisSession } from "../model/useAnalysisSession";
+import { AnalysisSummary } from "./AnalysisSummary";
 import { PlaybackEndedBanner, StaleResultBanner } from "./StaleResultBanner";
 
 /**
@@ -205,16 +207,25 @@ export function StudioPage() {
   /**
    * Configuration reçue de l'historique — « Ouvrir » ou « Relancer ».
    *
-   * Appliquée **une seule fois** : sans ce garde, chaque rendu réécraserait les
-   * modifications que l'utilisateur vient de faire depuis son arrivée, ce qui rend
-   * l'écran impossible à utiliser sans qu'on comprenne pourquoi.
+   * Appliquée **une seule fois par navigation** : sans ce garde, chaque rendu
+   * réécraserait les modifications que l'utilisateur vient de faire depuis son
+   * arrivée, ce qui rend l'écran impossible à utiliser sans qu'on comprenne
+   * pourquoi.
+   *
+   * Le garde retient **l'état de navigation appliqué**, et non un simple « c'est
+   * fait ». La distinction est devenue nécessaire le jour où cette page a cessé
+   * d'être démontée en changeant d'onglet (`KeepAlivePages`) : un booléen posé une
+   * fois pour toutes ne se réarmerait plus jamais, et le deuxième « Ouvrir » depuis
+   * l'historique ne ferait plus rien. `navigate` construit un objet neuf à chaque
+   * appel, y compris pour le même job — comparer les identités suffit donc, et
+   * c'est ce qui distingue « une nouvelle demande » d'« un rendu de plus ».
    */
-  const applied = useRef(false);
+  const appliedConfig = useRef<unknown>(null);
   useEffect(() => {
-    if (applied.current) return;
+    if (appliedConfig.current === location.state) return;
     const incoming = (location.state as { config?: unknown } | null)?.config;
     if (incoming === undefined) return;
-    applied.current = true;
+    appliedConfig.current = location.state;
 
     const loaded = incoming as {
       lines?: typeof geometry.lines;
@@ -286,12 +297,14 @@ export function StudioPage() {
    * à tout changement de source ; poser la vidéo après l'adoption effacerait donc le
    * résultat qu'on vient d'aller chercher. La source d'abord, le résultat ensuite.
    */
-  const adopted = useRef(false);
+  const adopted = useRef<unknown>(null);
   useEffect(() => {
-    if (adopted.current) return;
+    // Indexé sur l'état de navigation et non sur le montage, même raison que le
+    // garde de la configuration ci-dessus : la page survit au changement d'onglet.
+    if (adopted.current === location.state) return;
     const state = location.state as { jobId?: unknown; replay?: unknown; fileName?: unknown } | null;
     if (state?.replay !== true || typeof state.jobId !== "string") return;
-    adopted.current = true;
+    adopted.current = location.state;
 
     const jobId = state.jobId;
     const label = typeof state.fileName === "string" ? state.fileName : "Analyse archivée";
@@ -557,6 +570,45 @@ export function StudioPage() {
       catalogue?.models.find((model) => model.id === settings.modelId)?.label ??
       settings.modelId,
     [catalogue?.models, settings.modelId],
+  );
+
+  /**
+   * Les rangées du récapitulatif d'avant-analyse.
+   *
+   * Assemblées ici et pas dans le composant, pour la raison qui vaut partout dans
+   * ce fichier : le récapitulatif traverse quatre features — le modèle, les classes
+   * détectables, la géométrie, l'intervalle — et seul le studio les connaît toutes.
+   */
+  const summaryRows = useMemo(
+    () =>
+      analysisSummaryRows({
+        modelLabel: selectedModelLabel,
+        // Les libellés du **catalogue serveur**, jamais une liste recopiée : une
+        // classe cochée que le serveur ne propose plus disparaît d'elle-même,
+        // exactement comme `sanitiseClassIds` la retire de l'envoi.
+        classLabels: (detectableClasses ?? [])
+          .filter((entry) => settings.classIds.includes(entry.id))
+          .map((entry) => entry.label),
+        lineCount: geometry.lines.length,
+        zoneCount: geometry.zones.length,
+        range,
+        detectPlates: settings.detectPlates,
+        readPlateText: settings.readPlateText,
+        analysisSpeed: settings.analysisSpeed,
+        maxAnalysisFps: settings.maxAnalysisFps,
+      }),
+    [
+      selectedModelLabel,
+      detectableClasses,
+      settings.classIds,
+      settings.detectPlates,
+      settings.readPlateText,
+      settings.analysisSpeed,
+      settings.maxAnalysisFps,
+      geometry.lines.length,
+      geometry.zones.length,
+      range,
+    ],
   );
 
   /** Démarre le direct sur la géométrie **courante**, mise à l'échelle par le hook. */
@@ -1068,6 +1120,39 @@ export function StudioPage() {
             />
           )}
 
+          {/* Avant le premier chiffre, la même section **au même endroit** — elle
+              vivait tout en bas de la page, sous la vidéo, pendant que cette
+              colonne restait vide sur toute la hauteur de la scène. Un écran vide
+              qui promet des chiffres qu'on ne verra jamais est pire que pas
+              d'écran vide du tout : d'où le même libellé, la même taille et la
+              même place que le tableau réel. Une seule carte, parce que le tableau
+              réel n'a plus qu'une tête de lecture — « Objets suivis » est passé
+              dans la barre, où rien ne s'affiche avant la première analyse. */}
+          {resultStats === null && media.source !== null && (
+            <section aria-labelledby="results-title">
+              <h3 id="results-title" className="label-micro mb-3">
+                Résultats
+              </h3>
+              <MetricCard
+                size="lg"
+                label="Passages en entrée"
+                value="—"
+                hint="Total des passages sur les sens marqués « entrée », toutes lignes"
+              />
+            </section>
+          )}
+
+          {/* Ce qui remplit le reste de la colonne : les réglages qui partiront au
+              serveur, relus d'un coup. Ils vivent dans quatre tiroirs de la barre,
+              et les vérifier demandait d'ouvrir les quatre — pendant que la place
+              pour les lire tous ensemble restait inoccupée juste à côté.
+
+              Pas en caméra : le direct n'a ni portion à choisir ni plaques, et
+              `RealtimePanel` occupe déjà cette place avec ce qui le concerne. */}
+          {resultStats === null && media.source !== null && !isCamera && (
+            <AnalysisSummary rows={summaryRows} />
+          )}
+
           {/* Le direct quand la caméra est la source : c'est l'action qu'on vient
               chercher, et la placer sous vingt curseurs obligerait à défiler pour
               la trouver. */}
@@ -1197,29 +1282,6 @@ export function StudioPage() {
           jamais. */}
       {timelineEvents !== null && !live.active && (
         <CrossingTimeline events={timelineEvents} lines={geometry.lines} live={analysing} />
-      )}
-
-      {/* `media.source !== null` en plus de `resultStats === null` : sans vidéo,
-          il n'y a même pas de tracé possible, et ce squelette qui promet des
-          chiffres n'a pas sa place sur un écran d'arrivée vide. */}
-      {resultStats === null && media.source !== null && (
-        <section aria-labelledby="results-title">
-          <h2 id="results-title" className="label-micro mb-3">
-            Résultats
-          </h2>
-          {/* Le même libellé, la même taille **et la même place** que le tableau de
-              bord réel : un écran vide qui promet des chiffres qu'on ne verra
-              jamais est pire que pas d'écran vide du tout. Une seule carte, parce
-              que le tableau réel n'a plus qu'une tête de lecture — « Objets
-              suivis » est passé dans la barre, où rien ne s'affiche avant la
-              première analyse. */}
-          <MetricCard
-            size="lg"
-            label="Passages en entrée"
-            value="—"
-            hint="Total des passages sur les sens marqués « entrée », toutes lignes"
-          />
-        </section>
       )}
 
       {/* Monté seulement une fois ouvert : le `<dialog>` est un composant lourd

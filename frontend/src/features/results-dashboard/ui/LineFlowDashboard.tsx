@@ -192,7 +192,7 @@ function LineFlowRow({
         )}
       </div>
       {entries !== null && exits !== null && (entries > 0 || exits > 0) && (
-        <EntryExitBar entries={entries} exits={exits} />
+        <EntryExitBar entries={entries} exits={exits} color={line.color} />
       )}
     </li>
   );

@@ -30,9 +30,11 @@ interface MetricCardProps {
    * `lg` pour l'unique chiffre de tête d'un écran, `md` (défaut) pour un chiffre
    * important, `sm` pour un chiffre de détail.
    *
-   * Aucune ne change autre chose que la densité — même carte, même structure,
-   * même `aria-live` : c'est le poids visuel qui distingue « ce que je viens
-   * lire » de « comment il se décompose ».
+   * Elles ne changent que la densité — même carte, même structure, même
+   * `aria-live`, et **le même alignement à gauche** : c'est le poids visuel qui
+   * distingue « ce que je viens lire » de « comment il se décompose ». Le chiffre
+   * de tête a été centré un moment ; à gauche, il s'aligne avec son libellé, sa
+   * précision et tout ce que la colonne empile en dessous.
    */
   size?: "lg" | "md" | "sm";
 }
