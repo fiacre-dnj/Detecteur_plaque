@@ -18,10 +18,11 @@
  * ou qui grandit d'un message d'erreur déplacerait sinon la barre derrière elle.
  */
 
-import { Suspense, useLayoutEffect, useRef } from "react";
-import { NavLink, Outlet } from "react-router";
+import { useLayoutEffect, useRef } from "react";
+import { NavLink } from "react-router";
 
 import { BackendStatusBadge } from "./BackendStatusBadge";
+import { KeepAlivePages } from "./KeepAlivePages";
 import { ThemeToggle } from "./ThemeToggle";
 
 const LINKS = [
@@ -82,11 +83,12 @@ export function AppShell() {
       </header>
 
       <main className="mx-auto max-w-[1600px] px-6 py-6">
-        {/* Une frontière de suspense par coquille : une route paresseuse en cours
-            de chargement n'efface pas l'entête ni la navigation. */}
-        <Suspense fallback={<PageSkeleton />}>
-          <Outlet />
-        </Suspense>
+        {/* Les trois pages restent **montées**, seule la visible est affichée :
+            changer d'onglet ne doit pas coûter la vidéo importée, le tracé et le
+            résultat en cours. Chacune porte sa propre frontière de suspense, donc
+            une page qu'on ouvre pour la première fois n'efface ni l'entête, ni la
+            navigation, ni les pages déjà chargées. */}
+        <KeepAlivePages />
       </main>
     </div>
   );
@@ -136,17 +138,4 @@ function useHeaderHeight(): React.RefObject<HTMLElement | null> {
   }, []);
 
   return element;
-}
-
-/** Squelette à la forme d'une page, pas un spinner centré. */
-function PageSkeleton() {
-  return (
-    <div className="space-y-4" aria-busy="true" aria-label="Chargement de la page">
-      <div className="h-9 w-64 animate-pulse rounded-input bg-surface" />
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
-        <div className="aspect-video animate-pulse rounded-section bg-surface" />
-        <div className="h-64 animate-pulse rounded-section bg-surface" />
-      </div>
-    </div>
-  );
 }
