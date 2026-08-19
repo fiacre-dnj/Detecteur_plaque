@@ -255,9 +255,47 @@ plus deux fois dans le même sens » si.
 - **La carte « Personne » ne disparaît plus d'un résultat qui en contient.** Elle
   suivait la case cochée dans les réglages : décocher « Personne » après une
   analyse effaçait le chiffre de l'analyse elle-même.
+- **La colonne de droite ne reste plus vide en attendant l'analyse.** Elle affiche
+  désormais « Configuration système » : le modèle retenu, les types comptés, le
+  tracé, la portion de vidéo analysée, les plaques et la cadence — les six réglages
+  qui
+  partiront au serveur, relus d'un coup au lieu d'ouvrir quatre tiroirs pour les
+  vérifier. Un tracé sans ligne, ou aucun type coché, y est signalé avec sa
+  conséquence : « les zones seules ne produisent pas de franchissement ». Rien n'y
+  empêche de lancer.
+- **L'aperçu des résultats à venir est passé en haut de la colonne**, à la place
+  exacte des vrais chiffres. Il vivait tout en bas de la page, sous la vidéo et la
+  chronologie, là où il fallait défiler pour le trouver.
+- **Le registre dit par où *et* quand, dans la même colonne.** « Lignes franchies »
+  listait les deux sens dans une seule cellule, pendant que les colonnes « Entrée »
+  et « Sortie » n'en portaient que l'heure : lire « ce véhicule est entré par la
+  ligne 1 à 00:34 » demandait de recoller trois cellules, dont une au survol. Les
+  colonnes s'appellent maintenant « Entrée par » et « Sortie par » et portent la
+  ligne et l'heure. Un franchissement dont le rôle n'est plus lisible — ligne
+  effacée du tracé depuis l'analyse — garde sa propre colonne, qui n'apparaît que
+  s'il en existe.
+- **Les barres entrées/sorties portent la couleur de leur ligne**, celle du trait
+  tracé sur la vidéo, au lieu d'un gris uniforme — dans les Résultats comme dans la
+  Statistique. Trois barres empilées se ressemblaient toutes, et relier une rangée
+  au trait qu'on voit à l'écran demandait de relire son nom à chaque fois.
+- **Changer d'onglet ne fait plus perdre son travail.** Passer du Studio à
+  l'Historique ou au Benchmark, puis revenir, rendait la page telle qu'on l'avait
+  ouverte : plus de vidéo, plus de tracé, plus de résultat — et il fallait tout
+  recommencer pour avoir consulté l'historique dix secondes. Les trois pages
+  conservent désormais leur état, y compris la position de lecture de la vidéo, une
+  analyse en cours et la position de défilement de chacune.
 
 ### Corrigé
 
+- **L'analyse avec repérage de plaques est 1,3× à 2× plus rapide.** Elle s'arrêtait
+  net pendant une seconde entière, plusieurs fois par minute : sur une route calme, ces
+  pauses représentaient les trois quarts du temps passé à repérer les plaques. Le
+  détecteur de plaques recevait une image de forme légèrement différente pour chaque
+  véhicule, et la bibliothèque de calcul réétalonnait ses algorithmes à chaque fois.
+  Mesuré sur deux scènes réelles, en alternant les deux régimes : **7,2 → 14,9 puis
+  6,1 → 10,4 images/s** sur une scène clairsemée, **8,0 → 10,7 puis 7,8 → 11,9** sur une
+  scène chargée. Aucun chiffre publié ne change — mêmes véhicules, mêmes
+  franchissements, mêmes plaques.
 - **Une vidéo haute résolution ne coûte presque plus de cadence.** L'analyse
   ralentissait à mesure que la résolution montait, et pour une seule raison : le
   décodage des images attendait le calcul de l'image précédente au lieu de se faire

@@ -72,7 +72,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1526 tests
+uv run pytest                                                            # 1532 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -167,11 +167,35 @@ câblage passe par `StudioPage` — c'est pourquoi `GeometryPanel` reçoit un
 `onOpenPresets` plutôt que la modale elle-même, et pourquoi `SettingsPanels` reçoit
 un emplacement `leading` où le studio pose le bouton d'import.
 
+**Les trois pages ne se démontent plus en changeant d'onglet** (2026-08-19). Le
+routeur n'a plus qu'une route (`path: "*"` → `AppShell`) et c'est
+`app/layout/KeepAlivePages.tsx` qui monte les pages visitées et masque les autres
+par l'attribut `hidden`. Un `<Outlet />` les démontait : aller voir l'historique
+dix secondes coûtait la vidéo importée, le tracé, l'intervalle, la position de
+lecture et le suivi SSE en cours — dont **rien** ne se reconstruit depuis l'URL,
+la source étant un `File` local et la géométrie des pixels de cette vidéo-là.
+Quatre conséquences à connaître avant d'y toucher :
+
+- **l'appariement URL → page est à nous maintenant**, dans `layout/keepAlive.ts`,
+  et il est testé : la comparaison est **exacte**, sinon `/` désignerait les trois
+  onglets à la fois et deux pages s'afficheraient l'une sur l'autre ;
+- **un garde « une seule fois » indexé sur le montage ne se réarme plus jamais.**
+  Les deux effets de `StudioPage` qui lisent `location.state` — « Ouvrir » et
+  « Relancer » depuis l'historique — retiennent donc **l'état de navigation
+  appliqué** et non un booléen ; sans cela, le deuxième « Ouvrir » ne ferait rien ;
+- **une page cachée n'est pas une page inerte** : SSE, session caméra et requêtes
+  en vol continuent. C'est le but, mais cela veut dire qu'on ne peut plus compter
+  sur le démontage pour arrêter quoi que ce soit ;
+- **le défilement est mémorisé par page**, relevé en continu et rendu en
+  `useLayoutEffect`. Masquer une page longue raccourcit le document, le navigateur
+  recadre `scrollY`, et l'enregistrer au moment de la bascule sauvegarderait la
+  valeur déjà tronquée.
+
 #### La disposition du studio, depuis le 2026-08-12 (barre collante, géométrie en tiroir et actions dans le lecteur le 2026-08-19)
 
 ```
 ━━ barre COLLANTE sous l'entête (sticky, top: --app-header-h, z-30) ━━━━━━━━━━
-[⇧ Importer] [Détection ▾] [Comptage ▾] [Affichage ▾] [Géométrie ▾]  cadence · latence · suivis · flux →
+[⇧ Importer] [Détection ▾] [Comptage ▾] [Affichage ▾] [Géométrie ▾]  suivis · cadence · latence · flux →
              └─ tiroir flottant du panneau ouvert, 2 colonnes, PAR-DESSUS la page
 ┌──────────────────────────────┬──────────────────┐
 │ nom du fichier ⟨   ⟩ WxH · fps│ RÉSULTATS         │  aside 24 rem
@@ -181,7 +205,13 @@ un emplacement `leading` où le studio pose le bouton d'import.
 │ │ INTERVALLE ─── mm:ss→mm:ss│ │   par type        │
 │ │ rail d'intervalle         │ │ + 1 carte PAR     │
 │ │ ⏵ ⏮ ⏪ ±1i ⏩ ⏭ ↺  Vitesse  │ │   LIGNE tracée    │
-│ │              [LANCER] [Fermer]                  │
+│ │              [LANCER] [Fermer] │                  │
+│                                │ AVANT L'ANALYSE : │
+│                                │ le KPI de tête à  │
+│                                │ « — », puis AVANT │
+│                                │ DE LANCER, le     │
+│                                │ récapitulatif des │
+│                                │ réglages          │
 ├──────────────────────────────┴──────────────────┤
 │ STATISTIQUE — KPI de tête, une rangée par ligne,  │  les trois sections
 │   comparatifs groupés en une carte                │  vivent PENDANT
@@ -206,7 +236,7 @@ l'écran dès qu'on lisait un résultat.
   des réglages ne connaît pas `geometry-editor`, c'est le studio qui câble, même
   règle que `leading`/`trailing`. `GeometryPanel` a **perdu sa carte et son
   titre** : le tiroir est déjà une région nommée « Géométrie » ;
-- **les chiffres d'instant** — cadence serveur, latence, **objets suivis** et flux
+- **les chiffres d'instant** — **objets suivis**, cadence serveur, latence et flux
   analysé — sont à l'extrémité de la barre (`TechnicalMetrics`, `trailing`), en
   libellé plus chiffre sur deux lignes, sans carte. Ils tenaient quatre des six
   `MetricCard` de tête, à égalité visuelle avec le bilan du comptage. Ils étaient
@@ -263,6 +293,32 @@ calcul :
   cochée **ou** si le résultat relu porte des entrées `person`. Sans cela, rouvrir un
   résultat archivé après avoir décoché la case effaçait une colonne de son propre
   contenu.
+
+**La colonne n'est plus vide avant la première analyse** (soir du 2026-08-19). Entre
+l'import d'une vidéo et le premier chiffre, elle était une bande de 24 rem inoccupée
+sur toute la hauteur de la scène — et le squelette « Passages en entrée — » vivait,
+lui, **tout en bas de la page**, sous la vidéo et la chronologie, là où personne ne
+le voyait avant d'avoir défilé. Deux changements :
+
+- **le squelette est monté dans la colonne**, à l'endroit exact qu'occupera le
+  tableau réel : même libellé, même taille, même place. Un écran d'attente n'a de
+  valeur que s'il annonce la forme de ce qui vient ;
+- **« Configuration système » remplit le reste** (`ui/AnalysisSummary.tsx`, texte
+  calculé par `model/analysisSummary.ts`, testé) : modèle, objets comptés, géométrie,
+  portion analysée, plaques, cadence — les réglages qui partiront au serveur, relus
+  d'un coup. Ils vivent dans **quatre tiroirs différents** de la barre, et les
+  vérifier demandait d'ouvrir les quatre pendant que la place pour les lire ensemble
+  restait inoccupée juste à côté. Trois points qui ne se devinent pas :
+  - **les avertissements disent une conséquence, jamais un interdit** — « aucune
+    ligne : les zones seules ne produisent pas de franchissement », et non « ligne
+    manquante ». Lancer reste possible, `canAnalyse` en est le seul juge, et ce
+    récapitulatif ne bloque rien ;
+  - **il ne montre pas la durée de l'intervalle**, seulement ses bornes :
+    `describeRange` demande la durée de la vidéo, qui n'est lisible que sur la
+    balise `<video>` et ne vit dans aucun état réactif — le chiffre serait figé au
+    premier rendu ;
+  - **rien en caméra** : un flux n'a ni portion à choisir ni plaques, et
+    `RealtimePanel` occupe déjà cette place avec ce qui le concerne.
 
 **La chronologie des franchissements survit à la fin de l'analyse** — c'était sa
 condition d'affichage (`session.result === null`) qui la démontait à la seconde où
@@ -409,7 +465,26 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
   et **« Durée à l'écran »** (`firstSeenMs → lastSeenMs`, un temps de **présence
   dans le champ**), parce que « Vu de / à » et « Durée » se lisaient comme l'heure
   et le temps du franchissement — exactement ce que les deux nouvelles colonnes
-  portent ;
+  portent.
+
+  **« Lignes franchies » n'existe plus** (soir du 2026-08-19) : elle est fondue
+  dans ces deux colonnes, devenues **« Entrée par »** et **« Sortie par »**, qui
+  portent maintenant la **ligne et l'heure** au lieu de l'heure seule. Elle
+  listait les deux sens dans une même cellule pendant que ses voisines ne
+  donnaient que l'instant : lire « ce véhicule est entré par la ligne 1 à 00:34 »
+  demandait de recoller trois cellules, dont une par survol. Deux points qui ne se
+  devinent pas :
+  - **le contenu tient sur une rangée** — flèche à l'angle réel, nom de ligne
+    tronqué, heure poussée à droite. Empiler la ligne et l'heure casserait
+    `ROW_HEIGHT`, dont dépend la virtualisation au-delà de 200 lignes ;
+  - **une troisième colonne « Hors rôle » apparaît, et seulement si une rangée en
+    porte** : un franchissement dont le rôle n'est plus lisible — ligne retirée du
+    tracé, ou sens resté `neutral` d'avant ADR 0021. Le ranger sous un rôle serait
+    une invention, le taire ferait diverger le registre de « Passages », qui le
+    compte. `crossingsWithoutRole` est le **complément exact** des deux rôles, et
+    un test le verrouille. La colonne est décidée sur `vehicles` entier et non sur
+    les lignes rendues : une colonne qui apparaîtrait au défilement d'un tableau
+    virtualisé décalerait toutes les autres sous le curseur ;
 - **les Franchissements sont une chronologie, plus un tableau** (2026-08-17).
   `CrossingLog` est **supprimé**, remplacé par
   `analysis-job/ui/CrossingTimeline.tsx` et son modèle
@@ -945,11 +1020,12 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       existe et **reste à 640** : sur 60 images, 640 → 448 → 320 donne 94 → 22 → **0**
       plaques localisées pour 96 → 56 → 34 ms. Le rappel s'effondre bien plus vite que
       le coût ne baisse ;
-    - **`TRAFFIC_PLATE_DETECT_MAX_PER_FRAME` borne le coût, et n'est pas monotone** :
-      `2` rend 1,27× à 1,51× à comptage identique, `1` ne rend rien. Le coût par appel
-      dans le pipeline (~99 ms pour un recadrage) vaut cinq fois celui mesuré hors
-      pipeline (21,5 ms) : quelque chose domine que le nombre de recadrages n'explique
-      pas, et c'est le prochain sujet de mesure.
+    - **`TRAFFIC_PLATE_DETECT_MAX_PER_FRAME` borne le coût, et ne l'améliore pas.**
+      Le 1,27× qui lui était d'abord attribué venait surtout de ce qu'il évitait les
+      appels à un seul recadrage, donc les pauses d'étalonnage cuDNN (décision 25). Une
+      fois cette cause corrigée : `0` → 11,0 img/s et **180 plaques localisées**,
+      `2` → 9,0 et 137, `1` → 13,8 et 76. Il **coûte des plaques**, à peu près
+      proportionnellement aux recadrages écartés.
 
     **Et surtout** : sur une vue de circulation 1080p, les plaques font moins de 48 px
     et le plancher de lecture est à 64 (invariant 12) — **aucune plaque ne peut être
@@ -957,6 +1033,29 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     (`plate_unread_reason = too_small`, décision 14). Les deux gestes qui règlent cela
     sont de resserrer le plan ou de filmer plus défini, pas de régler quoi que ce soit.
     [ADR 0032](docs/adr/0032-l-ocr-n-etait-pas-le-goulot-le-detecteur-de-plaques-l-est.md).
+25. **L'autotune cuDNN se réétalonnait à chaque plaque, et coûtait jusqu'à 2× la
+    cadence.** `TRAFFIC_INFERENCE_CUDNN_AUTOTUNE` est **à `false` par défaut** depuis
+    [ADR 0033](docs/adr/0033-l-autotune-cudnn-se-reetalonnait-a-chaque-plaque.md), qui
+    abroge le défaut d'ADR 0013. Quatre points, et le premier est le plus utile pour
+    déboguer n'importe quoi d'autre ici :
+    - **ce n'était pas un coût, c'était une pause.** L'étage de plaques annonçait 99 ms
+      par image ; sa **médiane valait 27 ms** et six appels sur 90 dépassaient la
+      seconde, pesant 73 % du poste. Une moyenne ne distingue pas les deux, et les deux
+      appellent des gestes opposés — d'où les `p50 / p90 / max` **par appel** que le banc
+      rend désormais, avec un `⚠` dès qu'un maximum dépasse le double de la médiane ;
+    - **la cause est la forme d'entrée.** Ultralytics impose `rect=True` en prédiction,
+      donc un recadrage soumis **seul** produit une forme qui dépend de son rapport
+      d'aspect ; cuDNN réétalonne à chaque forme neuve, une seconde à chaque fois. Deux
+      recadrages de tailles différentes forcent au contraire une entrée **carrée
+      constante** — c'est pourquoi les images chargées n'en souffraient pas ;
+    - **couper l'autotune ne touche aucun pixel** : mêmes détections, même plaque
+      publiée, mêmes comptages, sur les deux scènes et les quatre courses. Gain mesuré
+      en courses alternées : **1,7× à 2,1×** sur une scène clairsemée, **1,3× à 1,5×**
+      sur une scène dense. Et ce qu'il rendait au chemin dont la forme *est* fixe :
+      7,92 ms contre 8,00, soit rien ;
+    - **ne pas « corriger » en forçant `rect=False` sur les plaques.** Même gain, et une
+      plaque publiée en moins : le remplissage change la boîte d'un sous-pixel, donc la
+      vignette d'OCR, donc le vote.
 
 ## Les vitesses en km/h : la calibration est **par ligne**
 
@@ -1294,7 +1393,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1526 (1 skip) | 628 |
+| Nombre | 1532 (1 skip) | 628 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 
