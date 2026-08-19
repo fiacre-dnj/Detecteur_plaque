@@ -41,10 +41,12 @@ from traffic_analysis.features.counting.domain.plate_geometry import (
     select_best,
 )
 from traffic_analysis.features.counting.domain.plate_policy import (
+    DetectionCandidate,
     PlateDetectOptions,
     PlateDetectPolicy,
     PlateOcrOptions,
     PlateOcrPolicy,
+    select_within_budget,
 )
 from traffic_analysis.features.counting.domain.tracking_session import (
     AnalysisSession,
@@ -86,6 +88,10 @@ __all__ = [
     "BoundingBox",
     "CountingLineDef",
     "DetectableClass",
+    # Une candidate au budget de détection de plaques, réexportée pour le service :
+    # le classement est une règle pure du domaine, la décision de plafonner appartient
+    # à qui sait ce qu'une inférence coûte.
+    "DetectionCandidate",
     # Le vocabulaire des sens de ligne, publié pour le schéma de requête : c'est lui
     # qui valide « entry | exit | neutral », et il ne doit pas recopier la liste.
     "DirectionRole",
@@ -114,6 +120,10 @@ __all__ = [
     "ZoneDef",
     "is_plausible",
     "select_best",
+    # Le plafond de dépense par image : le classement est une règle pure du domaine,
+    # la décision de plafonner appartient au service qui sait ce qu'une inférence
+    # coûte. Même partage que `should_detect` / `_detect_plates`.
+    "select_within_budget",
 ]
 
 # Au-delà, la timeline devient un objet de plusieurs centaines de mégaoctets.

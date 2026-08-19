@@ -11,7 +11,9 @@ d'un coup les débits, les vitesses et les gates de ré-identification.
 from __future__ import annotations
 
 import os
+import queue
 import tempfile
+import threading
 from functools import lru_cache
 from math import ceil
 from pathlib import Path
@@ -48,6 +50,33 @@ DEFAULT_IMGSZ = 640
 
 #: Largeur attendue de `boxes.data` en suivi : `[x1, y1, x2, y2, id, conf, cls]`.
 TRACKED_BOX_COLUMNS = 7
+
+#: Mémoire d'images décodées **en vol** au plus, en octets.
+#:
+#: Bornée en octets et non en images, et c'est tout l'objet du réglage : une image
+#: 4K pèse 24,9 Mo contre 2,8 en 720p, donc « quatre images en avance » veut dire
+#: neuf fois plus de mémoire d'un cas à l'autre. Une file profonde n'apporte
+#: d'ailleurs rien de plus qu'un lot d'avance — c'est le lot d'avance qui recouvre
+#: le décodage avec l'inférence ; le reste ne sert qu'à absorber la gigue.
+#:
+#: 128 Mo laissent une douzaine de lots d'avance en 720p et **un seul** en 4K, ce
+#: qui suffit au recouvrement dans les deux cas.
+DECODE_BUDGET_BYTES = 128 * 1024 * 1024
+
+#: Attente maximale d'un dépôt dans la file, en secondes.
+#:
+#: Le producteur ne bloque **jamais** indéfiniment : il redemande la permission de
+#: continuer à chaque expiration. C'est ce qui garantit qu'un consommateur qui
+#: s'arrête au milieu — une fenêtre d'analyse qui atteint sa borne, une annulation —
+#: ne laisse pas un fil de décodage vivant sur un fichier ouvert.
+DECODE_PUT_TIMEOUT_S = 0.05
+
+#: Sentinelle de fin de flux. Un objet privé, jamais `None` : `None` est une valeur
+#: qu'un jour quelqu'un mettra légitimement dans la file.
+_DECODE_DONE = object()
+
+type _DecodedFrame = tuple[int, npt.NDArray[np.uint8]]
+type _DecodedBatch = list[_DecodedFrame]
 
 # `parents[5]` mène à `backend/` : infrastructure → models_registry → features →
 # traffic_analysis → src → backend. Compté à la main, ce décalage a été **faux**
@@ -251,125 +280,44 @@ class UltralyticsEngine:
         Un bail pour toute l'itération : deux `track()` simultanés sur la même
         instance partageraient l'état de suivi et mélangeraient deux vidéos.
 
-        **Deux chemins, un seul contrat.** Sans début demandé, la vidéo part au
-        chargeur d'Ultralytics, qui la décode par lots et sait la lire vite. Avec un
-        début, ce chargeur ne sert plus à rien : il **ne sait pas se déplacer** —
-        `LoadImagesAndVideos` ouvre à zéro et avance —, donc analyser à partir de la
-        cinquantième minute d'un fichier d'une heure coûterait cinquante minutes
-        d'inférence sur des images jetées. Le second chemin décode alors lui-même,
-        après un déplacement, et confie les images une par une au modèle, exactement
-        comme le fait déjà le temps réel.
+        **Un seul chemin, et le décodage vit dans un fil séparé.** Il y en avait deux
+        — le chargeur d'Ultralytics sans borne de début, un décodage maison image par
+        image avec borne — et ils partageaient le même défaut : le décodage attendait
+        l'inférence de l'image précédente. Or c'est **tout** ce que la résolution
+        coûte. Mesuré au banc (`scripts/pipeline_bench.py --ladder`), même scène
+        réencodée à quatre paliers, yolov8n, GPU :
 
-        Ce que les deux chemins garantissent identiquement, et qu'il ne faut pas
-        casser : `frame_index` est l'index **dans le fichier**, donc `timestamp_ms`
-        reste du temps de scène absolu. Une fenêtre ne décale aucun horodatage.
+        | palier | img/s | décodage | inférence |
+        |---|---|---|---|
+        | 720p  | 58,5 | 3,2 ms | 8,0 ms |
+        | 1080p | 47,0 | 6,9 ms | 8,0 ms |
+        | 1440p | 35,4 | 12,6 ms | 8,0 ms |
+        | 2160p | 27,0 | 21,7 ms | 8,0 ms |
+
+        L'inférence ne bouge pas d'un dixième — l'entrée du réseau vaut 640 quelle que
+        soit la source — et le décodage suit le nombre de pixels. Le décodage nu,
+        chronométré séparément sur le même fichier, donne 20,9 ms : la colonne
+        obtenue par différence **est** le décodage, ce n'est pas une supposition.
+
+        Le décodage étant du travail CPU pendant que la carte attend, un fil et un lot
+        d'avance suffisent à le faire disparaître du chemin critique. Le plafond
+        devient `max(décodage, GPU)` au lieu de leur somme.
+
+        Ce que le fil ne change pas, et qu'il ne faut pas casser : `frame_index` est
+        l'index **dans le fichier**, donc `timestamp_ms` reste du temps de scène
+        absolu. Une fenêtre ne décale aucun horodatage.
+
+        **Les images partent en lot, comme avant.** `LoadImagesAndVideos` remplissait
+        un lot d'images consécutives ; nous le remplissons nous-mêmes et le passons en
+        liste. Vérifié dans la roue installée (`trackers/track.py`) : hors mode
+        `stream`, Ultralytics ne crée **qu'un** tracker et l'applique aux résultats
+        dans l'ordre d'entrée. Le lot reste donc neutre pour le suivi — et le chemin
+        avec borne de début, qui n'en avait aucun, en gagne un.
         """
         info = self.probe(video_path)
         stride = max(1, spec.frame_stride)
         first_index = _first_analysed_index(spec.start_ms, info.fps, stride)
-
-        with self._registry.lease(spec.model_id) as model:
-            reset_trackers(model)
-            if first_index > 0:
-                yield from self._iter_seeked(model, video_path, info, spec, stride, first_index)
-                return
-            results = model.track(
-                source=str(video_path),
-                stream=True,
-                tracker=str(self._tracker_for(spec)),
-                # **Le plancher du détecteur, pas le seuil de l'utilisateur.** Ce
-                # dernier est passé au tracker comme `track_high_thresh` /
-                # `new_track_thresh` : la création de pistes reste à son niveau,
-                # mais les détections faibles atteignent enfin la seconde
-                # association, qui prolonge une piste dont la confiance plonge.
-                # Voir `detector_floor` pour la panne que cela corrige.
-                conf=detector_floor(),
-                iou=spec.iou,
-                classes=list(spec.class_ids),
-                # **NMS inter-classes**, et c'est le piège 5 de prompt/13. Le NMS
-                # par défaut d'Ultralytics est *class-aware* : il ne compare que
-                # des boîtes de même classe. Une camionnette scorée `car 0.52`
-                # **et** `truck 0.41` survit donc en double, devient deux pistes,
-                # deux identités, et compte deux fois. Nos quatre classes sont
-                # mutuellement exclusives sur un objet physique, donc la
-                # suppression doit ignorer la classe.
-                agnostic_nms=True,
-                device=self._registry.device(),
-                half=self._registry.half(),
-                imgsz=self._imgsz,
-                # **Le lot ne change rien au suivi, et c'est vérifié dans la roue
-                # installée.** `LoadImagesAndVideos` remplit un lot d'images
-                # **consécutives** de la même vidéo, et `on_predict_postprocess_end`
-                # leur applique `trackers[0]` une par une, dans l'ordre. Avec
-                # `stream=True`, les résultats restent rendus un par un : la
-                # correspondance `frame_index = position × stride` ci-dessous reste
-                # donc vraie, et c'est elle qui porte tout le temps de scène.
-                batch=self._batch,
-                vid_stride=stride,
-                persist=True,
-                verbose=False,
-            )
-            for position, result in enumerate(results):
-                frame_index = position * stride
-                yield EngineFrame(
-                    frame_index=frame_index,
-                    # Temps de scène, vrai par construction.
-                    timestamp_ms=frame_index / info.fps * 1000.0,
-                    image=result.orig_img,
-                    tracks=_to_observations(result),
-                )
-
-    def _iter_seeked(
-        self,
-        model: Any,  # noqa: ANN401 — un `YOLO` n'est pas typé
-        video_path: Path,
-        info: VideoInfo,
-        spec: EngineSpec,
-        stride: int,
-        first_index: int,
-    ) -> Iterator[EngineFrame]:
-        """Décode à partir de `first_index` et suit image par image.
-
-        Le déplacement se fait en deux temps, et le second n'est pas une précaution
-        de style : `CAP_PROP_POS_FRAMES` est **approximatif** sur plusieurs
-        conteneurs — FFmpeg se pose sur l'image-clé précédente, et certains
-        démultiplexeurs dépassent la cible. On lit donc la position réellement
-        atteinte, on repart de zéro si elle a dépassé, puis on avance par `grab()`,
-        qui démultiplexe sans convertir en tableau : quelques dizaines d'images de
-        rattrapage coûtent bien moins qu'une seule inférence.
-
-        Ce module a déjà payé une panne silencieuse de cette famille (le
-        `parents[5]` de `CONFIG_DIR`) : un déplacement approximatif accepté sans
-        vérification donnerait des `frame_index` faux, donc des horodatages faux,
-        donc des vitesses et des franchissements datés à côté — sans qu'aucune
-        exception ne le signale.
-        """
-        import cv2
-
-        capture = cv2.VideoCapture(str(video_path))
-        try:
-            if not capture.isOpened():
-                raise UnsupportedMediaError("Ce fichier n'a pas pu être ouvert comme une vidéo.")
-
-            capture.set(cv2.CAP_PROP_POS_FRAMES, first_index)
-            position = int(capture.get(cv2.CAP_PROP_POS_FRAMES))
-            if position > first_index:
-                capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                position = 0
-            while position < first_index and capture.grab():
-                position += 1
-            if position != first_index:
-                # La vidéo est plus courte que la borne demandée. Rendre un flux
-                # vide plutôt que lever : c'est `AnalysisService` qui décide du
-                # message, il connaît la durée **et** les deux bornes, là où
-                # l'adaptateur ne verrait qu'une lecture qui s'arrête.
-                logger.warning(
-                    "déplacement impossible : la vidéo s'arrête avant la borne demandée",
-                    wanted_index=first_index,
-                    reached_index=position,
-                )
-                return
-
+        if first_index > 0:
             logger.info(
                 "analyse démarrée après déplacement",
                 start_ms=round(spec.start_ms),
@@ -377,51 +325,54 @@ class UltralyticsEngine:
                 frame_stride=stride,
             )
 
-            index = first_index
-            while True:
-                ok, decoded = capture.read()
-                if not ok:
-                    return
-                # `read()` est typé « n'importe quel dtype » par les stubs d'OpenCV.
-                # Il rend en pratique du `uint8` BGR, exactement comme `orig_img` de
-                # l'autre chemin — d'où le recadrage de type, et pas une conversion :
-                # copier chaque image coûterait plus que toute la lecture.
-                image = cast("npt.NDArray[np.uint8]", decoded)
+        with self._registry.lease(spec.model_id) as model:
+            reset_trackers(model)
+            batches = decode_ahead(
+                video_path,
+                stride=stride,
+                first_index=first_index,
+                batch=self._batch,
+                frame_bytes=max(1, info.width * info.height * 3),
+            )
+            for chunk in batches:
                 results = model.track(
-                    source=image,
-                    # Les **mêmes** arguments que le chemin sans déplacement, à
-                    # l'unique exception de la source. Toute divergence ici ferait
-                    # qu'un même tracé compterait différemment selon qu'on analyse
-                    # depuis le début ou depuis une borne — précisément le genre
-                    # d'écart que le partage des schémas de requête existe pour
-                    # empêcher entre le différé et le direct.
-                    persist=True,
+                    source=[image for _, image in chunk],
                     tracker=str(self._tracker_for(spec)),
+                    # **Le plancher du détecteur, pas le seuil de l'utilisateur.** Ce
+                    # dernier est passé au tracker comme `track_high_thresh` /
+                    # `new_track_thresh` : la création de pistes reste à son niveau,
+                    # mais les détections faibles atteignent enfin la seconde
+                    # association, qui prolonge une piste dont la confiance plonge.
+                    # Voir `detector_floor` pour la panne que cela corrige.
                     conf=detector_floor(),
                     iou=spec.iou,
                     classes=list(spec.class_ids),
+                    # **NMS inter-classes**, et c'est le piège 5 de prompt/13. Le NMS
+                    # par défaut d'Ultralytics est *class-aware* : il ne compare que
+                    # des boîtes de même classe. Une camionnette scorée `car 0.52`
+                    # **et** `truck 0.41` survit donc en double, devient deux pistes,
+                    # deux identités, et compte deux fois. Nos quatre classes sont
+                    # mutuellement exclusives sur un objet physique, donc la
+                    # suppression doit ignorer la classe.
                     agnostic_nms=True,
                     device=self._registry.device(),
                     half=self._registry.half(),
                     imgsz=self._imgsz,
+                    persist=True,
                     verbose=False,
                 )
-                yield EngineFrame(
-                    frame_index=index,
-                    # Absolu, depuis le début du **fichier** : c'est ce qui fait
-                    # qu'une fenêtre ne décale aucun horodatage.
-                    timestamp_ms=index / info.fps * 1000.0,
-                    image=image,
-                    tracks=_to_observations(results[0]),
-                )
-                # `grab()` et non `read()` : les images sautées par le pas d'analyse
-                # n'ont pas à être converties en tableau.
-                for _ in range(stride - 1):
-                    if not capture.grab():
-                        return
-                index += stride
-        finally:
-            capture.release()
+                # `strict=True` : Ultralytics promet un résultat par image d'entrée,
+                # dans l'ordre. S'il en rendait un de moins, tout le reste du lot
+                # serait décalé d'un cran — donc des boîtes rattachées à la mauvaise
+                # image, avec des horodatages plausibles et faux.
+                for (index, image), result in zip(chunk, results, strict=True):
+                    yield EngineFrame(
+                        frame_index=index,
+                        # Temps de scène, vrai par construction.
+                        timestamp_ms=index / info.fps * 1000.0,
+                        image=image,
+                        tracks=_to_observations(result),
+                    )
 
     def open_stream(self, spec: EngineSpec) -> UltralyticsStream:
         """Ouvre un flux persistant pour le temps réel.
@@ -500,6 +451,173 @@ class UltralyticsStream:
         if self._lease is not None:
             self._lease.__exit__(None, None, None)
             self._lease = None  # type: ignore[assignment]
+
+
+def decode_ahead(
+    video_path: Path,
+    *,
+    stride: int,
+    first_index: int,
+    batch: int,
+    frame_bytes: int,
+    budget_bytes: int = DECODE_BUDGET_BYTES,
+) -> Iterator[_DecodedBatch]:
+    """Décode dans un fil séparé et rend des lots d'images consécutives.
+
+    **Le seul gain que ce fil apporte est un recouvrement**, pas une accélération du
+    décodage : celui-ci coûte exactement la même chose, il ne coûte plus *en plus* de
+    l'inférence. C'est ce qui rend la cadence indépendante de la résolution jusqu'au
+    point où le décodage devient lui-même le plus lent des deux — voir la docstring
+    d'`iter_video` pour le tableau des mesures.
+
+    Trois propriétés à ne pas casser, chacune payée par un mode de panne :
+
+    - **le fil meurt avec le générateur.** `AnalysisService` sort de sa boucle sur la
+      borne de fin d'une fenêtre et sur une annulation ; le générateur est alors
+      fermé. Sans le `finally` ci-dessous, chaque job borné ou annulé laisserait un
+      fil vivant sur un décodeur ouvert — invisible, jusqu'à épuiser les descripteurs
+      ou la mémoire du serveur ;
+    - **le producteur ne bloque jamais indéfiniment.** Il redemande la permission de
+      continuer à chaque expiration de `put`, donc il voit l'arrêt même quand la file
+      est pleine et que plus personne ne lit ;
+    - **une exception du décodage traverse.** Elle est déposée dans la file et relevée
+      dans le fil appelant, à l'endroit où l'appelant l'attend. Un fil qui meurt en
+      silence rendrait un flux vide, c'est-à-dire une analyse « réussie » et vide.
+
+    La file est bornée en **octets** (`budget_bytes`) : une image 4K pèse neuf fois
+    une image 720p, donc un nombre de lots fixe donnerait deux empreintes mémoire
+    incomparables. Un lot d'avance suffit au recouvrement ; le reste absorbe la gigue.
+    """
+    per_batch = max(1, frame_bytes * max(1, batch))
+    pending: queue.Queue[object] = queue.Queue(maxsize=max(1, budget_bytes // per_batch))
+    stop = threading.Event()
+
+    def offer(item: object) -> bool:
+        """Dépose `item`, ou renonce si l'appelant a cessé de lire."""
+        while not stop.is_set():
+            try:
+                pending.put(item, timeout=DECODE_PUT_TIMEOUT_S)
+            except queue.Full:
+                continue
+            return True
+        return False
+
+    def produce() -> None:
+        try:
+            for chunk in _batched(
+                _iter_decoded(video_path, stride=stride, first_index=first_index), batch
+            ):
+                if not offer(chunk):
+                    return
+            offer(_DECODE_DONE)
+        except BaseException as exc:
+            # Toutes, sans distinction : une exception perdue dans un fil rendrait un
+            # flux vide, c'est-à-dire une analyse « réussie » sans un seul véhicule.
+            offer(exc)
+
+    thread = threading.Thread(target=produce, name="traffic-decode", daemon=True)
+    thread.start()
+    try:
+        while True:
+            item = pending.get()
+            if item is _DECODE_DONE:
+                return
+            if isinstance(item, BaseException):
+                raise item
+            yield cast("_DecodedBatch", item)
+    finally:
+        stop.set()
+        # Vidée pour débloquer un producteur en attente : il verrait l'arrêt au bout
+        # d'une expiration de toute façon, mais rendre la place immédiatement raccourcit
+        # la fermeture d'autant, et une annulation doit être ressentie tout de suite.
+        while True:
+            try:
+                pending.get_nowait()
+            except queue.Empty:
+                break
+        thread.join(timeout=1.0)
+
+
+def _iter_decoded(video_path: Path, *, stride: int, first_index: int) -> Iterator[_DecodedFrame]:
+    """Décode la vidéo image par image, à partir de `first_index`, un sur `stride`.
+
+    **Pur et sans fil**, pour être testable : c'est ici que vivent l'index et le
+    déplacement, c'est-à-dire tout ce qui peut se tromper sans lever.
+
+    Le déplacement se fait en deux temps, et le second n'est pas une précaution de
+    style : `CAP_PROP_POS_FRAMES` est **approximatif** sur plusieurs conteneurs —
+    FFmpeg se pose sur l'image-clé précédente, et certains démultiplexeurs dépassent
+    la cible. On lit donc la position réellement atteinte, on repart de zéro si elle
+    a dépassé, puis on avance par `grab()`, qui démultiplexe sans convertir en
+    tableau : quelques dizaines d'images de rattrapage coûtent bien moins qu'une
+    seule inférence.
+
+    Ce module a déjà payé une panne silencieuse de cette famille (le `parents[5]` de
+    `CONFIG_DIR`) : un déplacement approximatif accepté sans vérification donnerait
+    des `frame_index` faux, donc des horodatages faux, donc des vitesses et des
+    franchissements datés à côté — sans qu'aucune exception ne le signale.
+    """
+    import cv2
+
+    capture = cv2.VideoCapture(str(video_path))
+    try:
+        if not capture.isOpened():
+            raise UnsupportedMediaError("Ce fichier n'a pas pu être ouvert comme une vidéo.")
+
+        capture.set(cv2.CAP_PROP_POS_FRAMES, first_index)
+        position = int(capture.get(cv2.CAP_PROP_POS_FRAMES))
+        if position > first_index:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            position = 0
+        while position < first_index and capture.grab():
+            position += 1
+        if position != first_index:
+            # La vidéo est plus courte que la borne demandée. Rendre un flux vide
+            # plutôt que lever : c'est `AnalysisService` qui décide du message, il
+            # connaît la durée **et** les deux bornes, là où l'adaptateur ne verrait
+            # qu'une lecture qui s'arrête.
+            logger.warning(
+                "déplacement impossible : la vidéo s'arrête avant la borne demandée",
+                wanted_index=first_index,
+                reached_index=position,
+            )
+            return
+
+        index = first_index
+        while True:
+            ok, decoded = capture.read()
+            if not ok:
+                return
+            # `read()` est typé « n'importe quel dtype » par les stubs d'OpenCV. Il
+            # rend en pratique du `uint8` BGR, exactement ce qu'attend le modèle —
+            # d'où le recadrage de type, et pas une conversion : copier chaque image
+            # coûterait plus que toute la lecture.
+            yield index, cast("npt.NDArray[np.uint8]", decoded)
+            # `grab()` et non `read()` : les images sautées par le pas d'analyse
+            # n'ont pas à être converties en tableau.
+            for _ in range(stride - 1):
+                if not capture.grab():
+                    return
+            index += stride
+    finally:
+        capture.release()
+
+
+def _batched(frames: Iterator[_DecodedFrame], size: int) -> Iterator[_DecodedBatch]:
+    """Regroupe les images par `size`, le dernier lot pouvant être plus court.
+
+    `itertools.batched` ferait exactement cela — mais il rend des tuples, là où
+    l'appelant construit une liste pour Ultralytics ; l'écrire ici évite une
+    conversion par lot et laisse le type du lot explicite.
+    """
+    chunk: _DecodedBatch = []
+    for frame in frames:
+        chunk.append(frame)
+        if len(chunk) >= max(1, size):
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
 
 
 def reset_trackers(model: Any) -> None:  # noqa: ANN401 — un `YOLO` n'est pas typé

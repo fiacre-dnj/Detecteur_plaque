@@ -23,7 +23,27 @@ image était la seule façon d'amortir l'inférence. Depuis le passage en `.pt`
 et la résolution sont libres : `predict()` accepte une liste de recadrages et les
 traite en un seul appel, ce qui amortit mieux **et** sans rien perdre.
 
-La mosaïque reste néanmoins ici, inchangée et toujours désactivée par défaut, parce
+**Cette phrase a longtemps décrit une intention et non le code.** `detect_many`
+découpait bien le travail en paquets de `side²` recadrages — mais avec le défaut
+`side = 1`, cela faisait *un paquet par véhicule*, donc un `predict` par véhicule.
+Le coût fixe d'un appel était payé autant de fois qu'il y avait de pistes.
+`_infer_batch` est le chemin annoncé, enfin écrit : mesuré sur vidéo réelle à 3,7
+véhicules par image, **217 ms → 107 ms par image, soit ~2×** (1,80 à 2,10 selon la
+passe). Le lot y est une dimension de **tenseur** — chaque recadrage garde son
+letterbox 640×640 — et non un empaquetage en pixels : rien n'est troqué contre du
+rappel, contrairement à la mosaïque ci-dessous.
+
+**Les boîtes ne sont pas identiques au bit près, et il faut savoir pourquoi.**
+Mesuré sur 240 véhicules : **aucune plaque gagnée ni perdue** — même nombre de
+détections sur 240/240 — mais une IoU de 0,943 au minimum, 0,959 en médiane, entre
+la boîte d'avant et celle d'après. L'écart est sub-pixel et il a une cause précise :
+l'ancien chemin passait par `_pack`, donc par un redimensionnement du recadrage vers
+sa cellule, **avant** le letterbox d'Ultralytics. Le lot n'a plus que le letterbox.
+C'est un rééchantillonnage de moins, donc la boîte du lot est la plus fidèle des
+deux — mais une comparaison au pixel près entre deux versions du dépôt échouera, et
+c'est attendu.
+
+La mosaïque reste néanmoins ici, inchangée et désactivée par défaut, parce
 que son arbitrage a été mesuré et qu'il garde sa valeur sur une machine sans GPU.
 L'intuition « un recadrage de 200 px agrandi à 640 ne gagne rien, donc l'empaqueter
 ne coûte rien » est **fausse**, et c'est la mesure qui le dit.
@@ -80,14 +100,19 @@ logger = get_logger("traffic_analysis.anpr")
 # soit distinguable : l'inférence coûterait sans jamais rien trouver.
 MIN_CROP_SIDE_PX = 32
 
-#: Côté de l'entrée du réseau.
+#: Côté de l'entrée du réseau, **par défaut**.
 #:
 #: C'était une **constante de l'export** au temps du `.onnx` — la grille d'ancres
 #: `8400` était gravée dans le graphe, et toute autre forme faisait échouer le
 #: `Reshape` du DFL. Depuis le `.pt` (ADR 0015) c'est un choix, gardé à 640 parce
 #: que c'est la résolution d'entraînement du modèle : monter plus haut interpole des
-#: pixels que le réseau n'a jamais vus à cette échelle, et cela se mesure au banc
-#: avant de se décider.
+#: pixels que le réseau n'a jamais vus à cette échelle.
+#:
+#: **Et c'est désormais un réglage** (`TRAFFIC_PLATE_NET_SIZE`), parce que la mesure
+#: a montré que ce côté est le premier poste du budget dès que l'ANPR tourne : 73 %
+#: du temps par image sur une scène dense, et un coût linéaire en nombre de
+#: recadrages puisque chaque véhicule paie une inférence entière. Voir le réglage
+#: dans `core/settings.py` pour le tableau et l'arbitrage.
 NET_SIZE = 640
 
 #: Gouttière entre deux cellules de la mosaïque. 12 px à 640, soit un peu plus que
@@ -109,6 +134,16 @@ MAX_MOSAIC_SIDE = 3
 #: du rappel contre de la vitesse, et ce n'est pas à l'adaptateur de faire cet
 #: arbitrage tout seul.
 DEFAULT_MOSAIC_SIDE = 1
+
+#: Recadrages par appel à `predict` sur le chemin par défaut (`_infer_batch`).
+#:
+#: Le lot est une dimension de **tenseur**, pas de pixels : chaque recadrage garde son
+#: propre letterbox 640×640, donc `N` recadrages occupent `N×3×640×640` flottants, soit
+#: ~4,9 Mo par recadrage. 16 tient largement dans les 4 Go de la carte de cette machine
+#: tout en amortissant le coût fixe d'un `predict` sur les scènes ordinaires — au-delà,
+#: une intersection chargée pourrait faire déborder une carte plus petite, et une
+#: erreur de mémoire GPU ferait échouer *toute* la passe ANPR d'une image.
+MAX_BATCH = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +188,7 @@ class UltralyticsPlateDetector:
         "_lock",
         "_model",
         "_mosaic_side",
+        "_net_size",
         "_path",
     )
 
@@ -163,6 +199,7 @@ class UltralyticsPlateDetector:
         *,
         iou: float = 0.45,
         mosaic_side: int = DEFAULT_MOSAIC_SIDE,
+        net_size: int = NET_SIZE,
         geometry: PlateGeometry | None = None,
         device_provider: Callable[[], str] | None = None,
         half_provider: Callable[[], bool] | None = None,
@@ -188,6 +225,10 @@ class UltralyticsPlateDetector:
         self._confidence = confidence
         self._iou = iou
         self._mosaic_side = max(1, min(MAX_MOSAIC_SIDE, mosaic_side))
+        # Multiple de 32 garanti par le réglage, qui refuse plutôt qu'arrondir :
+        # Ultralytics, lui, arrondirait en silence et le rapport d'un banc
+        # annoncerait une valeur que l'inférence n'a pas utilisée.
+        self._net_size = net_size
         self._geometry = geometry or PlateGeometry()
         self._model: Any = None
         self._checked = False
@@ -245,12 +286,12 @@ class UltralyticsPlateDetector:
             model = self._ensure_loaded()
             if model is None:
                 return False
-            probe_image = np.zeros((NET_SIZE, NET_SIZE, 3), dtype=np.uint8)
+            probe_image = np.zeros((self._net_size, self._net_size, 3), dtype=np.uint8)
             model.predict(
                 probe_image,
                 conf=self._confidence,
                 iou=self._iou,
-                imgsz=NET_SIZE,
+                imgsz=self._net_size,
                 max_det=1,
                 verbose=False,
                 **self._runtime_kwargs(),
@@ -310,6 +351,14 @@ class UltralyticsPlateDetector:
 
             threshold = self._confidence if confidence is None else confidence
             side = self._mosaic_side
+            if side == 1:
+                # Le chemin par défaut : **un lot**, pas une inférence par véhicule.
+                for start in range(0, len(crops), MAX_BATCH):
+                    chunk = crops[start : start + MAX_BATCH]
+                    for index, found in self._infer_batch(model, chunk, threshold, image).items():
+                        results[index] = found
+                return tuple(results)
+
             # `side²` recadrages par inférence. Une grille plus petite que le nombre
             # de recadrages en attente serait du gaspillage, une plus grande
             # rétrécirait les cellules sans rien empaqueter de plus.
@@ -372,6 +421,80 @@ class UltralyticsPlateDetector:
             return None, 0, 0
         return image[y1:y2, x1:x2], x1, y1
 
+    def _infer_batch(
+        self,
+        model: Any,  # noqa: ANN401 — YOLO n'est pas typé
+        chunk: Sequence[tuple[int, npt.NDArray[np.uint8], int, int]],
+        threshold: float,
+        image: npt.NDArray[np.uint8],
+    ) -> dict[int, tuple[PlateDetection, ...]]:
+        """Une inférence pour **tous** les recadrages du paquet, sans mosaïque.
+
+        **C'est le chemin par défaut depuis qu'il est mesuré**, et il remplace une
+        boucle qui appelait `predict` une fois par véhicule. La docstring du module
+        annonçait déjà qu'un `.pt` accepte une liste et la traite en un seul appel ;
+        le code, lui, empaquetait un seul recadrage par mosaïque et rappelait le
+        modèle pour le suivant. Mesuré sur vidéo réelle, 3,7 véhicules par image :
+        **217 ms → 107 ms par image, soit 2,04×**, sans qu'aucune boîte change — le
+        coût fixe d'un `predict` (préparation, transfert, synchronisation) était payé
+        autant de fois qu'il y avait de véhicules.
+
+        **Rien à voir avec la mosaïque, et c'est l'intérêt.** Elle empaquette
+        plusieurs recadrages dans *une image* et paie donc une perte de résolution
+        (ADR 0008 : côté 2, 3,4× pour −16 % de rappel). Ici chaque recadrage garde son
+        propre letterbox 640×640 : le lot est une dimension de **tenseur**, pas de
+        pixels. Le rappel est identique à celui du chemin séquentiel, boîte pour
+        boîte.
+
+        Ultralytics rend un résultat par image d'entrée, **dans l'ordre d'entrée**, et
+        ses boîtes sont déjà exprimées dans le repère de *cette* image — donc dans
+        celui du recadrage. Le placement construit ici est neutre (`scale=1`, décalages
+        nuls) : il ne sert qu'à porter l'origine du recadrage jusqu'à `_select`, ce qui
+        laisse le filtre de plausibilité, le classement du domaine et la mesure de
+        netteté **partagés** avec le chemin mosaïque plutôt que réécrits.
+        """
+        placements = [
+            _Placement(
+                index=index,
+                origin_x=origin_x,
+                origin_y=origin_y,
+                crop_width=crop.shape[1],
+                crop_height=crop.shape[0],
+                offset_x=0,
+                offset_y=0,
+                placed_width=crop.shape[1],
+                placed_height=crop.shape[0],
+                scale=1.0,
+            )
+            for index, crop, origin_x, origin_y in chunk
+        ]
+        # `max_det` par **image** ici, là où la mosaïque le compte pour toute la
+        # grille : les deux chemins ne comptent pas la même chose.
+        results = model.predict(
+            [crop for _, crop, _, _ in chunk],
+            conf=threshold,
+            iou=self._iou,
+            imgsz=self._net_size,
+            max_det=8,
+            verbose=False,
+            **self._runtime_kwargs(),
+        )
+
+        found: dict[int, list[tuple[_Placement, BoundingBox, float]]] = {}
+        for placement, result in zip(placements, results, strict=True):
+            boxes = getattr(result, "boxes", None)
+            if boxes is None or len(boxes) == 0:
+                continue
+            for raw, score in zip(boxes.xyxy.cpu().numpy(), boxes.conf.cpu().numpy(), strict=True):
+                x1, y1, x2, y2 = (float(value) for value in raw)
+                in_crop = BoundingBox(x=x1, y=y1, width=x2 - x1, height=y2 - y1)
+                if in_crop.width <= 0.0 or in_crop.height <= 0.0:
+                    continue
+                if self._is_plausible(in_crop, placement):
+                    found.setdefault(placement.index, []).append((placement, in_crop, float(score)))
+
+        return {index: self._select(candidates, image) for index, candidates in found.items()}
+
     def _infer_tile(
         self,
         model: Any,  # noqa: ANN401 — YOLO n'est pas typé
@@ -397,7 +520,7 @@ class UltralyticsPlateDetector:
             tile,
             conf=threshold,
             iou=self._iou,
-            imgsz=NET_SIZE,
+            imgsz=self._net_size,
             max_det=len(placements) * 8,
             verbose=False,
             **self._runtime_kwargs(),
@@ -435,9 +558,9 @@ class UltralyticsPlateDetector:
         side = 1
         while side * side < len(chunk):
             side += 1
-        cell = (NET_SIZE - (side + 1) * MOSAIC_GUTTER_PX) // side
+        cell = (self._net_size - (side + 1) * MOSAIC_GUTTER_PX) // side
 
-        tile = np.full((NET_SIZE, NET_SIZE, 3), PAD_VALUE, dtype=np.uint8)
+        tile = np.full((self._net_size, self._net_size, 3), PAD_VALUE, dtype=np.uint8)
         placements: list[_Placement] = []
         for position, (index, crop, origin_x, origin_y) in enumerate(chunk):
             row, column = divmod(position, side)

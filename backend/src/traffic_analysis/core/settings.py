@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "staging", "test", "production"]
@@ -157,6 +157,35 @@ class Settings(BaseSettings):
     #:
     #: Sans effet sur GPU, où l'inférence ne vit pas sur ces threads.
     inference_threads: int = Field(0, ge=0, le=64)
+    #: Laisser cuDNN choisir ses algorithmes de convolution **par la mesure**.
+    #:
+    #: **`false` par défaut, et c'est un correctif, pas un renoncement.** ADR 0013
+    #: l'avait activé sans jamais chiffrer ce qu'il apportait, sur la prémisse que
+    #: « notre forme d'entrée est fixe pour une vidéo donnée ». Cette prémisse est
+    #: vraie du détecteur de véhicules et **fausse du détecteur de plaques**, qui reçoit
+    #: un recadrage différent par piste : Ultralytics impose `rect=True` en prédiction,
+    #: donc un recadrage soumis seul produit une forme d'entrée qui dépend de son
+    #: rapport d'aspect. cuDNN réétalonne à **chaque nouvelle forme**, et cet
+    #: étalonnage coûte environ une seconde.
+    #:
+    #: Mesuré sur deux scènes réelles, ANPR et OCR actives, à détections et plaques
+    #: publiées **strictement identiques** :
+    #:
+    #: | scène | autotune actif | coupé | gain |
+    #: |---|---|---|---|
+    #: | clairsemée (1 recadrage par appel) | 8,4 img/s | **18,2** | **2,17×** |
+    #: | dense (2,3 recadrages par image) | 8,0 img/s | **11,0** | **1,38×** |
+    #:
+    #: Sur la scène clairsemée, **six appels sur 124 dépassaient la seconde et pesaient
+    #: 73 %** du temps de l'étage de plaques. Après, plus aucun au-dessus de 100 ms.
+    #:
+    #: Et ce que l'autotune rendait au chemin dont la forme *est* fixe : **rien de
+    #: mesurable** — inférence véhicules 7,92 ms avec, 8,00 ms sans, soit le bruit.
+    #:
+    #: Le réglage existe donc pour une machine où la mesure dirait autre chose — une
+    #: carte plus récente, un déploiement sans ANPR. `scripts/pipeline_bench.py --cudnn`
+    #: la refait sans toucher à l'environnement. Voir ADR 0033.
+    inference_cudnn_autotune: bool = False
     default_model_id: str = "yolov8n"
     #: Préchauffe le modèle par défaut au démarrage, **si son poids est déjà sur le
     #: disque**. Le premier appel d'un modèle paie son chargement et sa fusion de
@@ -199,6 +228,36 @@ class Settings(BaseSettings):
     #: images du même véhicule. `3` ne se justifie que sur des plans serrés où les
     #: véhicules sont grands.
     plate_mosaic_side: int = Field(1, ge=1, le=3)
+    #: Côté de l'entrée du **détecteur de plaques**, en pixels. Multiple de 32.
+    #:
+    #: **C'est le premier poste du budget dès que l'ANPR est active, et de loin.**
+    #: Mesuré sur une scène dense réelle (1920×1080, 6 à 14 véhicules par image,
+    #: `--anpr --ocr`) : l'étage de plaques coûte **76 ms par image analysée, soit
+    #: 73 % du total**, contre 0,4 ms pour l'OCR. Le coût est **linéaire en nombre de
+    #: recadrages** — 21,5 ms pour un, 139,7 pour huit — parce que chaque recadrage de
+    #: véhicule paie une inférence complète, exactement comme une image entière.
+    #:
+    #: Le côté de l'entrée est donc le seul levier qui n'exige pas d'en détecter
+    #: moins. Mesuré sur les mêmes huit recadrages, plaques trouvées à l'identique :
+    #:
+    #: | côté | ms/appel | ms/recadrage |
+    #: |------|----------|--------------|
+    #: | 640  | 141,1    | 17,6         |
+    #: | 448  | 77,8     | 9,7          |
+    #: | 320  | 56,8     | 7,1          |
+    #:
+    #: **640 reste le défaut**, parce que c'est la résolution d'entraînement du modèle
+    #: et qu'on ne troque pas du rappel contre du débit sans que quelqu'un le demande
+    #: (même règle que la mosaïque, ADR 0008). Ce qui décide qu'une plaque est trouvée
+    #: est sa taille **dans l'entrée du réseau** : le recadrage étant agrandi jusqu'à
+    #: ce côté, une plaque y occupe ~0,15 × côté, soit ~96 px à 640 et ~48 px à 320.
+    #: Descendre se paie donc d'abord sur les **véhicules lointains**, dont la plaque
+    #: était de toute façon sous le plancher de lecture de l'OCR (64 px, invariant 12).
+    #:
+    #: À calibrer sur ses propres vidéos avec `scripts/anpr_bench.py --net-size …`, en
+    #: regardant les plaques **détectées** et les textes **publiés**, jamais la seule
+    #: cadence.
+    plate_net_size: int = Field(640, ge=64, le=1280)
 
     # ── Étranglement du détecteur de plaques (ADR 0010) ──────────────────────
     # **Le vrai goulot, et de loin.** Mesuré sur cette machine (i5-8350U, sans GPU) :
@@ -241,6 +300,41 @@ class Settings(BaseSettings):
     #: chacune payant ~800 ms par image analysée sans jamais bénéficier de
     #: l'étranglement. Résultat : 1,42 image/s traitée, contre 11 sans ANPR.
     plate_detect_max_consecutive_misses: int = Field(3, ge=1, le=30)
+    #: Recadrages soumis au détecteur par image analysée, au plus. `0` = illimité.
+    #:
+    #: **Le seul plafond qui rende le coût de l'ANPR indépendant de la scène.** Sans
+    #: lui, la cadence suit la circulation : mesuré sur une scène dense réelle
+    #: (1920×1080, 6 à 14 véhicules par image), l'étage de plaques coûte 76 ms par
+    #: image analysée — 73 % du budget, contre 0,4 ms pour l'OCR — et ce coût est
+    #: **linéaire en nombre de recadrages**, chaque véhicule payant une inférence
+    #: entière (21,5 ms pour un recadrage, 139,7 pour huit).
+    #:
+    #: `0` par défaut, c'est-à-dire le comportement historique : plafonner écarte des
+    #: mesures, donc des plaques possibles, et cet arbitrage ne se prend pas à la place
+    #: de l'exploitant. Ce qui n'est pas servi cette image l'est à la suivante — le
+    #: texte publié est un vote sur la vie du véhicule (invariant 4) — et le budget va
+    #: d'abord aux pistes jamais mesurées, puis aux plus larges.
+    #:
+    #: **Son gain est bien plus faible qu'annoncé d'abord, et son prix est réel.** Le
+    #: 1,27× qui lui était attribué venait surtout de ce qu'il évitait les appels à un
+    #: seul recadrage, donc les pauses d'étalonnage cuDNN d'ADR 0033. Cette cause
+    #: corrigée, sur la scène dense, à comptages identiques :
+    #:
+    #: | plafond | img/s | recadrages/image | plaques **localisées** |
+    #: |---|---|---|---|
+    #: | 0 (illimité) | 11,0 | 2,28 | **180** |
+    #: | 2 | 9,0 | 1,74 | 137 |
+    #: | 1 | 13,8 | 1,00 | 76 |
+    #:
+    #: Le plafond **coûte des plaques localisées**, à peu près proportionnellement aux
+    #: recadrages écartés, et sa cadence ne s'ordonne pas proprement (`2` plus lent que
+    #: `0` sur cette passe, à coût d'étage quasi égal). Il **borne** le coût quand le
+    #: trafic monte ; il ne l'améliore pas dans le cas général.
+    #:
+    #: À mesurer avec `scripts/pipeline_bench.py --anpr --ocr` : la cadence d'un côté,
+    #: les **plaques publiées** de l'autre. Un plafond qui double la cadence en
+    #: publiant une plaque de moins n'est pas un réglage, c'est une perte.
+    plate_detect_max_per_frame: int = Field(0, ge=0, le=32)
 
     # Utilisés par scripts/fetch_plate_model.py uniquement. Le service ne
     # télécharge jamais de lui-même : un démarrage ne doit pas dépendre du réseau.
@@ -313,7 +407,26 @@ class Settings(BaseSettings):
     #: politique dépensait son budget sur la première vignette venue — souvent
     #: minuscule et floue — alors que le véhicule offrirait deux secondes plus tard
     #: une vignette deux fois plus large.
-    plate_ocr_quality_improvement: float = Field(1.25, ge=1.0, le=10.0)
+    #:
+    #: **`1.0` — donc désactivé — depuis ADR 0029, et c'est une mesure qui l'a
+    #: décidé.** À `1.25`, ce garde *affamait le vote* : sur une fenêtre de vraie
+    #: circulation, le serveur publiait `R606` pour une plaque `苏A·R606L`, ou plus
+    #: rien du tout. La raison est arithmétique — `PlateTextVote` exige deux lectures
+    #: concordantes, une confiance cumulée de 1,2 et une domination de 1,5, et une
+    #: exigence d'amélioration de 25 % à chaque relecture ne laissait que deux ou
+    #: trois lectures sur toute la vie d'un véhicule. Réparties sur quatre graphies
+    #: voisines, aucune ne pouvait dominer. À `1.0`, la même fenêtre publie
+    #: `AR606L`, la vérité terrain.
+    #:
+    #: Le raisonnement d'origine n'était pas faux, il était **déjà couvert** :
+    #: `plate_ocr_skip_iou` interdit déjà de relire le recadrage figé d'un véhicule
+    #: arrêté au feu, qui est le cas où la confiance se gonflerait pour rien.
+    #:
+    #: **Et cela ne coûte pas plus cher.** L'analyse de la même fenêtre n'a pas
+    #: ralenti — la mesure la donne même plus rapide, parce qu'un vote qui converge
+    #: déclenche `stop_when_confident`, lequel arrête le *détecteur* de plaques,
+    #: c'est-à-dire le vrai goulot (ADR 0015).
+    plate_ocr_quality_improvement: float = Field(1.0, ge=1.0, le=10.0)
     #: Au-dessus de cette IoU avec la dernière boîte lue, on ne relit pas. Protège
     #: surtout la *justesse* du vote : cent recadrages identiques d'un véhicule
     #: arrêté au feu ne feraient que gonfler la confiance d'un texte peut-être faux.
@@ -327,6 +440,22 @@ class Settings(BaseSettings):
     #: lot : le surcoût est celui de quelques lignes de tenseur, pas d'une inférence
     #: de plus. À désactiver seulement pour comparer.
     plate_ocr_variants: bool = True
+    #: Fractions rognées **à gauche**, une variante de lecture par valeur.
+    #:
+    #: Elles existent pour un caractère de tête absent de l'alphabet du modèle — un
+    #: idéogramme de province chinois, un blason régional : le CTC doit émettre
+    #: quelque chose pour ces pas de temps, et ce quelque chose mange la lettre
+    #: voisine. Mesuré sur 40 vignettes de vraie circulation, la chaîne rendait la
+    #: plaque **moins sa première lettre** (`96886` pour `苏A·96886`) à 0,90 de
+    #: confiance ; le même recadrage privé de son bord gauche rend `A96886` à 0,97.
+    #: Lectures exactes 8/40 → 17/40, plaques publiées justes 1/6 → 3/6, et
+    #: l'échelle synthétique **latine** — le contrôle indépendant, sans idéogramme —
+    #: passe de 40 à 43 sur 56.
+    #:
+    #: Vide désactive la famille. Le coût est de deux lignes de tenseur dans le lot
+    #: déjà envoyé, soit ~38 ms par lecture là où le détecteur de plaques en coûte
+    #: 700 : le rapport reste celui d'ADR 0015.
+    plate_ocr_left_insets: tuple[float, ...] = (0.14, 0.22)
     #: Négocier la largeur du tenseur avec le lot au lieu des 320 px de PP-OCR. Une
     #: plaque européenne tient en 226 px — 30 % de convolutions en moins — et une
     #: plaque très large cesse d'être comprimée. Repli à 320 si un export refusait
@@ -541,9 +670,9 @@ class Settings(BaseSettings):
             return None
         return trimmed
 
-    @field_validator("inference_imgsz")
+    @field_validator("inference_imgsz", "plate_net_size")
     @classmethod
-    def _require_stride_multiple(cls, value: int) -> int:
+    def _require_stride_multiple(cls, value: int, info: ValidationInfo) -> int:
         """Le côté doit être un multiple de 32, le pas du réseau.
 
         Refusé plutôt qu'arrondi. Ultralytics, lui, arrondit **en silence** vers le
@@ -554,8 +683,9 @@ class Settings(BaseSettings):
         une décision.
         """
         if value % 32:
+            name = f"TRAFFIC_{(info.field_name or '').upper()}"
             msg = (
-                f"TRAFFIC_INFERENCE_IMGSZ={value} n'est pas un multiple de 32, le pas "
+                f"{name}={value} n'est pas un multiple de 32, le pas "
                 f"du réseau. Prenez {value // 32 * 32} ou {(value // 32 + 1) * 32}."
             )
             raise ValueError(msg)

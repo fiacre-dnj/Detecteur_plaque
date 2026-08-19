@@ -16,7 +16,7 @@ import type { AnalysisStats, CountingLine } from "@/shared/api/contracts";
 import { directionRows, isEntryRow } from "./directions";
 
 /**
- * Entrées au carrefour, par classe COCO (`car`, `truck`, `person`…).
+ * Passages en entrée, par classe COCO (`car`, `truck`, `person`…).
  *
  * Une classe absente du résultat n'a pas de clé — l'appelant retombe sur `0`
  * (`?? 0`), comme partout ailleurs dans ce tableau de bord.

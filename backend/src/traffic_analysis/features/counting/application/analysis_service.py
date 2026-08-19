@@ -21,6 +21,7 @@ from traffic_analysis.features.counting.application.dto import (
     TIMELINE_WARNING_THRESHOLD,
     AnalysisCancelled,
     AnalysisResultData,
+    DetectionCandidate,
     PlateDetectOptions,
     PlateDetectPolicy,
     PlateOcrOptions,
@@ -28,6 +29,7 @@ from traffic_analysis.features.counting.application.dto import (
     PreviewSample,
     Progress,
     TimelineRow,
+    select_within_budget,
 )
 from traffic_analysis.features.counting.domain.models import PlateDetection, VideoInfo
 from traffic_analysis.features.counting.domain.pacing import ScenePacer
@@ -546,6 +548,26 @@ class AnalysisService:
                 has_anchor=track.global_id in anchors,
             )
         ]
+
+        # **Le plafond par image**, quand il est posé. Il vient après les gardes et non
+        # à leur place : `should_detect` dit ce qui *mérite* une inférence, le budget
+        # dit combien on en paie sur cette image. Ce qui est écarté ici n'est pas
+        # perdu — la piste reçoit l'ancre reprojetée comme n'importe quelle image
+        # sautée, et repassera devant le budget à l'image suivante.
+        budget = detect_policy.options.max_per_frame
+        if budget > 0 and len(wanted) > budget:
+            keep = select_within_budget(
+                [
+                    DetectionCandidate(
+                        global_id=track.global_id,
+                        width=track.box.width,
+                        never_detected=track.global_id not in detect_policy.last_ordinal,
+                    )
+                    for track in wanted
+                ],
+                budget,
+            )
+            wanted = [track for track in wanted if track.global_id in keep]
 
         measured: dict[int, tuple[PlateDetection, ...]] = {}
         if wanted:

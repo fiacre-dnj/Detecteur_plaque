@@ -115,7 +115,7 @@ describe("hasEnteredCrossroad", () => {
 describe("enteringVehicleCount", () => {
   it("compte des véhicules distincts, jamais des passages", () => {
     // **L'invariant 3 rendu visible.** Ce véhicule entre deux fois — deux lignes
-    // d'entrée franchies. « Entrées au carrefour » en compterait 2 ; ici, c'est
+    // d'entrée franchies. « Passages en entrée » en compterait 2 ; ici, c'est
     // un seul véhicule, et les deux chiffres ne se divisent jamais l'un par
     // l'autre.
     const deuxFois = vehicle(1, [ENTERS, { lineId: "est", direction: 1, timestampMs: 900 }]);

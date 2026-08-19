@@ -22,6 +22,12 @@
  * Le bloc des sens ne s'ouvre que sur la ligne **sélectionnée**, et c'est délibéré :
  * six lignes dépliées feraient douze menus dans une colonne de 24 rem, où on ne
  * retrouverait plus la ligne qu'on cherchait.
+ *
+ * **Il ne porte plus ni carte ni titre**, depuis qu'il vit dans le quatrième tiroir
+ * de la barre du studio au lieu d'occuper en permanence la colonne de droite. Le
+ * tiroir est déjà une surface élevée nommée « Géométrie » (`role="region"`), et un
+ * `<h3>Géométrie</h3>` dans une région qui porte ce nom se lisait deux fois. Ce
+ * composant rend donc son contenu nu : c'est son conteneur qui décide de l'écrin.
  */
 
 import { ArrowUp, ArrowUpDown, Bookmark, Plus, Square, Trash2 } from "lucide-react";
@@ -62,54 +68,53 @@ export function GeometryPanel(props: GeometryPanelProps) {
   const empty = lines.length === 0 && zones.length === 0;
 
   return (
-    <div className="rounded-section bg-surface p-4 shadow-card">
-      <div className="flex items-center justify-between">
-        <h3 className="label-micro">Géométrie</h3>
-        <div className="flex gap-1">
+    <div>
+      {/* Les trois actions en tête, alignées à gauche : dans un tiroir, il n'y a
+          plus de titre à leur droite pour équilibrer la rangée. */}
+      <div className="flex flex-wrap gap-1">
+        <button
+          type="button"
+          onClick={props.onAddLine}
+          disabled={disabled}
+          title="Ajouter une ligne de comptage"
+          className="flex items-center gap-1 rounded-input px-2 py-1 text-small text-ink-muted transition-colors hover:bg-elevated hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Plus aria-hidden="true" className="size-3.5" />
+          Ligne
+        </button>
+        <button
+          type="button"
+          onClick={props.onToggleDrawZone}
+          disabled={disabled}
+          aria-pressed={drawingZone}
+          title={
+            drawingZone
+              ? "Terminer par un double-clic ou un clic sur le premier sommet ; Échap annule"
+              : "Dessiner une zone : un clic par sommet"
+          }
+          className={[
+            "flex items-center gap-1 rounded-input px-2 py-1 text-small transition-colors",
+            drawingZone
+              ? "bg-accent text-accent-ink"
+              : "text-ink-muted hover:bg-elevated hover:text-ink",
+            "disabled:cursor-not-allowed disabled:opacity-50",
+          ].join(" ")}
+        >
+          <Square aria-hidden="true" className="size-3.5" />
+          Zone
+        </button>
+        {props.onOpenPresets !== undefined && (
           <button
             type="button"
-            onClick={props.onAddLine}
+            onClick={props.onOpenPresets}
             disabled={disabled}
-            title="Ajouter une ligne de comptage"
+            title="Enregistrer cette géométrie, ou en charger une"
             className="flex items-center gap-1 rounded-input px-2 py-1 text-small text-ink-muted transition-colors hover:bg-elevated hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <Plus aria-hidden="true" className="size-3.5" />
-            Ligne
+            <Bookmark aria-hidden="true" className="size-3.5" />
+            Presets
           </button>
-          <button
-            type="button"
-            onClick={props.onToggleDrawZone}
-            disabled={disabled}
-            aria-pressed={drawingZone}
-            title={
-              drawingZone
-                ? "Terminer par un double-clic ou un clic sur le premier sommet ; Échap annule"
-                : "Dessiner une zone : un clic par sommet"
-            }
-            className={[
-              "flex items-center gap-1 rounded-input px-2 py-1 text-small transition-colors",
-              drawingZone
-                ? "bg-accent text-accent-ink"
-                : "text-ink-muted hover:bg-elevated hover:text-ink",
-              "disabled:cursor-not-allowed disabled:opacity-50",
-            ].join(" ")}
-          >
-            <Square aria-hidden="true" className="size-3.5" />
-            Zone
-          </button>
-          {props.onOpenPresets !== undefined && (
-            <button
-              type="button"
-              onClick={props.onOpenPresets}
-              disabled={disabled}
-              title="Enregistrer cette géométrie, ou en charger une"
-              className="flex items-center gap-1 rounded-input px-2 py-1 text-small text-ink-muted transition-colors hover:bg-elevated hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Bookmark aria-hidden="true" className="size-3.5" />
-              Presets
-            </button>
-          )}
-        </div>
+        )}
       </div>
 
       {drawingZone && (

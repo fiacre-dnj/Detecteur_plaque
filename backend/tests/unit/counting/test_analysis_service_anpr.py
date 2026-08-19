@@ -61,6 +61,29 @@ def _frames(steps: int = 16) -> list[list[object]]:
     )
 
 
+def _wide_and_narrow(steps: int = 12) -> list[list[object]]:
+    """Deux pistes de largeurs **différentes**, toutes deux au-dessus du plancher.
+
+    Le classement du budget départage par la largeur : deux pistes identiques
+    rendraient le test aveugle à l'ordre, qui est précisément ce qui décide de la
+    justesse quand on plafonne.
+    """
+    return compose(
+        track_path(
+            1,
+            CAR,
+            straight_line((700.0, 250.0), (700.0, 800.0), steps=steps),
+            box_size=(400.0, 220.0),
+        ),
+        track_path(
+            2,
+            TRUCK,
+            straight_line((1200.0, 800.0), (1200.0, 250.0), steps=steps),
+            box_size=(120.0, 100.0),
+        ),
+    )
+
+
 def _run(
     *,
     detect_plates: bool = True,
@@ -385,3 +408,66 @@ class TestEtranglementDuDetecteur:
         )
 
         assert detector.calls == 0
+
+
+class TestPlafondParImage:
+    """Le plafond de dépense, vu du service : combien de recadrages partent vraiment.
+
+    Le classement lui-même est testé dans le domaine (`test_plate_detect_policy.py`).
+    Ce qui ne peut se vérifier qu'ici est le **câblage** : que le plafond s'applique
+    après les gardes, que les pistes écartées reçoivent quand même leur rectangle, et
+    qu'un plafond non posé ne change rien.
+    """
+
+    @staticmethod
+    def _service(detector: FakePlateDetector, budget: int) -> AnalysisResultData:
+        service = AnalysisService(
+            FakeEngine(_wide_and_narrow()),  # type: ignore[arg-type]
+            detector,
+            None,
+            None,
+            PlateDetectOptions(max_per_frame=budget),
+        )
+        return service.run_video(
+            "job-budget",
+            VIDEO,
+            AnalysisJobConfig(model_id="yolov8n", lines=(make_line(),), detect_plates=True),
+        )
+
+    def test_sans_plafond_une_image_peut_soumettre_les_deux_pistes(self) -> None:
+        """Le témoin. Sans lui, le test suivant pourrait passer parce que la scène ne
+        soumet jamais deux recadrages, et non parce que le plafond travaille."""
+        detector = FakePlateDetector()
+
+        self._service(detector, 0)
+
+        assert max(len(boxes) for boxes in detector.submitted) == 2
+
+    def test_un_plafond_de_un_ne_soumet_jamais_deux_recadrages(self) -> None:
+        """Le coût de l'étage est linéaire en recadrages — 21,5 ms pour un, 139,7 pour
+        huit sur une vraie carte. Plafonner le nombre est donc plafonner le coût."""
+        detector = FakePlateDetector()
+
+        self._service(detector, 1)
+
+        assert detector.submitted
+        assert max(len(boxes) for boxes in detector.submitted) == 1
+
+    def test_une_piste_ecartee_garde_son_rectangle(self) -> None:
+        """**Ce qui est écarté n'est pas perdu.** La piste reçoit l'ancre reprojetée,
+        exactement comme sur une image sautée par la cadence : sans cela, plafonner
+        ferait clignoter les rectangles, ce qu'ADR 0010 existe pour supprimer.
+
+        Les deux pistes sont mesurées dans les deux premières images — une piste jamais
+        mesurée passe avant une plus large — puis chacune vit sur son ancre les images
+        où elle n'est pas servie.
+        """
+        result = self._service(FakePlateDetector(), 1)
+
+        muettes = [
+            (row.frame_index, track.global_id)
+            for row in result.timeline[2:]
+            for track in row.tracks
+            if not track.plates
+        ]
+        assert muettes == []

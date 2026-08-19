@@ -1,11 +1,12 @@
 /**
  * Les franchissements d'un véhicule, **rangés par rôle de sens**.
  *
- * Ce que ce module rend possible dans le registre : deux colonnes « Entrée » et
- * « Sortie » portant l'**instant** du franchissement, là où « Lignes franchies »
- * ne donne que la liste des sens. La question à laquelle il répond est « à quelle
- * seconde ce véhicule est-il entré dans le carrefour, et à quelle seconde en est-il
- * ressorti » — jusqu'ici lisible seulement en survolant chaque puce une par une.
+ * Ce que ce module rend possible dans le registre : deux colonnes « Entrée par » et
+ * « Sortie par », portant chacune **la ligne et l'instant** du franchissement. Elles
+ * remplacent « Lignes franchies », qui listait les deux sens dans une seule cellule
+ * pendant que deux colonnes voisines n'en portaient que l'heure : lire « ce véhicule
+ * est entré par la ligne 1 à 00:34 » demandait de recoller trois cellules, dont une
+ * par survol.
  *
  * Trois décisions qui ne se devinent pas :
  *
@@ -15,8 +16,10 @@
  *   instantanée — même raison, même mécanique que `hasEnteredCrossroad` ;
  * - **une ligne retirée du tracé depuis l'analyse est ignorée**, jamais supposée
  *   « entrée ». Son rôle n'est plus lisible, et l'inventer fabriquerait une heure
- *   de franchissement fausse. Le franchissement reste visible dans « Lignes
- *   franchies », avec sa flèche brute ;
+ *   de franchissement fausse. Ces franchissements-là sont rendus par
+ *   `crossingsWithoutRole` dans une colonne à part, qui n'apparaît que s'il en
+ *   existe : les ranger sous un rôle serait une invention, les taire ferait
+ *   diverger le registre de la colonne « Passages », qui les compte ;
  * - **un rôle peut porter plusieurs franchissements**, et c'est le cas normal, pas
  *   un bord : un aller-retour, deux lignes d'entrée en travers de la même voie, ou
  *   une occlusion qui coupe la piste en donnent chacun deux (invariant 6). La
@@ -46,5 +49,30 @@ export function crossingsWithRole(
     const line = lines.find((candidate) => candidate.id === crossing.lineId);
     if (line === undefined) return false;
     return directionRole(line, signOf(crossing.direction)) === role;
+  });
+}
+
+/**
+ * Les franchissements de ce véhicule **qu'aucun rôle ne réclame**.
+ *
+ * Deux cas, et aucun n'est une anomalie du comptage :
+ *
+ * - la ligne a été **retirée du tracé** depuis l'analyse — son rôle n'existe plus
+ *   nulle part, et le franchissement, lui, a bien eu lieu ;
+ * - le sens est resté `neutral`, c'est-à-dire un tracé antérieur au 2026-08-16, où
+ *   le rôle est devenu obligatoire (ADR 0021).
+ *
+ * Le complément exact d'`entry` ∪ `exit` : ce que ces trois fonctions rendent,
+ * mises bout à bout, est `vehicle.crossedLines` — ce qui est ce qui empêche le
+ * registre de perdre un passage en le rangeant par rôle.
+ */
+export function crossingsWithoutRole(
+  vehicle: VehicleRecord,
+  lines: readonly CountingLine[],
+): readonly VehicleCrossing[] {
+  return vehicle.crossedLines.filter((crossing) => {
+    const line = lines.find((candidate) => candidate.id === crossing.lineId);
+    if (line === undefined) return true;
+    return directionRole(line, signOf(crossing.direction)) === "neutral";
   });
 }

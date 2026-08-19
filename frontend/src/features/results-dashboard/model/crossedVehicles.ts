@@ -75,7 +75,7 @@ export function crossingVehicles(
  *
  * Un nombre de *véhicules*, jamais de passages : un véhicule qui entre deux fois
  * — deux lignes d'entrée franchies, ou un aller-retour — compte **1** ici et
- * **2** dans « Entrées au carrefour ». Les deux chiffres répondent à deux
+ * **2** dans « Passages en entrée ». Les deux chiffres répondent à deux
  * questions (« combien de véhicules », « combien de passages ») et ne doivent
  * jamais être divisés l'un par l'autre : c'est l'invariant 3, et il a déjà coûté
  * un taux à 200 %.

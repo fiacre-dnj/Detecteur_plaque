@@ -14,8 +14,10 @@ from __future__ import annotations
 
 from traffic_analysis.features.counting.domain.models import BoundingBox
 from traffic_analysis.features.counting.domain.plate_policy import (
+    DetectionCandidate,
     PlateDetectOptions,
     PlateDetectPolicy,
+    select_within_budget,
 )
 
 #: Un véhicule largement au-dessus de `min_vehicle_width_px`.
@@ -214,3 +216,79 @@ class TestEchecsConsecutifs:
         policy.record(7, ordinal=0)
 
         assert policy.misses.get(7, 0) == 0
+
+
+class TestPlafondParImage:
+    """Le seul plafond qui rende le coût de l'ANPR indépendant de la scène.
+
+    Mesuré sur une scène dense réelle (1920×1080, 6 à 14 véhicules par image) :
+    l'étage de plaques coûte 76 ms par image analysée, soit **73 %** du budget, contre
+    0,4 ms pour l'OCR — et ce coût est **linéaire en nombre de recadrages** (21,5 ms
+    pour un, 139,7 pour huit), chaque véhicule payant une inférence entière. Sans
+    plafond, la cadence suit donc la circulation.
+
+    Ce que ces tests verrouillent est le **classement**, parce que c'est lui qui décide
+    de la justesse : plafonner en gardant les mauvaises pistes échangerait de la
+    cadence contre des plaques.
+    """
+
+    @staticmethod
+    def _candidate(global_id: int, width: float, *, never: bool = False) -> DetectionCandidate:
+        return DetectionCandidate(global_id=global_id, width=width, never_detected=never)
+
+    def test_sans_plafond_rien_n_est_ecarte(self) -> None:
+        """`0` = illimité, le comportement historique. Le plafond doit rester
+        strictement additif tant que personne ne le pose."""
+        candidates = [self._candidate(index, 100.0) for index in range(6)]
+
+        assert select_within_budget(candidates, 0) == frozenset(range(6))
+
+    def test_un_plafond_plus_large_que_la_scene_n_ecarte_rien(self) -> None:
+        candidates = [self._candidate(index, 100.0) for index in range(3)]
+
+        assert select_within_budget(candidates, 8) == frozenset({0, 1, 2})
+
+    def test_les_plus_larges_passent_d_abord(self) -> None:
+        """La largeur du véhicule est le meilleur prédicteur disponible de la
+        lisibilité de sa plaque : le plancher de lecture est mesuré à 64 px, et
+        dépenser sur une piste dont la plaque fera 20 px achète une boîte que l'OCR
+        refusera de lire."""
+        candidates = [
+            self._candidate(1, 120.0),
+            self._candidate(2, 400.0),
+            self._candidate(3, 250.0),
+        ]
+
+        assert select_within_budget(candidates, 2) == frozenset({2, 3})
+
+    def test_une_piste_jamais_mesuree_passe_avant_une_piste_plus_large(self) -> None:
+        """**Sans cette priorité, un véhicule peut traverser tout le champ sans
+        recevoir une seule mesure**, donc sans jamais afficher de rectangle — un
+        silence qui se lit comme une panne de détection, pas comme une économie.
+
+        C'est la même raison qui fait que `should_detect` ne diffère jamais la
+        première mesure d'une piste.
+        """
+        candidates = [
+            self._candidate(1, 500.0),
+            self._candidate(2, 80.0, never=True),
+        ]
+
+        assert select_within_budget(candidates, 1) == frozenset({2})
+
+    def test_a_egalite_stricte_le_choix_est_deterministe(self) -> None:
+        """Deux courses du même clip doivent dépenser au même endroit.
+
+        Un `set` d'itération non déterministe rendrait deux analyses du même fichier
+        légèrement différentes — exactement le genre d'écart qu'on passe des jours à
+        ne pas comprendre.
+        """
+        candidates = [self._candidate(index, 200.0) for index in (9, 4, 7)]
+
+        assert select_within_budget(candidates, 2) == select_within_budget(candidates, 2)
+        assert select_within_budget(candidates, 2) == frozenset({4, 7})
+
+    def test_le_defaut_est_illimite(self) -> None:
+        """Plafonner écarte des mesures, donc des plaques possibles : l'arbitrage ne
+        se prend pas à la place de l'exploitant."""
+        assert PlateDetectOptions().max_per_frame == 0

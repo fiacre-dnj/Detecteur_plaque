@@ -11,8 +11,8 @@
  * `StudioPage`), qui le partage avec le chiffre de tête du tableau de bord pour
  * que les deux parlent du même ensemble. Le serveur, lui, publie tout objet suivi
  * confirmé : stationnement compris. Ces lignes-là n'avaient que des « — » dans
- * « Lignes franchies » et « Passages », donc rien à vérifier — exactement ce que
- * ce tableau existe pour permettre.
+ * les colonnes de franchissement et « Passages », donc rien à vérifier —
+ * exactement ce que ce tableau existe pour permettre.
  *
  * Trois comportements d'affichage, chacun pour une raison mesurée :
  * - **12 lignes puis « Afficher les N restants »** : le registre est sous les
@@ -59,7 +59,7 @@ import {
 } from "../model/exportCsv";
 import { filterByPlate } from "../model/filterPlate";
 import { plateBestGuessMessage, plateUnreadLabel, plateUnreadMessage } from "../model/plateUnread";
-import { crossingsWithRole } from "../model/roleCrossings";
+import { crossingsWithRole, crossingsWithoutRole } from "../model/roleCrossings";
 import { INITIAL_ROWS, ROW_HEIGHT, shouldVirtualise, visibleWindow } from "../model/virtualise";
 
 interface VehicleRegistryProps {
@@ -127,6 +127,19 @@ export function VehicleRegistry({
 
   const rows = virtualised ? filtered.slice(window.start, window.end) : shown;
 
+  /**
+   * Un franchissement échappe-t-il aux deux rôles, **quelque part** dans le
+   * registre ?
+   *
+   * Sur `vehicles` et non sur les lignes rendues : une colonne qui apparaîtrait au
+   * défilement d'un tableau virtualisé décalerait toutes les autres sous le
+   * curseur. Elle existe donc pour tout le tableau, ou pour aucun.
+   */
+  const hasUnroled = useMemo(
+    () => vehicles.some((entry) => crossingsWithoutRole(entry, lines).length > 0),
+    [vehicles, lines],
+  );
+
   const handleScroll = useCallback(() => {
     const element = scroller.current;
     if (element !== null) setScrollTop(element.scrollTop);
@@ -168,23 +181,30 @@ export function VehicleRegistry({
           <Th className="w-28">Type</Th>
           {/* « Présent de / à » et non « Vu de / à » : le mot disait *que* le
               véhicule avait été vu, pas *quoi* — et se lisait comme l'heure du
-              franchissement, que les deux colonnes « Entrée » et « Sortie »
+              franchissement, que les colonnes « Entrée par » et « Sortie par »
               portent maintenant. Ce sont les bornes de la piste dans le champ de
               la caméra, franchissement ou pas. */}
           <Th className="w-32">Présent de / à</Th>
           {/* Précisé pour la même raison : la durée est un temps de **présence à
               l'écran**, jamais un temps de trajet entre deux lignes. */}
           <Th className="w-20">Durée à l'écran</Th>
-          <Th>Lignes franchies</Th>
-          {/* Les instants des franchissements, séparés par rôle. « Lignes
-              franchies » dit *par où*, ces deux colonnes disent *quand* — l'heure
-              n'était lisible qu'en survolant chaque puce une par une.
+          {/* **Par où et quand, rangés par rôle.** « Lignes franchies » listait les
+              deux sens dans une seule cellule, et les deux colonnes voisines n'en
+              portaient que l'heure : lire « ce véhicule est entré par la ligne 1 à
+              00:34 » demandait de recoller trois cellules, dont une par survol.
 
               Deux colonnes et non une : entrée et sortie répondent à deux
-              questions, et les empiler dans une cellule casserait `ROW_HEIGHT`,
+              questions. Le nom de la ligne et l'heure tiennent sur **une seule
+              rangée** dans chaque cellule — les empiler casserait `ROW_HEIGHT`,
               dont la virtualisation dépend. */}
-          <Th className="w-24">Entrée</Th>
-          <Th className="w-24">Sortie</Th>
+          <Th className="w-44">Entrée par</Th>
+          <Th className="w-44">Sortie par</Th>
+          {/* N'existe que si une ligne du tableau en porte : un franchissement dont
+              le rôle n'est plus lisible — ligne retirée du tracé, ou sens resté
+              neutre sur un tracé antérieur à ADR 0021. Le ranger sous un rôle
+              serait une invention ; le taire ferait diverger le registre de la
+              colonne « Passages », qui le compte. */}
+          {hasUnroled && <Th className="w-40">Hors rôle</Th>}
           <Th className="w-28">Zones</Th>
           <Th className="w-24">Vitesse</Th>
           {/* « Passages » remplace « Ré-id » : la ré-identification n'existe plus
@@ -231,36 +251,9 @@ export function VehicleRegistry({
             <Td className="tabular text-ink-muted">
               {formatSceneTime(vehicle.lastSeenMs - vehicle.firstSeenMs)}
             </Td>
-            <Td>
-              {vehicle.crossedLines.length === 0 ? (
-                <span className="text-ink-dim">—</span>
-              ) : (
-                <span className="flex flex-wrap gap-1">
-                  {vehicle.crossedLines.map((crossing, crossingIndex) => (
-                    <span
-                      key={`${crossing.lineId}-${crossing.timestampMs}-${crossingIndex}`}
-                      // L'infobulle donne la ligne, l'instant **et** le sens nommé :
-                      // c'est ce qui permet de retrouver le passage dans la vidéo.
-                      title={`${lineName(lines, crossing.lineId)} à ${formatSceneTime(crossing.timestampMs)}, ${crossingDirectionName(lines, crossing.lineId, crossing.direction) ?? `sens ${directionArrow(crossing.direction)}`}`}
-                      className="inline-flex items-center gap-1 rounded-badge bg-elevated px-1.5 py-0.5 text-micro"
-                    >
-                      <CrossingArrow
-                        lines={lines}
-                        lineId={crossing.lineId}
-                        direction={crossing.direction}
-                      />
-                      {/* Le **nom du sens** plutôt que le nom de la ligne : c'est lui
-                          qui dit où va le véhicule, et c'est la question du registre.
-                          La ligne reste dans l'infobulle. */}
-                      {crossingDirectionName(lines, crossing.lineId, crossing.direction) ??
-                        lineName(lines, crossing.lineId)}
-                    </span>
-                  ))}
-                </span>
-              )}
-            </Td>
-            <RoleTimeCell vehicle={vehicle} lines={lines} role="entry" />
-            <RoleTimeCell vehicle={vehicle} lines={lines} role="exit" />
+            <RoleCrossingCell vehicle={vehicle} lines={lines} role="entry" />
+            <RoleCrossingCell vehicle={vehicle} lines={lines} role="exit" />
+            {hasUnroled && <UnroledCrossingCell vehicle={vehicle} lines={lines} />}
             <Td className="text-ink-muted">
               {vehicle.zonesVisited.length === 0 ? (
                 <span className="text-ink-dim">—</span>
@@ -540,7 +533,7 @@ function Td({ children, className = "" }: { children: React.ReactNode; className
  * tracé. Le second reste visible dans « Lignes franchies », qui affiche alors la
  * flèche brute — les inventer une heure serait pire.
  */
-function RoleTimeCell({
+function RoleCrossingCell({
   vehicle,
   lines,
   role,
@@ -554,26 +547,89 @@ function RoleTimeCell({
 
   if (first === undefined) {
     return (
-      <Td className="tabular">
+      <Td>
         <span className="text-ink-dim">—</span>
       </Td>
     );
   }
 
   const others = crossings.length - 1;
-  const title = crossings
-    .map(
-      (crossing) =>
-        `${lineName(lines, crossing.lineId)} à ${formatSceneTimePrecise(crossing.timestampMs)}`,
-    )
-    .join(" · ");
+  const title = crossings.map((crossing) => describeCrossing(lines, crossing)).join(" · ");
 
   return (
-    <Td className="tabular text-ink">
-      <span title={title}>
-        {formatSceneTimePrecise(first.timestampMs)}
-        {others > 0 && <span className="ms-1 text-micro text-ink-dim">+{others}</span>}
+    <Td className="text-ink">
+      {/* Une seule rangée : la flèche, le nom de la ligne tronqué, l'heure. Le
+          `+N` compte les franchissements **suivants du même rôle** — un
+          aller-retour, deux lignes d'entrée en travers de la même voie, une
+          occlusion qui coupe la piste (invariant 6). Aucun n'est fusionné ni
+          perdu : l'infobulle les porte tous. */}
+      <span className="flex items-center gap-1.5" title={title}>
+        <CrossingArrow lines={lines} lineId={first.lineId} direction={first.direction} />
+        <span className="min-w-0 truncate">{lineName(lines, first.lineId)}</span>
+        <span className="ms-auto shrink-0 text-micro text-ink-muted tabular">
+          {formatSceneTimePrecise(first.timestampMs)}
+        </span>
+        {others > 0 && <span className="shrink-0 text-micro text-ink-dim">+{others}</span>}
       </span>
     </Td>
   );
+}
+
+/**
+ * Les franchissements qu'**aucun rôle ne réclame** — ligne retirée du tracé, ou
+ * sens resté neutre sur un tracé antérieur à ADR 0021.
+ *
+ * Rendus comme les anciennes puces de « Lignes franchies », flèche de repli
+ * comprise : c'est exactement le cas que cette colonne couvrait, et que les deux
+ * colonnes de rôle ne peuvent pas couvrir sans inventer un rôle. Les taire ferait
+ * diverger le registre de la colonne « Passages », qui les compte.
+ */
+function UnroledCrossingCell({
+  vehicle,
+  lines,
+}: {
+  vehicle: VehicleRecord;
+  lines: readonly CountingLine[];
+}) {
+  const crossings = crossingsWithoutRole(vehicle, lines);
+
+  if (crossings.length === 0) {
+    return (
+      <Td>
+        <span className="text-ink-dim">—</span>
+      </Td>
+    );
+  }
+
+  return (
+    <Td className="text-ink-muted">
+      <span className="flex flex-wrap gap-1">
+        {crossings.map((crossing, index) => (
+          <span
+            key={`${crossing.lineId}-${crossing.timestampMs}-${index}`}
+            title={describeCrossing(lines, crossing)}
+            className="inline-flex items-center gap-1 rounded-badge bg-elevated px-1.5 py-0.5 text-micro"
+          >
+            <CrossingArrow lines={lines} lineId={crossing.lineId} direction={crossing.direction} />
+            {lineName(lines, crossing.lineId)}
+          </span>
+        ))}
+      </span>
+    </Td>
+  );
+}
+
+/**
+ * La phrase d'infobulle d'un franchissement : la ligne, l'instant **et** le sens
+ * nommé. C'est ce triplet qui permet de retrouver le passage dans la vidéo — le
+ * nom du sens seul ne dit pas quand, l'heure seule ne dit pas par où.
+ */
+function describeCrossing(
+  lines: readonly CountingLine[],
+  crossing: VehicleRecord["crossedLines"][number],
+): string {
+  const way =
+    crossingDirectionName(lines, crossing.lineId, crossing.direction) ??
+    `sens ${directionArrow(crossing.direction)}`;
+  return `${lineName(lines, crossing.lineId)} à ${formatSceneTimePrecise(crossing.timestampMs)}, ${way}`;
 }

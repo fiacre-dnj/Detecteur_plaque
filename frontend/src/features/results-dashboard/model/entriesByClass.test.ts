@@ -3,7 +3,7 @@
  *
  * Le test qui compte est le dernier : la somme des classes doit égaler
  * `flowBalance(...).entries` **exactement**. Sans cette garantie, la carte
- * « Voitures » de la Répartition et le KPI « Entrées au carrefour » des
+ * « Voitures » de la Répartition et le KPI « Passages en entrée » des
  * Résultats pourraient un jour se contredire — la même famille de bug que le
  * « taux de franchissement » à 200 % que ce dépôt a déjà payée une fois.
  */

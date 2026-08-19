@@ -28,6 +28,7 @@ import pytest
 from traffic_analysis.features.counting.application.dto import BoundingBox
 from traffic_analysis.features.models_registry.infrastructure.plate_detector import (
     DEFAULT_MOSAIC_SIDE,
+    MAX_BATCH,
     MOSAIC_GUTTER_PX,
     NET_SIZE,
     PAD_VALUE,
@@ -344,6 +345,227 @@ class TestSelection:
         )
 
         assert [round(detection.score, 2) for detection in selected] == [0.91, 0.55]
+
+
+class _FakeBoxes:
+    """Le strict nécessaire de `Results.boxes` : `xyxy`, `conf`, et une longueur."""
+
+    def __init__(self, rows: list[tuple[float, float, float, float, float]]) -> None:
+        self._rows = rows
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    @property
+    def xyxy(self) -> _FakeTensor:
+        return _FakeTensor(np.array([row[:4] for row in self._rows], dtype=np.float32))
+
+    @property
+    def conf(self) -> _FakeTensor:
+        return _FakeTensor(np.array([row[4] for row in self._rows], dtype=np.float32))
+
+
+class _FakeTensor:
+    """Imite juste assez de torch pour que `.cpu().numpy()` traverse."""
+
+    def __init__(self, array: np.ndarray) -> None:
+        self._array = array
+
+    def cpu(self) -> _FakeTensor:
+        return self
+
+    def numpy(self) -> np.ndarray:
+        return self._array
+
+
+class _FakeResult:
+    def __init__(self, rows: list[tuple[float, float, float, float, float]]) -> None:
+        self.boxes = _FakeBoxes(rows)
+
+
+class _RecordingYolo:
+    """Un modèle qui note **comment** on l'appelle, pas ce qu'on lui demande de voir.
+
+    C'est le seul moyen de tester un coût : le résultat d'une passe étranglée et
+    celui d'une passe séquentielle sont identiques, donc aucune assertion sur les
+    boîtes ne pourrait distinguer une inférence par véhicule d'une seule pour tous.
+    """
+
+    def __init__(self, rows: list[tuple[float, float, float, float, float]] | None = None) -> None:
+        self.calls: list[int] = []
+        #: Côté d'entrée demandé à chaque appel. C'est le premier poste du budget
+        #: quand l'ANPR tourne (73 % sur une scène dense) : un réglage qui
+        #: n'atteindrait pas `predict` se lirait comme un levier sans effet.
+        self.sizes: list[object] = []
+        #: Forme de la source de chaque appel, mosaïque comprise : c'est elle qui dit
+        #: qu'une tuile a bien été construite au côté demandé.
+        self.shapes: list[tuple[int, ...]] = []
+        self._rows = rows if rows is not None else [(10.0, 30.0, 70.0, 50.0, 0.9)]
+
+    def predict(self, source: object, **kwargs: object) -> list[_FakeResult]:
+        self.sizes.append(kwargs.get("imgsz"))
+        if isinstance(source, list):
+            self.calls.append(len(source))
+            return [_FakeResult(list(self._rows)) for _ in source]
+        # Chemin mosaïque : une seule image, un seul résultat.
+        self.calls.append(1)
+        self.shapes.append(getattr(source, "shape", ()))
+        return [_FakeResult(list(self._rows))]
+
+
+class TestUnSeulLotPourToutesLesPistes:
+    """Le chemin par défaut paie **un** `predict`, pas un par véhicule.
+
+    Ce n'était pas le cas jusqu'ici : `detect_many` découpait en paquets de `side²`
+    recadrages, et le défaut `side = 1` faisait donc un paquet — donc un appel — par
+    piste. Mesuré sur vidéo réelle à 3,7 véhicules par image, corriger cela vaut
+    **217 ms → 107 ms par image**, à détections rigoureusement équivalentes (240
+    véhicules, aucune plaque gagnée ni perdue, IoU minimale de 0,943 sur les boîtes
+    appariées — l'écart sub-pixel vient du redimensionnement de mosaïque que le lot
+    n'a plus à faire).
+
+    Une régression ici ne changerait **aucun chiffre affiché** : elle diviserait
+    seulement la cadence par deux, ce que personne ne relie spontanément à ce
+    fichier. D'où un test qui compte les appels.
+    """
+
+    @staticmethod
+    def _prepared(model: _RecordingYolo, **kwargs: object) -> UltralyticsPlateDetector:
+        detector = _detector(**kwargs)
+        detector._model = model
+        return detector
+
+    def test_cinq_vehicules_ne_coutent_qu_une_inference(self) -> None:
+        model = _RecordingYolo()
+        detector = self._prepared(model)
+        image = np.zeros((720, 1280, 3), dtype=np.uint8)
+        boxes = [
+            BoundingBox(x=float(index * 200), y=0.0, width=180.0, height=120.0)
+            for index in range(5)
+        ]
+
+        detector.detect_many(image, boxes)
+
+        assert model.calls == [5]
+
+    def test_le_cote_d_entree_configure_atteint_l_inference(self) -> None:
+        """**Le premier poste du budget dès que l'ANPR tourne.**
+
+        Mesuré sur une scène dense réelle : 73 % du temps par image, et un coût
+        linéaire en nombre de recadrages — chaque véhicule paie une inférence
+        complète. Le côté de l'entrée est donc le seul levier qui n'exige pas d'en
+        détecter moins : 141 ms par appel à 640, 56,8 à 320 sur les mêmes huit
+        recadrages.
+
+        Un réglage qui n'atteindrait pas `predict` serait le pire des deux mondes :
+        l'opérateur croirait avoir changé de régime et mesurerait l'ancien.
+        """
+        model = _RecordingYolo()
+        detector = self._prepared(model, net_size=320)
+        image = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        detector.detect_many(image, [BoundingBox(x=0.0, y=0.0, width=180.0, height=120.0)])
+
+        assert model.sizes == [320]
+
+    def test_la_mosaique_est_construite_au_cote_demande(self) -> None:
+        """Les deux chemins doivent lire le **même** côté.
+
+        La tuile est une image réelle : la bâtir à 640 pour l'inférer à 320
+        rétrécirait chaque cellule d'un facteur deux sans que rien ne le dise, et
+        détruirait le rappel que la mosaïque essaie déjà de préserver (ADR 0008).
+        """
+        model = _RecordingYolo()
+        detector = self._prepared(model, mosaic_side=2, net_size=320)
+        image = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        detector.detect_many(image, [BoundingBox(x=0.0, y=0.0, width=180.0, height=120.0)])
+
+        assert model.sizes == [320]
+        assert model.shapes == [(320, 320, 3)]
+
+    def test_le_defaut_reste_la_resolution_d_entrainement(self) -> None:
+        """640 tant que personne ne demande autre chose : on ne troque pas du rappel
+        contre du débit en silence."""
+        model = _RecordingYolo()
+        detector = self._prepared(model)
+        image = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        detector.detect_many(image, [BoundingBox(x=0.0, y=0.0, width=180.0, height=120.0)])
+
+        assert model.sizes == [NET_SIZE]
+
+    def test_le_lot_est_borne_pour_ne_pas_saturer_la_carte(self) -> None:
+        """Une intersection chargée ne doit pas faire déborder une petite carte.
+
+        Une erreur de mémoire GPU ferait échouer **toute** la passe ANPR de l'image,
+        pas seulement le véhicule de trop.
+        """
+        model = _RecordingYolo()
+        detector = self._prepared(model)
+        image = np.zeros((2000, 4000, 3), dtype=np.uint8)
+        boxes = [
+            BoundingBox(
+                x=float(index % 20 * 190), y=float(index // 20 * 190), width=180.0, height=180.0
+            )
+            for index in range(MAX_BATCH + 4)
+        ]
+
+        detector.detect_many(image, boxes)
+
+        assert model.calls == [MAX_BATCH, 4]
+
+    def test_la_boite_revient_dans_le_repere_de_l_image_complete(self) -> None:
+        """Le lot supprime la mosaïque : il ne doit pas supprimer le retour au repère.
+
+        Le modèle rend `(10, 30, 70, 50)` dans le repère du **recadrage** ; le
+        véhicule commence à `x=200`, donc la plaque est à `x=210` dans l'image.
+        """
+        model = _RecordingYolo()
+        detector = self._prepared(model)
+        image = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        found = detector.detect_many(
+            image, [BoundingBox(x=200.0, y=100.0, width=180.0, height=120.0)]
+        )
+
+        assert len(found[0]) == 1
+        assert found[0][0].box.x == pytest.approx(210.0)
+        assert found[0][0].box.y == pytest.approx(130.0)
+        assert found[0][0].box.width == pytest.approx(60.0)
+
+    def test_une_boite_invraisemblable_est_ecartee_sur_ce_chemin_aussi(self) -> None:
+        """Le filtre du domaine ne doit pas être perdu en route.
+
+        Sans lui, la boîte du véhicule entier repartirait en OCR — les 112 fausses
+        détections sur 538 d'ADR 0008.
+        """
+        model = _RecordingYolo(rows=[(0.0, 0.0, 180.0, 120.0, 0.87)])
+        detector = self._prepared(model)
+        image = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        found = detector.detect_many(image, [BoundingBox(x=0.0, y=0.0, width=180.0, height=120.0)])
+
+        assert found == ((),)
+
+    def test_la_mosaique_garde_son_propre_chemin(self) -> None:
+        """`mosaic_side > 1` reste l'empaquetage d'ADR 0008, intact.
+
+        Elle échange du rappel contre de la vitesse sans GPU, et ce n'est pas le même
+        arbitrage : le lot, lui, ne troque rien.
+        """
+        model = _RecordingYolo()
+        detector = self._prepared(model, mosaic_side=2)
+        image = np.zeros((720, 1280, 3), dtype=np.uint8)
+        boxes = [
+            BoundingBox(x=float(index * 200), y=0.0, width=180.0, height=120.0)
+            for index in range(4)
+        ]
+
+        detector.detect_many(image, boxes)
+
+        # Quatre recadrages dans une grille 2×2 : une image empaquetée, un appel.
+        assert model.calls == [1]
 
 
 class TestDegradationGracieuse:

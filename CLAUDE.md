@@ -72,7 +72,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1351 tests
+uv run pytest                                                            # 1532 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -167,25 +167,168 @@ câblage passe par `StudioPage` — c'est pourquoi `GeometryPanel` reçoit un
 `onOpenPresets` plutôt que la modale elle-même, et pourquoi `SettingsPanels` reçoit
 un emplacement `leading` où le studio pose le bouton d'import.
 
-#### La disposition du studio, depuis le 2026-08-12 (barre flottante et bas de page refondu le 2026-08-16/17)
+**Les trois pages ne se démontent plus en changeant d'onglet** (2026-08-19). Le
+routeur n'a plus qu'une route (`path: "*"` → `AppShell`) et c'est
+`app/layout/KeepAlivePages.tsx` qui monte les pages visitées et masque les autres
+par l'attribut `hidden`. Un `<Outlet />` les démontait : aller voir l'historique
+dix secondes coûtait la vidéo importée, le tracé, l'intervalle, la position de
+lecture et le suivi SSE en cours — dont **rien** ne se reconstruit depuis l'URL,
+la source étant un `File` local et la géométrie des pixels de cette vidéo-là.
+Quatre conséquences à connaître avant d'y toucher :
+
+- **l'appariement URL → page est à nous maintenant**, dans `layout/keepAlive.ts`,
+  et il est testé : la comparaison est **exacte**, sinon `/` désignerait les trois
+  onglets à la fois et deux pages s'afficheraient l'une sur l'autre ;
+- **un garde « une seule fois » indexé sur le montage ne se réarme plus jamais.**
+  Les deux effets de `StudioPage` qui lisent `location.state` — « Ouvrir » et
+  « Relancer » depuis l'historique — retiennent donc **l'état de navigation
+  appliqué** et non un booléen ; sans cela, le deuxième « Ouvrir » ne ferait rien ;
+- **une page cachée n'est pas une page inerte** : SSE, session caméra et requêtes
+  en vol continuent. C'est le but, mais cela veut dire qu'on ne peut plus compter
+  sur le démontage pour arrêter quoi que ce soit ;
+- **le défilement est mémorisé par page**, relevé en continu et rendu en
+  `useLayoutEffect`. Masquer une page longue raccourcit le document, le navigateur
+  recadre `scrollY`, et l'enregistrer au moment de la bascule sauvegarderait la
+  valeur déjà tronquée.
+
+#### La disposition du studio, depuis le 2026-08-12 (barre collante, géométrie en tiroir et actions dans le lecteur le 2026-08-19)
 
 ```
-[⇧ Importer]  [Détection ▾] [Comptage ▾] [Affichage & analyse ▾]  … nom du fichier →
-              └─ tiroir flottant du panneau ouvert, 2 colonnes, PAR-DESSUS la page
+━━ barre COLLANTE sous l'entête (sticky, top: --app-header-h, z-30) ━━━━━━━━━━
+[⇧ Importer] [Détection ▾] [Comptage ▾] [Affichage ▾] [Géométrie ▾]  suivis · cadence · latence · flux →
+             └─ tiroir flottant du panneau ouvert, 2 colonnes, PAR-DESSUS la page
 ┌──────────────────────────────┬──────────────────┐
-│ vidéo + canvas + HUD          │ RÉSULTATS         │  aside 24 rem
-│ TransportBar                  │ KPI en 2 colonnes │
+│ nom du fichier ⟨   ⟩ WxH · fps│ RÉSULTATS         │  aside 24 rem
+│ vidéo + canvas + HUD          │ 1 KPI de tête,    │
+│ ┌ LECTURE ───── mm:ss/mm:ss ┐ │   PLEINE LARGEUR  │
+│ │ rail de position          │ │ + 4 (5) cartes    │
+│ │ INTERVALLE ─── mm:ss→mm:ss│ │   par type        │
+│ │ rail d'intervalle         │ │ + 1 carte PAR     │
+│ │ ⏵ ⏮ ⏪ ±1i ⏩ ⏭ ↺  Vitesse  │ │   LIGNE tracée    │
+│ │              [LANCER] [Fermer] │                  │
+│                                │ AVANT L'ANALYSE : │
+│                                │ le KPI de tête à  │
+│                                │ « — », puis AVANT │
+│                                │ DE LANCER, le     │
+│                                │ récapitulatif des │
+│                                │ réglages          │
 ├──────────────────────────────┴──────────────────┤
-│ RÉPARTITION — une carte par type, entrées seules  │  les quatre sections
-│ STATISTIQUE — KPI de tête, une rangée par ligne,  │  vivent PENDANT
-│   comparatifs groupés en une carte                │  l'analyse et après
-│ [camembert flux/ligne] [camembert entrées/type]   │  deux colonnes
+│ STATISTIQUE — KPI de tête, une rangée par ligne,  │  les trois sections
+│   comparatifs groupés en une carte                │  vivent PENDANT
+│ [camembert flux/ligne] [camembert entrées/type]   │  l'analyse et après
 │ REGISTRE — tableau par véhicule, export CSV/JSON  │  exports à la fin
-│ FRANCHISSEMENTS — chronologie, analyse d'un fichier │  ni après, ni en direct
+│ FRANCHISSEMENTS — chronologie, PENDANT ET APRÈS   │  jamais en direct
 └──────────────────────────────────────────────────┘
 ```
 
-**Les quatre sections se mettent à jour en direct depuis le 2026-08-17** ([ADR
+**Ce qui a bougé le 2026-08-19, et pourquoi.** Cinq déplacements, tous motivés par
+la même observation : le bas de page s'était allongé (trois sections plus la
+chronologie), donc tout ce qui vivait « en haut à droite » finissait hors de
+l'écran dès qu'on lisait un résultat.
+
+- **la barre est collante** (`sticky`, décalée de `--app-header-h` que `AppShell`
+  mesure et publie ; `-mx-6 px-6` pour peindre son fond jusqu'aux gouttières).
+  Sans le fond opaque, la vidéo défile visiblement sous les pilules. La hauteur
+  d'entête est **mesurée** et non écrite en dur : elle s'enroule en fenêtre
+  étroite, et le badge serveur grandit quand il porte une erreur ;
+- **« Géométrie » est le quatrième tiroir**, plus un panneau permanent de la
+  colonne. `SettingsPanels` l'accepte par `panels` (`ExtraPanel[]`) — la feature
+  des réglages ne connaît pas `geometry-editor`, c'est le studio qui câble, même
+  règle que `leading`/`trailing`. `GeometryPanel` a **perdu sa carte et son
+  titre** : le tiroir est déjà une région nommée « Géométrie » ;
+- **les chiffres d'instant** — **objets suivis**, cadence serveur, latence et flux
+  analysé — sont à l'extrémité de la barre (`TechnicalMetrics`, `trailing`), en
+  libellé plus chiffre sur deux lignes, sans carte. Ils tenaient quatre des six
+  `MetricCard` de tête, à égalité visuelle avec le bilan du comptage. Ils étaient
+  trois jusqu'au soir du 2026-08-19 : « Objets suivis » les a rejoints pour la même
+  raison, c'est le nombre de pistes vivantes à *cette* image — un chiffre qui monte
+  et redescend, jamais un résultat qui s'accumule. Contrepartie assumée : la
+  `MetricCard` portait `aria-live="polite"` et cette rangée non, un compteur qui
+  change à chaque image ferait d'un lecteur d'écran un métronome ;
+- **le nom du fichier est sur la scène**, coin haut-gauche, dans **exactement**
+  l'écrin du badge de dimensions d'en face (`SourceBadge`, `pointer-events-none`
+  obligatoire — la scène est une surface de tracé) ;
+- **« Lancer l'analyse » et « Fermer » sont dans le lecteur** (`TransportBar.actions`,
+  poussés par `ms-auto`), là où se réglait la vitesse — laquelle rejoint le groupe
+  de boutons qui lit. Le rappel « Portion retenue » disparaît avec eux : l'intervalle
+  est écrit deux rangées plus haut, dans l'entête du rail qui le dessine.
+
+**Les deux rails du lecteur ont la même longueur, et c'est vérifiable** (mesuré :
+`x = 79`, `w = 1128` pour les deux). Le temps courant était écrit *à côté* du
+curseur de position, ce qui raccourcissait ce rail-là de la largeur de
+« 03:26 / 03:26 » : une borne posée au milieu de l'intervalle ne tombait pas au
+milieu de la vidéo. Les deux chiffres sont désormais en **entête de leur rail**,
+d'où les deux libellés « LECTURE » et « INTERVALLE D'ANALYSE » qui se répondent.
+
+**La Répartition n'a plus de section** : ses cartes sont dans les Résultats, en
+`size="sm"` — elles découpent « Passages en entrée » dont elles sont la somme
+exacte, et un écran de défilement entre les deux obligeait à retenir un nombre
+pour vérifier l'autre. `ClassEntriesGrid` est **supprimé**, son contenu replié
+dans `ResultsDashboard`. Le titre « Répartition » ne disait rien de plus que
+« Voiture », « Bus » juste dessous.
+
+**La colonne de résultats n'a plus qu'une tête de lecture, et une carte par
+ligne** (soir du 2026-08-19). Quatre changements liés, et aucun ne touche un
+calcul :
+
+- **« Entrées au carrefour » s'appelle « Passages en entrée »**, en `size="lg"` et
+  sur toute la largeur de la colonne. Le mot nommait un lieu que l'utilisateur n'a
+  pas forcément : sur une route à sens unique portant une seule ligne, « carrefour »
+  ne veut rien dire alors que le chiffre reste juste. Le nom retenu garde l'unité
+  explicite — des **passages**, jamais des véhicules (invariant 3) ;
+- **une carte par ligne tracée**, pleine largeur elle aussi : pastille de couleur,
+  **le nom saisi par l'utilisateur**, fréquentation, entrées, sorties, solde signé
+  et la barre à deux segments. Le détail par ligne n'existait qu'en bas de page,
+  sous la vidéo, alors que la question « combien sur *cette* ligne » se pose en même
+  temps que le total. Tout est dérivé de `stats.byLine` et du tracé **courant** :
+  renommer une ligne ou basculer un sens entrée ↔ sortie se voit sans réanalyser ;
+- **`model/lineFlows.ts` est la seule définition du bilan d'une ligne.** Elle était
+  écrite deux fois — en privé dans `highlights.ts`, en clair dans `LineFlowRow` — et
+  trois écrans la lisent désormais. Deux copies d'une règle finissent par diverger,
+  et ici ce serait un passage qui change de colonne selon l'écran qui le montre.
+  `entries`/`exits` y valent `null` et **jamais `0`** quand aucun sens ne porte le
+  rôle : « 0 sorties » se lit comme un comptage, pas comme un rôle non déclaré.
+  `EntryExitBar` sort de `LineFlowDashboard` pour la même raison ;
+- **la carte « Personne » survit au décochage** : elle s'affiche si la classe est
+  cochée **ou** si le résultat relu porte des entrées `person`. Sans cela, rouvrir un
+  résultat archivé après avoir décoché la case effaçait une colonne de son propre
+  contenu.
+
+**La colonne n'est plus vide avant la première analyse** (soir du 2026-08-19). Entre
+l'import d'une vidéo et le premier chiffre, elle était une bande de 24 rem inoccupée
+sur toute la hauteur de la scène — et le squelette « Passages en entrée — » vivait,
+lui, **tout en bas de la page**, sous la vidéo et la chronologie, là où personne ne
+le voyait avant d'avoir défilé. Deux changements :
+
+- **le squelette est monté dans la colonne**, à l'endroit exact qu'occupera le
+  tableau réel : même libellé, même taille, même place. Un écran d'attente n'a de
+  valeur que s'il annonce la forme de ce qui vient ;
+- **« Configuration système » remplit le reste** (`ui/AnalysisSummary.tsx`, texte
+  calculé par `model/analysisSummary.ts`, testé) : modèle, objets comptés, géométrie,
+  portion analysée, plaques, cadence — les réglages qui partiront au serveur, relus
+  d'un coup. Ils vivent dans **quatre tiroirs différents** de la barre, et les
+  vérifier demandait d'ouvrir les quatre pendant que la place pour les lire ensemble
+  restait inoccupée juste à côté. Trois points qui ne se devinent pas :
+  - **les avertissements disent une conséquence, jamais un interdit** — « aucune
+    ligne : les zones seules ne produisent pas de franchissement », et non « ligne
+    manquante ». Lancer reste possible, `canAnalyse` en est le seul juge, et ce
+    récapitulatif ne bloque rien ;
+  - **il ne montre pas la durée de l'intervalle**, seulement ses bornes :
+    `describeRange` demande la durée de la vidéo, qui n'est lisible que sur la
+    balise `<video>` et ne vit dans aucun état réactif — le chiffre serait figé au
+    premier rendu ;
+  - **rien en caméra** : un flux n'a ni portion à choisir ni plaques, et
+    `RealtimePanel` occupe déjà cette place avec ce qui le concerne.
+
+**La chronologie des franchissements survit à la fin de l'analyse** — c'était sa
+condition d'affichage (`session.result === null`) qui la démontait à la seconde où
+l'on commence à vérifier un comptage. Après coup elle lit le résultat complet à la
+tête de lecture (`crossingsUpTo`, la fonction qui existait pour cela et avait perdu
+son consommateur), donc elle ne montre jamais un passage que la vidéo n'a pas
+atteint. `timelineEvents` dans `StudioPage` choisit la source ; `!live.active`
+reste, le direct n'ayant pas de journal.
+
+**Les sections du bas se mettent à jour en direct depuis le 2026-08-17** ([ADR
 0026](docs/adr/0026-le-registre-se-remplit-pendant-l-analyse.md)) : l'aperçu SSE
 transporte désormais le registre (`JobPreview.vehicles`), les mêmes
 `VehicleRecord` que le résultat final par le même sérialiseur. Un seul jeu de
@@ -204,7 +347,8 @@ devinent pas :
   combien. Même règle que les exports qui ignorent la recherche par plaque ;
 - **le direct (caméra) ne gagne rien**, faute d'aperçu SSE donc de registre.
   Seule la Répartition, qui ne lit que `by_class`, reste servie dans les trois
-  modes.
+  modes — elle est depuis le 2026-08-19 dans les cartes de Résultats, ce qui ne
+  change rien à cette règle : elle suit `resultStats` et non `dashboardStats`.
 
 Le tiroir ouvrait initialement **en flux normal**, pleine largeur — il grandissait
 la page et poussait la vidéo et les résultats de plusieurs centaines de pixels vers
@@ -212,9 +356,10 @@ le bas à chaque ouverture. Depuis le 2026-08-16 il **flotte** (`position: absol
 ancré sous la barre, `z-30`) : la page ne bouge plus quand on l'ouvre. Un clic en
 dehors ou `Échap` le referme. L'entête de l'application (`AppShell`) est fixée en
 haut de l'écran (`sticky top-0 z-40`) pour la même raison de fond — rester
-atteignable pendant que la page défile en dessous.
+atteignable pendant que la page défile en dessous, et **la barre du studio l'est à
+son tour** depuis le 2026-08-19, calée sur la hauteur mesurée de cette entête.
 
-#### Ce que portent les trois tiroirs, depuis le 2026-08-17
+#### Ce que portent les quatre tiroirs, depuis le 2026-08-17 (le quatrième depuis le 2026-08-19)
 
 Le contenu a été **réaligné sur le code réellement exécuté** : plusieurs textes
 décrivaient un comportement d'avant ADR 0024 et ADR 0025, et deux chiffres du
@@ -236,16 +381,18 @@ diagnostic n'étaient renseignés par personne.
 - **Affichage & analyse** — trajectoires (le seul réglage purement visuel), pas
   d'analyse, les deux cadences, et l'**échelle globale** px/m, désormais présentée
   pour ce qu'elle est depuis ADR 0025 : un repli, que la longueur d'une ligne
-  l'emporte localement dès qu'elle est saisie.
+  l'emporte localement dès qu'elle est saisie ;
+- **Géométrie**, depuis le 2026-08-19 — lignes, zones, presets, rôles de sens et
+  longueur réelle par ligne. Fourni par le studio (`panels`) et non par cette
+  feature, qui ne connaît pas `geometry-editor`.
 
-Les trois boutons du tiroir sont **grisés tant qu'aucune vidéo n'est chargée** :
-régler la détection, le comptage ou l'affichage n'a rien à quoi s'appliquer sans
-source. La scène vide n'affiche plus une phrase inerte mais une invite cliquable
-(icône, « Importer une vidéo », glisser-déposer) — le bouton de la barre et cette
-invite déclenchent le même import, `handleFile`. Le nom du fichier importé se lit
-désormais **à l'extrémité de la barre** (`trailing`, poussé par `ms-auto`), et non
-plus juste après le bouton : une fois choisie, la source se consulte, elle ne se
-reclique pas.
+Les boutons du tiroir sont **grisés tant qu'aucune vidéo n'est chargée** : régler
+la détection, le comptage, l'affichage ou la géométrie n'a rien à quoi s'appliquer
+sans source. La scène vide n'affiche plus une phrase inerte mais une invite
+cliquable (icône, « Importer une vidéo », glisser-déposer) — le bouton de la barre
+et cette invite déclenchent le même import, `handleFile`. Le nom du fichier
+importé, qui a occupé l'extrémité de la barre, est depuis le 2026-08-19 **posé sur
+la vidéo** ; cette extrémité porte les compteurs techniques.
 
 Elle est l'inverse de la précédente, où les réglages tenaient la colonne de droite
 et les résultats vivaient sous la grille. Conséquences à connaître :
@@ -262,12 +409,14 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
   `model/timeline.ts`/`timelineFilters.ts` sont supprimés, pas seulement masqués ;
 - **le bas de page n'a plus d'onglets.** L'ancien `Tabs` à cinq entrées
   (Répartition, Par ligne & sens, Mouvements, Flux, Registre) est remplacé par
-  trois sections toujours empilées, jamais en accordéon — **Répartition**
-  (`ClassEntriesGrid`, une carte par type de véhicule, valeur = entrées
-  seulement, cohérente par construction avec le KPI « Entrées au carrefour » —
-  `entriesByClass` partage son prédicat `role === "entry"` avec `flowBalance`,
-  verrouillé par un test), **Statistique** (`LineFlowDashboard`) et
-  **Registre** (`VehicleRegistry`). La matrice origine-destination
+  des sections toujours empilées, jamais en accordéon — **Statistique**
+  (`LineFlowDashboard`) et **Registre** (`VehicleRegistry`). La Répartition y a
+  vécu jusqu'au 2026-08-19 sous la forme d'un `ClassEntriesGrid` **aujourd'hui
+  supprimé** : ses cartes sont dans `ResultsDashboard`, où l'invariant qui les
+  justifie reste vrai — valeur = entrées seulement, cohérente par construction
+  avec le KPI « Passages en entrée », `entriesByClass` partageant son prédicat
+  `role === "entry"` avec `flowBalance`, verrouillé par un test. La matrice
+  origine-destination
   (« Mouvements ») et l'occupation de zone disparaissent **sans
   reconstruction**, décision assumée : ce tableau de bord ne parle que de
   lignes ;
@@ -316,7 +465,26 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
   et **« Durée à l'écran »** (`firstSeenMs → lastSeenMs`, un temps de **présence
   dans le champ**), parce que « Vu de / à » et « Durée » se lisaient comme l'heure
   et le temps du franchissement — exactement ce que les deux nouvelles colonnes
-  portent ;
+  portent.
+
+  **« Lignes franchies » n'existe plus** (soir du 2026-08-19) : elle est fondue
+  dans ces deux colonnes, devenues **« Entrée par »** et **« Sortie par »**, qui
+  portent maintenant la **ligne et l'heure** au lieu de l'heure seule. Elle
+  listait les deux sens dans une même cellule pendant que ses voisines ne
+  donnaient que l'instant : lire « ce véhicule est entré par la ligne 1 à 00:34 »
+  demandait de recoller trois cellules, dont une par survol. Deux points qui ne se
+  devinent pas :
+  - **le contenu tient sur une rangée** — flèche à l'angle réel, nom de ligne
+    tronqué, heure poussée à droite. Empiler la ligne et l'heure casserait
+    `ROW_HEIGHT`, dont dépend la virtualisation au-delà de 200 lignes ;
+  - **une troisième colonne « Hors rôle » apparaît, et seulement si une rangée en
+    porte** : un franchissement dont le rôle n'est plus lisible — ligne retirée du
+    tracé, ou sens resté `neutral` d'avant ADR 0021. Le ranger sous un rôle serait
+    une invention, le taire ferait diverger le registre de « Passages », qui le
+    compte. `crossingsWithoutRole` est le **complément exact** des deux rôles, et
+    un test le verrouille. La colonne est décidée sur `vehicles` entier et non sur
+    les lignes rendues : une colonne qui apparaîtrait au défilement d'un tableau
+    virtualisé décalerait toutes les autres sous le curseur ;
 - **les Franchissements sont une chronologie, plus un tableau** (2026-08-17).
   `CrossingLog` est **supprimé**, remplacé par
   `analysis-job/ui/CrossingTimeline.tsx` et son modèle
@@ -583,13 +751,21 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     - **~150 px, le seuil de fiabilité** — en dessous, elle essaie et se trompe
       souvent.
 
-    L'échelle de vérité terrain : 8/8 lectures justes à 320 px, 4/8 à 64 px,
-    **0/8 à 48 px** — rejouable par `scripts/anpr_bench.py --truth-ladder`.
-    Entre 64 et 150 px, l'OCR travaille mais son vote est incertain, et c'est
-    précisément là que `PlateTextVote` gagne sa place.
+    L'échelle de vérité terrain : 8/8 lectures justes à 320 px, **7/8 à 64 px**
+    depuis ADR 0029 (4/8 avant), **0/8 à 48 px** — rejouable par
+    `scripts/anpr_bench.py --truth-ladder`. Entre 64 et 150 px, l'OCR travaille
+    mais son vote est incertain, et c'est précisément là que `PlateTextVote`
+    gagne sa place.
+
+    **L'échelle synthétique n'est pas un juge suffisant, et ADR 0029 l'a payé.**
+    Elle rend des plaques françaises trop propres : couper CLAHE y gagne quatre
+    lectures et en perd sur de vraies vignettes, parce qu'il n'y a là que du bruit
+    à amplifier alors qu'il rattrape le contraste d'une vraie prise de vue. Tout
+    réglage de contraste ou de prétraitement se tranche sur des vignettes réelles,
+    l'échelle ne servant qu'à vérifier qu'on n'a rien cassé au cas latin.
 
     L'OCR relit une identité seulement si la nouvelle vignette bat la meilleure
-    déjà lue de 25 % en **qualité = largeur × netteté**.
+    déjà lue en **qualité = largeur × netteté**.
 13. **Un échec porte son message et son code.** Une `AppError` fait traverser
     `detail` et `code` jusqu'à l'écran ; tout le reste garde la phrase générique,
     parce qu'un `RuntimeError` porte des chemins serveur. Le modèle est **chargé
@@ -604,12 +780,26 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     CPU.** Ce n'est pas une incohérence, c'est une mesure : `onnxruntime` n'a pas de
     provider CUDA ici, donc tout ONNX est cloué au CPU — mais PP-OCRv3 rec est un
     modèle CTC qu'Ultralytics ne sait pas charger, et son seul équivalent `.pt`
-    imposerait PaddlePaddle (600 Mo, refusé en ADR 0007). L'arbitrage penche
-    franchement : l'OCR coûte 66 ms par vignette contre 702 pour l'ancien détecteur,
-    rapport 10,7 à 1 — **optimiser l'OCR ne rend rien de perceptible.** Les poids
-    véhicules, eux, étaient déjà des `.pt` par nécessité (`track()` a besoin de
-    BoT-SORT + ReID + GMC).
-    [ADR 0015](docs/adr/0015-le-detecteur-de-plaques-en-pt.md).
+    imposerait PaddlePaddle (600 Mo, refusé en ADR 0007). Les poids véhicules, eux,
+    étaient déjà des `.pt` par nécessité (`track()` a besoin de BoT-SORT + ReID + GMC).
+
+    **Le rapport de coût entre les deux s'est inversé, et la phrase qui vivait ici
+    est maintenant fausse.** Elle disait « l'OCR coûte 66 ms par vignette contre 702
+    pour l'ancien détecteur, rapport 10,7 à 1 — optimiser l'OCR ne rend rien de
+    perceptible ». Deux changements l'ont retournée : ADR 0015 a divisé le détecteur
+    par ~15 en le passant sur GPU, et ADR 0029 a porté le lot d'OCR de 3 à 5
+    variantes. Mesuré après ADR 0030, par image analysée : **OCR 262 ms (60 %)**,
+    suivi des véhicules 90 ms (21 %), détection de plaques 81 ms (19 %). **C'est
+    l'OCR qu'il faut optimiser maintenant**, et le seul levier structurel restant est
+    de la recouvrir avec le travail GPU — elle est aujourd'hui sérialisée avec lui.
+
+    **Cette conclusion a été vérifiée, et elle ne vaut que pour ce profil-là.** Les
+    262 ms viennent d'une mesure où les trois étages sont forcés sur chaque image. Sur
+    une vraie vue de circulation, l'OCR pèse **0,3 %** et la détection de plaques
+    **73 %** : voir la décision 24 et
+    [ADR 0032](docs/adr/0032-l-ocr-n-etait-pas-le-goulot-le-detecteur-de-plaques-l-est.md).
+    [ADR 0015](docs/adr/0015-le-detecteur-de-plaques-en-pt.md),
+    [ADR 0030](docs/adr/0030-le-detecteur-de-plaques-payait-une-inference-par-vehicule.md).
 16. **Un objet suivi est un véhicule, et les sens de ligne portent un nom.** La galerie
     de ré-identification est supprimée : elle relâchait une identité puis la
     ré-attachait, donc le même `#1` réapparaissait au milieu d'une vidéo et faussait le
@@ -730,6 +920,142 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       qui est **rappelée sous le bouton de lancement**.
 
     [ADR 0028](docs/adr/0028-analyser-une-fenetre-de-la-video.md).
+21. **La plaque perdait son premier caractère, pour trois raisons distinctes.** Le
+    registre affichait `606L` pour une plaque `苏A·R606L`, **à 81 % de confiance** —
+    un texte tronqué présenté comme lu, ce qui est pire qu'un refus. Les trois
+    causes, et l'ordre d'importance n'est pas celui qu'on devine :
+    - **le vote était affamé.** `plate_ocr_quality_improvement` valait `1.25`, donc
+      une plaque n'était relue que si la vignette battait la meilleure de 25 % en
+      largeur × netteté : deux ou trois lectures sur la vie d'un véhicule, réparties
+      sur quatre graphies voisines, donc aucune ne pouvait dominer. **C'est le seul
+      changement nécessaire et suffisant** sur le cas mesuré : à `1.0`, le serveur
+      publie `AR606L`. Son raisonnement d'origine était déjà couvert par
+      `plate_ocr_skip_iou`, et il ne coûte rien — un vote qui converge déclenche
+      `stop_when_confident`, qui arrête le *détecteur*, le vrai goulot ;
+    - **un caractère hors alphabet mange son voisin.** `en_PP-OCRv3_rec` ne connaît
+      que l'ASCII imprimable ; l'idéogramme de province d'une plaque chinoise n'a
+      aucune classe où aller, et le CTC doit bien émettre quelque chose pour ces pas
+      de temps. `LEFT_INSET_FRACTIONS = (0.14, 0.22)` ajoute deux variantes rognées
+      à gauche, dans le **même** lot. Vignettes justes 8 → 17 sur 40, et l'échelle
+      latine — le contrôle indépendant, sans idéogramme — 39 → 43 sur 56, dont
+      **4/8 → 7/8 au palier 64 px**. L'ajout est strictement additif : sur une plaque
+      latine la variante coupe un vrai caractère, rend une chaîne plus courte, et la
+      confiance cumulée la fait perdre ;
+    - **une lecture partielle concurrençait la complète, et gagnait.** `R606L` n'est
+      pas une rivale d'`AR606L`, c'en est un morceau — mais elle est lue **plus
+      souvent**, parce qu'elle sort de tous les prétraitements. `_consolidated`
+      reverse la confiance d'un sous-texte contigu à son sur-texte. Deux gardes, et
+      la seconde est celle qui empêche l'inverse du bug : un sur-texte ne reçoit rien
+      tant qu'il n'a pas ses propres `MIN_AGREEING_READS` (sinon `TA96886`, où le `T`
+      est l'idéogramme mal lu, aspirerait les voix d'`A96886`), et la domination ne se
+      joue que contre de **vrais** rivaux. Sans relation de sous-texte, c'est
+      exactement l'ancien code, ce qui est verrouillé par un test.
+
+    **Quatre pistes plausibles ont été mesurées et rejetées** — élargir le recadrage
+    (la hauteur d'entrée étant fixe à 48 px, élargir *rétrécit* les glyphes : 8 → 0
+    sur 40), un consensus spatial des caractères, trois réglages « gratuits », et un
+    filtre d'attachement contre les fausses détections sur l'habillage vidéo. Ne pas
+    les re-proposer sans lire l'ADR : chacune a sa mesure.
+    [ADR 0029](docs/adr/0029-la-plaque-perdait-son-premier-caractere.md).
+22. **Le détecteur de plaques paie une inférence par image, plus une par véhicule.**
+    `detect_many` découpait le travail en paquets de `side²` recadrages — le côté de
+    la mosaïque d'ADR 0008 — et le défaut `side = 1` faisait donc *un paquet par
+    véhicule*, c'est-à-dire un `predict` par piste. La docstring du module annonçait
+    pourtant le bon comportement depuis ADR 0015. Rien ne levait, aucun chiffre publié
+    ne changeait : seule la cadence était deux fois trop basse. Mesuré à 3,7 véhicules
+    par image : **217 → 107 ms par image sur l'étage**, et **5,84 → 10,63 img/s de
+    bout en bout** avec ANPR et OCR actives, à comptages et plaques identiques.
+    Quatre points qui ne se devinent pas :
+    - **le lot est une dimension de tenseur, pas de pixels.** Chaque recadrage garde
+      son letterbox 640×640, donc rien n'est troqué contre du rappel — contrairement
+      à la mosaïque, qui rétrécit les plaques dans l'entrée du réseau (côté 2 : 3,4×
+      pour −16 %). La mosaïque reste intacte pour les machines sans GPU ;
+    - **les boîtes ne sont pas identiques au bit près** : sur 240 véhicules, aucune
+      plaque gagnée ni perdue, mais une IoU de 0,943 au minimum. L'ancien chemin
+      passait par un redimensionnement de mosaïque *avant* le letterbox ; le lot n'a
+      plus que le letterbox, donc un rééchantillonnage de moins. Une comparaison au
+      pixel près entre deux versions échouera, et c'est attendu ;
+    - **grouper l'OCR de la même façon est 1,6× plus LENT** (380 contre 232 ms) :
+      `batch_width` aligne tout le lot sur la vignette la plus large. Un appel par
+      piste est la bonne forme, il ne faut pas la « corriger » ;
+    - **un test compte les appels à `predict`**, parce qu'une régression rendrait
+      exactement les mêmes boîtes deux fois plus lentement.
+
+    [ADR 0030](docs/adr/0030-le-detecteur-de-plaques-payait-une-inference-par-vehicule.md).
+23. **La résolution ne coûtait qu'une chose : le décodage, et il attendait le GPU.**
+    Mesuré sur une même scène réencodée à quatre paliers, `yolov8n`, sans ANPR :
+    l'inférence vaut **8,00 ms à toutes les résolutions** — l'entrée du réseau vaut
+    640 quoi qu'il arrive — le prétraitement 2,3 à 3,0 ms, et tout le reste est du
+    décodage : 3,2 ms en 720p, 21,7 en 4K, soit 58 % du budget. Le décodage étant du
+    travail CPU pendant que la carte attend, il vit désormais dans un **fil séparé**
+    qui rend des lots d'images consécutives : **1080p 47 → 58 img/s, 1440p 35 → 59,
+    2160p 27 → 40**, à comptage identique, et la cadence est devenue *plate* de 720p
+    à 1440p. Quatre points qui ne se devinent pas :
+    - **il n'y a plus qu'un chemin de lecture.** Le chemin « avec borne de début »
+      existait parce que le chargeur d'Ultralytics ne sait pas se déplacer ; depuis
+      que le différé décode lui-même, le déplacement n'est plus un cas particulier —
+      et il gagne le lot d'images qu'il n'avait pas ;
+    - **le fil doit mourir avec le générateur**, et le producteur ne doit jamais
+      bloquer indéfiniment sur une file pleine : une fenêtre d'analyse qui atteint sa
+      borne ou une annulation laisserait sinon un fil vivant sur un décodeur ouvert.
+      Mesuré : une annulation rend la main en **0,30 s** ;
+    - **l'accélération matérielle d'OpenCV est acceptée et 2,3× plus lente** (13,70
+      contre 5,87 ms sur du H.264 1080p réel) : la surface décodée doit revenir de la
+      mémoire graphique. Ne pas la « réactiver » ;
+    - **la résolution n'achète rien au détecteur de véhicules et tout aux plaques.**
+      Sur la scène mesurée, l'OCR ne se déclenche **jamais** en 720p (plaques sous le
+      plancher de 64 px) et publie une plaque en 4K — où l'étage de plaques coûte
+      même *moins* cher, un vote acquis arrêtant le détecteur.
+
+    [ADR 0031](docs/adr/0031-le-decodage-payait-la-resolution-sur-le-chemin-critique.md).
+24. **L'OCR n'est pas le goulot ; le détecteur de plaques l'est.** ADR 0030 annonçait
+    l'inverse — OCR 262 ms, 60 % du budget — sur un profil où les trois étages sont
+    forcés sur chaque image. Mesuré sur une **vue de circulation réelle** (1080p, 6 à
+    14 véhicules par image, ANPR et OCR actives) : détection de plaques **76 ms, 73 %**,
+    OCR **0,4 ms, 0,3 %**. Trois choses en découlent, et aucune ne se devine :
+    - **le coût est linéaire en recadrages** — 21,5 ms pour un, 139,7 pour huit :
+      chaque véhicule paie une inférence entière, l'équivalent d'une image complète.
+      Le lot d'ADR 0030 amortit le coût d'appel, jamais le calcul ;
+    - **descendre le côté d'entrée du détecteur ne marche pas.** `TRAFFIC_PLATE_NET_SIZE`
+      existe et **reste à 640** : sur 60 images, 640 → 448 → 320 donne 94 → 22 → **0**
+      plaques localisées pour 96 → 56 → 34 ms. Le rappel s'effondre bien plus vite que
+      le coût ne baisse ;
+    - **`TRAFFIC_PLATE_DETECT_MAX_PER_FRAME` borne le coût, et ne l'améliore pas.**
+      Le 1,27× qui lui était d'abord attribué venait surtout de ce qu'il évitait les
+      appels à un seul recadrage, donc les pauses d'étalonnage cuDNN (décision 25). Une
+      fois cette cause corrigée : `0` → 11,0 img/s et **180 plaques localisées**,
+      `2` → 9,0 et 137, `1` → 13,8 et 76. Il **coûte des plaques**, à peu près
+      proportionnellement aux recadrages écartés.
+
+    **Et surtout** : sur une vue de circulation 1080p, les plaques font moins de 48 px
+    et le plancher de lecture est à 64 (invariant 12) — **aucune plaque ne peut être
+    publiée**, donc l'ANPR y dépense 73 % du budget pour rien. Le service le dit déjà
+    (`plate_unread_reason = too_small`, décision 14). Les deux gestes qui règlent cela
+    sont de resserrer le plan ou de filmer plus défini, pas de régler quoi que ce soit.
+    [ADR 0032](docs/adr/0032-l-ocr-n-etait-pas-le-goulot-le-detecteur-de-plaques-l-est.md).
+25. **L'autotune cuDNN se réétalonnait à chaque plaque, et coûtait jusqu'à 2× la
+    cadence.** `TRAFFIC_INFERENCE_CUDNN_AUTOTUNE` est **à `false` par défaut** depuis
+    [ADR 0033](docs/adr/0033-l-autotune-cudnn-se-reetalonnait-a-chaque-plaque.md), qui
+    abroge le défaut d'ADR 0013. Quatre points, et le premier est le plus utile pour
+    déboguer n'importe quoi d'autre ici :
+    - **ce n'était pas un coût, c'était une pause.** L'étage de plaques annonçait 99 ms
+      par image ; sa **médiane valait 27 ms** et six appels sur 90 dépassaient la
+      seconde, pesant 73 % du poste. Une moyenne ne distingue pas les deux, et les deux
+      appellent des gestes opposés — d'où les `p50 / p90 / max` **par appel** que le banc
+      rend désormais, avec un `⚠` dès qu'un maximum dépasse le double de la médiane ;
+    - **la cause est la forme d'entrée.** Ultralytics impose `rect=True` en prédiction,
+      donc un recadrage soumis **seul** produit une forme qui dépend de son rapport
+      d'aspect ; cuDNN réétalonne à chaque forme neuve, une seconde à chaque fois. Deux
+      recadrages de tailles différentes forcent au contraire une entrée **carrée
+      constante** — c'est pourquoi les images chargées n'en souffraient pas ;
+    - **couper l'autotune ne touche aucun pixel** : mêmes détections, même plaque
+      publiée, mêmes comptages, sur les deux scènes et les quatre courses. Gain mesuré
+      en courses alternées : **1,7× à 2,1×** sur une scène clairsemée, **1,3× à 1,5×**
+      sur une scène dense. Et ce qu'il rendait au chemin dont la forme *est* fixe :
+      7,92 ms contre 8,00, soit rien ;
+    - **ne pas « corriger » en forçant `rect=False` sur les plaques.** Même gain, et une
+      plaque publiée en moins : le remplissage change la boîte d'un sous-pixel, donc la
+      vignette d'OCR, donc le vote.
 
 ## Les vitesses en km/h : la calibration est **par ligne**
 
@@ -776,6 +1102,40 @@ uv run python scripts/anpr_bench.py --videos D:/TesteIA/Video --frames 40 \
 
 Le couple `textsDecoded` / `textsPublished` est le chiffre qui explique tout : un
 `118 / 0` dit que la chaîne lit du bruit et le **refuse**. Ce n'est pas une panne.
+
+## Mesurer avant d'optimiser la cadence
+
+`backend/scripts/pipeline_bench.py` est l'autre banc : il chiffre ce qui tourne à
+**chaque** image — décodage, prétraitement, inférence, NMS, suivi, détection de
+plaques, OCR, domaine, sérialisation — là où `anpr_bench.py` mesure la *justesse*
+de la lecture.
+
+```bash
+cd backend
+# Ce que la résolution coûte, à contenu identique : la même scène réencodée aux
+# quatre paliers, comptages comparables d'un palier à l'autre.
+uv run python scripts/pipeline_bench.py --videos data/jobs/<id> \
+    --ladder 720,1080,1440,2160 --frames 200 --json out/echelle.json
+# Avec l'ANPR et l'OCR, c'est-à-dire les deux tiers du budget réel.
+uv run python scripts/pipeline_bench.py --videos data/jobs/<id> --anpr --ocr \
+    --frames 400 --warmup 20 --start 12 --json out/anpr.json --compare out/avant.json
+```
+
+Quatre choses à savoir avant de lire un rapport :
+
+- **`--anpr` fait tourner la vraie `AnalysisService`**, assemblée par le même
+  `build_counting_stack` que le service. Sans le drapeau, le banc ne mesure que le
+  comptage — et l'ANPR pèse 60 à 80 % du budget quand elle est active ;
+- **le bloc `work` explique tout écart de coût** : il compte les recadrages soumis
+  au détecteur de plaques et les vignettes soumises à l'OCR **par image**. Trois
+  fois plus cher en 4K peut venir de l'étage ou du nombre de vignettes, et les deux
+  appellent le contraire l'un de l'autre ;
+- **une course sans véhicule ne mesure ni l'ANPR ni l'OCR** : les premières
+  secondes d'un clip sont souvent vides, d'où `--start` ;
+- **le cache de l'échelle est indexé par nom, hauteur et instant de départ, pas par
+  nombre d'images** : augmenter `--frames` sur une échelle déjà générée mesure
+  l'ancien palier, plus court. Le codec rendu vaut alors `cache` — le rapport
+  n'affirme jamais un réencodage qui n'a pas eu lieu.
 
 `backend/scripts/build_fixtures.py` régénère les fixtures du contrat. **Toujours
 les régénérer, jamais les corriger à la main** : une fixture éditée pour faire
@@ -1033,7 +1393,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1351 (1 skip) | 628 |
+| Nombre | 1532 (1 skip) | 628 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

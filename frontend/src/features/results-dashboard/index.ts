@@ -17,6 +17,8 @@ export {
 
 export { entriesByClass } from "./model/entriesByClass";
 
+export { type LineFlow, lineFlows } from "./model/lineFlows";
+
 export {
   type LineHighlight,
   busiestLine,
@@ -42,7 +44,7 @@ export {
 } from "./model/labels";
 
 export { ClassEntriesChart } from "./ui/ClassEntriesChart";
-export { ClassEntriesGrid } from "./ui/ClassEntriesGrid";
 export { LineFlowChart } from "./ui/LineFlowChart";
 export { LineFlowDashboard } from "./ui/LineFlowDashboard";
 export { ResultsDashboard } from "./ui/ResultsDashboard";
+export { TechnicalMetrics } from "./ui/TechnicalMetrics";
