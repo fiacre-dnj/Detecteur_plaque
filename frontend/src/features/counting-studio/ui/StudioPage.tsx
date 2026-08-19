@@ -748,12 +748,12 @@ export function StudioPage() {
             onFile={handleFile}
           />
         }
-        // Tout à droite de la barre (`ms-auto` dans `SettingsPanels`) : les trois
-        // chiffres **de machine**. Ils tenaient trois des cinq cartes de tête de la
-        // colonne de résultats, au même poids visuel que « Entrées au carrefour » —
-        // la moitié du meilleur emplacement de l'écran pour de la métrologie qu'on
-        // surveille du coin de l'œil. Le nom du fichier, qui occupait cette place,
-        // est passé sur la vidéo qu'il nomme.
+        // Tout à droite de la barre (`ms-auto` dans `SettingsPanels`) : les quatre
+        // chiffres **d'instant**, objets suivis compris. Ils tenaient quatre des six
+        // cartes de tête de la colonne de résultats, au même poids visuel que le
+        // bilan du comptage — les deux tiers du meilleur emplacement de l'écran pour
+        // de la métrologie qu'on surveille du coin de l'œil. Le nom du fichier, qui
+        // occupait cette place, est passé sur la vidéo qu'il nomme.
         trailing={
           resultStats !== null ? (
             <TechnicalMetrics
@@ -1130,9 +1130,11 @@ export function StudioPage() {
 
           **La Répartition n'est plus ici** : ses quatre cartes ont rejoint les
           Résultats, dans la colonne de droite. Elle découpe le chiffre de tête
-          « Entrées au carrefour » — leur somme lui est égale par construction — et
+          « Passages en entrée » — leur somme lui est égale par construction — et
           un écran de défilement entre les deux obligeait à retenir un nombre pour
-          vérifier l'autre. */}
+          vérifier l'autre. Le bilan par ligne y a suivi le même chemin, en
+          cartes ; ce qui reste ici est ce qu'une colonne de 24 rem ne porte pas —
+          les comparatifs entre lignes et le total de véhicules distincts. */}
       {dashboardStats !== null && (
         <>
           <LineFlowDashboard
@@ -1205,22 +1207,18 @@ export function StudioPage() {
           <h2 id="results-title" className="label-micro mb-3">
             Résultats
           </h2>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {/* Les mêmes libellés **et le même ordre** que le tableau de bord réel :
-                un écran vide qui promet des chiffres qu'on ne verra jamais est pire
-                que pas d'écran vide du tout. Les deux cartes de tête du tableau
-                réel, donc le bilan du carrefour en premier. */}
-            <MetricCard
-              label="Entrées au carrefour"
-              value="—"
-              hint="Total des passages sur les sens marqués « entrée », toutes lignes"
-            />
-            <MetricCard
-              label="Objets suivis"
-              value="—"
-              hint="Pistes vivantes à cet instant"
-            />
-          </div>
+          {/* Le même libellé, la même taille **et la même place** que le tableau de
+              bord réel : un écran vide qui promet des chiffres qu'on ne verra
+              jamais est pire que pas d'écran vide du tout. Une seule carte, parce
+              que le tableau réel n'a plus qu'une tête de lecture — « Objets
+              suivis » est passé dans la barre, où rien ne s'affiche avant la
+              première analyse. */}
+          <MetricCard
+            size="lg"
+            label="Passages en entrée"
+            value="—"
+            hint="Total des passages sur les sens marqués « entrée », toutes lignes"
+          />
         </section>
       )}
 

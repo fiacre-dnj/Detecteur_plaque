@@ -16,7 +16,7 @@
 
 import type { AnalysisStats, CountingLine } from "@/shared/api/contracts";
 
-import { directionRows, isEntryRow } from "./directions";
+import { lineFlows, type LineFlow } from "./lineFlows";
 
 /** Une ligne mise en avant, avec la valeur qui justifie sa sélection. */
 export interface LineHighlight {
@@ -26,55 +26,18 @@ export interface LineHighlight {
   value: number;
 }
 
-interface LineFlow {
-  lineId: string;
-  lineName: string;
-  color: string;
-  total: number;
-  net: number;
-  entries: number;
-  exits: number;
-}
-
 /**
- * Le solde entrées/sorties de chaque ligne, calculé **une seule fois** et
- * partagé par toutes les fonctions de ce module — c'est ce qui évite à
- * `strongestInflowLine` et `strongestOutflowLine` de recalculer chacune le même
- * solde par un chemin légèrement différent.
+ * Le bilan par ligne vient de `lineFlows` et n'est plus calculé ici : trois
+ * écrans posent la même question, et deux copies de la règle finiraient par
+ * diverger. Un sens `neutral` n'y compte ni dans `net`, ni dans `entries`, ni
+ * dans `exits`, mais **`total` inclut bien tous les passages** — c'est la
+ * fréquentation brute de la ligne, indépendante des rôles déclarés.
  *
- * Un sens `neutral` ne compte ni dans `net`/`entries`/`exits`, mais **`total`
- * inclut bien tous les passages** (y compris neutres) : c'est le même total
- * que `LineTally.total`, la fréquentation brute de la ligne, indépendante des
- * rôles déclarés.
+ * `entries`/`exits` valent `null` quand aucun sens ne porte le rôle ; les scores
+ * ci-dessous les ramènent à `0`, parce qu'un comparatif doit bien classer une
+ * ligne sans rôle déclaré quelque part — et c'est exactement ce que faisait
+ * l'ancienne version, qui les initialisait à zéro.
  */
-function flowByLine(stats: AnalysisStats, lines: readonly CountingLine[]): LineFlow[] {
-  const byLine = new Map<string, LineFlow>();
-  for (const line of lines) {
-    byLine.set(line.id, {
-      lineId: line.id,
-      lineName: line.name,
-      color: line.color,
-      total: 0,
-      net: 0,
-      entries: 0,
-      exits: 0,
-    });
-  }
-  for (const row of directionRows(stats, lines)) {
-    const entry = byLine.get(row.lineId);
-    if (entry === undefined) continue;
-    entry.total += row.tally.total;
-    if (isEntryRow(row)) {
-      entry.net += row.tally.total;
-      entry.entries += row.tally.total;
-    } else if (row.role === "exit") {
-      entry.net -= row.tally.total;
-      entry.exits += row.tally.total;
-    }
-  }
-  return [...byLine.values()];
-}
-
 function best(flows: readonly LineFlow[], score: (flow: LineFlow) => number): LineHighlight | null {
   if (flows.length === 0) return null;
   const winner = flows.reduce((top, flow) => (score(flow) > score(top) ? flow : top));
@@ -83,7 +46,7 @@ function best(flows: readonly LineFlow[], score: (flow: LineFlow) => number): Li
 
 /** La ligne la plus fréquentée — la plus grande somme de passages, tous sens confondus. */
 export function busiestLine(stats: AnalysisStats, lines: readonly CountingLine[]): LineHighlight | null {
-  return best(flowByLine(stats, lines), (flow) => flow.total);
+  return best(lineFlows(stats, lines), (flow) => flow.total);
 }
 
 /** La ligne dont le bilan entrées − sorties est le plus positif : le carrefour s'y remplit le plus. */
@@ -91,7 +54,7 @@ export function strongestInflowLine(
   stats: AnalysisStats,
   lines: readonly CountingLine[],
 ): LineHighlight | null {
-  return best(flowByLine(stats, lines), (flow) => flow.net);
+  return best(lineFlows(stats, lines), (flow) => flow.net);
 }
 
 /** La ligne dont le bilan entrées − sorties est le plus négatif : le carrefour s'y vide le plus. */
@@ -99,7 +62,7 @@ export function strongestOutflowLine(
   stats: AnalysisStats,
   lines: readonly CountingLine[],
 ): LineHighlight | null {
-  return best(flowByLine(stats, lines), (flow) => -flow.net);
+  return best(lineFlows(stats, lines), (flow) => -flow.net);
 }
 
 /**
@@ -113,7 +76,7 @@ export function mostEnteredLine(
   stats: AnalysisStats,
   lines: readonly CountingLine[],
 ): LineHighlight | null {
-  return best(flowByLine(stats, lines), (flow) => flow.entries);
+  return best(lineFlows(stats, lines), (flow) => flow.entries ?? 0);
 }
 
 /** La ligne la plus empruntée **en sortie**, en compte brut — pendant de `mostEnteredLine`. */
@@ -121,7 +84,7 @@ export function mostExitedLine(
   stats: AnalysisStats,
   lines: readonly CountingLine[],
 ): LineHighlight | null {
-  return best(flowByLine(stats, lines), (flow) => flow.exits);
+  return best(lineFlows(stats, lines), (flow) => flow.exits ?? 0);
 }
 
 /**
@@ -137,7 +100,7 @@ export function busiestVsQuietestShareGap(
   lines: readonly CountingLine[],
 ): number | null {
   if (lines.length === 0 || stats.crossings === 0) return null;
-  const totals = flowByLine(stats, lines).map((flow) => flow.total);
+  const totals = lineFlows(stats, lines).map((flow) => flow.total);
   const max = Math.max(...totals);
   const min = Math.min(...totals);
   return (max - min) / stats.crossings;

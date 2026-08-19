@@ -21,7 +21,6 @@
 import type { AnalysisStats, CountingLine, VehicleRecord } from "@/shared/api/contracts";
 
 import { enteringVehicleCount } from "../model/crossedVehicles";
-import { directionRows, isEntryRow } from "../model/directions";
 import {
   busiestLine,
   busiestVsQuietestShareGap,
@@ -32,6 +31,8 @@ import {
   type LineHighlight,
 } from "../model/highlights";
 import { crossroadFlowSentence } from "../model/labels";
+import { lineFlows } from "../model/lineFlows";
+import { EntryExitBar } from "./EntryExitBar";
 
 interface LineFlowDashboardProps {
   stats: AnalysisStats;
@@ -95,7 +96,7 @@ export function LineFlowDashboard({ stats, lines, vehicles }: LineFlowDashboardP
       </h2>
 
       {/* **Des véhicules distincts entrés, pas des passages.** Un véhicule qui
-          entre deux fois compte 1 ici et 2 dans « Entrées au carrefour » : deux
+          entre deux fois compte 1 ici et 2 dans « Passages en entrée » : deux
           questions, deux unités, et on ne les divise jamais l'une par l'autre
           (invariant 3). */}
       <div className="flex flex-wrap items-baseline justify-between gap-2 rounded-card bg-surface p-3 shadow-card">
@@ -152,14 +153,13 @@ function LineFlowRow({
   line: CountingLine;
   bordered: boolean;
 }) {
-  const rows = directionRows(stats, [line]);
-  const entryRow = rows.find((row) => isEntryRow(row));
-  const exitRow = rows.find((row) => row.role === "exit");
-  const entries = entryRow?.tally.total ?? null;
-  const exits = exitRow?.tally.total ?? null;
+  // `lineFlows` est la seule définition du bilan d'une ligne : les comparatifs
+  // ci-dessus et les cartes de la colonne de résultats lisent la même.
+  const flow = lineFlows(stats, [line])[0];
+  const entries = flow?.entries ?? null;
+  const exits = flow?.exits ?? null;
   const net = entries !== null && exits !== null ? entries - exits : null;
-  const lineTotal = rows.reduce((sum, row) => sum + row.tally.total, 0);
-  const share = stats.crossings === 0 ? null : lineTotal / stats.crossings;
+  const share = flow?.shareOfTotal ?? null;
 
   return (
     <li
@@ -195,25 +195,5 @@ function LineFlowRow({
         <EntryExitBar entries={entries} exits={exits} />
       )}
     </li>
-  );
-}
-
-/**
- * Une seule barre, deux segments côte à côte — remplace les deux barres
- * empilées d'avant : la même comparaison entrées/sorties en une ligne plutôt
- * que deux, sans perdre l'information puisque les chiffres sont déjà dans
- * l'en-tête de la rangée.
- */
-function EntryExitBar({ entries, exits }: { entries: number; exits: number }) {
-  const total = entries + exits;
-  const entryShare = total === 0 ? 0 : (entries / total) * 100;
-  return (
-    <div
-      aria-hidden="true"
-      className="mt-2 flex h-1.5 overflow-hidden rounded-pill bg-elevated"
-    >
-      <span className="block h-full bg-ink" style={{ width: `${entryShare}%` }} />
-      <span className="block h-full bg-ink-dim" style={{ width: `${100 - entryShare}%` }} />
-    </div>
   );
 }

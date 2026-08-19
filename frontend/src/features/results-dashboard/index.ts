@@ -17,6 +17,8 @@ export {
 
 export { entriesByClass } from "./model/entriesByClass";
 
+export { type LineFlow, lineFlows } from "./model/lineFlows";
+
 export {
   type LineHighlight,
   busiestLine,

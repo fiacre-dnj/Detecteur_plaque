@@ -1,15 +1,23 @@
 /**
- * Les trois chiffres **de machine**, posés à l'extrémité de la barre du studio.
+ * Les quatre chiffres **d'instant**, posés à l'extrémité de la barre du studio.
  *
- * Cadence serveur, latence par image, durée de vidéo déjà traitée : ils disent
- * comment l'analyse se passe, jamais ce qu'elle a trouvé. Ils occupaient trois des
- * cinq cartes de tête de la colonne de résultats, au même poids visuel que
- * « Entrées au carrefour » — donc la moitié de l'espace le mieux placé de l'écran
- * pour de la métrologie qu'on surveille du coin de l'œil.
+ * Cadence serveur, latence par image, pistes vivantes, durée de vidéo déjà
+ * traitée : ils disent comment l'analyse se passe **en ce moment**, jamais ce
+ * qu'elle a trouvé. Ils occupaient quatre des six cartes de tête de la colonne de
+ * résultats, au même poids visuel que le bilan du comptage — donc les deux tiers
+ * de l'espace le mieux placé de l'écran pour de la métrologie qu'on surveille du
+ * coin de l'œil.
+ *
+ * **« Objets suivis » est de cette famille**, et c'est ce qui l'a fait descendre
+ * ici : c'est le nombre de pistes vivantes à *cette* image, un chiffre qui monte
+ * et redescend, pas un résultat qui s'accumule. Sa contrepartie est assumée — la
+ * `MetricCard` portait un `aria-live="polite"` sur sa valeur, cette rangée non :
+ * un compteur qui change à chaque image, annoncé en continu, ferait d'un lecteur
+ * d'écran un métronome (la raison qui prive déjà la chronologie d'`aria-live`).
  *
  * **Volontairement sobre** : une rangée de libellé-plus-chiffre, séparateurs fins,
  * aucune carte, aucune ombre. Une `MetricCard` ici les remettrait au niveau des
- * chiffres du carrefour, ce qui est exactement ce qu'on vient de défaire.
+ * chiffres du comptage, ce qui est exactement ce qu'on vient de défaire.
  *
  * Les libellés gardent leur précision d'origine, qui n'est pas cosmétique :
  * « Cadence serveur » et non « Cadence » — la cadence de **lecture** de la vidéo
@@ -43,6 +51,14 @@ export function TechnicalMetrics({ processingFps, stats }: TechnicalMetricsProps
         // Dit ce que le chiffre mesure : le traitement d'une image côté serveur,
         // et non un aller-retour réseau — en différé, il n'y en a pas par image.
         hint="Temps de traitement d'une image côté serveur"
+      />
+      <Metric
+        label="Objets suivis"
+        value={stats.activeTracks.toString()}
+        // **Un instantané, pas un total** : le nombre de pistes vivantes à cette
+        // image. Il redescend quand les véhicules sortent du champ, et le lire
+        // comme un cumul ferait croire à un comptage qui perd des véhicules.
+        hint="Pistes vivantes à cet instant — pas un total"
       />
       <Metric
         label="Flux analysé"

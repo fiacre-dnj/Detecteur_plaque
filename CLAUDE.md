@@ -171,16 +171,16 @@ un emplacement `leading` où le studio pose le bouton d'import.
 
 ```
 ━━ barre COLLANTE sous l'entête (sticky, top: --app-header-h, z-30) ━━━━━━━━━━
-[⇧ Importer] [Détection ▾] [Comptage ▾] [Affichage ▾] [Géométrie ▾]  cadence · latence · flux →
+[⇧ Importer] [Détection ▾] [Comptage ▾] [Affichage ▾] [Géométrie ▾]  cadence · latence · suivis · flux →
              └─ tiroir flottant du panneau ouvert, 2 colonnes, PAR-DESSUS la page
 ┌──────────────────────────────┬──────────────────┐
 │ nom du fichier ⟨   ⟩ WxH · fps│ RÉSULTATS         │  aside 24 rem
-│ vidéo + canvas + HUD          │ 2 KPI de tête     │
-│ ┌ LECTURE ───── mm:ss/mm:ss ┐ │ + 4 (5) cartes    │
-│ │ rail de position          │ │   par type,       │
-│ │ INTERVALLE ─── mm:ss→mm:ss│ │   MÊME longueur   │
-│ │ rail d'intervalle         │ │   de rail que la  │
-│ │ ⏵ ⏮ ⏪ ±1i ⏩ ⏭ ↺  Vitesse  │ │   position        │
+│ vidéo + canvas + HUD          │ 1 KPI de tête,    │
+│ ┌ LECTURE ───── mm:ss/mm:ss ┐ │   PLEINE LARGEUR  │
+│ │ rail de position          │ │ + 4 (5) cartes    │
+│ │ INTERVALLE ─── mm:ss→mm:ss│ │   par type        │
+│ │ rail d'intervalle         │ │ + 1 carte PAR     │
+│ │ ⏵ ⏮ ⏪ ±1i ⏩ ⏭ ↺  Vitesse  │ │   LIGNE tracée    │
 │ │              [LANCER] [Fermer]                  │
 ├──────────────────────────────┴──────────────────┤
 │ STATISTIQUE — KPI de tête, une rangée par ligne,  │  les trois sections
@@ -206,10 +206,15 @@ l'écran dès qu'on lisait un résultat.
   des réglages ne connaît pas `geometry-editor`, c'est le studio qui câble, même
   règle que `leading`/`trailing`. `GeometryPanel` a **perdu sa carte et son
   titre** : le tiroir est déjà une région nommée « Géométrie » ;
-- **les trois chiffres de machine** — cadence serveur, latence, flux analysé —
-  sont à l'extrémité de la barre (`TechnicalMetrics`, `trailing`), en libellé plus
-  chiffre sur deux lignes, sans carte. Ils tenaient trois des cinq `MetricCard` de
-  tête, à égalité visuelle avec le bilan du carrefour ;
+- **les chiffres d'instant** — cadence serveur, latence, **objets suivis** et flux
+  analysé — sont à l'extrémité de la barre (`TechnicalMetrics`, `trailing`), en
+  libellé plus chiffre sur deux lignes, sans carte. Ils tenaient quatre des six
+  `MetricCard` de tête, à égalité visuelle avec le bilan du comptage. Ils étaient
+  trois jusqu'au soir du 2026-08-19 : « Objets suivis » les a rejoints pour la même
+  raison, c'est le nombre de pistes vivantes à *cette* image — un chiffre qui monte
+  et redescend, jamais un résultat qui s'accumule. Contrepartie assumée : la
+  `MetricCard` portait `aria-live="polite"` et cette rangée non, un compteur qui
+  change à chaque image ferait d'un lecteur d'écran un métronome ;
 - **le nom du fichier est sur la scène**, coin haut-gauche, dans **exactement**
   l'écrin du badge de dimensions d'en face (`SourceBadge`, `pointer-events-none`
   obligatoire — la scène est une surface de tracé) ;
@@ -226,11 +231,38 @@ milieu de la vidéo. Les deux chiffres sont désormais en **entête de leur rail
 d'où les deux libellés « LECTURE » et « INTERVALLE D'ANALYSE » qui se répondent.
 
 **La Répartition n'a plus de section** : ses cartes sont dans les Résultats, en
-`size="sm"` — elles découpent « Entrées au carrefour » dont elles sont la somme
+`size="sm"` — elles découpent « Passages en entrée » dont elles sont la somme
 exacte, et un écran de défilement entre les deux obligeait à retenir un nombre
 pour vérifier l'autre. `ClassEntriesGrid` est **supprimé**, son contenu replié
 dans `ResultsDashboard`. Le titre « Répartition » ne disait rien de plus que
 « Voiture », « Bus » juste dessous.
+
+**La colonne de résultats n'a plus qu'une tête de lecture, et une carte par
+ligne** (soir du 2026-08-19). Quatre changements liés, et aucun ne touche un
+calcul :
+
+- **« Entrées au carrefour » s'appelle « Passages en entrée »**, en `size="lg"` et
+  sur toute la largeur de la colonne. Le mot nommait un lieu que l'utilisateur n'a
+  pas forcément : sur une route à sens unique portant une seule ligne, « carrefour »
+  ne veut rien dire alors que le chiffre reste juste. Le nom retenu garde l'unité
+  explicite — des **passages**, jamais des véhicules (invariant 3) ;
+- **une carte par ligne tracée**, pleine largeur elle aussi : pastille de couleur,
+  **le nom saisi par l'utilisateur**, fréquentation, entrées, sorties, solde signé
+  et la barre à deux segments. Le détail par ligne n'existait qu'en bas de page,
+  sous la vidéo, alors que la question « combien sur *cette* ligne » se pose en même
+  temps que le total. Tout est dérivé de `stats.byLine` et du tracé **courant** :
+  renommer une ligne ou basculer un sens entrée ↔ sortie se voit sans réanalyser ;
+- **`model/lineFlows.ts` est la seule définition du bilan d'une ligne.** Elle était
+  écrite deux fois — en privé dans `highlights.ts`, en clair dans `LineFlowRow` — et
+  trois écrans la lisent désormais. Deux copies d'une règle finissent par diverger,
+  et ici ce serait un passage qui change de colonne selon l'écran qui le montre.
+  `entries`/`exits` y valent `null` et **jamais `0`** quand aucun sens ne porte le
+  rôle : « 0 sorties » se lit comme un comptage, pas comme un rôle non déclaré.
+  `EntryExitBar` sort de `LineFlowDashboard` pour la même raison ;
+- **la carte « Personne » survit au décochage** : elle s'affiche si la classe est
+  cochée **ou** si le résultat relu porte des entrées `person`. Sans cela, rouvrir un
+  résultat archivé après avoir décoché la case effaçait une colonne de son propre
+  contenu.
 
 **La chronologie des franchissements survit à la fin de l'analyse** — c'était sa
 condition d'affichage (`session.result === null`) qui la démontait à la seconde où
@@ -326,7 +358,7 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
   vécu jusqu'au 2026-08-19 sous la forme d'un `ClassEntriesGrid` **aujourd'hui
   supprimé** : ses cartes sont dans `ResultsDashboard`, où l'invariant qui les
   justifie reste vrai — valeur = entrées seulement, cohérente par construction
-  avec le KPI « Entrées au carrefour », `entriesByClass` partageant son prédicat
+  avec le KPI « Passages en entrée », `entriesByClass` partageant son prédicat
   `role === "entry"` avec `flowBalance`, verrouillé par un test. La matrice
   origine-destination
   (« Mouvements ») et l'occupation de zone disparaissent **sans

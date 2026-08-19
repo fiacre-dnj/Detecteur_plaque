@@ -238,6 +238,23 @@ plus deux fois dans le même sens » si.
   sens* chaque passage a eu lieu. Après coup, elle suit la tête de lecture comme le
   registre et les compteurs — elle ne montre jamais un franchissement que la vidéo
   n'a pas encore atteint.
+- **Le bilan de chaque ligne est dans la colonne de résultats**, une carte par
+  ligne tracée, sous le nom que vous lui avez donné : fréquentation, entrées,
+  sorties et solde. Il fallait défiler jusqu'au bas de page pour savoir combien de
+  véhicules étaient passés sur *une* ligne, alors que la question se pose en même
+  temps que le total. Renommer une ligne ou basculer un sens entrée ↔ sortie s'y
+  voit immédiatement, sans relancer l'analyse.
+- **« Entrées au carrefour » s'appelle désormais « Passages en entrée »**, et
+  occupe toute la largeur de la colonne. Le mot « carrefour » ne voulait rien dire
+  quand on compte les passages sur une route à sens unique, alors que le chiffre,
+  lui, restait juste.
+- **« Objets suivis » a rejoint la cadence et la latence dans la barre du studio.**
+  C'est le nombre de véhicules suivis à l'image affichée — un chiffre qui monte et
+  redescend, pas un résultat — et il occupait la moitié des cartes de tête, à
+  égalité visuelle avec le bilan du comptage.
+- **La carte « Personne » ne disparaît plus d'un résultat qui en contient.** Elle
+  suivait la case cochée dans les réglages : décocher « Personne » après une
+  analyse effaçait le chiffre de l'analyse elle-même.
 
 ### Corrigé
 

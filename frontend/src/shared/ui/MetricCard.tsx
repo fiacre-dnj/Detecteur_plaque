@@ -5,10 +5,15 @@
  * lecteur d'écran doit l'annoncer sans interrompre ce qu'il est en train de
  * lire.
  *
- * **Deux tailles, et l'écart est une hiérarchie, pas une économie de place.** La
- * Répartition par type de véhicule vit désormais dans la même grille que les
- * chiffres de tête du carrefour ; rendues à l'identique, neuf cartes de même poids
- * ne diraient plus laquelle répond à la question qu'on se pose en arrivant.
+ * **Trois tailles, et l'écart est une hiérarchie, pas une économie de place.** La
+ * Répartition par type de véhicule et le bilan de chaque ligne vivent désormais
+ * dans la même grille que le chiffre de tête ; rendues à l'identique, une dizaine
+ * de cartes de même poids ne diraient plus laquelle répond à la question qu'on se
+ * pose en arrivant.
+ *
+ * `lg` est arrivée avec cette grille : la colonne n'a plus qu'**une** tête de
+ * lecture — « Passages en entrée », désormais sur toute la largeur — et une carte
+ * `md` au milieu de cartes `sm` ne se détachait plus assez pour l'être.
  */
 
 import type { ReactNode } from "react";
@@ -22,14 +27,24 @@ interface MetricCardProps {
   /** Vrai pendant le chargement : affiche un squelette **à la forme finale**. */
   loading?: boolean;
   /**
-   * `md` (défaut) pour un chiffre de tête, `sm` pour un chiffre de détail.
+   * `lg` pour l'unique chiffre de tête d'un écran, `md` (défaut) pour un chiffre
+   * important, `sm` pour un chiffre de détail.
    *
-   * `sm` ne change que la densité — même carte, même structure, même
-   * `aria-live` : c'est le poids visuel qui distingue « ce que je viens lire »
-   * de « comment il se décompose ».
+   * Aucune ne change autre chose que la densité — même carte, même structure,
+   * même `aria-live` : c'est le poids visuel qui distingue « ce que je viens
+   * lire » de « comment il se décompose ».
    */
-  size?: "md" | "sm";
+  size?: "lg" | "md" | "sm";
 }
+
+/** Densités, par taille : marge de la carte, chiffre, précision, squelette. */
+const SIZES: Readonly<
+  Record<NonNullable<MetricCardProps["size"]>, { pad: string; value: string; hint: string; skeleton: string }>
+> = {
+  lg: { pad: "p-5", value: "text-[2.5rem]", hint: "text-small", skeleton: "h-10 w-24" },
+  md: { pad: "p-4", value: "text-[1.75rem]", hint: "text-small", skeleton: "h-8 w-20" },
+  sm: { pad: "p-3", value: "text-heading", hint: "text-micro", skeleton: "h-6 w-14" },
+};
 
 export function MetricCard({
   label,
@@ -39,10 +54,10 @@ export function MetricCard({
   loading = false,
   size = "md",
 }: MetricCardProps) {
-  const dense = size === "sm";
+  const density = SIZES[size];
 
   return (
-    <div className={`rounded-card bg-surface shadow-card ${dense ? "p-3" : "p-4"}`}>
+    <div className={`rounded-card bg-surface shadow-card ${density.pad}`}>
       <div className="flex items-start justify-between gap-3">
         <span className="label-micro">{label}</span>
         {icon ? (
@@ -56,26 +71,18 @@ export function MetricCard({
         // Un squelette à la forme du contenu final, jamais un spinner centré :
         // la page ne doit pas sauter quand la valeur arrive.
         <div
-          className={[
-            "mt-2 animate-pulse rounded-input bg-elevated",
-            dense ? "h-6 w-14" : "h-8 w-20",
-          ].join(" ")}
+          className={["mt-2 animate-pulse rounded-input bg-elevated", density.skeleton].join(" ")}
         />
       ) : (
         <output
           aria-live="polite"
-          className={[
-            "mt-1 block font-bold leading-tight text-ink",
-            dense ? "text-heading" : "text-[1.75rem]",
-          ].join(" ")}
+          className={["mt-1 block font-bold leading-tight text-ink", density.value].join(" ")}
         >
           {value}
         </output>
       )}
 
-      {hint ? (
-        <p className={`mt-1 text-ink-dim ${dense ? "text-micro" : "text-small"}`}>{hint}</p>
-      ) : null}
+      {hint ? <p className={`mt-1 text-ink-dim ${density.hint}`}>{hint}</p> : null}
     </div>
   );
 }
