@@ -394,7 +394,14 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Même fenêtre et même raison que le budget de threads : avant la première
     # inférence. Sans GPU, l'appel rend la main sans importer torch — le moteur
     # factice des tests n'est donc pas touché.
-    await anyio.to_thread.run_sync(container.model_registry.enable_cudnn_autotune)
+    #
+    # **Désactivé par défaut depuis ADR 0033**, et sous condition pour la même raison
+    # que le budget de threads : qui n'a pas posé le réglage ne doit pas payer un
+    # import de torch. L'autotune réétalonne cuDNN à chaque **nouvelle forme**
+    # d'entrée, et le détecteur de plaques lui en présente une par recadrage — d'où des
+    # pauses d'une seconde qui pesaient 73 % de son étage.
+    if settings.inference_cudnn_autotune:
+        await anyio.to_thread.run_sync(container.model_registry.enable_cudnn_autotune)
 
     background: set[asyncio.Task[None]] = set()
     cleanup = asyncio.create_task(_cleanup_loop(app), name="cleanup")

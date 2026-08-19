@@ -123,20 +123,34 @@ plaque est effectivement publiée, le plafond ne change rien à ce qu'elle publi
 **`0` par défaut**, c'est-à-dire le comportement historique. Plafonner écarte des
 mesures, donc des plaques possibles ; cet arbitrage appartient à l'exploitant.
 
-## Ce que la mesure n'explique pas, et qu'il ne faut pas cacher
+## Ce que la mesure n'expliquait pas — et qui est expliqué depuis
 
-**Le plafond n'est pas monotone : `1` ne gagne rien, `2` gagne beaucoup.** Vérifié dans
-les deux ordres d'exécution pour écarter la dérive thermique (±20 % sur cette machine,
-ADR 0013) — le classement des trois valeurs est stable.
+**Le plafond n'était pas monotone : `1` ne gagnait rien, `2` gagnait beaucoup.** Et le
+coût par appel observé *dans le pipeline* était de ~99 ms pour un seul recadrage, contre
+**21,5 ms mesurées hors pipeline sur le même modèle et le même recadrage**.
 
-Le coût par appel observé *dans le pipeline* est de ~99 ms pour un seul recadrage,
-contre **21,5 ms mesurées hors pipeline sur le même modèle et le même recadrage**. Un
-facteur cinq que le nombre de recadrages n'explique pas ; quelque chose d'autre domine
-quand les deux modèles alternent sur la même carte. Les pistes non écartées à ce
-stade : la contention de l'allocateur CUDA sur 4 Go, le réétalonnage cuDNN entre deux
-modèles, ou la sérialisation de deux contextes d'inférence. **C'est le prochain sujet
-de mesure**, et probablement le plus rentable qui reste : si les 99 ms redescendaient
-aux 21,5 ms mesurées isolément, l'étage de plaques cesserait d'être le premier poste.
+[ADR 0033](0033-l-autotune-cudnn-se-reetalonnait-a-chaque-plaque.md) a trouvé la cause,
+et ce n'était aucune des pistes soupçonnées ici : ce n'était pas un coût mais **une
+pause**. Six appels sur 90 dépassaient la seconde et pesaient 73 % de l'étage, parce que
+l'autotune cuDNN se réétalonne à chaque **nouvelle forme d'entrée** et qu'un recadrage
+soumis seul en produit une par rapport d'aspect de véhicule. Deux recadrages ou plus
+forcent une entrée carrée constante — d'où l'avantage apparent de `max_per_frame = 2`,
+qui n'était qu'un évitement de ce défaut.
+
+**Les chiffres de la décision 2 ci-dessus sont donc ceux d'un pipeline défectueux.**
+Après correctif, sur la même scène dense et à comptages identiques :
+
+| plafond | img/s | recadrages/image | plaques **localisées** |
+|---|---|---|---|
+| 0 (illimité) | 11,0 | 2,28 | **180** |
+| 2 | 9,0 | 1,74 | 137 |
+| 1 | 13,8 | 1,00 | 76 |
+
+Le plafond **coûte des plaques localisées**, à peu près proportionnellement aux
+recadrages écartés, et sa cadence ne s'ordonne toujours pas proprement (`2` plus lent que
+`0` sur cette passe, à coût d'étage quasi égal). Ce qu'il fait reste vrai et utile — il
+**borne** le coût quand le trafic monte — mais il ne l'améliore pas dans le cas général,
+et il reste à `0` par défaut.
 
 ## Ce que la mesure dit à l'utilisateur, et qui compte plus que tout le reste
 

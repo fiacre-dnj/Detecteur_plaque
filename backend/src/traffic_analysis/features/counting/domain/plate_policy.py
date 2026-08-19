@@ -269,6 +269,12 @@ class PlateDetectOptions:
     #: pistes **jamais mesurées** — sinon un véhicule pourrait traverser tout le champ
     #: sans jamais recevoir de rectangle — puis aux **plus larges**, dont la plaque a
     #: le plus de chances de dépasser le plancher de lecture.
+    #:
+    #: **Il coûte tout de même des plaques localisées**, à peu près proportionnellement
+    #: aux recadrages écartés : 180 sur la scène dense sans plafond, 137 à `2`, 76 à
+    #: `1`. Et son gain de cadence, une fois corrigée la vraie cause des pauses
+    #: (ADR 0033), est bien plus faible qu'il n'a d'abord paru. Il **borne** le coût
+    #: quand le trafic monte ; il ne l'améliore pas dans le cas général.
     max_per_frame: int = 0
 
     #: Nombre d'échecs consécutifs (détection soumise, aucune plaque trouvée)

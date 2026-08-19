@@ -387,3 +387,15 @@ def test_sans_budget_personne_ne_borne_rien() -> None:
 
     assert settings.inference_threads == 0
     assert settings.resolved_plate_ocr_intra_op_threads == 0
+
+
+def test_l_autotune_cudnn_est_ferme_par_defaut() -> None:
+    """**Un défaut retourné par la mesure** (ADR 0033).
+
+    ADR 0013 l'avait activé sur la prémisse que la forme d'entrée est fixe pour une
+    vidéo donnée. Elle l'est pour le détecteur de véhicules ; elle ne l'est pas pour le
+    détecteur de plaques, qui reçoit un recadrage par piste. cuDNN réétalonnait donc à
+    chaque nouveau rapport d'aspect, une seconde à chaque fois : 1,3× à 2,1× de cadence
+    perdue sur une analyse avec plaques, pour un gain nul là où la forme est fixe.
+    """
+    assert _settings().inference_cudnn_autotune is False

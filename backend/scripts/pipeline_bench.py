@@ -73,6 +73,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -141,6 +142,28 @@ class Stage:
     def calls(self) -> int:
         return len(self.samples)
 
+    def spread(self) -> dict[str, float]:
+        """Médiane, p90 et maximum d'un poste — **par appel**, pas par image.
+
+        **Une moyenne a caché six pauses d'une seconde pendant toute une session.**
+        L'étage de plaques affichait 99 ms par image ; sa médiane valait 27 ms et six
+        appels sur 90 dépassaient la seconde, pesant à eux seuls 73 % du poste. Les deux
+        lectures appellent des gestes opposés — un coût se réduit en travaillant moins,
+        une pause se supprime en trouvant ce qui bloque (ADR 0033 : l'autotune cuDNN qui
+        réétalonne à chaque nouvelle forme d'entrée).
+
+        Un écart franc entre `mean` et `p50` est donc le signal à lire en premier.
+        """
+        if not self.samples:
+            return {"mean": 0.0, "p50": 0.0, "p90": 0.0, "max": 0.0}
+        ordered = sorted(self.samples)
+        return {
+            "mean": statistics.fmean(ordered),
+            "p50": statistics.median(ordered),
+            "p90": ordered[min(len(ordered) - 1, int(0.9 * len(ordered)))],
+            "max": ordered[-1],
+        }
+
 
 @dataclass
 class Timings:
@@ -206,6 +229,19 @@ class Timings:
                 "domain": round(self.domain.per_frame_ms(self.frames), 2),
                 "serialise": round(self.serialise.per_frame_ms(self.frames), 2),
                 "decodeAndOther": round(rest / per_frame, 2),
+            },
+            # **Par appel**, et non par image : c'est la seule lecture qui distingue
+            # un poste cher d'un poste qui *stalle*. Voir `Stage.spread`.
+            "perCall": {
+                name: {key: round(value, 2) for key, value in stage.spread().items()}
+                for name, stage in (
+                    ("preprocess", self.preprocess),
+                    ("inference", self.inference),
+                    ("postprocess", self.postprocess),
+                    ("tracker", self.tracker),
+                    ("plateDetect", self.plate_detect),
+                    ("ocr", self.ocr),
+                )
             },
             # Le **volume de travail**, sans lequel une variation de coût ne
             # s'interprète pas : 3 ms de plus par image peuvent venir d'un étage
@@ -715,10 +751,20 @@ def print_run(report: dict[str, Any]) -> None:
         print(
             f"    {timing['framesPerSecond']:>7.2f} img/s   {timing['msPerFrame']:>6.2f} ms/image"
         )
+        per_call = timing.get("perCall", {})
         for name, value in sorted(stages.items(), key=lambda item: -item[1]):
             share = 100.0 * value / timing["msPerFrame"] if timing["msPerFrame"] else 0.0
             marker = " (par différence)" if name == "decodeAndOther" else ""
-            print(f"      {name:<16} {value:>6.2f} ms  {share:>5.1f} %{marker}")
+            spread = per_call.get(name)
+            # La queue de distribution n'est affichée que si elle dit quelque chose :
+            # un maximum au double de la médiane est une pause, pas un coût.
+            tail = ""
+            if spread and spread["p50"] and spread["max"] > 2.0 * spread["p50"]:
+                tail = (
+                    f"   ⚠ par appel : p50 {spread['p50']:.0f} / p90 {spread['p90']:.0f} / "
+                    f"max {spread['max']:.0f} ms"
+                )
+            print(f"      {name:<16} {value:>6.2f} ms  {share:>5.1f} %{marker}{tail}")
         counts = source["counts"]
         near = sum(counts.get("nearMisses", {}).values())
         print(
@@ -871,9 +917,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--no-cudnn",
+        "--cudnn",
+        dest="cudnn",
+        default=None,
         action="store_true",
-        help="Mesure sans l'autotune cuDNN, pour chiffrer ce qu'il apporte.",
+        help=(
+            "Force l'autotune cuDNN, désactivé par défaut depuis ADR 0033 — il "
+            "réétalonne à chaque nouvelle forme d'entrée, et le détecteur de plaques "
+            "lui en présente une par recadrage. Par défaut : le réglage "
+            "TRAFFIC_INFERENCE_CUDNN_AUTOTUNE."
+        ),
+    )
+    parser.add_argument(
+        "--no-cudnn",
+        dest="cudnn",
+        action="store_false",
+        help="Force l'autotune cuDNN à l'arrêt, pour chiffrer ce qu'il coûte.",
     )
     parser.add_argument("--json", type=Path, help="Écrit le rapport complet à ce chemin.")
     parser.add_argument("--compare", type=Path, help="Rapport JSON antérieur à comparer.")
@@ -907,10 +966,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     imgsz = args.imgsz if args.imgsz is not None else settings.inference_imgsz
     batch = args.batch if args.batch is not None else settings.inference_batch
     # Le service pose aussi l'autotune cuDNN dans son `lifespan`, avant toute
-    # inférence : sans lui, le banc mesurerait des algorithmes de convolution que
-    # le service n'utilise pas. `--no-cudnn` existe pour **chiffrer** ce que
-    # l'autotune apporte, pas pour proposer un mode dégradé.
-    if not args.no_cudnn:
+    # inférence : sans lui, le banc mesurerait des algorithmes de convolution que le
+    # service n'utilise pas. Il suit donc le **réglage**, et les deux drapeaux servent à
+    # chiffrer l'échange sans toucher à l'environnement (ADR 0033).
+    cudnn = args.cudnn if args.cudnn is not None else settings.inference_cudnn_autotune
+    if cudnn:
         registry.enable_cudnn_autotune()
     engine = UltralyticsEngine(registry, gmc_method=gmc, imgsz=imgsz, batch=batch)
     model_id = args.model or settings.default_model_id
@@ -958,6 +1018,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "frames": args.frames,
                 "warmup": args.warmup,
                 "confidence": args.confidence,
+                # Annoncé, jamais supposé : c'est ce réglage qui décide si un poste
+                # coûte ou s'il stalle, donc un rapport qui ne le porte pas n'est pas
+                # comparable à un autre (ADR 0033).
+                "cudnnAutotune": cudnn,
                 "anpr": anpr,
                 "ocr": args.ocr,
                 "plateNetSize": settings.plate_net_size if anpr else None,

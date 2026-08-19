@@ -300,17 +300,30 @@ class ModelRegistry:
     def enable_cudnn_autotune(self) -> None:
         """Laisse cuDNN choisir ses algorithmes de convolution par la mesure.
 
-        **Appelée une fois au démarrage, avant toute inférence**, comme
-        `apply_thread_budget` et pour la même raison : le choix est mémorisé par
-        forme d'entrée, et le déclencher au milieu d'une analyse ferait payer
-        l'étalonnage à une image en plein vol.
+        **Désactivée par défaut depuis ADR 0033**, et n'appelée que si
+        `TRAFFIC_INFERENCE_CUDNN_AUTOTUNE` le demande. Ce qui suit explique pourquoi,
+        parce que c'est le premier endroit où l'on vient regarder.
 
-        L'échange est explicite : les premières images d'une **nouvelle forme**
-        d'entrée coûtent plus cher, parce que cuDNN essaie plusieurs algorithmes
-        avant de garder le meilleur. Notre forme est fixe pour une vidéo donnée —
-        `imgsz` est un réglage, la résolution ne change pas en cours de route —
-        donc l'étalonnage est amorti dès les premières images et le préchauffage en
-        absorbe l'essentiel.
+        **La prémisse de cette optimisation était fausse pour la moitié du pipeline.**
+        Elle disait : « les premières images d'une nouvelle forme d'entrée coûtent plus
+        cher, mais notre forme est fixe pour une vidéo donnée — `imgsz` est un réglage,
+        la résolution ne change pas en cours de route — donc l'étalonnage est amorti dès
+        les premières images ». C'est exact du **détecteur de véhicules**, qui reçoit
+        toujours des images de la même taille. C'est faux du **détecteur de plaques**,
+        qui reçoit un recadrage de véhicule par piste : Ultralytics impose `rect=True`
+        en prédiction, donc un recadrage soumis **seul** produit une forme d'entrée qui
+        dépend de son rapport d'aspect, et cuDNN réétalonne à chaque nouvelle forme.
+
+        Mesuré sur une scène clairsemée réelle : **six appels sur 124 dépassaient la
+        seconde et pesaient 73 % du temps de l'étage de plaques**, l'analyse tournant à
+        8,4 img/s au lieu de 18,2 — pour des détections et des plaques publiées
+        **strictement identiques**. Ce que l'autotune rendait en échange, sur le chemin
+        dont la forme *est* fixe : 7,92 ms d'inférence contre 8,00 sans, soit rien.
+
+        **Appelée une fois au démarrage, avant toute inférence**, comme
+        `apply_thread_budget` et pour la même raison : le choix est mémorisé par forme
+        d'entrée, et le déclencher au milieu d'une analyse ferait payer l'étalonnage à
+        une image en plein vol.
 
         Sans effet hors GPU, et sans effet si torch est absent. Ne lève jamais :
         c'est une optimisation, et un service qui refuserait de démarrer parce

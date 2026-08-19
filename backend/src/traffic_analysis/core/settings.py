@@ -157,6 +157,35 @@ class Settings(BaseSettings):
     #:
     #: Sans effet sur GPU, où l'inférence ne vit pas sur ces threads.
     inference_threads: int = Field(0, ge=0, le=64)
+    #: Laisser cuDNN choisir ses algorithmes de convolution **par la mesure**.
+    #:
+    #: **`false` par défaut, et c'est un correctif, pas un renoncement.** ADR 0013
+    #: l'avait activé sans jamais chiffrer ce qu'il apportait, sur la prémisse que
+    #: « notre forme d'entrée est fixe pour une vidéo donnée ». Cette prémisse est
+    #: vraie du détecteur de véhicules et **fausse du détecteur de plaques**, qui reçoit
+    #: un recadrage différent par piste : Ultralytics impose `rect=True` en prédiction,
+    #: donc un recadrage soumis seul produit une forme d'entrée qui dépend de son
+    #: rapport d'aspect. cuDNN réétalonne à **chaque nouvelle forme**, et cet
+    #: étalonnage coûte environ une seconde.
+    #:
+    #: Mesuré sur deux scènes réelles, ANPR et OCR actives, à détections et plaques
+    #: publiées **strictement identiques** :
+    #:
+    #: | scène | autotune actif | coupé | gain |
+    #: |---|---|---|---|
+    #: | clairsemée (1 recadrage par appel) | 8,4 img/s | **18,2** | **2,17×** |
+    #: | dense (2,3 recadrages par image) | 8,0 img/s | **11,0** | **1,38×** |
+    #:
+    #: Sur la scène clairsemée, **six appels sur 124 dépassaient la seconde et pesaient
+    #: 73 %** du temps de l'étage de plaques. Après, plus aucun au-dessus de 100 ms.
+    #:
+    #: Et ce que l'autotune rendait au chemin dont la forme *est* fixe : **rien de
+    #: mesurable** — inférence véhicules 7,92 ms avec, 8,00 ms sans, soit le bruit.
+    #:
+    #: Le réglage existe donc pour une machine où la mesure dirait autre chose — une
+    #: carte plus récente, un déploiement sans ANPR. `scripts/pipeline_bench.py --cudnn`
+    #: la refait sans toucher à l'environnement. Voir ADR 0033.
+    inference_cudnn_autotune: bool = False
     default_model_id: str = "yolov8n"
     #: Préchauffe le modèle par défaut au démarrage, **si son poids est déjà sur le
     #: disque**. Le premier appel d'un modèle paie son chargement et sa fusion de
@@ -285,6 +314,22 @@ class Settings(BaseSettings):
     #: de l'exploitant. Ce qui n'est pas servi cette image l'est à la suivante — le
     #: texte publié est un vote sur la vie du véhicule (invariant 4) — et le budget va
     #: d'abord aux pistes jamais mesurées, puis aux plus larges.
+    #:
+    #: **Son gain est bien plus faible qu'annoncé d'abord, et son prix est réel.** Le
+    #: 1,27× qui lui était attribué venait surtout de ce qu'il évitait les appels à un
+    #: seul recadrage, donc les pauses d'étalonnage cuDNN d'ADR 0033. Cette cause
+    #: corrigée, sur la scène dense, à comptages identiques :
+    #:
+    #: | plafond | img/s | recadrages/image | plaques **localisées** |
+    #: |---|---|---|---|
+    #: | 0 (illimité) | 11,0 | 2,28 | **180** |
+    #: | 2 | 9,0 | 1,74 | 137 |
+    #: | 1 | 13,8 | 1,00 | 76 |
+    #:
+    #: Le plafond **coûte des plaques localisées**, à peu près proportionnellement aux
+    #: recadrages écartés, et sa cadence ne s'ordonne pas proprement (`2` plus lent que
+    #: `0` sur cette passe, à coût d'étage quasi égal). Il **borne** le coût quand le
+    #: trafic monte ; il ne l'améliore pas dans le cas général.
     #:
     #: À mesurer avec `scripts/pipeline_bench.py --anpr --ocr` : la cadence d'un côté,
     #: les **plaques publiées** de l'autre. Un plafond qui double la cadence en

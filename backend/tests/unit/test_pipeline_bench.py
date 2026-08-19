@@ -344,3 +344,55 @@ class _Args:
         self.frames = frames
         self.stride = stride
         self.start = start
+
+
+class TestQueueDeDistribution:
+    """Un coût et une **pause** ne se lisent pas de la même façon, et le banc ne
+    distinguait pas les deux.
+
+    L'étage de plaques a affiché 99 ms par image pendant toute une session : sa médiane
+    valait 27 ms, et six appels sur 90 dépassaient la seconde en pesant 73 % du poste.
+    La moyenne seule envoyait chercher un travail trop lourd là où il fallait chercher
+    ce qui bloquait — l'autotune cuDNN, qui réétalonnait à chaque nouvelle forme
+    d'entrée (ADR 0033).
+    """
+
+    def test_la_mediane_et_le_maximum_separent_la_pause_du_cout(self) -> None:
+        """Le cas réel, reproduit : dix-neuf appels normaux et un qui stalle."""
+        stage = pipeline_bench.Stage("plateDetect")
+        for _ in range(19):
+            stage.add(30.0)
+        stage.add(1_200.0)
+
+        spread = stage.spread()
+
+        assert spread["p50"] == pytest.approx(30.0)
+        assert spread["max"] == pytest.approx(1_200.0)
+        # La moyenne, elle, décrit un étage « à 88 ms » qui n'a jamais existé.
+        assert spread["mean"] == pytest.approx(88.5)
+
+    def test_un_poste_sans_echantillon_ne_leve_pas(self) -> None:
+        """Les postes de plaques restent vides sans `--anpr` : le rapport doit
+        s'écrire quand même."""
+        assert pipeline_bench.Stage("ocr").spread() == {
+            "mean": 0.0,
+            "p50": 0.0,
+            "p90": 0.0,
+            "max": 0.0,
+        }
+
+    def test_le_rapport_porte_la_queue_de_chaque_poste(self) -> None:
+        """Dans le JSON, donc dans `--compare` : c'est ce qui rend une régression de
+        queue visible d'une course à l'autre, et pas seulement une régression de
+        moyenne."""
+        timings = pipeline_bench.Timings()
+        timings.frames = 2
+        timings.wall_ms = 1_000.0
+        timings.plate_detect.add(30.0)
+        timings.plate_detect.add(900.0)
+
+        per_call = timings.as_json()["perCall"]
+
+        assert per_call["plateDetect"]["p50"] == pytest.approx(465.0)
+        assert per_call["plateDetect"]["max"] == pytest.approx(900.0)
+        assert per_call["ocr"]["max"] == 0.0
