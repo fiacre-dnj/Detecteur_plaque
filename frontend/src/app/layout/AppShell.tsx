@@ -12,9 +12,13 @@
  * exigé un espaceur pour que `<main>` ne parte pas sous l'entête, une source
  * de décalage à chaque changement de hauteur de l'entête (ex. un message
  * d'erreur du badge serveur qui passe sur deux lignes).
+ *
+ * Sa hauteur **mesurée** est publiée dans `--app-header-h` (`useHeaderHeight`) :
+ * la barre de réglages du studio s'y colle à son tour, et une entête qui s'enroule
+ * ou qui grandit d'un message d'erreur déplacerait sinon la barre derrière elle.
  */
 
-import { Suspense } from "react";
+import { Suspense, useLayoutEffect, useRef } from "react";
 import { NavLink, Outlet } from "react-router";
 
 import { BackendStatusBadge } from "./BackendStatusBadge";
@@ -27,9 +31,14 @@ const LINKS = [
 ] as const;
 
 export function AppShell() {
+  const header = useHeaderHeight();
+
   return (
     <div className="min-h-dvh bg-base">
-      <header className="sticky top-0 z-40 border-b border-line/40 bg-base/95 backdrop-blur">
+      <header
+        ref={header}
+        className="sticky top-0 z-40 border-b border-line/40 bg-base/95 backdrop-blur"
+      >
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-x-8 gap-y-3 px-6 py-4">
           <div className="min-w-0">
             <h1 className="text-heading font-bold leading-tight text-ink">
@@ -81,6 +90,52 @@ export function AppShell() {
       </main>
     </div>
   );
+}
+
+/**
+ * Publie la hauteur **mesurée** de l'entête dans `--app-header-h`.
+ *
+ * La barre du studio se colle sous elle (`sticky top-[var(--app-header-h)]`), et
+ * il n'existe aucune façon honnête de deviner ce décalage : l'entête s'enroule sur
+ * deux lignes en fenêtre étroite, et le badge serveur grandit quand il porte un
+ * message d'erreur. Une valeur écrite en dur laisserait la barre flotter dans le
+ * vide ou disparaître derrière l'entête — sans rien qui l'explique, puisque les
+ * deux sont opaques.
+ *
+ * `useLayoutEffect` et non `useEffect` : la valeur est lue par la mise en page du
+ * rendu qui suit, et la poser après la peinture ferait sauter la barre d'une
+ * frame à chaque chargement.
+ */
+function useHeaderHeight(): React.RefObject<HTMLElement | null> {
+  const element = useRef<HTMLElement>(null);
+
+  useLayoutEffect(() => {
+    const header = element.current;
+    if (header === null) return;
+
+    const publish = (): void => {
+      document.documentElement.style.setProperty(
+        "--app-header-h",
+        `${Math.round(header.getBoundingClientRect().height)}px`,
+      );
+    };
+
+    publish();
+    // **Un second relevé à la frame suivante**, et il n'est pas redondant : le
+    // `ResizeObserver` ne se déclenche qu'au *changement*, donc une première mesure
+    // prise avant que la mise en page se stabilise ne serait jamais corrigée — la
+    // barre resterait décalée de la hauteur d'un entête qui n'a jamais existé. Vu
+    // en dev sur un arbre rechargé à chaud (344 px relevés pour un entête de 76).
+    const settled = requestAnimationFrame(publish);
+    const observer = new ResizeObserver(publish);
+    observer.observe(header);
+    return () => {
+      cancelAnimationFrame(settled);
+      observer.disconnect();
+    };
+  }, []);
+
+  return element;
 }
 
 /** Squelette à la forme d'une page, pas un spinner centré. */

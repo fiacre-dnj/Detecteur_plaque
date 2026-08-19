@@ -207,9 +207,65 @@ plus deux fois dans le même sens » si.
   et non plus seulement à la fin : l'aperçu en direct porte le registre des
   véhicules ayant déjà franchi une ligne, à une cadence plus lente que celle des
   boîtes pour ne pas alourdir le flux à mesure qu'il grossit.
+- **L'écran de comptage est réorganisé autour du lecteur.** La barre du haut —
+  import, réglages — **reste collée sous l'entête** quand on descend lire le
+  registre ou la chronologie, au lieu de partir hors de l'écran. La géométrie
+  (lignes, zones, presets) devient son **quatrième tiroir**, à côté de Détection,
+  Comptage et Affichage & analyse : elle occupait en permanence le haut de la
+  colonne de droite pour un réglage qu'on pose une fois avant de lancer. Les trois
+  chiffres de machine — cadence serveur, latence, flux analysé — passent à
+  l'extrémité de cette barre, en petit : ils tenaient trois des cinq cartes de
+  résultats, à égalité visuelle avec les chiffres du carrefour. Le nom du fichier,
+  qui occupait cette extrémité, est désormais **posé sur la vidéo**, coin
+  haut-gauche, dans le même écrin que la résolution affichée en face.
+- **La Répartition par type de véhicule rejoint les Résultats**, dans la colonne
+  de droite, et perd son titre : ses quatre cartes découpent le chiffre « Entrées
+  au carrefour » qu'elles totalisent exactement, et un écran de défilement entre
+  les deux obligeait à retenir un nombre pour vérifier l'autre.
+- **« Lancer l'analyse » et « Fermer » sont dans le lecteur**, à l'extrémité de sa
+  rangée de commandes, là où se réglait la vitesse de lecture — laquelle rejoint le
+  groupe de boutons qui lit. On choisit sa portion de vidéo sur le rail
+  d'intervalle, puis on lance : deux gestes voisins, que la hauteur de la colonne
+  de résultats séparait.
+- **Le rail d'intervalle d'analyse a exactement la longueur de la barre de
+  position.** Le temps courant était écrit à côté du curseur de lecture, ce qui
+  raccourcissait ce rail-là d'une centaine de pixels : les deux échelles ne
+  coïncidaient pas, et une borne posée au milieu de l'intervalle ne tombait pas au
+  milieu de la vidéo. Les deux chiffres sont maintenant en entête de leur rail.
+- **La chronologie des franchissements reste affichée après l'analyse.** Elle
+  disparaissait à la seconde où l'analyse terminait, c'est-à-dire au moment précis
+  où l'on vérifie un comptage : c'est la seule vue qui dise *quand* et *dans quel
+  sens* chaque passage a eu lieu. Après coup, elle suit la tête de lecture comme le
+  registre et les compteurs — elle ne montre jamais un franchissement que la vidéo
+  n'a pas encore atteint.
 
 ### Corrigé
 
+- **Une vidéo haute résolution ne coûte presque plus de cadence.** L'analyse
+  ralentissait à mesure que la résolution montait, et pour une seule raison : le
+  décodage des images attendait le calcul de l'image précédente au lieu de se faire
+  pendant. Il se fait désormais en parallèle. Mesuré sur une même scène réencodée à
+  quatre résolutions, sans plaques : **1080p 47 → 58 images/s, 1440p 35 → 59, 4K
+  27 → 40** — et la cadence est devenue la **même** de 720p à 1440p, là où elle
+  perdait 40 % en montant. Avec plaques et lecture actives, le 4K passe de 16 à
+  21 images/s, c'est-à-dire la cadence du 720p. Aucun chiffre ne change : mêmes
+  véhicules comptés, mêmes franchissements, mêmes plaques publiées.
+- **Le repérage de plaques peut être plafonné, et il se mesure.** Deux réglages
+  nouveaux, tous deux sans effet par défaut : un plafond de véhicules examinés par
+  image, qui rend le coût du repérage indépendant du trafic (mesuré sur une scène à 6-14
+  véhicules : **7,3 → 11,0 images/s à comptage identique**), et la taille d'entrée du
+  modèle de plaques, réglable pour ceux qui filment des plans serrés.
+- **Ce que le repérage de plaques coûte vraiment, dit clairement** : sur une vue de
+  circulation 1080p, il pèse **73 %** du temps d'analyse et la lecture de texte 0,3 % —
+  et surtout, **aucune plaque n'y est publiable** : elles font moins de 48 px de large
+  quand la lecture en exige 64. L'application le disait déjà véhicule par véhicule
+  (« plaque vue à 32 px »), mais rien ne disait que cela représentait les trois quarts
+  du temps de calcul. Deux gestes le règlent : resserrer le plan, ou filmer plus défini.
+- **Ce que la résolution apporte vraiment, dit clairement** : elle ne change *rien*
+  à la détection des véhicules — l'image est ramenée à la taille d'entrée du modèle
+  dans tous les cas — mais elle est ce qui rend les plaques lisibles. Sur la scène
+  mesurée, la lecture ne se déclenche jamais en 720p (les plaques y font moins de
+  64 px) et publie une plaque en 4K.
 - **L'analyse avec repérage de plaques est deux fois plus rapide.** Activer les
   plaques et la lecture du texte faisait chuter la cadence bien plus que nécessaire :
   le repérage relançait le calcul **une fois par véhicule** au lieu d'une fois par

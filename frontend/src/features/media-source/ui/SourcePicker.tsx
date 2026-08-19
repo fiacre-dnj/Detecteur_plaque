@@ -97,22 +97,28 @@ export function SourcePicker({ activeLabel, disabled, onFile }: SourcePickerProp
 }
 
 /**
- * Le nom du fichier actif, à part du bouton d'import.
+ * Le nom du fichier actif, **posé sur la scène** — coin haut-gauche.
  *
- * Posé **tout à droite** de la barre du studio (`SettingsPanels.trailing`) plutôt
- * qu'à côté du bouton : une fois la vidéo choisie, l'import redevient un geste
- * occasionnel — « Changer de vidéo » — alors que les trois tiroirs de réglages
- * sont ce qu'on ouvre le plus souvent juste après, et méritaient la place qui
- * suit immédiatement le bouton.
+ * Il a occupé l'extrémité de la barre du studio, où les compteurs techniques
+ * (cadence, latence, flux analysé) sont désormais : ceux-là changent dix fois par
+ * seconde et se surveillent, alors que le nom du fichier est un repère fixe qui se
+ * lit une fois — et sa place naturelle est **sur** ce qu'il nomme.
+ *
+ * Même écrin, exactement, que le badge de dimensions du coin opposé
+ * (`rounded-badge bg-base/80 …text-micro`) : deux repères de même nature — « quoi
+ * je regarde », « dans quel repère » — dessinés différemment se liraient comme deux
+ * informations de niveaux différents. `pointer-events-none` est **obligatoire** :
+ * la scène entière est une surface de tracé, et un badge cliquable y avalerait les
+ * clics destinés au canvas.
  */
-export function SourceLabel({ label }: { label: string }) {
+export function SourceBadge({ label }: { label: string }) {
   return (
     <span
-      className="inline-flex min-w-0 items-center gap-1.5 text-small text-ink-muted"
+      className="pointer-events-none inline-flex min-w-0 max-w-[18rem] items-center gap-1.5 rounded-badge bg-base/80 px-2 py-1 text-micro text-ink-muted"
       title={label}
     >
-      <FileVideo aria-hidden="true" className="size-4 shrink-0 text-ink-dim" />
-      <span className="max-w-48 truncate">{label}</span>
+      <FileVideo aria-hidden="true" className="size-3 shrink-0 text-ink-dim" />
+      <span className="truncate">{label}</span>
     </span>
   );
 }

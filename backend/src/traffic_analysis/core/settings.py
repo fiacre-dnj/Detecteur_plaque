@@ -11,7 +11,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["development", "staging", "test", "production"]
@@ -199,6 +199,36 @@ class Settings(BaseSettings):
     #: images du même véhicule. `3` ne se justifie que sur des plans serrés où les
     #: véhicules sont grands.
     plate_mosaic_side: int = Field(1, ge=1, le=3)
+    #: Côté de l'entrée du **détecteur de plaques**, en pixels. Multiple de 32.
+    #:
+    #: **C'est le premier poste du budget dès que l'ANPR est active, et de loin.**
+    #: Mesuré sur une scène dense réelle (1920×1080, 6 à 14 véhicules par image,
+    #: `--anpr --ocr`) : l'étage de plaques coûte **76 ms par image analysée, soit
+    #: 73 % du total**, contre 0,4 ms pour l'OCR. Le coût est **linéaire en nombre de
+    #: recadrages** — 21,5 ms pour un, 139,7 pour huit — parce que chaque recadrage de
+    #: véhicule paie une inférence complète, exactement comme une image entière.
+    #:
+    #: Le côté de l'entrée est donc le seul levier qui n'exige pas d'en détecter
+    #: moins. Mesuré sur les mêmes huit recadrages, plaques trouvées à l'identique :
+    #:
+    #: | côté | ms/appel | ms/recadrage |
+    #: |------|----------|--------------|
+    #: | 640  | 141,1    | 17,6         |
+    #: | 448  | 77,8     | 9,7          |
+    #: | 320  | 56,8     | 7,1          |
+    #:
+    #: **640 reste le défaut**, parce que c'est la résolution d'entraînement du modèle
+    #: et qu'on ne troque pas du rappel contre du débit sans que quelqu'un le demande
+    #: (même règle que la mosaïque, ADR 0008). Ce qui décide qu'une plaque est trouvée
+    #: est sa taille **dans l'entrée du réseau** : le recadrage étant agrandi jusqu'à
+    #: ce côté, une plaque y occupe ~0,15 × côté, soit ~96 px à 640 et ~48 px à 320.
+    #: Descendre se paie donc d'abord sur les **véhicules lointains**, dont la plaque
+    #: était de toute façon sous le plancher de lecture de l'OCR (64 px, invariant 12).
+    #:
+    #: À calibrer sur ses propres vidéos avec `scripts/anpr_bench.py --net-size …`, en
+    #: regardant les plaques **détectées** et les textes **publiés**, jamais la seule
+    #: cadence.
+    plate_net_size: int = Field(640, ge=64, le=1280)
 
     # ── Étranglement du détecteur de plaques (ADR 0010) ──────────────────────
     # **Le vrai goulot, et de loin.** Mesuré sur cette machine (i5-8350U, sans GPU) :
@@ -241,6 +271,25 @@ class Settings(BaseSettings):
     #: chacune payant ~800 ms par image analysée sans jamais bénéficier de
     #: l'étranglement. Résultat : 1,42 image/s traitée, contre 11 sans ANPR.
     plate_detect_max_consecutive_misses: int = Field(3, ge=1, le=30)
+    #: Recadrages soumis au détecteur par image analysée, au plus. `0` = illimité.
+    #:
+    #: **Le seul plafond qui rende le coût de l'ANPR indépendant de la scène.** Sans
+    #: lui, la cadence suit la circulation : mesuré sur une scène dense réelle
+    #: (1920×1080, 6 à 14 véhicules par image), l'étage de plaques coûte 76 ms par
+    #: image analysée — 73 % du budget, contre 0,4 ms pour l'OCR — et ce coût est
+    #: **linéaire en nombre de recadrages**, chaque véhicule payant une inférence
+    #: entière (21,5 ms pour un recadrage, 139,7 pour huit).
+    #:
+    #: `0` par défaut, c'est-à-dire le comportement historique : plafonner écarte des
+    #: mesures, donc des plaques possibles, et cet arbitrage ne se prend pas à la place
+    #: de l'exploitant. Ce qui n'est pas servi cette image l'est à la suivante — le
+    #: texte publié est un vote sur la vie du véhicule (invariant 4) — et le budget va
+    #: d'abord aux pistes jamais mesurées, puis aux plus larges.
+    #:
+    #: À mesurer avec `scripts/pipeline_bench.py --anpr --ocr` : la cadence d'un côté,
+    #: les **plaques publiées** de l'autre. Un plafond qui double la cadence en
+    #: publiant une plaque de moins n'est pas un réglage, c'est une perte.
+    plate_detect_max_per_frame: int = Field(0, ge=0, le=32)
 
     # Utilisés par scripts/fetch_plate_model.py uniquement. Le service ne
     # télécharge jamais de lui-même : un démarrage ne doit pas dépendre du réseau.
@@ -576,9 +625,9 @@ class Settings(BaseSettings):
             return None
         return trimmed
 
-    @field_validator("inference_imgsz")
+    @field_validator("inference_imgsz", "plate_net_size")
     @classmethod
-    def _require_stride_multiple(cls, value: int) -> int:
+    def _require_stride_multiple(cls, value: int, info: ValidationInfo) -> int:
         """Le côté doit être un multiple de 32, le pas du réseau.
 
         Refusé plutôt qu'arrondi. Ultralytics, lui, arrondit **en silence** vers le
@@ -589,8 +638,9 @@ class Settings(BaseSettings):
         une décision.
         """
         if value % 32:
+            name = f"TRAFFIC_{(info.field_name or '').upper()}"
             msg = (
-                f"TRAFFIC_INFERENCE_IMGSZ={value} n'est pas un multiple de 32, le pas "
+                f"{name}={value} n'est pas un multiple de 32, le pas "
                 f"du réseau. Prenez {value // 32 * 32} ou {(value // 32 + 1) * 32}."
             )
             raise ValueError(msg)

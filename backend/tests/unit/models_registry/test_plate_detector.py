@@ -393,14 +393,23 @@ class _RecordingYolo:
 
     def __init__(self, rows: list[tuple[float, float, float, float, float]] | None = None) -> None:
         self.calls: list[int] = []
+        #: Côté d'entrée demandé à chaque appel. C'est le premier poste du budget
+        #: quand l'ANPR tourne (73 % sur une scène dense) : un réglage qui
+        #: n'atteindrait pas `predict` se lirait comme un levier sans effet.
+        self.sizes: list[object] = []
+        #: Forme de la source de chaque appel, mosaïque comprise : c'est elle qui dit
+        #: qu'une tuile a bien été construite au côté demandé.
+        self.shapes: list[tuple[int, ...]] = []
         self._rows = rows if rows is not None else [(10.0, 30.0, 70.0, 50.0, 0.9)]
 
-    def predict(self, source: object, **_: object) -> list[_FakeResult]:
+    def predict(self, source: object, **kwargs: object) -> list[_FakeResult]:
+        self.sizes.append(kwargs.get("imgsz"))
         if isinstance(source, list):
             self.calls.append(len(source))
             return [_FakeResult(list(self._rows)) for _ in source]
         # Chemin mosaïque : une seule image, un seul résultat.
         self.calls.append(1)
+        self.shapes.append(getattr(source, "shape", ()))
         return [_FakeResult(list(self._rows))]
 
 
@@ -438,6 +447,53 @@ class TestUnSeulLotPourToutesLesPistes:
         detector.detect_many(image, boxes)
 
         assert model.calls == [5]
+
+    def test_le_cote_d_entree_configure_atteint_l_inference(self) -> None:
+        """**Le premier poste du budget dès que l'ANPR tourne.**
+
+        Mesuré sur une scène dense réelle : 73 % du temps par image, et un coût
+        linéaire en nombre de recadrages — chaque véhicule paie une inférence
+        complète. Le côté de l'entrée est donc le seul levier qui n'exige pas d'en
+        détecter moins : 141 ms par appel à 640, 56,8 à 320 sur les mêmes huit
+        recadrages.
+
+        Un réglage qui n'atteindrait pas `predict` serait le pire des deux mondes :
+        l'opérateur croirait avoir changé de régime et mesurerait l'ancien.
+        """
+        model = _RecordingYolo()
+        detector = self._prepared(model, net_size=320)
+        image = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        detector.detect_many(image, [BoundingBox(x=0.0, y=0.0, width=180.0, height=120.0)])
+
+        assert model.sizes == [320]
+
+    def test_la_mosaique_est_construite_au_cote_demande(self) -> None:
+        """Les deux chemins doivent lire le **même** côté.
+
+        La tuile est une image réelle : la bâtir à 640 pour l'inférer à 320
+        rétrécirait chaque cellule d'un facteur deux sans que rien ne le dise, et
+        détruirait le rappel que la mosaïque essaie déjà de préserver (ADR 0008).
+        """
+        model = _RecordingYolo()
+        detector = self._prepared(model, mosaic_side=2, net_size=320)
+        image = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        detector.detect_many(image, [BoundingBox(x=0.0, y=0.0, width=180.0, height=120.0)])
+
+        assert model.sizes == [320]
+        assert model.shapes == [(320, 320, 3)]
+
+    def test_le_defaut_reste_la_resolution_d_entrainement(self) -> None:
+        """640 tant que personne ne demande autre chose : on ne troque pas du rappel
+        contre du débit en silence."""
+        model = _RecordingYolo()
+        detector = self._prepared(model)
+        image = np.zeros((720, 1280, 3), dtype=np.uint8)
+
+        detector.detect_many(image, [BoundingBox(x=0.0, y=0.0, width=180.0, height=120.0)])
+
+        assert model.sizes == [NET_SIZE]
 
     def test_le_lot_est_borne_pour_ne_pas_saturer_la_carte(self) -> None:
         """Une intersection chargée ne doit pas faire déborder une petite carte.

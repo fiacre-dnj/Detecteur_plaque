@@ -64,6 +64,26 @@ if TYPE_CHECKING:
     from traffic_analysis.features.jobs.application.ports import JobRepository
 
 
+@dataclass(frozen=True, slots=True)
+class CountingStack:
+    """Le moteur, les deux étages de plaques, et le service qui les enchaîne.
+
+    Elle existe pour que **le banc mesure ce que le service exécute**.
+    `scripts/pipeline_bench.py` a besoin d'une `AnalysisService` réelle, ANPR et OCR
+    comprises, mais pas d'une base de données ni d'un `JobManager` : sans ce point
+    d'assemblage partagé, il recopierait le câblage de `build_container` — une
+    quinzaine de réglages — et mesurerait au premier oubli un pipeline que personne ne
+    fait tourner. C'est le mode de panne qu'ADR 0013 signale à propos du fichier de
+    tracker : un rapport qui annonce autre chose que ce qui a tourné est pire qu'un
+    rapport sans cette ligne.
+    """
+
+    engine: DetectionTrackingEngine
+    plate_detector: PlateDetector
+    plate_reader: PlateReader
+    analysis: AnalysisService
+
+
 @dataclass(slots=True)
 class Container:
     """Les dépendances vivantes du service."""
@@ -136,73 +156,23 @@ def build_container(
         device=settings.device,
         half=settings.half,
     )
-    resolved_engine = engine or UltralyticsEngine(
+    stack = build_counting_stack(
+        settings,
         registry,
-        gmc_method=settings.tracker_gmc,
-        imgsz=settings.inference_imgsz,
-        batch=settings.inference_batch,
+        engine=engine,
+        plate_detector=plate_detector,
+        plate_reader=plate_reader,
     )
-    resolved_plates = plate_detector or UltralyticsPlateDetector(
-        settings.resolved_plate_model_path,
-        settings.plate_confidence,
-        iou=settings.plate_iou,
-        mosaic_side=settings.plate_mosaic_side,
-        geometry=PlateGeometry(max_per_vehicle=settings.plate_max_per_vehicle),
-        # Le registre est l'autorité sur le matériel, pour le détecteur de plaques
-        # comme pour celui des véhicules : une seule décision par machine, prise à
-        # un seul endroit, testée une seule fois. Des appelables et non des valeurs
-        # — le registre ne sonde le GPU qu'au premier besoin (ADR 0015).
-        device_provider=registry.device,
-        half_provider=registry.half,
-    )
-    resolved_plate_reader = plate_reader or OnnxPlateReader(
-        settings.resolved_plate_ocr_model_path,
-        settings.resolved_plate_ocr_charset_path,
-        min_score=settings.plate_ocr_min_text_score,
-        intra_op_threads=settings.resolved_plate_ocr_intra_op_threads,
-        variants=settings.plate_ocr_variants,
-        dynamic_width=settings.plate_ocr_dynamic_width,
-        # `plate_ocr_variants` reste le commutateur maître : couper les variantes doit
-        # tout couper, sinon « désactivé pour comparer » ne compare pas ce qu'on croit.
-        left_insets=settings.plate_ocr_left_insets if settings.plate_ocr_variants else (),
-    )
+    resolved_engine = stack.engine
+    resolved_plates = stack.plate_detector
+    resolved_plate_reader = stack.plate_reader
+    analysis_service = stack.analysis
+
     model_service = ModelService(
         registry,
         default_model_id=settings.default_model_id,
         plate_detector=resolved_plates,
         plate_reader=resolved_plate_reader,
-    )
-
-    analysis_service = AnalysisService(
-        resolved_engine,
-        resolved_plates,
-        resolved_plate_reader,
-        # Les seuils d'OCR viennent des réglages et aucun de la requête : ce sont des
-        # arbitrages de déploiement — combien de cœurs, quelle cadence — que
-        # l'utilisateur d'une analyse n'a pas à connaître. `plate_confidence` fait
-        # exception et voyage bien par requête, parce qu'il répond à une question que
-        # seul l'utilisateur peut trancher devant sa vidéo : « trop de rectangles, ou
-        # pas assez ». Il descend jusqu'à l'adaptateur en argument de `detect_many`,
-        # ce qui lève l'impasse où ADR 0007 le laissait mort.
-        PlateOcrOptions(
-            every_n_frames=settings.plate_ocr_every_n_frames,
-            skip_above_iou=settings.plate_ocr_skip_iou,
-            min_width_px=float(settings.plate_ocr_min_width_px),
-            min_sharpness=settings.plate_ocr_min_sharpness,
-            quality_improvement=settings.plate_ocr_quality_improvement,
-        ),
-        # L'étranglement du détecteur — **le vrai goulot**, 702 ms par inférence
-        # contre 66 ms par vignette d'OCR sur cette machine. Les trois champs
-        # existaient et aucun n'était atteignable : seul `every_n_frames` était
-        # passé, et il valait forcément celui de l'OCR. Le repli conserve ce
-        # comportement (`resolved_plate_detect_every_n_frames`), mais il devient
-        # un repli et non une fatalité.
-        PlateDetectOptions(
-            every_n_frames=settings.resolved_plate_detect_every_n_frames,
-            min_vehicle_width_px=settings.plate_detect_min_vehicle_width_px,
-            max_anchor_age=settings.plate_detect_max_anchor_age,
-            max_consecutive_misses=settings.plate_detect_max_consecutive_misses,
-        ),
     )
     realtime_service = RealtimeSessionService(
         resolved_engine, max_sessions=settings.max_realtime_sessions
@@ -269,4 +239,92 @@ def build_container(
             preview_interval_paced_ms=settings.preview_interval_paced_ms,
             preview_vehicles_interval_ms=settings.preview_vehicles_interval_ms,
         ),
+    )
+
+
+def build_counting_stack(
+    settings: Settings,
+    registry: ModelRegistry,
+    *,
+    engine: DetectionTrackingEngine | None = None,
+    plate_detector: PlateDetector | None = None,
+    plate_reader: PlateReader | None = None,
+) -> CountingStack:
+    """Assemble le moteur, les deux étages de plaques et l'`AnalysisService`.
+
+    Extrait de `build_container` **sans rien changer à son câblage** : c'est le seul
+    endroit qui sait comment une analyse est composée, et il doit rester le seul —
+    voir la docstring de `CountingStack` pour ce qu'un second exemplaire coûterait.
+
+    Les paramètres nommés restent les points de substitution des tests, exactement
+    comme dans `build_container`.
+    """
+    resolved_engine = engine or UltralyticsEngine(
+        registry,
+        gmc_method=settings.tracker_gmc,
+        imgsz=settings.inference_imgsz,
+        batch=settings.inference_batch,
+    )
+    resolved_plates = plate_detector or UltralyticsPlateDetector(
+        settings.resolved_plate_model_path,
+        settings.plate_confidence,
+        iou=settings.plate_iou,
+        mosaic_side=settings.plate_mosaic_side,
+        net_size=settings.plate_net_size,
+        geometry=PlateGeometry(max_per_vehicle=settings.plate_max_per_vehicle),
+        # Le registre est l'autorité sur le matériel, pour le détecteur de plaques
+        # comme pour celui des véhicules : une seule décision par machine, prise à
+        # un seul endroit, testée une seule fois. Des appelables et non des valeurs
+        # — le registre ne sonde le GPU qu'au premier besoin (ADR 0015).
+        device_provider=registry.device,
+        half_provider=registry.half,
+    )
+    resolved_plate_reader = plate_reader or OnnxPlateReader(
+        settings.resolved_plate_ocr_model_path,
+        settings.resolved_plate_ocr_charset_path,
+        min_score=settings.plate_ocr_min_text_score,
+        intra_op_threads=settings.resolved_plate_ocr_intra_op_threads,
+        variants=settings.plate_ocr_variants,
+        dynamic_width=settings.plate_ocr_dynamic_width,
+        # `plate_ocr_variants` reste le commutateur maître : couper les variantes doit
+        # tout couper, sinon « désactivé pour comparer » ne compare pas ce qu'on croit.
+        left_insets=settings.plate_ocr_left_insets if settings.plate_ocr_variants else (),
+    )
+    analysis_service = AnalysisService(
+        resolved_engine,
+        resolved_plates,
+        resolved_plate_reader,
+        # Les seuils d'OCR viennent des réglages et aucun de la requête : ce sont des
+        # arbitrages de déploiement — combien de cœurs, quelle cadence — que
+        # l'utilisateur d'une analyse n'a pas à connaître. `plate_confidence` fait
+        # exception et voyage bien par requête, parce qu'il répond à une question que
+        # seul l'utilisateur peut trancher devant sa vidéo : « trop de rectangles, ou
+        # pas assez ». Il descend jusqu'à l'adaptateur en argument de `detect_many`,
+        # ce qui lève l'impasse où ADR 0007 le laissait mort.
+        PlateOcrOptions(
+            every_n_frames=settings.plate_ocr_every_n_frames,
+            skip_above_iou=settings.plate_ocr_skip_iou,
+            min_width_px=float(settings.plate_ocr_min_width_px),
+            min_sharpness=settings.plate_ocr_min_sharpness,
+            quality_improvement=settings.plate_ocr_quality_improvement,
+        ),
+        # L'étranglement du détecteur — **le vrai goulot**, 702 ms par inférence
+        # contre 66 ms par vignette d'OCR sur cette machine. Les trois champs
+        # existaient et aucun n'était atteignable : seul `every_n_frames` était
+        # passé, et il valait forcément celui de l'OCR. Le repli conserve ce
+        # comportement (`resolved_plate_detect_every_n_frames`), mais il devient
+        # un repli et non une fatalité.
+        PlateDetectOptions(
+            every_n_frames=settings.resolved_plate_detect_every_n_frames,
+            min_vehicle_width_px=settings.plate_detect_min_vehicle_width_px,
+            max_anchor_age=settings.plate_detect_max_anchor_age,
+            max_consecutive_misses=settings.plate_detect_max_consecutive_misses,
+            max_per_frame=settings.plate_detect_max_per_frame,
+        ),
+    )
+    return CountingStack(
+        engine=resolved_engine,
+        plate_detector=resolved_plates,
+        plate_reader=resolved_plate_reader,
+        analysis=analysis_service,
     )

@@ -51,24 +51,23 @@ def _track_calls(source: str) -> list[str]:
     return calls
 
 
-#: Les **trois** appels au moteur :
+#: Les **deux** appels au moteur :
 #:
-#: 1. `model.track(source=str(video_path), stream=True, …)` — le différé ordinaire,
-#:    qui confie le fichier entier au chargeur d'Ultralytics ;
-#: 2. `model.track(source=image, …)` — le différé **avec une borne de début**, qui
-#:    décode lui-même après déplacement parce que ce chargeur ne sait pas se
-#:    déplacer, et confie donc les images une par une ;
-#: 3. `self._model.track(source=image, …)` — le direct.
+#: 1. `model.track(source=[image for _, image in chunk], …)` — le différé, qui décode
+#:    lui-même dans un fil séparé et confie les images par lots ;
+#: 2. `self._model.track(source=image, …)` — le direct.
 #:
-#: Le troisième n'existait pas quand ce fichier a été écrit, et c'est précisément
-#: ce que le garde-fou ci-dessous a signalé en échouant : un chemin d'analyse neuf
-#: aurait pu naître sans `agnostic_nms`, donc en comptant des camionnettes deux
-#: fois, sans qu'aucun test ne s'en aperçoive.
+#: Il y en a eu trois, et ce garde-fou a signalé les deux changements en échouant :
+#: l'apparition du direct, puis la disparition du chemin « avec borne de début ».
+#: Ce dernier existait parce que le chargeur d'Ultralytics ne sait pas se déplacer ;
+#: depuis que le différé décode lui-même, le déplacement n'est plus un cas
+#: particulier et les deux chemins n'en font qu'un — celui qui reste porte donc les
+#: garanties des deux.
 TRACK_CALLS = _track_calls(SOURCE)
 
-#: Nombre d'appels attendus. **À incrémenter en connaissance de cause** : chaque
-#: nouvel appel doit d'abord satisfaire les trois vérifications ci-dessous.
-EXPECTED_TRACK_CALLS = 3
+#: Nombre d'appels attendus. **À changer en connaissance de cause** : chaque nouvel
+#: appel doit d'abord satisfaire les trois vérifications ci-dessous.
+EXPECTED_TRACK_CALLS = 2
 
 
 def test_tous_les_chemins_appellent_bien_le_tracker() -> None:

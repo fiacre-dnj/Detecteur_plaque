@@ -100,14 +100,19 @@ logger = get_logger("traffic_analysis.anpr")
 # soit distinguable : l'inférence coûterait sans jamais rien trouver.
 MIN_CROP_SIDE_PX = 32
 
-#: Côté de l'entrée du réseau.
+#: Côté de l'entrée du réseau, **par défaut**.
 #:
 #: C'était une **constante de l'export** au temps du `.onnx` — la grille d'ancres
 #: `8400` était gravée dans le graphe, et toute autre forme faisait échouer le
 #: `Reshape` du DFL. Depuis le `.pt` (ADR 0015) c'est un choix, gardé à 640 parce
 #: que c'est la résolution d'entraînement du modèle : monter plus haut interpole des
-#: pixels que le réseau n'a jamais vus à cette échelle, et cela se mesure au banc
-#: avant de se décider.
+#: pixels que le réseau n'a jamais vus à cette échelle.
+#:
+#: **Et c'est désormais un réglage** (`TRAFFIC_PLATE_NET_SIZE`), parce que la mesure
+#: a montré que ce côté est le premier poste du budget dès que l'ANPR tourne : 73 %
+#: du temps par image sur une scène dense, et un coût linéaire en nombre de
+#: recadrages puisque chaque véhicule paie une inférence entière. Voir le réglage
+#: dans `core/settings.py` pour le tableau et l'arbitrage.
 NET_SIZE = 640
 
 #: Gouttière entre deux cellules de la mosaïque. 12 px à 640, soit un peu plus que
@@ -183,6 +188,7 @@ class UltralyticsPlateDetector:
         "_lock",
         "_model",
         "_mosaic_side",
+        "_net_size",
         "_path",
     )
 
@@ -193,6 +199,7 @@ class UltralyticsPlateDetector:
         *,
         iou: float = 0.45,
         mosaic_side: int = DEFAULT_MOSAIC_SIDE,
+        net_size: int = NET_SIZE,
         geometry: PlateGeometry | None = None,
         device_provider: Callable[[], str] | None = None,
         half_provider: Callable[[], bool] | None = None,
@@ -218,6 +225,10 @@ class UltralyticsPlateDetector:
         self._confidence = confidence
         self._iou = iou
         self._mosaic_side = max(1, min(MAX_MOSAIC_SIDE, mosaic_side))
+        # Multiple de 32 garanti par le réglage, qui refuse plutôt qu'arrondir :
+        # Ultralytics, lui, arrondirait en silence et le rapport d'un banc
+        # annoncerait une valeur que l'inférence n'a pas utilisée.
+        self._net_size = net_size
         self._geometry = geometry or PlateGeometry()
         self._model: Any = None
         self._checked = False
@@ -275,12 +286,12 @@ class UltralyticsPlateDetector:
             model = self._ensure_loaded()
             if model is None:
                 return False
-            probe_image = np.zeros((NET_SIZE, NET_SIZE, 3), dtype=np.uint8)
+            probe_image = np.zeros((self._net_size, self._net_size, 3), dtype=np.uint8)
             model.predict(
                 probe_image,
                 conf=self._confidence,
                 iou=self._iou,
-                imgsz=NET_SIZE,
+                imgsz=self._net_size,
                 max_det=1,
                 verbose=False,
                 **self._runtime_kwargs(),
@@ -463,7 +474,7 @@ class UltralyticsPlateDetector:
             [crop for _, crop, _, _ in chunk],
             conf=threshold,
             iou=self._iou,
-            imgsz=NET_SIZE,
+            imgsz=self._net_size,
             max_det=8,
             verbose=False,
             **self._runtime_kwargs(),
@@ -509,7 +520,7 @@ class UltralyticsPlateDetector:
             tile,
             conf=threshold,
             iou=self._iou,
-            imgsz=NET_SIZE,
+            imgsz=self._net_size,
             max_det=len(placements) * 8,
             verbose=False,
             **self._runtime_kwargs(),
@@ -547,9 +558,9 @@ class UltralyticsPlateDetector:
         side = 1
         while side * side < len(chunk):
             side += 1
-        cell = (NET_SIZE - (side + 1) * MOSAIC_GUTTER_PX) // side
+        cell = (self._net_size - (side + 1) * MOSAIC_GUTTER_PX) // side
 
-        tile = np.full((NET_SIZE, NET_SIZE, 3), PAD_VALUE, dtype=np.uint8)
+        tile = np.full((self._net_size, self._net_size, 3), PAD_VALUE, dtype=np.uint8)
         placements: list[_Placement] = []
         for position, (index, crop, origin_x, origin_y) in enumerate(chunk):
             row, column = divmod(position, side)

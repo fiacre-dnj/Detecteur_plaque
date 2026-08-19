@@ -27,6 +27,17 @@
  *
  * Un seul tiroir ouvert à la fois, et **fermé par défaut** : l'écran d'arrivée doit
  * montrer la vidéo, pas un formulaire.
+ *
+ * **La barre est collée sous l'entête** (`sticky`, décalée de `--app-header-h` que
+ * `AppShell` mesure). Le bas de page s'est allongé — quatre sections de résultats
+ * plus la chronologie — et les réglages, l'import et les compteurs techniques
+ * partaient donc hors de l'écran dès qu'on lisait le registre. Elle porte son propre
+ * fond opaque, débordé jusqu'aux gouttières de la page (`-mx-6 px-6`) : sans lui, la
+ * vidéo défilerait visiblement *sous* les pilules.
+ *
+ * **Les tiroirs ne sont pas tous d'ici.** `panels` en accepte d'autres, fournis par
+ * le studio — c'est ainsi que « Géométrie » rejoint la barre sans que cette feature
+ * connaisse `geometry-editor`, même règle que `leading` et `trailing`.
  */
 
 import { ChevronDown } from "lucide-react";
@@ -49,14 +60,31 @@ import {
   type AnalysisSettings,
 } from "../model/settings";
 
-/** Identifiants des tiroirs — l'ordre est celui de la barre. */
+/** Identifiants des tiroirs **de cette feature** — l'ordre est celui de la barre. */
 const PANELS = [
   { id: "detection", label: "Détection" },
   { id: "comptage", label: "Comptage" },
   { id: "affichage", label: "Affichage & analyse" },
 ] as const;
 
-type PanelId = (typeof PANELS)[number]["id"];
+type OwnPanelId = (typeof PANELS)[number]["id"];
+
+/**
+ * Un tiroir **fourni de l'extérieur**, rendu après les trois d'ici.
+ *
+ * « Géométrie » est le premier : c'était un panneau permanent de la colonne de
+ * droite, alors qu'il se règle comme les autres — une fois, avant de lancer — et
+ * qu'il volait la place des chiffres. Il ne peut pas être importé ici (une feature
+ * n'importe jamais une autre feature), donc le studio le passe.
+ */
+export interface ExtraPanel {
+  id: string;
+  label: string;
+  content: ReactNode;
+}
+
+/** L'identifiant du tiroir ouvert : l'un des trois d'ici, ou celui d'un `ExtraPanel`. */
+type PanelId = string;
 
 interface SettingsPanelsProps {
   settings: AnalysisSettings;
@@ -125,6 +153,14 @@ interface SettingsPanelsProps {
    * referme si la source disparaît pendant qu'il l'était.
    */
   hasSource: boolean;
+  /**
+   * Tiroirs supplémentaires, rendus **après** les trois d'ici — « Géométrie ».
+   *
+   * Une liste plutôt qu'un `ReactNode` : la barre doit dessiner leur pilule et
+   * tenir l'exclusivité (un seul tiroir ouvert), ce qu'elle ne peut pas faire sur
+   * du contenu déjà rendu.
+   */
+  panels?: readonly ExtraPanel[];
 }
 
 export function SettingsPanels({
@@ -142,6 +178,7 @@ export function SettingsPanels({
   leading,
   trailing,
   hasSource,
+  panels: extraPanels = [],
 }: SettingsPanelsProps) {
   /** `null` = tout fermé, l'état d'arrivée. */
   const [open, setOpen] = useState<PanelId | null>(null);
@@ -190,7 +227,7 @@ export function SettingsPanels({
     ocrAvailable: plateOcrAvailable,
   });
 
-  const panels: Record<PanelId, ReactNode> = {
+  const ownPanels: Record<OwnPanelId, ReactNode> = {
     detection: (
       <PanelGrid>
         {/* `canPreload={!disabled}` : le préchargement prend un bail sur le
@@ -463,11 +500,38 @@ export function SettingsPanels({
     ),
   };
 
+  /**
+   * Les tiroirs de la barre, les trois d'ici puis ceux qu'on lui donne.
+   *
+   * Une seule liste : la pilule, l'exclusivité et le contenu se lisent au même
+   * endroit, et un tiroir venu du studio se comporte donc exactement comme les
+   * autres — `Échap`, clic en dehors, re-clic qui referme.
+   */
+  const tabs: readonly ExtraPanel[] = [
+    ...PANELS.map((panel) => ({
+      id: panel.id,
+      label: panel.label,
+      content: ownPanels[panel.id],
+    })),
+    ...extraPanels,
+  ];
+  const current = tabs.find((tab) => tab.id === open) ?? null;
+
   return (
-    <div ref={root} className="relative">
+    /* `sticky` **et** un fond opaque débordé jusqu'aux gouttières : la barre reste
+       atteignable quand on lit le bas de page, et la vidéo ne défile pas en
+       transparence derrière ses pilules. `z-30` la pose sous l'entête de
+       l'application (`z-40`) et au-dessus de tout le reste du studio. */
+    <div
+      ref={root}
+      className={[
+        "sticky top-[var(--app-header-h,0px)] z-30",
+        "-mx-6 border-b border-line/40 bg-base/95 px-6 py-2 backdrop-blur",
+      ].join(" ")}
+    >
       <div className="flex flex-wrap items-center gap-2">
         {leading}
-        {PANELS.map((panel) => {
+        {tabs.map((panel) => {
           const active = open === panel.id;
           return (
             <button
@@ -498,27 +562,33 @@ export function SettingsPanels({
             </button>
           );
         })}
-        {trailing !== undefined && <div className="ms-auto flex items-center">{trailing}</div>}
+        {trailing !== undefined && (
+          <div className="ms-auto flex min-w-0 items-center">{trailing}</div>
+        )}
       </div>
 
       {/* Flotte **par-dessus** la page : `absolute`, ancré sous la barre, jamais
           dans le flux. C'est ce qui évite qu'ouvrir un tiroir décale la vidéo et
           les résultats de plusieurs centaines de pixels — voir la docstring du
-          fichier. `z-30` le pose sous l'entête fixe de l'application (`z-40`,
-          `AppShell`) mais au-dessus de tout le reste de la page. */}
-      {open !== null && (
+          fichier. Il hérite du `z-30` de la barre, donc il passe sous l'entête
+          fixe de l'application (`z-40`, `AppShell`) et au-dessus du reste.
+
+          `start-6` et non `start-0` : la barre déborde désormais de six unités de
+          chaque côté pour peindre son fond jusqu'aux gouttières de la page, et un
+          tiroir aligné sur ce débord commencerait hors de la colonne de contenu. */}
+      {current !== null && (
         <section
-          id={`${base}-${open}`}
+          id={`${base}-${current.id}`}
           // `region` + le nom du panneau : le tiroir devient un point de repère
           // atteignable directement, au lieu d'un bloc anonyme.
           role="region"
-          aria-label={PANELS.find((panel) => panel.id === open)?.label}
+          aria-label={current.label}
           className={[
-            "absolute start-0 top-full z-30 mt-2 w-full max-w-xl origin-top",
+            "absolute start-6 top-full mt-2 w-[min(36rem,calc(100%-3rem))] origin-top",
             "max-h-[70vh] overflow-y-auto rounded-panel bg-surface p-4 shadow-dialog",
           ].join(" ")}
         >
-          {panels[open]}
+          {current.content}
         </section>
       )}
     </div>
@@ -528,9 +598,9 @@ export function SettingsPanels({
 /**
  * La grille du tiroir : une colonne sur mobile, deux en largeur.
  *
- * Deux et non trois : le tiroir flotte désormais dans une largeur bornée
- * (`max-w-xl`) plutôt que sur toute la barre — la troisième colonne n'aurait
- * plus la place de respirer.
+ * Deux et non trois : le tiroir flotte dans une largeur bornée (36 rem) plutôt
+ * que sur toute la barre — la troisième colonne n'aurait plus la place de
+ * respirer.
  *
  * `items-start` est nécessaire : sans lui, les cellules d'une même rangée s'étirent
  * à la hauteur de la plus grande, et un curseur se retrouve centré dans le vide en

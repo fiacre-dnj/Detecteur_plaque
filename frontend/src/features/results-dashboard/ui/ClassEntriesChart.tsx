@@ -1,6 +1,6 @@
 /**
- * Le graphique de répartition — le pendant visuel des cartes de
- * `ClassEntriesGrid`, mêmes chiffres (`entriesByClass`, passé en prop par
+ * Le graphique de répartition — le pendant visuel des cartes par type de
+ * `ResultsDashboard`, mêmes chiffres (`entriesByClass`, passé en prop par
  * l'appelant pour ne calculer qu'une fois — voir `StudioPage`).
  *
  * Un camembert, comme `LineFlowChart` désormais : la question posée par cette

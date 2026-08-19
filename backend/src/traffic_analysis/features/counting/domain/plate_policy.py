@@ -29,8 +29,12 @@ extrapolation n'est pas une mesure, et la faire voter fabriquerait de la confian
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from traffic_analysis.features.counting.domain.models import BoundingBox
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +252,25 @@ class PlateDetectOptions:
     #: rectangle qui ne décrit plus rien. Ne rien dessiner est alors plus honnête.
     max_anchor_age: int = 4
 
+    #: Recadrages soumis au détecteur par image analysée, au plus. `0` = illimité.
+    #:
+    #: **C'est le seul plafond qui rende le coût de l'ANPR indépendant de la scène.**
+    #: Mesuré sur une scène dense réelle (1920×1080, 6 à 14 véhicules par image) :
+    #: l'étage de plaques coûte 76 ms par image analysée, soit **73 %** du budget,
+    #: contre 0,4 ms pour l'OCR — et ce coût est **linéaire en nombre de recadrages**,
+    #: chaque véhicule payant une inférence complète. Sans plafond, la cadence suit
+    #: donc la circulation : une intersection chargée coûte trois fois une rue calme,
+    #: et une source plus définie fait franchir le seuil de largeur à plus de
+    #: véhicules, donc paie encore davantage.
+    #:
+    #: Ce qui n'est pas servi cette image l'est à la suivante, et c'est ce qui rend le
+    #: plafond peu coûteux en justesse : le texte publié est un **vote sur la vie du
+    #: véhicule** (invariant 4), pas la lecture d'une image. Le budget va d'abord aux
+    #: pistes **jamais mesurées** — sinon un véhicule pourrait traverser tout le champ
+    #: sans jamais recevoir de rectangle — puis aux **plus larges**, dont la plaque a
+    #: le plus de chances de dépasser le plancher de lecture.
+    max_per_frame: int = 0
+
     #: Nombre d'échecs consécutifs (détection soumise, aucune plaque trouvée)
     #: au-delà duquel une piste sans ancre retombe sur la cadence normale au lieu
     #: d'être retentée à chaque image analysée.
@@ -270,6 +293,53 @@ class PlateDetectOptions:
     #: images sautées (`_project_anchor` rend `()` sans ancre), donc rien ne se met
     #: à clignoter : il n'y avait rien à faire clignoter.
     max_consecutive_misses: int = 3
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionCandidate:
+    """Une piste qui a passé les gardes de `should_detect`, prête à être classée.
+
+    Trois champs et pas la piste entière : le classement est une règle de dépense, il
+    n'a aucune raison de connaître une `SessionTrack` — et cette séparation est ce qui
+    le rend testable sur des tuples.
+    """
+
+    global_id: int
+    width: float
+    #: Aucune détection n'a **jamais** été soumise pour cette piste.
+    never_detected: bool
+
+
+def select_within_budget(candidates: Sequence[DetectionCandidate], budget: int) -> frozenset[int]:
+    """Les `budget` pistes qui méritent l'inférence de cette image.
+
+    Rend un ensemble d'identités et non une liste : l'appelant garde **son** ordre,
+    qui est celui du suivi. Un budget nul ou supérieur au nombre de candidates ne
+    retire rien — c'est le comportement historique, et le plafond reste donc
+    strictement additif tant que personne ne le pose.
+
+    Le classement, dans cet ordre :
+
+    1. **jamais mesurée d'abord.** Sans cette priorité, un véhicule qui apparaît au
+       milieu d'un embouteillage pourrait traverser tout le champ sans jamais recevoir
+       une seule mesure, donc sans jamais afficher de rectangle — un silence qui se
+       lit comme une panne de détection, pas comme une économie ;
+    2. **la plus large ensuite.** La largeur du véhicule est le meilleur prédicteur
+       disponible de la largeur de la plaque, donc de sa lisibilité : le plancher de
+       lecture est mesuré à 64 px (invariant 12), et dépenser sur une piste dont la
+       plaque fera 20 px achète une boîte que l'OCR refusera de lire ;
+    3. **l'identité, à égalité stricte**, pour que deux courses du même clip
+       dépensent au même endroit. Un `set` d'itération non déterministe rendrait deux
+       analyses du même fichier légèrement différentes, ce qui est exactement le
+       genre d'écart qu'on passe des jours à ne pas comprendre.
+    """
+    if budget <= 0 or len(candidates) <= budget:
+        return frozenset(candidate.global_id for candidate in candidates)
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: (not candidate.never_detected, -candidate.width, candidate.global_id),
+    )
+    return frozenset(candidate.global_id for candidate in ranked[:budget])
 
 
 @dataclass(slots=True)

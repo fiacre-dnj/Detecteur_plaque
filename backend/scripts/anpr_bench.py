@@ -590,6 +590,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Côté de la mosaïque. Par défaut : la valeur de la configuration.",
     )
     parser.add_argument(
+        "--net-size",
+        type=int,
+        default=None,
+        help=(
+            "Côté de l'entrée du détecteur de plaques (multiple de 32). C'est le "
+            "premier poste du budget quand l'ANPR tourne : le descendre divise le "
+            "coût, et ce banc dit ce qu'il coûte en plaques détectées et publiées. "
+            "Par défaut : la valeur de la configuration."
+        ),
+    )
+    parser.add_argument(
         "--min-width",
         type=float,
         default=32.0,
@@ -637,6 +648,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     mosaic_side = args.mosaic_side if args.mosaic_side is not None else settings.plate_mosaic_side
+    net_size = args.net_size if args.net_size is not None else settings.plate_net_size
     context: dict[str, Any] = {
         "device": settings.device,
         "half": settings.half,
@@ -646,6 +658,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "settings": {
             "detectEvery": args.detect_every,
             "mosaicSide": mosaic_side,
+            "netSize": net_size,
             "minWidthPx": args.min_width,
             "ocrMinTextScore": settings.plate_ocr_min_text_score,
             "ocrVariants": settings.plate_ocr_variants,
@@ -679,6 +692,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             settings.plate_confidence,
             iou=settings.plate_iou,
             mosaic_side=mosaic_side,
+            net_size=net_size,
             geometry=PlateGeometry(max_per_vehicle=settings.plate_max_per_vehicle),
         )
         if not detector.available:
