@@ -12,7 +12,7 @@ import { describe, expect, it } from "bun:test";
 
 import type { CountingLine, VehicleRecord } from "@/shared/api/contracts";
 
-import { crossingsWithRole } from "./roleCrossings";
+import { crossingsWithRole, crossingsWithoutRole } from "./roleCrossings";
 
 function line(id: string, overrides: Partial<CountingLine> = {}): CountingLine {
   return {
@@ -108,5 +108,55 @@ describe("crossingsWithRole", () => {
 
   it("rend une liste vide pour un véhicule qui n'a rien franchi", () => {
     expect(crossingsWithRole(vehicle(), LINES, "entry")).toHaveLength(0);
+  });
+});
+
+describe("crossingsWithoutRole", () => {
+  it("ne réclame rien quand les deux sens portent un rôle", () => {
+    const record = vehicle([
+      { lineId: "nord", direction: 1, timestampMs: 3_400 },
+      { lineId: "est", direction: -1, timestampMs: 7_800 },
+    ]);
+
+    expect(crossingsWithoutRole(record, LINES)).toEqual([]);
+  });
+
+  it("récupère une ligne retirée du tracé et un sens resté neutre", () => {
+    const record = vehicle([
+      { lineId: "nord", direction: 1, timestampMs: 1_000 },
+      // Ligne absente du tracé courant : son rôle n'est plus lisible nulle part.
+      { lineId: "disparue", direction: 1, timestampMs: 2_000 },
+      // Tracé antérieur à ADR 0021, où le rôle est devenu obligatoire.
+      { lineId: "ancienne", direction: -1, timestampMs: 3_000 },
+    ]);
+    const lines = [
+      ...LINES,
+      line("ancienne", { positiveRole: "neutral", negativeRole: "neutral" }),
+    ];
+
+    expect(crossingsWithoutRole(record, lines).map((crossing) => crossing.lineId)).toEqual([
+      "disparue",
+      "ancienne",
+    ]);
+  });
+
+  it("est le complément exact des deux rôles : aucun passage ne se perd", () => {
+    // C'est la propriété qui autorise le registre à ranger « Lignes franchies »
+    // par rôle : les trois colonnes réunies redonnent `crossedLines`, donc la
+    // colonne « Passages », qui les compte toutes, ne peut pas les contredire.
+    const record = vehicle([
+      { lineId: "nord", direction: 1, timestampMs: 1_000 },
+      { lineId: "est", direction: -1, timestampMs: 2_000 },
+      { lineId: "disparue", direction: 1, timestampMs: 3_000 },
+    ]);
+
+    const parts = [
+      ...crossingsWithRole(record, LINES, "entry"),
+      ...crossingsWithRole(record, LINES, "exit"),
+      ...crossingsWithoutRole(record, LINES),
+    ];
+
+    expect(parts).toHaveLength(record.crossedLines.length);
+    expect(new Set(parts)).toEqual(new Set(record.crossedLines));
   });
 });
