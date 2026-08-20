@@ -465,6 +465,30 @@ class TestVoteDeClasse:
 
 
 class TestStatistiques:
+    def test_les_pistes_actives_sont_celles_de_la_derniere_frame(self) -> None:
+        """« Objets suivis » est un instantané, pas la mémoire de la session.
+
+        Une piste perdue survit jusqu'à `max_lost_ms` pour que le tracker puisse la
+        réactiver avec son identifiant. La compter dans `active_tracks` faisait
+        redescendre le chiffre deux secondes et demie **après** les boîtes de
+        l'écran, et le rendait incomparable à celui de la relecture, que le client
+        calcule sur les pistes de la frame.
+        """
+        session = AnalysisSession(_config(max_lost_ms=2500.0), FRAME_WIDTH, FRAME_HEIGHT)
+
+        for index, observation in enumerate(
+            track_path(1, CAR, [(900.0, 300.0 + step * 50.0) for step in range(6)])
+        ):
+            session.feed(index, index * FRAME_MS, (observation,))
+        assert session.stats().active_tracks == 1
+
+        # La piste cesse d'être rapportée, mais reste retenue : la session ne l'a pas
+        # oubliée (elle garde son numéro), l'écran ne la dessine plus.
+        session.feed(6, 6 * FRAME_MS, ())
+        stats = session.stats()
+        assert stats.active_tracks == 0
+        assert stats.tracked_vehicles == 1
+
     def test_les_franchissements_sont_derives_du_detail_par_ligne(self) -> None:
         session = AnalysisSession(
             _config(

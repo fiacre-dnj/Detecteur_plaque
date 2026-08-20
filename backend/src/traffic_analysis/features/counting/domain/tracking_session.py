@@ -166,6 +166,7 @@ class AnalysisSession:
     """Compte les véhicules d'un flux de détections suivies, frame par frame."""
 
     __slots__ = (
+        "_active_count",
         "_aggregates",
         "_config",
         "_contained_out",
@@ -203,6 +204,12 @@ class AnalysisSession:
         # Toutes les pistes connues, pas seulement les actives : `_release_lost`
         # doit pouvoir abandonner une piste qui a cessé d'être rapportée.
         self._tracks: dict[int, SessionTrack] = {}
+        # Pistes rapportées sur la **dernière** frame : le chiffre qu'affiche
+        # « Objets suivis », donc exactement le nombre de boîtes dessinées.
+        # `len(self._tracks)` ne peut pas jouer ce rôle — il compte aussi les pistes
+        # perdues encore retenues pour `max_lost_ms`, et redescendait donc deux
+        # secondes et demie après les boîtes.
+        self._active_count = 0
         # Numéro de véhicule → son histoire. **Jamais purgé** : le registre s'en
         # sert à la fin, et un véhicule sorti du champ à la dixième seconde doit
         # encore y figurer.
@@ -268,6 +275,7 @@ class AnalysisSession:
         self._aggregate(active, crossings, timestamp_ms)
 
         self._frame_index = frame_index
+        self._active_count = len(active)
         if self._first_timestamp_ms is None:
             self._first_timestamp_ms = timestamp_ms
         self._last_timestamp_ms = timestamp_ms
@@ -651,7 +659,13 @@ class AnalysisSession:
                 zone_id: _copy_zone_tally(tally) for zone_id, tally in self._zones.by_zone.items()
             },
             vehicles_per_minute=vehicles_per_minute,
-            active_tracks=len(self._tracks),
+            # Les pistes de la **dernière frame**, pas toutes les pistes retenues :
+            # c'est ce que l'écran dessine, et c'est la même définition que
+            # `activeTracks` de la relecture côté client (`tracks.length`). Compter
+            # `self._tracks` faisait traîner le chiffre jusqu'à `max_lost_ms` après
+            # la sortie du champ des véhicules — un retard visible, sur un chiffre
+            # dont tout l'intérêt est d'être un instantané.
+            active_tracks=self._active_count,
             # Côté serveur, le temps « écoulé » **est** le temps de scène analysé :
             # il n'y a pas d'attente d'utilisateur à mesurer. Le champ reste dans
             # le contrat parce que l'interface affiche les deux.

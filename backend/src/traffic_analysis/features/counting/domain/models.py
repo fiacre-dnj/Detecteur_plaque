@@ -757,6 +757,16 @@ class AnalysisStats:
     by_line: dict[str, LineTally]
     by_zone: dict[str, ZoneTally]
     vehicles_per_minute: float
+    #: Pistes **rapportées sur cette frame**, c'est-à-dire exactement les boîtes que
+    #: l'écran dessine — et non toutes les pistes que la session garde en mémoire.
+    #:
+    #: La distinction n'est pas cosmétique : une piste perdue survit jusqu'à
+    #: `max_lost_ms` (≈ 2,5 s) pour que le tracker puisse la réactiver avec son
+    #: identifiant, donc `len(self._tracks)` restait élevé plusieurs secondes après
+    #: la sortie du champ des véhicules. Le chiffre affiché redescendait alors *après*
+    #: les boîtes, ce qui se lit comme un retard de synchronisation — et il ne
+    #: pouvait pas se confronter à `activeTracks` de la relecture, que le client
+    #: calcule, lui, sur les pistes de la frame (`tracks.length`).
     active_tracks: int
     elapsed_ms: float
     analysed_scene_ms: float

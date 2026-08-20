@@ -106,7 +106,6 @@ import type { CrossingEvent, Point, Preset } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
 import { VEHICLE_CLASSES } from "@/shared/lib/classes";
 import { Button } from "@/shared/ui/Button";
-import { MetricCard } from "@/shared/ui/MetricCard";
 
 import { analysisSummaryRows } from "../model/analysisSummary";
 import { useAnalysisSession } from "../model/useAnalysisSession";
@@ -1120,29 +1119,7 @@ export function StudioPage() {
             />
           )}
 
-          {/* Avant le premier chiffre, la même section **au même endroit** — elle
-              vivait tout en bas de la page, sous la vidéo, pendant que cette
-              colonne restait vide sur toute la hauteur de la scène. Un écran vide
-              qui promet des chiffres qu'on ne verra jamais est pire que pas
-              d'écran vide du tout : d'où le même libellé, la même taille et la
-              même place que le tableau réel. Une seule carte, parce que le tableau
-              réel n'a plus qu'une tête de lecture — « Objets suivis » est passé
-              dans la barre, où rien ne s'affiche avant la première analyse. */}
-          {resultStats === null && media.source !== null && (
-            <section aria-labelledby="results-title">
-              <h3 id="results-title" className="label-micro mb-3">
-                Résultats
-              </h3>
-              <MetricCard
-                size="lg"
-                label="Passages en entrée"
-                value="—"
-                hint="Total des passages sur les sens marqués « entrée », toutes lignes"
-              />
-            </section>
-          )}
-
-          {/* Ce qui remplit le reste de la colonne : les réglages qui partiront au
+          {/* Ce qui remplit la colonne avant la première analyse : les réglages qui partiront au
               serveur, relus d'un coup. Ils vivent dans quatre tiroirs de la barre,
               et les vérifier demandait d'ouvrir les quatre — pendant que la place
               pour les lire tous ensemble restait inoccupée juste à côté.
