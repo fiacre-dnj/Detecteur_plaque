@@ -1,10 +1,5 @@
 /**
  * Libellés et formatage des mesures.
- *
- * Le cas qui compte : **une vitesse sans échelle px/m ne doit jamais s'afficher en
- * km/h**. Un véhicule à « 360 km/h » sur une image mal calibrée discrédite tout le
- * tableau, et l'utilisateur ne saura pas si c'est la vitesse ou le comptage qui est
- * faux.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -19,26 +14,8 @@ import {
   formatSceneTime,
   formatSceneTimePrecise,
   formatScore,
-  formatSpeed,
   plural,
 } from "./labels";
-
-describe("formatSpeed — trois cas distincts, jamais confondus", () => {
-  it("affiche des km/h quand l'échelle est fournie", () => {
-    expect(formatSpeed(48.6, 1250)).toBe("49 km/h");
-  });
-
-  it("**retombe sur px/s sans échelle**, plutôt que d'inventer des km/h", () => {
-    // Le cas central : afficher des km/h sans px/m produirait des chiffres
-    // inventés que l'utilisateur prendrait au sérieux.
-    expect(formatSpeed(null, 1250)).toBe("1250 px/s");
-  });
-
-  it("affiche un tiret quand la vitesse est inconnue", () => {
-    // Un `0` voudrait dire « à l'arrêt », ce qui est une affirmation différente.
-    expect(formatSpeed(null, null)).toBe("—");
-  });
-});
 
 describe("formatFrameLatency — la cadence lue dans l'autre sens", () => {
   it("convertit une cadence en temps par image", () => {

@@ -14,14 +14,11 @@
  * les colonnes de franchissement et « Passages », donc rien à vérifier —
  * exactement ce que ce tableau existe pour permettre.
  *
- * Trois comportements d'affichage, chacun pour une raison mesurée :
+ * Deux comportements d'affichage, chacun pour une raison mesurée :
  * - **12 lignes puis « Afficher les N restants »** : le registre est sous les
  *   cartes, et déployer 400 lignes par défaut repousserait tout le reste hors écran ;
  * - **virtualisation au-delà de 200 lignes** : 10 000 lignes de tableau bloquent
- *   l'onglet plusieurs secondes à chaque rendu ;
- * - **note de bas de tableau quand aucune échelle px/m n'est fournie** : sinon la
- *   colonne « Vitesse » en px/s se lit comme une valeur inutilisable, alors qu'elle
- *   est simplement dans une autre unité.
+ *   l'onglet plusieurs secondes à chaque rendu.
  */
 
 import { ArrowUp } from "lucide-react";
@@ -31,7 +28,6 @@ import {
   formatSceneTime,
   formatSceneTimePrecise,
   formatScore,
-  formatSpeed,
 } from "@/features/results-dashboard";
 import type {
   AnalysisResult,
@@ -86,8 +82,6 @@ interface VehicleRegistryProps {
    * défaut géométrique se déduit de `a` et `b`.
    */
   lines: readonly CountingLine[];
-  /** Vrai si une échelle px/m a été fournie : change l'unité de la colonne vitesse. */
-  hasScale: boolean;
 }
 
 /** Hauteur du conteneur virtualisé. */
@@ -97,7 +91,6 @@ export function VehicleRegistry({
   result,
   vehicles,
   lines,
-  hasScale,
 }: VehicleRegistryProps) {
   const [expanded, setExpanded] = useState(false);
   const [scrollTop, setScrollTop] = useState(0);
@@ -206,7 +199,6 @@ export function VehicleRegistry({
               colonne « Passages », qui le compte. */}
           {hasUnroled && <Th className="w-40">Hors rôle</Th>}
           <Th className="w-28">Zones</Th>
-          <Th className="w-24">Vitesse</Th>
           {/* « Passages » remplace « Ré-id » : la ré-identification n'existe plus
               (ADR 0016), et le nombre de franchissements d'un véhicule est
               l'information qui rend une ligne du registre vérifiable — un 0 dit
@@ -260,9 +252,6 @@ export function VehicleRegistry({
               ) : (
                 vehicle.zonesVisited.join(", ")
               )}
-            </Td>
-            <Td className="tabular">
-              {formatSpeed(vehicle.avgSpeedKmh, vehicle.avgSpeedPxS)}
             </Td>
             <Td className="tabular">
               {vehicle.crossedLines.length === 0 ? "—" : vehicle.crossedLines.length}
@@ -441,14 +430,6 @@ export function VehicleRegistry({
         </button>
       )}
 
-      {!hasScale && (
-        // Sans cette note, une colonne en px/s se lit comme inutilisable — alors
-        // qu'elle est simplement dans une autre unité, faute d'échelle.
-        <p className="mt-2 text-small text-ink-dim">
-          Les vitesses sont en pixels par seconde : renseignez l'échelle (px/m) dans
-          les réglages pour les obtenir en km/h.
-        </p>
-      )}
     </section>
   );
 }

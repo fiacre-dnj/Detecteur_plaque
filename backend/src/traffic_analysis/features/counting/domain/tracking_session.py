@@ -42,8 +42,6 @@ from traffic_analysis.features.counting.domain.models import (
 from traffic_analysis.features.counting.domain.plate_geometry import unread_reason
 from traffic_analysis.features.counting.domain.plate_text import normalise_plate_reading
 from traffic_analysis.features.counting.domain.plate_vote import PlateTextVote
-from traffic_analysis.features.counting.domain.scale_field import ScaleField
-from traffic_analysis.features.counting.domain.speed import SpeedEstimator, to_kmh
 from traffic_analysis.features.counting.domain.track_numbering import TrackNumbering
 from traffic_analysis.features.counting.domain.zone_counter import ZonePresenceCounter
 from traffic_analysis.features.counting.domain.zone_geometry import point_is_in_any_zone
@@ -96,7 +94,6 @@ class SessionConfig:
     #: distinction que le panneau de diagnostic affiche, et qui était impossible à
     #: établir sans cette valeur. Le défaut est celui du schéma de requête.
     confidence_threshold: float = 0.35
-    pixels_per_meter: float | None = None
     #: La lecture du texte de plaque tourne-t-elle réellement ?
     #:
     #: Ce que le service a **résolu**, et non ce que la requête a demandé : le
@@ -178,7 +175,6 @@ class AnalysisSession:
         "_masked_out",
         "_numbering",
         "_rescued_by_low_score",
-        "_speed",
         "_tracks",
         "_zones",
     )
@@ -195,12 +191,6 @@ class AnalysisSession:
         self._counter = LineCrossingCounter(config.lines, config.zones, config.min_hits)
         self._zones = ZonePresenceCounter(config.zones, config.min_hits)
         self._numbering = TrackNumbering()
-        # Le champ d'échelle est construit une fois : les lignes ne bougent pas
-        # pendant une analyse. Sans ligne calibrée il retombe sur l'échelle
-        # globale, donc une configuration existante est inchangée.
-        self._speed = SpeedEstimator(
-            ScaleField(config.lines, global_px_per_meter=config.pixels_per_meter)
-        )
         # Toutes les pistes connues, pas seulement les actives : `_release_lost`
         # doit pouvoir abandonner une piste qui a cessé d'être rapportée.
         self._tracks: dict[int, SessionTrack] = {}
@@ -270,7 +260,6 @@ class AnalysisSession:
         counted = self._counter.counted_identities()
         for track in active:
             track.counted = track.global_id != 0 and track.global_id in counted
-            track.speed_px_s = self._speed.observe(track.global_id, track.centroid, timestamp_ms)
 
         self._aggregate(active, crossings, timestamp_ms)
 
@@ -724,13 +713,12 @@ class AnalysisSession:
             if not self._numbering.is_confirmed(global_id):
                 continue
             aggregate = self._aggregates[global_id]
-            # **Avant** le vote de plaque et la moyenne de vitesse, pas après : sur
+            # **Avant** le vote de plaque, pas après : sur
             # une scène réelle deux tiers des objets suivis n'ont franchi aucune
             # ligne, et construire leurs enregistrements pour les jeter aussitôt
             # taxerait chaque aperçu au profit de personne.
             if crossed_only and not aggregate.crossings:
                 continue
-            average = self._speed.average_px_s(global_id)
             reason = (
                 None
                 if aggregate.plate_vote.text
@@ -755,15 +743,6 @@ class AnalysisSession:
                     last_seen_ms=aggregate.last_seen_ms,
                     crossed_lines=tuple(aggregate.crossings),
                     zones_visited=self._zones.zones_visited(global_id),
-                    avg_speed_px_s=average,
-                    # **La mesure locale d'abord, l'échelle globale en repli.**
-                    # `average_kmh` n'existe que si des mètres ont réellement été
-                    # cumulés à l'échelle de chaque bout de trajet ; sinon on
-                    # retombe exactement sur le calcul d'avant la calibration par
-                    # ligne, ce qui garde les configurations existantes
-                    # inchangées.
-                    avg_speed_kmh=self._speed.average_kmh(global_id)
-                    or to_kmh(average, self._config.pixels_per_meter),
                     best_plate_score=aggregate.best_plate_score,
                     # Le texte du **vote**, comme `label` est le libellé du vote :
                     # jamais la dernière lecture, qui est souvent la plus oblique.

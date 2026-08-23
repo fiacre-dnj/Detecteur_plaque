@@ -33,7 +33,6 @@ export type GeometryAction =
   | { type: "renameDirection"; id: string; sign: DirectionSign; name: string }
   | { type: "setDirectionRole"; id: string; sign: DirectionSign; role: DirectionRole }
   | { type: "setLineZone"; id: string; zoneId: string | null }
-  | { type: "setLineLength"; id: string; lengthMeters: number | null }
   | { type: "removeLine"; id: string }
   | { type: "removeZone"; id: string }
   | { type: "select"; selection: GeometryState["selection"] }
@@ -72,11 +71,6 @@ export function defaultLine(width: number, height: number, index: number): Count
     // deux côtés à sa guise.
     positiveRole: "entry",
     negativeRole: "exit",
-    // **Pas de longueur par défaut**, et surtout pas une valeur plausible : une
-    // échelle inventée produirait des km/h que l'utilisateur prendrait au
-    // sérieux. `null` laisse les vitesses en px/s jusqu'à ce qu'une vraie mesure
-    // de terrain soit saisie — la même honnêteté que `to_kmh` côté serveur.
-    lengthMeters: null,
   };
 }
 
@@ -102,12 +96,6 @@ export function withDirectionDefaults(line: CountingLine): CountingLine {
     negativeName: line.negativeName ?? "",
     positiveRole: line.positiveRole ?? "neutral",
     negativeRole: line.negativeRole ?? "neutral",
-    // Même raison que les quatre champs au-dessus : un preset enregistré avant la
-    // calibration par ligne ne porte pas ce champ, et `undefined` traverserait là
-    // où le type promet `number | null`. Le repli est `null` — « non calibrée » —
-    // et surtout pas une longueur devinée : une échelle inventée produirait des
-    // km/h que l'utilisateur prendrait au sérieux.
-    lengthMeters: line.lengthMeters ?? null,
   };
 }
 
@@ -220,27 +208,6 @@ export function geometryReducer(state: GeometryState, action: GeometryAction): G
         ...state,
         lines: state.lines.map((line) =>
           line.id === action.id ? { ...line, zoneId: action.zoneId } : line,
-        ),
-      };
-
-    // Une longueur **nulle ou négative n'est pas une longueur** : elle est
-    // normalisée en `null` ici, et pas seulement dans le champ de saisie. Le
-    // reducer est la dernière barrière avant une requête que le serveur
-    // refuserait en 422 (`gt=0`), et avant une division par zéro qui rendrait une
-    // échelle infinie — donc une vitesse infinie affichée comme un chiffre.
-    case "setLineLength":
-      return {
-        ...state,
-        lines: state.lines.map((line) =>
-          line.id === action.id
-            ? {
-                ...line,
-                lengthMeters:
-                  action.lengthMeters !== null && action.lengthMeters > 0
-                    ? action.lengthMeters
-                    : null,
-              }
-            : line,
         ),
       };
 

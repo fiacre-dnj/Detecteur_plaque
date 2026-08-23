@@ -96,18 +96,6 @@ class TestVehiculeQuiTraverse:
         assert record.last_seen_ms == pytest.approx(9 * FRAME_MS)
         assert len(record.crossed_lines) == 1
         assert record.crossed_lines[0].line_id == "l1"
-        # Sans échelle px/m fournie, la vitesse reste en px/s.
-        assert record.avg_speed_px_s is not None
-        assert record.avg_speed_kmh is None
-
-    def test_avec_une_echelle_la_vitesse_est_convertie(self) -> None:
-        session = AnalysisSession(_config(pixels_per_meter=10.0), FRAME_WIDTH, FRAME_HEIGHT)
-        path = [(900.0, 300.0 + step * 50.0) for step in range(10)]
-
-        for index, observation in enumerate(track_path(1, CAR, path)):
-            session.feed(index, index * FRAME_MS, (observation,))
-
-        assert session.vehicles()[0].avg_speed_kmh is not None
 
 
 class TestNumerotationDesVehicules:

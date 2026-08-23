@@ -220,6 +220,5 @@ def test_le_domaine_du_comptage_existe_et_est_analyse() -> None:
         "line_counter.py",
         "zone_counter.py",
         "track_numbering.py",
-        "speed.py",
         "tracking_session.py",
     } <= domain_files

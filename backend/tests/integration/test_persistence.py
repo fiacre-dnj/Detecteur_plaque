@@ -95,8 +95,6 @@ def _result(job_id: str = "job-1", *, vehicles: int = 3, crossings: int = 5) -> 
             last_seen_ms=index * 100.0 + 4000.0,
             crossed_lines=(LineCrossing("l1", 1, index * 100.0 + 500.0),),
             zones_visited=("z1",),
-            avg_speed_px_s=120.0 + index,
-            avg_speed_kmh=None,
             best_plate_score=0.7 if index == 0 else None,
             # Seul le véhicule 1 a une plaque **lue**. Les autres couvrent les deux
             # autres états : « vue mais illisible » n'existe pas ici puisque seul le

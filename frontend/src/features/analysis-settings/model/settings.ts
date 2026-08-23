@@ -55,8 +55,6 @@ export interface AnalysisSettings {
    * ancienne produirait une analyse différente de ce que l'écran affiche.
    */
   readPlateText: boolean;
-  /** `null` = échelle non définie : les vitesses restent en px/s. */
-  pixelsPerMeter: number | null;
   /**
    * Classes à détecter et à compter, par identifiant COCO.
    *
@@ -115,7 +113,6 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   // Faux par défaut : l'OCR est un surcoût, et persister un texte de plaque franchit
   // un cran de confidentialité qui doit être choisi, pas hérité.
   readPlateText: false,
-  pixelsPerMeter: null,
   // Les quatre véhicules de COCO : voiture, moto, bus, camion. C'est le
   // comportement historique de l'application, donc qui ne touche à rien retrouve
   // exactement ses chiffres d'avant. Les personnes se cochent quand on les veut.
@@ -197,7 +194,6 @@ export const BOUNDS = {
   maxLostMs: { min: 200, max: 15_000, step: 100 },
   frameStride: { min: 1, max: 5, step: 1 },
   plateConfidence: { min: 0.05, max: 0.95, step: 0.05 },
-  pixelsPerMeter: { min: 0, max: 500, step: 0.5 },
 } as const;
 
 /**
@@ -206,10 +202,6 @@ export const BOUNDS = {
  * C'est **le seul endroit** où `confidenceThreshold: null` devient un nombre : le
  * serveur n'accepte pas `null`, et résoudre le défaut plus tôt ferait perdre
  * l'information « je suis le défaut ».
- *
- * `pixelsPerMeter: 0` est traduit en `null` : le curseur utilise 0 pour « non
- * définie », mais le serveur refuse `0` (`gt=0`) — et il a raison, une échelle nulle
- * n'a pas de sens.
  */
 export function toRequest(
   settings: AnalysisSettings,
@@ -231,10 +223,6 @@ export function toRequest(
     // sens, et laisser passer `true` seul demanderait au serveur d'arbitrer une
     // incohérence que le client pouvait éviter.
     readPlateText: settings.detectPlates && settings.readPlateText,
-    pixelsPerMeter:
-      settings.pixelsPerMeter !== null && settings.pixelsPerMeter > 0
-        ? settings.pixelsPerMeter
-        : null,
     // Jamais vide : le serveur refuse une liste vide, et il a raison. Le repli sur
     // les quatre véhicules est le même que celui de `sanitiseClassIds` — l'écran
     // reste utilisable quand l'utilisateur a tout décoché.
@@ -370,7 +358,6 @@ function mergeSettings(source: Record<string, unknown>): AnalysisSettings {
   merged.analysisSpeed = isSupportedSpeed(speed) ? speed : merged.analysisSpeed;
   const fpsCap = nullableNumber(source.maxAnalysisFps, merged.maxAnalysisFps);
   merged.maxAnalysisFps = isSupportedFpsCap(fpsCap) ? fpsCap : merged.maxAnalysisFps;
-  merged.pixelsPerMeter = nullableNumber(source.pixelsPerMeter, merged.pixelsPerMeter);
 
   // Les identifiants non numériques sont écartés un par un plutôt que de faire
   // tomber toute la liste : un `localStorage` bricolé à la main ne doit pas coûter

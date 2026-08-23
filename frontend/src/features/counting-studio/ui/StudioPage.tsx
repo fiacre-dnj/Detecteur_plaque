@@ -19,7 +19,7 @@
  *   géométrie y remplace un panneau permanent de la colonne de droite : elle se
  *   règle comme les autres, une fois, avant de lancer ;
  * - le **lecteur** porte les deux rails — position, intervalle d'analyse, de même
- *   longueur —, la vitesse, puis « Lancer l'analyse » et « Fermer ». On choisit sa
+ *   longueur —, la vitesse de lecture, puis « Lancer l'analyse » et « Fermer ». On choisit sa
  *   portion de vidéo, puis on lance, sans traverser l'écran ;
  * - la **colonne de droite** ne porte plus que des chiffres : le bilan du carrefour,
  *   la Répartition par type qui le découpe, et les messages qui expliquent une
@@ -70,6 +70,7 @@ import {
   useFollowAnalysis,
 } from "@/features/analysis-job";
 import {
+  KEEP_PANELS_OPEN_ATTR,
   SettingsPanels,
   downloadNotice,
   loadSettings,
@@ -98,6 +99,7 @@ import {
   TechnicalMetrics,
   crossingVehicles,
   entriesByClass,
+  visibleClasses,
 } from "@/features/results-dashboard";
 import { crossingsUpTo, useReplay, vehiclesAt } from "@/features/timeline-replay";
 import { VehicleRegistry } from "@/features/vehicle-registry";
@@ -147,6 +149,16 @@ interface SceneSize {
 const NO_TRAILS: ReadonlyMap<number, readonly Point[]> = new Map();
 /** Référence figée : un tableau vide recréé à chaque rendu relancerait les flashs. */
 const NO_CROSSINGS: readonly CrossingEvent[] = [];
+
+/**
+ * L'identifiant du tiroir « Géométrie », **nommé une fois**.
+ *
+ * Il sert à deux endroits qui doivent rester d'accord : la déclaration du tiroir
+ * passée à `SettingsPanels`, et l'ouverture automatique déclenchée par un clic sur
+ * la scène. Deux chaînes littérales finiraient par diverger, et la panne serait
+ * muette — un clic sur une ligne qui n'ouvre rien.
+ */
+const GEOMETRY_PANEL_ID = "geometrie";
 
 export function StudioPage() {
   const { data: health } = useHealth();
@@ -519,22 +531,42 @@ export function StudioPage() {
   }, [session.result, session.preview?.vehicles, replay.timeMs]);
 
   /**
-   * La classe personne a-t-elle été cochée pour cette analyse ?
+   * Les classes cochées dans « Objets à compter », par **nom COCO**.
    *
    * Décidé ici, pas dans `results-dashboard` : cette feature ne connaît que
    * `AnalysisStats`/`CountingLine[]`, jamais le catalogue de classes ni les
    * réglages — même règle que `ClassPicker` dans `analysis-settings`, dont ce
-   * calcul reprend le filtre par catégorie.
+   * calcul reprend la source.
+   *
+   * **Le nom COCO et pas l'identifiant** : `cocoName` est la clé des `byClass` du
+   * résultat, l'identifiant ne l'est nulle part. La traduction se fait ici, une
+   * fois, contre le catalogue qui valide la requête — jamais contre une table
+   * recopiée, qui divergerait en silence.
+   *
+   * Repli sur les quatre véhicules tant que le catalogue n'a pas répondu : sans
+   * lui, aucune carte ne s'afficherait sur un résultat pourtant complet, et un
+   * serveur momentanément muet effacerait l'écran de résultats.
    */
-  const hasPersonClass = useMemo(
-    () =>
-      (detectableClasses ?? []).some(
-        (entry) => entry.category === "person" && settings.classIds.includes(entry.id),
-      ),
-    [detectableClasses, settings.classIds],
-  );
+  const selectedClasses = useMemo<readonly string[]>(() => {
+    const known = detectableClasses ?? [];
+    if (known.length === 0) return VEHICLE_CLASSES;
+    return known
+      .filter((entry) => settings.classIds.includes(entry.id))
+      .map((entry) => entry.cocoName);
+  }, [detectableClasses, settings.classIds]);
 
   const selectedId = geometry.selection.kind === "none" ? null : geometry.selection.id;
+
+  /**
+   * Le tiroir de réglages ouvert, tenu **ici** et non dans `SettingsPanels`.
+   *
+   * Parce que deux endroits l'ouvrent désormais, et qu'un seul des deux est la
+   * barre : cliquer une ligne sur la vidéo déplie « Géométrie ». Le geste et le
+   * réglage sont le même acte — on clique un trait pour le nommer, lui donner ses
+   * rôles de sens ou sa longueur réelle — et le studio est le seul à voir la scène
+   * *et* la barre.
+   */
+  const [openPanel, setOpenPanel] = useState<string | null>(null);
   const isCamera = media.source?.kind === "camera";
   const analysing = session.job !== null && !isTerminal(session.job.status);
   const busy = analysing || session.starting || live.active;
@@ -723,6 +755,18 @@ export function StudioPage() {
     session.result !== null ? replay.stats : (session.preview?.stats ?? null);
 
   /**
+   * La ventilation par type des sections du bas, calculée **une fois**.
+   *
+   * Le camembert la reçoit en prop, et `visibleClasses` la relit pour décider
+   * quelles parts tracer : deux appels à `entriesByClass` sur les mêmes chiffres
+   * seraient un parcours de plus à chaque image d'aperçu.
+   */
+  const dashboardEntries = useMemo(
+    () => (dashboardStats === null ? {} : entriesByClass(dashboardStats, geometry.lines)),
+    [dashboardStats, geometry.lines],
+  );
+
+  /**
    * Le journal que la chronologie affiche — **pendant l'analyse comme après**.
    *
    * La section des franchissements disparaissait à l'instant où l'analyse
@@ -839,6 +883,8 @@ export function StudioPage() {
         // s'appliquer sans source : les trois tiroirs restent grisés jusque-là.
         hasSource={media.source !== null}
         onChange={updateSettings}
+        openPanel={openPanel}
+        onOpenPanel={setOpenPanel}
         // **Géométrie devient le quatrième tiroir**, au même niveau que Détection,
         // Comptage et Affichage. Il occupait un panneau permanent de la colonne de
         // droite alors qu'il se règle comme les autres — une fois, avant de lancer —
@@ -847,7 +893,7 @@ export function StudioPage() {
         // pas `geometry-editor`, c'est le studio qui câble les deux.
         panels={[
           {
-            id: "geometrie",
+            id: GEOMETRY_PANEL_ID,
             label: "Géométrie",
             content: (
               <GeometryPanel
@@ -870,9 +916,6 @@ export function StudioPage() {
                   dispatch({ type: "setDirectionRole", id, sign, role })
                 }
                 onSetLineZone={(id, zoneId) => dispatch({ type: "setLineZone", id, zoneId })}
-                onSetLineLength={(id, lengthMeters) =>
-                  dispatch({ type: "setLineLength", id, lengthMeters })
-                }
                 onRemoveLine={(id) => dispatch({ type: "removeLine", id })}
                 onRemoveZone={(id) => dispatch({ type: "removeZone", id })}
                 onOpenPresets={() => setPresetsOpen(true)}
@@ -920,7 +963,18 @@ export function StudioPage() {
             onFile={handleFile}
             disabled={busy}
           >
+            {/* `display: contents` : l'enveloppe ne porte que l'attribut, et ne
+                génère aucune boîte — le canvas reste positionné par rapport à la
+                scène, son bloc conteneur.
+
+                Ce que l'attribut dit : la surface de tracé **pilote** le tiroir de
+                réglages (un clic de ligne ouvre « Géométrie »), donc elle n'est pas
+                un « en dehors » qui le referme. Sans lui, ouverture et fermeture
+                tomberaient dans le même événement — le gestionnaire de document de
+                `SettingsPanels` s'exécute après celui de React, donc la fermeture
+                gagnerait. */}
             {scene !== null && (
+              <div className="contents" {...{ [KEEP_PANELS_OPEN_ATTR]: "" }}>
               <GeometryCanvas
                 sourceWidth={scene.width}
                 sourceHeight={scene.height}
@@ -951,17 +1005,31 @@ export function StudioPage() {
                 // Les pointillés « pas encore confirmée » suivent le réglage réel,
                 // donc ce que le canvas montre correspond à ce que l'analyse fera.
                 minHits={settings.minHits}
-                onSelect={(selection) =>
+                // Sélectionner une forme sur la scène **déplie « Géométrie »** :
+                // cliquer un trait est déjà le début du réglage, et l'utilisateur
+                // cliquait puis cherchait dans la barre où le renommer, lui donner
+                // ses rôles de sens ou sa longueur réelle.
+                //
+                // Deux bornes. Rien pendant une analyse ou un direct (`busy`) : le
+                // panneau est alors grisé, et ouvrir un formulaire intouchable
+                // par-dessus la vidéo qu'on regarde tourner serait du bruit. Et rien
+                // sur un clic dans le vide (`null`), qui **désélectionne** — la
+                // conclusion d'un réglage, pas son début. Ce que le clic ne fait pas
+                // non plus : refermer le tiroir, laissé à `Échap`, au re-clic sur la
+                // pilule et au clic hors de la scène.
+                onSelect={(selection) => {
                   dispatch({
                     type: "select",
                     selection: (selection ?? { kind: "none" }) as Selection,
-                  })
-                }
+                  });
+                  if (selection !== null && !busy) setOpenPanel(GEOMETRY_PANEL_ID);
+                }}
                 onMoveLine={(id, a, b) => dispatch({ type: "moveLine", id, a, b })}
                 onMoveZone={(id, points) => dispatch({ type: "moveZone", id, points })}
                 onCompleteZone={(points) => dispatch({ type: "addZone", points })}
                 onCancelZone={() => dispatch({ type: "setDrawingZone", drawing: false })}
               />
+              </div>
             )}
 
             {/* Le nom du fichier **sur la scène**, coin haut-gauche, dans le même
@@ -1115,7 +1183,7 @@ export function StudioPage() {
             <ResultsDashboard
               stats={resultStats.stats}
               lines={geometry.lines}
-              includePerson={hasPersonClass}
+              selectedClasses={selectedClasses}
             />
           )}
 
@@ -1219,8 +1287,11 @@ export function StudioPage() {
             <div className="grid gap-3 sm:grid-cols-2">
               <LineFlowChart stats={dashboardStats} lines={geometry.lines} />
               <ClassEntriesChart
-                entries={entriesByClass(dashboardStats, geometry.lines)}
-                classes={hasPersonClass ? [...VEHICLE_CLASSES, "person"] : VEHICLE_CLASSES}
+                entries={dashboardEntries}
+                // Mêmes classes que les cartes de `ResultsDashboard`, par le
+                // même juge : deux listes divergeraient sur un décochage, et le
+                // camembert montrerait une part que les KPI ne montrent pas.
+                classes={visibleClasses(selectedClasses, dashboardEntries)}
               />
             </div>
           </Suspense>
@@ -1232,9 +1303,6 @@ export function StudioPage() {
             result={session.result}
             vehicles={countedVehicles}
             lines={geometry.lines}
-            // Suit le réglage réel : la note expliquant les px/s ne doit
-            // apparaître que quand l'échelle manque **effectivement**.
-            hasScale={settings.pixelsPerMeter !== null && settings.pixelsPerMeter > 0}
           />
         </>
       )}

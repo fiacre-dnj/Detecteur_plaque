@@ -172,8 +172,6 @@ describe("carryVehicles — le registre ne clignote pas", () => {
     lastSeenMs: 1_000,
     crossedLines: [{ lineId: "l1", direction: 1, timestampMs: 500 }],
     zonesVisited: [],
-    avgSpeedPxS: null,
-    avgSpeedKmh: null,
     bestPlateScore: null,
     plateText: null,
     plateTextScore: null,

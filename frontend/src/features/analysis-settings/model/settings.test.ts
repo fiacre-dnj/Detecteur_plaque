@@ -144,7 +144,6 @@ describe("saveSettings", () => {
       ...DEFAULT_SETTINGS,
       modelId: "yolo12l",
       confidenceThreshold: 0.6,
-      pixelsPerMeter: 12.5,
       detectPlates: true,
     };
     saveSettings(settings, storage);
@@ -171,7 +170,6 @@ describe("toRequest — la traduction vers le serveur", () => {
       negativeName: "",
       positiveRole: "neutral" as const,
       negativeRole: "neutral" as const,
-      lengthMeters: null,
       a: { x: 0, y: 100 },
       b: { x: 200, y: 100 },
     },
@@ -191,14 +189,6 @@ describe("toRequest — la traduction vers le serveur", () => {
     expect(request.confidenceThreshold).toBe(0.72);
   });
 
-  it("traduit une échelle nulle en `null`, que le serveur exige", () => {
-    // Le curseur utilise 0 pour « non définie », mais le serveur refuse 0
-    // (`gt=0`) — et il a raison, une échelle nulle n'a pas de sens.
-    expect(toRequest({ ...DEFAULT_SETTINGS, pixelsPerMeter: 0 }, LINES, []).pixelsPerMeter).toBeNull();
-    expect(
-      toRequest({ ...DEFAULT_SETTINGS, pixelsPerMeter: 12.5 }, LINES, []).pixelsPerMeter,
-    ).toBe(12.5);
-  });
 
   it("n'envoie pas de confiance de plaque quand l'ANPR est désactivé", () => {
     // Un seuil de plaque sans lecture de plaque est un réglage sans effet : le
@@ -336,7 +326,7 @@ describe("classIds dans la requête", () => {
   // Une ligne quelconque : `toRequest` en exige une, mais aucun de ces tests ne
   // parle de géométrie.
   const LINES = [
-    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 }, lengthMeters: null },
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
   ];
 
   it("part avec les quatre véhicules par défaut", () => {
@@ -359,7 +349,7 @@ describe("classIds dans la requête", () => {
 
 describe("analysisSpeed — la cadence d'analyse", () => {
   const LINES = [
-    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 }, lengthMeters: null },
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
   ];
 
   it("part en temps réel par défaut", () => {
@@ -426,7 +416,7 @@ describe("analysisSpeed — la cadence d'analyse", () => {
 
 describe("maxAnalysisFps — le plafond absolu de cadence", () => {
   const LINES = [
-    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 }, lengthMeters: null },
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
   ];
 
   it("part à 30 img/s par défaut", () => {

@@ -17,6 +17,8 @@ export {
 
 export { entriesByClass } from "./model/entriesByClass";
 
+export { visibleClasses } from "./model/visibleClasses";
+
 export { type LineFlow, lineFlows } from "./model/lineFlows";
 
 export {
@@ -39,7 +41,6 @@ export {
   formatSceneTime,
   formatSceneTimePrecise,
   formatScore,
-  formatSpeed,
   plural,
 } from "./model/labels";
 

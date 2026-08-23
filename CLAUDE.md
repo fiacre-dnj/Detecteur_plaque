@@ -135,7 +135,7 @@ que le moteur factice ne les atteint jamais. **Vérifier contre le vrai serveur
 avant de déclarer une fonctionnalité terminée.**
 
 `features/counting/domain/` est le cœur : `geometry`, `models`, `line_counter`,
-`zone_counter`, `track_numbering`, `speed`, `tracking_session`, plus tout ce qui décide
+`zone_counter`, `track_numbering`, `tracking_session`, plus tout ce qui décide
 de
 l'ANPR sans toucher un pixel — `plate_geometry` (le filtre de plausibilité et les
 raisons de non-lecture), `plate_policy` (les deux étranglements), `plate_anchor`,
@@ -289,10 +289,20 @@ calcul :
   `entries`/`exits` y valent `null` et **jamais `0`** quand aucun sens ne porte le
   rôle : « 0 sorties » se lit comme un comptage, pas comme un rôle non déclaré.
   `EntryExitBar` sort de `LineFlowDashboard` pour la même raison ;
-- **la carte « Personne » survit au décochage** : elle s'affiche si la classe est
-  cochée **ou** si le résultat relu porte des entrées `person`. Sans cela, rouvrir un
-  résultat archivé après avoir décoché la case effaçait une colonne de son propre
-  contenu.
+- **les cartes par type suivent « Objets à compter »** (2026-08-21) : décocher
+  « Moto » dans le tiroir Détection retire son KPI des Résultats et sa part du
+  camembert, le recocher les rend. Un zéro sous une classe que l'analyse n'a
+  jamais cherchée se lit comme « aucune moto n'est passée », alors que la vérité
+  est « on n'en a pas cherché ». La règle vivait déjà pour « Personne » seule ;
+  elle vaut maintenant pour toutes les classes, avec sa contrepartie inchangée :
+  **une classe décochée qui porte des entrées garde sa carte**, sans quoi rouvrir
+  un résultat archivé puis décocher une case effacerait une colonne de son propre
+  contenu. `results-dashboard/model/visibleClasses.ts` en est le **seul** juge —
+  les cartes et le camembert le lisent tous deux, deux listes divergeraient sur un
+  décochage. `StudioPage` lui donne les **noms COCO** des classes cochées, traduits
+  une fois contre le catalogue serveur (`cocoName` est la clé des `byClass` ;
+  l'identifiant ne l'est nulle part), avec repli sur les quatre véhicules tant que
+  le catalogue n'a pas répondu.
 
 **La colonne n'est plus vide avant la première analyse** (soir du 2026-08-19). Entre
 l'import d'une vidéo et le premier chiffre, elle était une bande de 24 rem inoccupée
@@ -379,12 +389,36 @@ diagnostic n'étaient renseignés par personne.
   est celui de la *sortie* de bande), le diagnostic, et les
   **quasi-franchissements**, redevenus visibles ;
 - **Affichage & analyse** — trajectoires (le seul réglage purement visuel), pas
-  d'analyse, les deux cadences, et l'**échelle globale** px/m, désormais présentée
-  pour ce qu'elle est depuis ADR 0025 : un repli, que la longueur d'une ligne
-  l'emporte localement dès qu'elle est saisie ;
-- **Géométrie**, depuis le 2026-08-19 — lignes, zones, presets, rôles de sens et
-  longueur réelle par ligne. Fourni par le studio (`panels`) et non par cette
-  feature, qui ne connaît pas `geometry-editor`.
+  d'analyse et les deux cadences. L'**échelle globale** px/m y a vécu jusqu'au
+  2026-08-21 : elle est supprimée avec toute la mesure de vitesse
+  ([ADR 0034](docs/adr/0034-la-mesure-de-vitesse-est-retiree.md)) ;
+- **Géométrie**, depuis le 2026-08-19 — lignes, zones, presets et rôles de sens.
+  Fourni par le studio (`panels`) et non par cette feature, qui ne connaît pas
+  `geometry-editor`. La longueur réelle par ligne en a disparu le 2026-08-21, pour
+  la même raison.
+
+**Cliquer une forme sur la vidéo déplie « Géométrie »** (2026-08-20) : cliquer un
+trait *est* le début du réglage, et l'utilisateur cliquait puis cherchait dans la
+barre où le renommer ou lui donner ses rôles de sens. Trois
+points qui ne se devinent pas :
+
+- **l'état du tiroir ouvert a quitté `SettingsPanels` pour `StudioPage`** : deux
+  endroits l'ouvrent désormais, et un seul des deux est la barre. `openPanel` /
+  `onOpenPanel` sont donc des props, et `GEOMETRY_PANEL_ID` est nommé une fois —
+  deux littéraux `"geometrie"` divergeraient en silence, sur un clic qui n'ouvre
+  plus rien ;
+- **la surface de tracé est exemptée du clic « en dehors »**
+  (`KEEP_PANELS_OPEN_ATTR`, posé sur une enveloppe `display: contents` autour du
+  canvas). Sans elle, ouverture et fermeture tomberaient dans le **même**
+  événement : le gestionnaire de `pointerdown` que `SettingsPanels` pose sur le
+  document s'exécute *après* celui de React, donc la fermeture gagnerait. Effet de
+  bord voulu : un clic sur la vidéo ne referme plus le tiroir qu'on est en train
+  d'utiliser pour la tracer ;
+- **deux bornes à l'ouverture** : rien pendant une analyse ou un direct (`busy`),
+  où le panneau est grisé et où un formulaire intouchable par-dessus la vidéo
+  serait du bruit ; rien sur un clic dans le vide, qui **désélectionne** — c'est la
+  fin d'un réglage, pas son début. Fermer reste à `Échap`, au re-clic sur la pilule
+  et au clic hors de la scène.
 
 Les boutons du tiroir sont **grisés tant qu'aucune vidéo n'est chargée** : régler
 la détection, le comptage, l'affichage ou la géométrie n'a rien à quoi s'appliquer
@@ -1057,33 +1091,24 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       plaque publiée en moins : le remplissage change la boîte d'un sous-pixel, donc la
       vignette d'OCR, donc le vote.
 
-## Les vitesses en km/h : la calibration est **par ligne**
+## Il n'y a plus de mesure de vitesse
 
-`to_kmh` n'invente jamais une distance : sans échelle, le registre reste en px/s.
-Mais une échelle **unique pour toute l'image ne peut pas être juste** — une caméra
-de trafic regarde en biais, donc un mètre vaut quelques pixels au fond et quelques
-dizaines devant. Mesuré sur une vidéo du dépôt, à largeur supposée égale sur les
-quatre lignes : **37 à 143 px/m, un facteur 3,9**.
+Supprimée le 2026-08-21 ([ADR
+0034](docs/adr/0034-la-mesure-de-vitesse-est-retiree.md), qui abroge [ADR
+0025](docs/adr/0025-la-calibration-se-fait-par-ligne.md)) : ni `domain/speed.py`,
+ni `domain/scale_field.py`, ni échelle globale px/m, ni longueur réelle par ligne,
+ni colonne « Vitesse » au registre ou aux CSV. Les champs `pixelsPerMeter`,
+`lengthMeters`, `speedPxS`, `avgSpeedPxS` et `avgSpeedKmh` ont quitté le contrat
+des deux côtés, et la migration `7c1f4b2ae903` retire les deux colonnes de
+`job_vehicles`.
 
-Chaque ligne porte donc `lengthMeters` (`length_m` au domaine), sa longueur réelle
-— une largeur de chaussée, un passage piéton. `domain/scale_field.py` en tire
-l'échelle **locale** et retient la **ligne calibrée la plus proche** (distance au
-*segment*, pas à sa droite). Pas d'interpolation entre deux lignes : elle
-inventerait une échelle que personne n'a mesurée.
+Conséquence à connaître : **une ligne n'a plus aucun champ que le serveur
+interprète.** Nom et rôles de sens ne font que traverser, donc corriger un tracé
+après coup ne demande plus jamais de réanalyser — ce qui n'était pas vrai de la
+longueur.
 
-La conversion se fait **déplacement par déplacement**, à l'échelle du milieu de
-chaque segment ; les mètres sont cumulés à part des pixels. Convertir le total à
-la fin annulerait la calibration locale pour un véhicule qui change de profondeur.
-
-Trois points à ne pas confondre :
-
-- **c'est purement additif** — sans ligne calibrée, `ScaleField` retombe sur le
-  curseur global et l'estimateur se comporte exactement comme avant ;
-- **la mesure locale l'emporte sur le curseur global**, jamais l'inverse ;
-- **`lengthMeters` est le seul champ de ligne que le serveur interprète.** Un rôle
-  ou un nom se corrige sans réanalyser ; **une longueur, non.**
-
-[ADR 0025](docs/adr/0025-la-calibration-se-fait-par-ligne.md).
+Un résultat archivé garde les anciennes clés dans son `result.json.gz` ; elles sont
+ignorées à la relecture, aucun compteur n'en dépendant.
 
 ## Mesurer avant d'optimiser l'ANPR
 

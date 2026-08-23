@@ -26,7 +26,6 @@ function line(id: string, overrides: Partial<CountingLine> = {}): CountingLine {
     negativeName: "",
     positiveRole: "entry",
     negativeRole: "exit",
-    lengthMeters: null,
     ...overrides,
   };
 }
@@ -39,8 +38,6 @@ function vehicle(crossedLines: VehicleRecord["crossedLines"] = []): VehicleRecor
     lastSeenMs: 10_000,
     crossedLines,
     zonesVisited: [],
-    avgSpeedPxS: null,
-    avgSpeedKmh: null,
     bestPlateScore: null,
     plateText: null,
     plateTextScore: null,

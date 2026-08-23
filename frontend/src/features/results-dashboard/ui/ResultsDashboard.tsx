@@ -27,7 +27,9 @@
  *    — la somme de ses cartes lui est exactement égale (`entriesByClass` partage
  *    son prédicat avec `flowBalance`, verrouillé par un test) — et le titre
  *    « Répartition » ne disait rien de plus que « Voiture », « Bus » juste
- *    dessous ;
+ *    dessous. **Ses cartes suivent « Objets à compter »** : décocher « Moto »
+ *    retire son KPI, parce qu'un zéro sous une classe jamais cherchée se lit
+ *    comme « aucune moto n'est passée » (voir `visibleClasses`) ;
  * 3. **une carte par ligne tracée**, sur toute la largeur, avec le nom que
  *    l'utilisateur a saisi et son bilan entrées / sorties. Le détail par ligne
  *    n'existait qu'en bas de page (`LineFlowDashboard`), sous la vidéo : la
@@ -45,37 +47,38 @@
  */
 
 import type { AnalysisStats, CountingLine } from "@/shared/api/contracts";
-import { VEHICLE_CLASSES, classLabel } from "@/shared/lib/classes";
+import { classLabel } from "@/shared/lib/classes";
 import { MetricCard } from "@/shared/ui/MetricCard";
 
 import { flowBalance } from "../model/directions";
 import { entriesByClass } from "../model/entriesByClass";
 import { crossroadFlowSentence, plural } from "../model/labels";
 import { lineFlows, type LineFlow } from "../model/lineFlows";
+import { visibleClasses } from "../model/visibleClasses";
 import { EntryExitBar } from "./EntryExitBar";
 
 interface ResultsDashboardProps {
   stats: AnalysisStats;
   lines: readonly CountingLine[];
   /**
-   * La classe « personne » est-elle cochée dans les réglages de l'analyse ?
+   * Les classes cochées dans « Objets à compter », par nom COCO (`car`,
+   * `motorcycle`…), dans l'ordre du catalogue serveur.
+   *
    * Calculé par l'appelant (`StudioPage`) : cette feature ne connaît ni les
    * réglages ni le catalogue de classes, seulement `AnalysisStats`/`CountingLine[]`.
    *
-   * La carte s'affiche **aussi** quand le résultat relu porte des entrées
-   * « person » sans que la case le soit — un résultat archivé rouvert garde alors
-   * son chiffre au lieu de le faire disparaître (voir plus bas).
+   * `selectedClasses` **décide des cartes affichées** : décocher « Moto » retire
+   * son KPI, le recocher le rend. Une classe non cochée mais **portant des
+   * entrées** dans le résultat relu garde malgré tout sa carte (voir
+   * `visibleClasses` plus bas).
    */
-  includePerson: boolean;
+  selectedClasses: readonly string[];
 }
 
-export function ResultsDashboard({ stats, lines, includePerson }: ResultsDashboardProps) {
+export function ResultsDashboard({ stats, lines, selectedClasses }: ResultsDashboardProps) {
   const flow = flowBalance(stats, lines);
   const entries = entriesByClass(stats, lines);
-  // La case cochée **ou** un chiffre déjà compté : décocher « Personne » après
-  // coup ne doit pas effacer une colonne du résultat qu'on est en train de lire.
-  const showPerson = includePerson || (entries.person ?? 0) > 0;
-  const classes: readonly string[] = showPerson ? [...VEHICLE_CLASSES, "person"] : VEHICLE_CLASSES;
+  const classes = visibleClasses(selectedClasses, entries);
 
   return (
     <section aria-labelledby="cards-title">

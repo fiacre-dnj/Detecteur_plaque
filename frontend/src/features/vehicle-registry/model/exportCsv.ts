@@ -76,8 +76,6 @@ export function vehiclesCsv(result: AnalysisResult, lines: readonly CountingLine
       "Lignes franchies",
       "Zones visitées",
       "Passages",
-      "Vitesse (px/s)",
-      "Vitesse (km/h)",
       // Le texte lu d'abord — c'est ce qu'on cherche —, puis les deux confiances.
       "Plaque",
       "Confiance lecture",
@@ -99,8 +97,6 @@ export function vehiclesCsv(result: AnalysisResult, lines: readonly CountingLine
         .join(" | "),
       vehicle.zonesVisited.join(" | "),
       vehicle.crossedLines.length,
-      vehicle.avgSpeedPxS,
-      vehicle.avgSpeedKmh,
       // `null` devient une case vide, **pas** « illisible » : un CSV n'est pas une vue,
       // et un mot dans cette colonne serait une valeur à nettoyer à la main avant tout
       // tri ou filtre de tableur.

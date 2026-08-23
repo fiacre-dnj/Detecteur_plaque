@@ -170,7 +170,6 @@ class AnalysisJobConfig:
     #: variantes de prétraitement — que l'utilisateur d'une analyse n'a pas à
     #: connaître, et dont il ne pourrait pas juger l'effet sur sa vidéo.
     read_plate_text: bool = False
-    pixels_per_meter: float | None = None
     max_lost_ms: float = 2500.0
     lines: tuple[CountingLineDef, ...] = ()
     zones: tuple[ZoneDef, ...] = ()
@@ -267,7 +266,6 @@ class AnalysisJobConfig:
             # d'une observation suivie si elle tenait le seuil ou si elle a été
             # rattrapée par la bande basse (ADR 0024).
             confidence_threshold=self.confidence_threshold,
-            pixels_per_meter=self.pixels_per_meter,
         )
 
 

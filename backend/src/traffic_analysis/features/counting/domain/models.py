@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from traffic_analysis.features.counting.domain.geometry import Point, distance
+from traffic_analysis.features.counting.domain.geometry import Point
 
 #: Pourquoi aucune plaque n'est publiée pour un véhicule — **cinq causes, cinq
 #: gestes différents**.
@@ -235,35 +235,6 @@ class CountingLineDef:
     negative_name: str = ""
     positive_role: DirectionRole = "neutral"
     negative_role: DirectionRole = "neutral"
-    #: Longueur **réelle** du trait, en mètres. `None` = non calibrée.
-    #:
-    #: C'est la seule mesure de terrain que l'utilisateur puisse donner sans
-    #: matériel : la largeur d'une chaussée, l'écart entre deux passages piétons.
-    #: Elle donne une échelle **locale** — `longueur en pixels / longueur en
-    #: mètres` — là où le trait est posé, donc à la profondeur où les véhicules le
-    #: franchissent.
-    #:
-    #: Une échelle unique pour toute l'image ne peut pas être juste sur une caméra
-    #: inclinée : le mètre y vaut quelques pixels au loin et quelques dizaines au
-    #: premier plan. Plusieurs lignes calibrées à des profondeurs différentes
-    #: décrivent ce gradient sans qu'on ait à modéliser la perspective.
-    length_m: float | None = None
-
-    def pixel_length(self) -> float:
-        """Longueur du trait **en pixels source**."""
-        return distance(self.a, self.b)
-
-    def px_per_meter(self) -> float | None:
-        """Échelle locale de ce trait, ou `None` s'il n'est pas calibré.
-
-        `None` aussi pour une longueur nulle ou négative, et pour un trait
-        dégénéré : diviser par zéro donnerait `inf`, et une vitesse infinie
-        s'affiche comme un chiffre, pas comme une erreur.
-        """
-        if self.length_m is None or self.length_m <= 0.0:
-            return None
-        pixels = self.pixel_length()
-        return pixels / self.length_m if pixels > 0.0 else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,7 +426,6 @@ class SessionTrack:
     identity_label: str = ""  # vote majoritaire — c'est LUI qui sert au comptage
     counted: bool = False  # écrit par la session depuis le tally, jamais deviné
     last_seen_ms: float = 0.0
-    speed_px_s: float | None = None
     plates: list[PlateDetection] = field(default_factory=list)
     #: Texte **voté** de l'identité, recopié depuis son agrégat par
     #: `AnalysisSession._mirror_plate_text`. Pas la lecture de la frame : c'est
@@ -499,7 +469,6 @@ class SessionTrack:
             identity_label=self.identity_label,
             counted=self.counted,
             last_seen_ms=self.last_seen_ms,
-            speed_px_s=self.speed_px_s,
             plates=list(self.plates),
             plate_text=self.plate_text,
             plate_text_score=self.plate_text_score,
@@ -611,8 +580,6 @@ class VehicleRecord:
     last_seen_ms: float
     crossed_lines: tuple[LineCrossing, ...]
     zones_visited: tuple[str, ...]
-    avg_speed_px_s: float | None
-    avg_speed_kmh: float | None
     #: Meilleure confiance de **détection** de plaque sur toute la vie du véhicule.
     best_plate_score: float | None
     #: Texte **voté** sur toute la vie du véhicule — l'autorité de l'interface, au

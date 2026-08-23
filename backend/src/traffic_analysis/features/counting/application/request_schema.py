@@ -78,20 +78,6 @@ class LineSchema(CamelModel):
     negative_name: str = Field(default="", max_length=60, examples=["Vers la rocade"])
     positive_role: DirectionRole = "neutral"
     negative_role: DirectionRole = "neutral"
-    #: Longueur **réelle** du trait, en mètres. `None` = non calibrée.
-    #:
-    #: Contrairement aux quatre champs de sens, celle-ci **est** lue par le
-    #: serveur : elle donne l'échelle pixels/mètre locale qui convertit les
-    #: vitesses en km/h à la profondeur où la ligne est posée. Une longueur
-    #: corrigée demande donc une réanalyse, là où un rôle corrigé ne demande rien.
-    #:
-    #: Bornée à 500 m : au-delà, c'est une saisie erronée (un chiffre tapé deux
-    #: fois), et elle produirait des vitesses absurdement basses sans rien signaler.
-    #:
-    #: `length_meters` et non `length_m` : l'alias camelCase est **généré** du nom
-    #: Python, et `length_m` donnerait `lengthM` — un champ que le client
-    #: n'enverrait jamais, donc une calibration silencieusement ignorée.
-    length_meters: float | None = Field(default=None, gt=0.0, le=500.0, examples=[7.0])
 
     def to_domain(self) -> CountingLineDef:
         return CountingLineDef(
@@ -104,7 +90,6 @@ class LineSchema(CamelModel):
             negative_name=self.negative_name,
             positive_role=self.positive_role,
             negative_role=self.negative_role,
-            length_m=self.length_meters,
         )
 
 
@@ -140,12 +125,6 @@ class AnalysisRequestSchema(CamelModel):
             "modèle d'OCR est installé (`plateOcrAvailable`). Le texte publié est un "
             "vote sur toute la vie du véhicule, pas la lecture de l'image courante."
         ),
-    )
-    pixels_per_meter: float | None = Field(
-        None,
-        gt=0,
-        description="Échelle de la scène. Sans elle, les vitesses restent en px/s.",
-        examples=[12.5],
     )
     class_ids: list[int] = Field(
         default_factory=lambda: list(VEHICLE_CLASS_IDS),
@@ -327,7 +306,6 @@ class AnalysisRequestSchema(CamelModel):
             detect_plates=self.detect_plates,
             plate_confidence=self.plate_confidence,
             read_plate_text=self.read_plate_text,
-            pixels_per_meter=self.pixels_per_meter,
             max_lost_ms=self.max_lost_ms,
             lines=tuple(line.to_domain() for line in self.lines),
             zones=tuple(zone.to_domain() for zone in self.zones),

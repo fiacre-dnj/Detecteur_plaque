@@ -49,8 +49,6 @@ class TestRegistre:
         assert vehicle["globalId"] == 1
         assert vehicle["label"] in {"car", "truck"}
         assert vehicle["crossedLines"][0]["lineId"] == "l1"
-        # Sans échelle px/m fournie, la vitesse reste en px/s : `null` et non `0`.
-        assert vehicle["avgSpeedKmh"] is None
 
     async def test_le_registre_se_filtre_par_classe(self, client: AsyncClient) -> None:
         job_id = await _finished_job(client)
@@ -166,23 +164,10 @@ class TestExportCsv:
 
         rows = content.lstrip("﻿").splitlines()[1:]
         assert rows
-        speeds = [row.split(";")[7] for row in rows]
-        assert any("," in speed for speed in speeds), f"aucune virgule décimale : {speeds}"
-        assert not any("." in speed for speed in speeds)
-
-    async def test_une_vitesse_inconnue_est_une_case_vide_et_non_un_zero(
-        self, client: AsyncClient
-    ) -> None:
-        """`0` voudrait dire « à l'arrêt ». Sans échelle, la valeur est inconnue."""
-        job_id = await _finished_job(client)
-
-        content = (
-            await client.get(f"/api/v1/jobs/{job_id}/export.csv?dataset=vehicles")
-        ).content.decode("utf-8")
-
-        rows = content.lstrip("﻿").splitlines()[1:]
-        kmh_column = [row.split(";")[8] for row in rows]
-        assert all(value == "" for value in kmh_column)
+        # Colonne « Vu de (s) » : des secondes de scène, donc décimales.
+        seconds = [row.split(";")[2] for row in rows]
+        assert any("," in value for value in seconds), f"aucune virgule décimale : {seconds}"
+        assert not any("." in value for value in seconds)
 
     async def test_le_csv_des_franchissements_traduit_le_sens(self, client: AsyncClient) -> None:
         """`+1`/`-1` est le contrat machine ; « A→B » est ce que lit un humain."""

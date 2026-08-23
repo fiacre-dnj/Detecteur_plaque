@@ -56,8 +56,6 @@ def _vehicle(**overrides: object) -> VehicleRecord:
         "last_seen_ms": 480.0,
         "crossed_lines": (),
         "zones_visited": (),
-        "avg_speed_px_s": None,
-        "avg_speed_kmh": None,
         "best_plate_score": 0.71,
     }
     base.update(overrides)
@@ -92,7 +90,6 @@ class TestSerialiseTrack:
             "plateTextScore",
             "plates",
             "score",
-            "speedPxS",
             "trackId",
         ]
 
@@ -171,8 +168,6 @@ class TestSerialiseCrossing:
 class TestSerialiseVehicle:
     def test_le_jeu_de_cles_du_registre(self) -> None:
         assert sorted(serialise_vehicle(_vehicle())) == [
-            "avgSpeedKmh",
-            "avgSpeedPxS",
             "bestPlateScore",
             "crossedLines",
             "firstSeenMs",

@@ -16,7 +16,6 @@ const TRACK: TrackSnapshot = {
   box: { x: 300, y: 150, width: 90, height: 60 },
   hits: 12,
   counted: true,
-  speedPxS: 120,
   plates: [
     {
       box: { x: 320, y: 190, width: 24, height: 9 },
@@ -68,17 +67,6 @@ describe("unscaleTrack", () => {
     expect(rescaled.plates[0]?.textScore).toBe(0.9);
     expect(rescaled.plateText).toBe("AB-123-CD");
     expect(rescaled.plateTextScore).toBe(0.9);
-  });
-
-  test("convertit la vitesse : c'est une longueur par seconde", () => {
-    // Sur une image réduite d'un quart, un véhicule parcourt un quart de pixels en
-    // moins par seconde. Laisser 120 afficherait une vitesse sous-estimée d'un tiers.
-    expect(unscaleTrack(TRACK, FACTOR).speedPxS).toBe(160);
-  });
-
-  test("laisse `null` à `null` — pas de vitesse mesurée", () => {
-    // 0 se lirait « véhicule à l'arrêt », ce qui est une affirmation, pas une absence.
-    expect(unscaleTrack({ ...TRACK, speedPxS: null }, FACTOR).speedPxS).toBeNull();
   });
 
   test("ne touche à rien de ce qui est sans dimension", () => {

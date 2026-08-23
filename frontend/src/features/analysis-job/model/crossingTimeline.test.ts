@@ -46,7 +46,6 @@ function line(id: string, name: string, color = "#539df5"): CountingLine {
     negativeName: "",
     positiveRole: "entry",
     negativeRole: "exit",
-    lengthMeters: null,
   };
 }
 

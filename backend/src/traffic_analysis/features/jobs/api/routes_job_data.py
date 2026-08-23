@@ -29,7 +29,7 @@ CSV_MEDIA_TYPE = "text/csv; charset=utf-8"
     summary="Registre des véhicules, paginé et filtrable",
     description=(
         "Une ligne par identité : vu de/à, lignes franchies avec leur sens, "
-        "vitesse, ré-identifications, meilleure plaque **détectée** et plaque "
+        "ré-identifications, meilleure plaque **détectée** et plaque "
         "**lue** (`plateText`, vote sur toute la vie du véhicule).\n\n"
         "Les cartes de synthèse disent *combien*, ce registre dit **lesquels** — "
         "c'est lui qui rend un total vérifiable plutôt que croyable."

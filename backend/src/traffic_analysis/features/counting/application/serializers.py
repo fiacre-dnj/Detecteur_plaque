@@ -100,7 +100,6 @@ def serialise_track(track: SessionTrack) -> dict[str, Any]:
         "box": serialise_box(track.box),
         "hits": track.hits,
         "counted": track.counted,
-        "speedPxS": _optional_pixel(track.speed_px_s),
         "plates": [serialise_plate(plate) for plate in track.plates],
         # Le texte **voté**, en plus des lectures de la frame — même raison
         # qu'`identityLabel` : c'est lui que le canvas étiquette. Dessiner
@@ -168,8 +167,6 @@ def serialise_vehicle(record: VehicleRecord) -> dict[str, Any]:
             for crossing in record.crossed_lines
         ],
         "zonesVisited": list(record.zones_visited),
-        "avgSpeedPxS": _optional_pixel(record.avg_speed_px_s),
-        "avgSpeedKmh": None if record.avg_speed_kmh is None else round(record.avg_speed_kmh, 1),
         "bestPlateScore": None
         if record.best_plate_score is None
         else _score(record.best_plate_score),

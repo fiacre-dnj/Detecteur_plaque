@@ -20,7 +20,6 @@
       },
       "hits": 7,
       "counted": true,
-      "speedPxS": 1250.0,
       "plates": [
         {
           "box": {
@@ -53,7 +52,6 @@
       },
       "hits": 7,
       "counted": false,
-      "speedPxS": 1250.0,
       "plates": [
         {
           "box": {
@@ -86,7 +84,6 @@
       },
       "hits": 7,
       "counted": false,
-      "speedPxS": 1250.0,
       "plates": [
         {
           "box": {
@@ -192,8 +189,6 @@
         }
       ],
       "zonesVisited": [],
-      "avgSpeedPxS": 1250.0,
-      "avgSpeedKmh": null,
       "bestPlateScore": 0.71,
       "plateText": "AB-123-CD",
       "plateTextScore": 0.93,
@@ -215,8 +210,6 @@
         }
       ],
       "zonesVisited": [],
-      "avgSpeedPxS": 1250.0,
-      "avgSpeedKmh": null,
       "bestPlateScore": 0.71,
       "plateText": null,
       "plateTextScore": null,

@@ -51,7 +51,6 @@ class TestSessionTrackSnapshot:
         track.global_id = 7
         track.identity_label = "truck"
         track.counted = True
-        track.speed_px_s = 412.5
 
         copy = track.snapshot()
 
@@ -59,7 +58,6 @@ class TestSessionTrackSnapshot:
         assert copy.global_id == 7
         assert copy.identity_label == "truck"
         assert copy.counted is True
-        assert copy.speed_px_s == 412.5
 
     def test_snapshot_ne_partage_rien_avec_l_original(self) -> None:
         """LE test de non-régression du piège d'aliasing de la timeline.

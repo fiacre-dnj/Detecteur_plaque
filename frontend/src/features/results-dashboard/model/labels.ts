@@ -61,20 +61,6 @@ export function formatSceneTimePrecise(ms: number): string {
 }
 
 /**
- * Formate une vitesse selon l'échelle disponible.
- *
- * Trois cas distincts, et les confondre serait mentir : `km/h` quand l'échelle
- * px/m est fournie, `px/s` sinon, et `—` quand la vitesse est inconnue. Afficher
- * des km/h sans échelle produirait des chiffres inventés — un véhicule à
- * « 360 km/h » sur une image mal calibrée, ce qui discrédite tout le tableau.
- */
-export function formatSpeed(kmh: number | null, pxPerSecond: number | null): string {
-  if (kmh !== null) return `${Math.round(kmh)} km/h`;
-  if (pxPerSecond !== null) return `${Math.round(pxPerSecond)} px/s`;
-  return "—";
-}
-
-/**
  * Temps moyen de traitement d'une image, en millisecondes.
  *
  * C'est la cadence lue dans l'autre sens, et c'est délibéré : « 5 img/s » répond

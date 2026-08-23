@@ -35,8 +35,6 @@ VEHICLE_HEADERS = (
     "Lignes franchies",
     "Zones visitées",
     "Franchissements",
-    "Vitesse moyenne (px/s)",
-    "Vitesse moyenne (km/h)",
     # Les deux colonnes de plaque sont voisines, et dans cet ordre : le texte lu
     # d'abord — c'est ce qu'on cherche —, puis la confiance de la détection.
     "Plaque",
@@ -68,8 +66,8 @@ CLASS_LABELS = {
 def _decimal(value: float | None, *, digits: int = 1) -> str:
     """Nombre à la française, ou case vide si l'information n'existe pas.
 
-    Une case vide et non `0` : sans échelle px/m, une vitesse en km/h est
-    **inconnue**, pas nulle. Écrire zéro ferait croire à un véhicule à l'arrêt.
+    Une case vide et non `0` : une information absente n'est pas une valeur
+    nulle. Écrire zéro ferait lire une mesure là où il n'y en a pas.
     """
     if value is None:
         return ""
@@ -126,8 +124,6 @@ def vehicles_csv(vehicles: Sequence[dict[str, Any]]) -> str:
             ),
             " | ".join(vehicle.get("zonesVisited", ())),
             str(len(vehicle.get("crossedLines", ()))),
-            _decimal(vehicle.get("avgSpeedPxS")),
-            _decimal(vehicle.get("avgSpeedKmh")),
             # Case **vide** et non « illisible » : un CSV n'est pas une vue, et un
             # mot dans cette colonne serait une valeur à nettoyer à la main avant
             # tout tri ou filtre de tableur.

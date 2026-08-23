@@ -41,7 +41,7 @@
  */
 
 import { ChevronDown } from "lucide-react";
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 
 import { ModelPicker } from "@/features/model-picker";
 import type {
@@ -161,7 +161,33 @@ interface SettingsPanelsProps {
    * du contenu déjà rendu.
    */
   panels?: readonly ExtraPanel[];
+  /**
+   * Le tiroir ouvert, `null` = tout fermé. **Piloté de l'extérieur.**
+   *
+   * L'état vivait ici, et c'était vrai tant que la barre était le seul endroit qui
+   * ouvre un tiroir. Cliquer une ligne sur la vidéo doit maintenant déplier
+   * « Géométrie » — le geste et le réglage sont le même acte, et l'utilisateur
+   * cliquait un trait puis cherchait où le renommer. Le studio est le seul à voir
+   * les deux, donc c'est lui qui tient l'état.
+   */
+  openPanel: PanelId | null;
+  /** Demande d'ouverture ou de fermeture : re-clic, `Échap`, clic en dehors. */
+  onOpenPanel: (id: PanelId | null) => void;
 }
+
+/**
+ * Marqueur d'exemption du clic « en dehors », posé par l'appelant.
+ *
+ * Le tiroir flotte au-dessus de la page et se referme sur tout `pointerdown`
+ * extérieur — sauf sur une surface qui, elle, **pilote** le tiroir. La scène de
+ * tracé est ce cas : sans exemption, cliquer une ligne ouvrirait « Géométrie » puis
+ * le refermerait dans le même événement, le gestionnaire de document s'exécutant
+ * après celui de React.
+ *
+ * Un attribut plutôt qu'une liste de `ref` : cette feature n'a pas à connaître la
+ * scène, ni le studio à lui passer une référence dont il ne fait rien d'autre.
+ */
+export const KEEP_PANELS_OPEN_ATTR = "data-keep-panels-open";
 
 export function SettingsPanels({
   settings,
@@ -179,9 +205,9 @@ export function SettingsPanels({
   trailing,
   hasSource,
   panels: extraPanels = [],
+  openPanel: open,
+  onOpenPanel: setOpen,
 }: SettingsPanelsProps) {
-  /** `null` = tout fermé, l'état d'arrivée. */
-  const [open, setOpen] = useState<PanelId | null>(null);
   const base = useId();
   /** Racine du composant : borne le clic « en dehors » qui referme le tiroir. */
   const root = useRef<HTMLDivElement>(null);
@@ -190,8 +216,12 @@ export function SettingsPanels({
   // trois panneaux n'ont alors plus rien à régler, et un tiroir grisé resté
   // ouvert serait un formulaire qu'on ne peut plus toucher sans savoir pourquoi.
   useEffect(() => {
+    // Inconditionnel, et non gardé par `open !== null` : l'état vit chez l'appelant
+    // depuis que la scène ouvre « Géométrie », et un `setState` qui repose la même
+    // valeur ne provoque aucun rendu. Le garde n'économiserait rien et ferait lire
+    // `open` dans un effet qui ne dépend que de la source.
     if (!hasSource) setOpen(null);
-  }, [hasSource]);
+  }, [hasSource, setOpen]);
 
   // Le tiroir flotte **par-dessus** la page (`position: absolute`) : il n'est
   // plus contenu par un parent qu'on pourrait cliquer pour le refermer, ni par
@@ -202,9 +232,18 @@ export function SettingsPanels({
     if (open === null) return;
 
     const closeIfOutside = (event: PointerEvent): void => {
-      if (root.current !== null && !root.current.contains(event.target as Node)) {
-        setOpen(null);
+      const target = event.target as Node;
+      if (root.current === null || root.current.contains(target)) return;
+      // Une surface qui pilote elle-même le tiroir n'est pas un « en dehors » : la
+      // scène de tracé ouvre « Géométrie » sur un clic de ligne, et ce
+      // gestionnaire, qui s'exécute *après* celui de React, le refermerait aussitôt.
+      if (
+        target instanceof Element &&
+        target.closest(`[${KEEP_PANELS_OPEN_ATTR}]`) !== null
+      ) {
+        return;
       }
+      setOpen(null);
     };
     const closeOnEscape = (event: KeyboardEvent): void => {
       if (event.key === "Escape") setOpen(null);
@@ -216,7 +255,7 @@ export function SettingsPanels({
       document.removeEventListener("pointerdown", closeIfOutside);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [open]);
+  }, [open, setOpen]);
 
   // Les trois états de l'ANPR tranchés **une fois**, en dehors du rendu : la case
   // de détection, celle de lecture et leurs deux phrases décrivent le même serveur,
@@ -480,22 +519,6 @@ export function SettingsPanels({
           onChange={(maxAnalysisFps) => onChange({ maxAnalysisFps })}
         />
 
-        <Slider
-          label="Échelle globale (px/m)"
-          value={settings.pixelsPerMeter ?? 0}
-          bounds={BOUNDS.pixelsPerMeter}
-          disabled={disabled}
-          format={(value) => (value === 0 ? "non définie" : `${value} px/m`)}
-          // Deux choses à dire, et la seconde est récente. **Sans échelle**, les
-          // vitesses restent en px/s plutôt que converties à tort : un km/h sans
-          // calibration est une invention que l'utilisateur prendrait au sérieux.
-          // **Avec une échelle unique**, elle ne peut pas être juste partout — une
-          // caméra de trafic regarde en biais, et 37 à 143 px/m ont été mesurés sur
-          // les quatre lignes d'une même vidéo, un facteur 3,9. D'où le renvoi vers
-          // la longueur par ligne, qui l'emporte localement quand elle est saisie.
-          hint="Repli pour toute l'image : sans elle, les vitesses restent en pixels par seconde. Une caméra qui regarde en biais ne peut pas avoir une échelle unique — donnez plutôt sa longueur réelle à chaque ligne dans le panneau Géométrie, la mesure locale l'emporte alors sur ce curseur."
-          onChange={(value) => onChange({ pixelsPerMeter: value === 0 ? null : value })}
-        />
       </PanelGrid>
     ),
   };

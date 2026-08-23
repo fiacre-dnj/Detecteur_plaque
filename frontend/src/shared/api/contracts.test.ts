@@ -95,7 +95,6 @@ describe("contrat d'une piste", () => {
       "plateTextScore",
       "plates",
       "score",
-      "speedPxS",
       "trackId",
     ]);
   });
@@ -360,8 +359,6 @@ describe("contrat du registre des véhicules", () => {
     if (vehicle === undefined) return;
 
     expect(Object.keys(vehicle).sort()).toEqual([
-      "avgSpeedKmh",
-      "avgSpeedPxS",
       "bestPlateScore",
       "crossedLines",
       "firstSeenMs",
@@ -574,17 +571,6 @@ describe("contrat de l'aperçu d'une analyse en cours", () => {
 });
 
 describe("contrat du registre des véhicules", () => {
-  it("rend `null` et non 0 pour une vitesse inconnue", () => {
-    // `0` voudrait dire « à l'arrêt ». La distinction compte : sans échelle
-    // px/m, `avgSpeedKmh` doit être `null` plutôt qu'un chiffre inventé.
-    for (const vehicle of result.vehicles) {
-      if (vehicle.avgSpeedKmh !== null) {
-        expect(vehicle.avgSpeedKmh).toBeGreaterThan(0);
-      }
-      expect(vehicle.avgSpeedPxS === null || vehicle.avgSpeedPxS > 0).toBe(true);
-    }
-  });
-
   it("liste les lignes franchies par chaque véhicule", () => {
     const vehicle = result.vehicles.find((candidate) => candidate.crossedLines.length > 0);
     expect(vehicle).toBeDefined();
