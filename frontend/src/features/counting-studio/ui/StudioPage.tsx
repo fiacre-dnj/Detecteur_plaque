@@ -67,7 +67,7 @@ import {
   JobProgressBar,
   LaunchDialog,
   inputVideoUrl,
-  useFollowAnalysis,
+  useSyncedPreview,
 } from "@/features/analysis-job";
 import {
   KEEP_PANELS_OPEN_ATTR,
@@ -380,6 +380,37 @@ export function StudioPage() {
   );
 
   /**
+   * Terminer une zone, et **cocher « Ignorer hors zone » avec la première**.
+   *
+   * Tracer une zone est un geste qui dit « ce qui m'intéresse est là-dedans ». Sans
+   * ce défaut, il n'avait pourtant aucun effet sur les chiffres tant qu'une case
+   * restée décochée dans un autre tiroir n'était pas trouvée : l'utilisateur voyait
+   * son polygone dessiné, comptait toujours ce qui passait dehors, et n'avait
+   * aucune raison d'aller chercher la cause dans « Détection ».
+   *
+   * Trois bornes, et elles sont ce qui distingue un défaut d'une contrainte :
+   *
+   * - **la première zone seulement.** Décocher puis tracer une deuxième zone
+   *   recocherait la case : ce serait combattre un choix explicite, pas en proposer
+   *   un. Le passage de « aucune zone » à « une zone » est le seul moment où la
+   *   question n'a jamais été posée ;
+   * - **le tracé, pas le chargement.** Un preset porte son propre
+   *   `maskOutsideZones` (`handleApplyPreset`) et l'impose : c'est la géométrie
+   *   enregistrée qui décide, pas ce défaut-ci. Passer par un effet sur
+   *   `zones.length` les ferait entrer en collision — le preset poserait `false`,
+   *   l'effet le verrait passer à une zone et le remettrait à `true` ;
+   * - **rien n'est verrouillé.** La case reste décochable dans « Détection », et
+   *   `toRequest` retombe de toute façon à `false` s'il ne reste aucune zone.
+   */
+  const handleCompleteZone = useCallback(
+    (points: Point[]) => {
+      dispatch({ type: "addZone", points });
+      if (geometry.zones.length === 0) updateSettings({ maskOutsideZones: true });
+    },
+    [geometry.zones.length, updateSettings],
+  );
+
+  /**
    * Changer de source remet tout à zéro : la géométrie est en pixels de la source.
    *
    * **Le direct est coupé ici**, et c'est obligatoire : les dimensions d'envoi sont
@@ -675,13 +706,23 @@ export function StudioPage() {
   const preview = previewMismatch || live.active ? null : session.preview;
 
   /**
-   * La vidéo se cale sur l'image que le serveur analyse.
+   * La vidéo se cale sur l'image que le serveur analyse, **et les boîtes attendent
+   * que cette image soit là**.
    *
    * Uniquement sur une source **fichier** : la vidéo locale est alors le même
    * fichier que celui envoyé, donc le temps de scène désigne exactement la même
-   * image des deux côtés. Une caméra n'a pas de temps de scène commun.
+   * image des deux côtés. Une caméra n'a pas de temps de scène commun, et le hook
+   * y est un passe-plat.
+   *
+   * La **référence** et non `video.current` : remplir un `ref` ne déclenche aucun
+   * rendu, donc le lire ici faisait dépendre l'abonnement d'un rendu ultérieur que
+   * rien ne garantit — les premiers aperçus d'une analyse pouvaient être perdus.
    */
-  useFollowAnalysis(video.current, preview?.timestampMs ?? null, media.source?.file !== undefined);
+  const { preview: shownPreview, displayLagMs } = useSyncedPreview(
+    video,
+    preview,
+    media.source?.file !== undefined,
+  );
 
   /**
    * Les pistes à dessiner : le direct s'il tourne, sinon l'aperçu de l'analyse en
@@ -691,12 +732,20 @@ export function StudioPage() {
    * seul repère. Faire la conversion ici et non dans le canvas évite une branche
    * « si direct » dans le code de dessin, qui finirait par diverger. L'aperçu, lui,
    * est déjà en pixels source : le serveur analyse la vidéo telle qu'elle est.
+   *
+   * **`shownPreview` et non `preview`, et c'est toute la règle de cet écran :
+   * les boîtes suivent l'image, les compteurs suivent le serveur.** `preview` est
+   * l'aperçu que le serveur vient d'envoyer ; `shownPreview` est celui dont l'image
+   * est réellement à l'écran. Dessiner le premier faisait courir l'overlay devant
+   * la vidéo de tout le temps de décodage — « on dirait que le tracker est en
+   * avance ». Les compteurs, eux, restent branchés sur `preview` : eux n'ont pas
+   * d'image à attendre, et les ralentir pour rien rendrait le comptage tardif.
    */
   const canvasTracks = useMemo(() => {
     if (live.active) return unscaleTracks(live.tracks, live.factor);
-    if (preview !== null) return preview.tracks;
+    if (shownPreview !== null) return shownPreview.tracks;
     return replay.tracks;
-  }, [live.active, live.tracks, live.factor, preview, replay.tracks]);
+  }, [live.active, live.tracks, live.factor, shownPreview, replay.tracks]);
 
   /**
    * Les statistiques à afficher : direct, puis aperçu, puis tête de lecture.
@@ -797,6 +846,14 @@ export function StudioPage() {
    * Les franchissements qui viennent d'être comptés — ceux qui font clignoter leur
    * ligne. La **dernière salve**, jamais le cumul : rallumer toutes les lignes à
    * chaque image ferait d'un signal un bruit de fond.
+   *
+   * **`preview` et non `shownPreview`, à l'inverse des boîtes**, et la raison tient
+   * à la nature de la donnée : une boîte est un *état*, qu'on peut sauter sans rien
+   * perdre — l'image suivante le redonne. Un franchissement est un *événement* :
+   * l'aperçu qui le porte est le seul à le porter. Le tampon d'affichage écrase sa
+   * cible en attente quand le décodeur prend du retard, donc y faire passer les
+   * flashs les ferait purement et simplement disparaître. Même raison que
+   * `session.events`, qui accumule le journal sur l'aperçu vivant.
    */
   const flashCrossings = live.active ? live.lastCrossings : (preview?.crossings ?? NO_CROSSINGS);
   const lineFlashes = useLineFlashes(flashCrossings);
@@ -854,6 +911,7 @@ export function StudioPage() {
             <TechnicalMetrics
               processingFps={resultStats.processingFps}
               stats={resultStats.stats}
+              displayLagMs={displayLagMs}
             />
           ) : null
         }
@@ -1026,7 +1084,7 @@ export function StudioPage() {
                 }}
                 onMoveLine={(id, a, b) => dispatch({ type: "moveLine", id, a, b })}
                 onMoveZone={(id, points) => dispatch({ type: "moveZone", id, points })}
-                onCompleteZone={(points) => dispatch({ type: "addZone", points })}
+                onCompleteZone={handleCompleteZone}
                 onCancelZone={() => dispatch({ type: "setDrawingZone", drawing: false })}
               />
               </div>

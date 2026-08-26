@@ -27,6 +27,7 @@ export {
   busiestVsQuietestShareGap,
   mostEnteredLine,
   mostExitedLine,
+  quietestLine,
   strongestInflowLine,
   strongestOutflowLine,
 } from "./model/highlights";

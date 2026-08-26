@@ -157,6 +157,19 @@ class AnalysisJobConfig:
     #: argument de `detect_many`, ce qui lève l'impasse où ADR 0007 l'avait laissé
     #: mort — annoncé au contrat et sans effet, le pire état d'un réglage.
     plate_confidence: float | None = None
+    #: Plancher de confiance d'une **lecture**, pour cette course. `None` garde celui
+    #: du déploiement (`plate_ocr_min_text_score`).
+    #:
+    #: Il voyage par requête pour la même raison que `plate_confidence`, et c'est la
+    #: seule exception à la règle énoncée sous `read_plate_text` : il répond à une
+    #: question que seul l'utilisateur peut trancher devant sa vidéo — « des plaques
+    #: fausses, ou pas de plaques ». Les autres seuils d'OCR restent des arbitrages de
+    #: déploiement, dont il ne pourrait pas juger l'effet.
+    #:
+    #: Il descend jusqu'à l'adaptateur en argument de `read`, où il décide ce qui
+    #: devient un `PlateText`. Une lecture écartée ne vote pas, donc le véhicule reste
+    #: sans plaque et le registre en donne la raison (`no_consensus`).
+    plate_text_confidence: float | None = None
     #: Lire le **texte** des plaques localisées, en plus de les encadrer.
     #:
     #: Distinct de `detect_plates`, et subordonné à lui : lire sans détecter n'a pas
@@ -165,10 +178,11 @@ class AnalysisJobConfig:
     #: que persister un texte de plaque franchit un cran de confidentialité qui
     #: mérite un consentement explicite plutôt qu'un effet de bord (ADR 0007).
     #:
-    #: Aucun seuil OCR ici, délibérément : ils vivent tous dans `Settings`. Ce sont
-    #: des arbitrages de déploiement — combien de cœurs, quelle cadence, quelles
-    #: variantes de prétraitement — que l'utilisateur d'une analyse n'a pas à
-    #: connaître, et dont il ne pourrait pas juger l'effet sur sa vidéo.
+    #: Un seul seuil OCR ici — `plate_text_confidence` ci-dessus, le plancher de
+    #: lecture. Tous les autres vivent dans `Settings` : ce sont des arbitrages de
+    #: déploiement — combien de cœurs, quelle cadence, quelles variantes de
+    #: prétraitement — que l'utilisateur d'une analyse n'a pas à connaître, et dont il
+    #: ne pourrait pas juger l'effet sur sa vidéo.
     read_plate_text: bool = False
     max_lost_ms: float = 2500.0
     lines: tuple[CountingLineDef, ...] = ()

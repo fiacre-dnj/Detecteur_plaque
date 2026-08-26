@@ -21,11 +21,16 @@ sans poids et sans ultralytics.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+import yaml
 
 from traffic_analysis.features.models_registry.infrastructure.ultralytics_engine import (
     reset_trackers,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _Tracker:
@@ -83,3 +88,97 @@ def test_un_predicteur_sans_tracker_ne_leve_pas() -> None:
 
 def test_une_liste_de_trackers_vide_ne_leve_pas() -> None:
     reset_trackers(_Model(_Predictor([])))
+
+
+# ── Le seuil de la requête, reposé sur un tracker déjà construit ──────────────
+#
+# **Deuxième panne silencieuse de la même sortie anticipée d'Ultralytics.**
+# `register_tracker` ne relit le fichier de suivi à aucun moment une fois ses
+# trackers en place, donc le `tracker=…` passé à `track()` est ignoré. Or c'est là
+# que voyage « Confiance véhicules » (`track_high_thresh` / `new_track_thresh`,
+# ADR 0024) : toutes les analyses d'un processus tournaient au seuil de la
+# **première**. Le curseur bougeait, le fichier dérivé était écrit, son chemin
+# journalisé, et aucun chiffre ne changeait.
+
+
+class _Args:
+    """Le `IterableSimpleNamespace` d'Ultralytics, réduit à ce qui nous concerne."""
+
+    def __init__(self, high: float) -> None:
+        self.track_high_thresh = high
+        self.new_track_thresh = high
+        self.track_low_thresh = 0.1
+        self.gmc_method = "none"
+
+
+class _ConfiguredTracker(_Tracker):
+    def __init__(self, high: float) -> None:
+        super().__init__()
+        self.args = _Args(high)
+
+
+def _tracker_file(tmp_path: Path, high: float) -> Path:
+    path = tmp_path / f"botsort-hi-{high:.2f}.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "tracker_type": "botsort",
+                "track_high_thresh": high,
+                "new_track_thresh": high,
+                "track_low_thresh": 0.1,
+                "gmc_method": "none",
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_le_seuil_du_fichier_est_repose_sur_un_tracker_deja_construit(tmp_path: Path) -> None:
+    """**Le test de la panne.** Analyse 1 à 0,35, analyse 2 à 0,60.
+
+    Sans ce report, la seconde compterait avec le seuil de la première — et rien à
+    l'écran, dans les journaux ou dans les chiffres ne le dirait.
+    """
+    tracker = _ConfiguredTracker(0.35)
+
+    reset_trackers(_Model(_Predictor([tracker])), _tracker_file(tmp_path, 0.60))
+
+    assert tracker.args.track_high_thresh == 0.60
+    assert tracker.args.new_track_thresh == 0.60
+
+
+def test_le_report_precede_aucune_remise_a_zero_perdue(tmp_path: Path) -> None:
+    """Reposer le seuil ne remplace pas le nettoyage d'état : les deux ont lieu."""
+    tracker = _ConfiguredTracker(0.35)
+
+    reset_trackers(_Model(_Predictor([tracker])), _tracker_file(tmp_path, 0.60))
+
+    assert tracker.resets == 1
+
+
+def test_sans_fichier_rien_n_est_repose() -> None:
+    """L'appelant qui n'a que l'état à nettoyer garde exactement l'ancien comportement."""
+    tracker = _ConfiguredTracker(0.35)
+
+    reset_trackers(_Model(_Predictor([tracker])))
+
+    assert tracker.args.track_high_thresh == 0.35
+
+
+def test_un_tracker_sans_arguments_ne_leve_pas(tmp_path: Path) -> None:
+    """Une forme inattendue rend le comportement d'avant le correctif, jamais un échec.
+
+    Un comptage ne doit pas tomber parce qu'Ultralytics a changé la forme de ses
+    trackers : on renonce au report, on le journalise, et l'analyse continue.
+    """
+    reset_trackers(_Model(_Predictor([_Tracker()])), _tracker_file(tmp_path, 0.60))
+
+
+def test_un_modele_neuf_avec_un_fichier_ne_leve_pas(tmp_path: Path) -> None:
+    """Premier appel du processus : Ultralytics lira le fichier lui-même.
+
+    C'est le seul cas où il le lit, et c'est pour cela que la panne ne se voyait
+    jamais sur la première analyse — celle qu'on regarde en développement.
+    """
+    reset_trackers(_Model(), _tracker_file(tmp_path, 0.60))

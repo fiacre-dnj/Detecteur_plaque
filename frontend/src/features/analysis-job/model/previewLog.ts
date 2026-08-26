@@ -29,6 +29,22 @@ export const LOG_LIMIT = 200;
  * L'ordre d'affichage est celui du journal : ce qui vient de se passer doit être
  * en haut, sinon il faut défiler pour voir l'événement qu'on attendait — et c'est
  * précisément l'événement qu'on regardait la vidéo pour voir.
+ *
+ * **Insertion triée, plus empilement**, depuis qu'un franchissement porte la date
+ * de son intersection avec le trait (ADR 0038). La bande morte a une épaisseur
+ * proportionnelle à la boîte du véhicule : un poids lourd la traverse bien plus
+ * lentement qu'une moto, donc deux passages peuvent arriver dans **deux trames SSE
+ * différentes** en ordre inverse de leurs dates. Le serveur trie à l'intérieur
+ * d'une trame ; le désordre entre trames se referme ici, et nulle part ailleurs.
+ *
+ * Ce n'est pas une question de présentation : `describeCrossings` en dérive
+ * `gapMs`, le numéro de passage, et surtout `previous` — qui relie une sortie à
+ * l'entrée du **même** véhicule pour donner le temps de traversée du carrefour.
+ * Sur un journal désordonné, cette durée devient négative.
+ *
+ * Le coût est borné par `limit` (200 entrées) : au pire 200 comparaisons par
+ * trame, soit une insertion linéaire sur une liste que l'écran affiche déjà en
+ * entier. Un tri complet serait plus lisible et plus cher pour rien.
  */
 export function appendCrossings(
   log: readonly CrossingEvent[],
@@ -36,10 +52,16 @@ export function appendCrossings(
   limit: number = LOG_LIMIT,
 ): readonly CrossingEvent[] {
   if (incoming.length === 0) return log;
-  // Les entrants sont eux-mêmes dans l'ordre chronologique : les renverser avant
-  // de les empiler garde le plus récent tout en haut, y compris à l'intérieur
-  // d'un même aperçu qui en porte plusieurs.
-  return [...[...incoming].reverse(), ...log].slice(0, limit);
+  const merged = [...log];
+  for (const event of incoming) {
+    // Première position dont l'instant n'est **pas plus récent** : à date égale
+    // l'entrant passe devant, ce qui reproduit exactement l'empilement d'avant
+    // (`[...incoming].reverse()`) et garde le dernier arrivé en tête.
+    let at = merged.findIndex((seen) => seen.timestampMs <= event.timestampMs);
+    if (at < 0) at = merged.length;
+    merged.splice(at, 0, event);
+  }
+  return merged.slice(0, limit);
 }
 
 /**

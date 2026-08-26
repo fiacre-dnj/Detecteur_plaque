@@ -238,7 +238,10 @@ class PlateReader(Protocol):
     """
 
     def read(
-        self, image: npt.NDArray[np.uint8], boxes: Sequence[BoundingBox]
+        self,
+        image: npt.NDArray[np.uint8],
+        boxes: Sequence[BoundingBox],
+        min_score: float | None = None,
     ) -> tuple[PlateText | None, ...]:
         """Lit les plaques de `boxes`, en coordonnées de l'image **complète**.
 
@@ -246,6 +249,14 @@ class PlateReader(Protocol):
         l'appelant qui sait à quelle détection appartient quelle boîte, et lui rendre
         une liste plus courte l'obligerait à deviner. `None` signifie « rien de
         lisible ici » — un refus honnête, pas une erreur.
+
+        `min_score` est le plancher de confiance de **cette** course, `None` gardant
+        celui du déploiement (`plate_ocr_min_text_score`). Il voyage par appel et non
+        par construction, exactement comme le `confidence` de
+        `PlateDetector.detect_many`, et pour la même raison : c'est une question que
+        seul l'utilisateur peut trancher devant sa vidéo — « des plaques fausses, ou
+        pas de plaques ». Une lecture sous ce plancher n'atteint pas le vote, donc ne
+        peut rien publier.
 
         Ne lève **jamais** : une lecture ratée rend `(None, …)` et journalise. Un
         comptage ne doit pas échouer parce qu'une plaque était sale.

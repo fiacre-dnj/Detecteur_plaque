@@ -212,8 +212,15 @@ function tallyLine(byLine: Record<string, LineTally>, event: CrossingEvent): voi
   // compteurs du même fait, et le rejeu contredirait le résultat qu'il rejoue.
   side.total += 1;
   side.byClass[event.label] = (side.byClass[event.label] ?? 0) + 1;
-  side.firstMs ??= event.timestampMs;
-  side.lastMs = event.timestampMs;
+  // **Minimum et maximum, jamais « première » et « dernière écriture »**, et c'est
+  // le miroir exact de `DirectionTally.record` côté serveur (ADR 0038). Un
+  // franchissement porte désormais la date de son intersection avec le trait ; la
+  // bande morte étant proportionnelle à la boîte, deux véhicules peuvent être
+  // comptabilisés dans l'ordre inverse de leur passage. Prendre la première
+  // écriture rendrait alors `firstMs > lastMs`, et la relecture contredirait le
+  // résultat qu'elle rejoue.
+  side.firstMs = side.firstMs === null ? event.timestampMs : Math.min(side.firstMs, event.timestampMs);
+  side.lastMs = side.lastMs === null ? event.timestampMs : Math.max(side.lastMs, event.timestampMs);
 
   tally.total = tally.byDirection.positive.total + tally.byDirection.negative.total;
   tally.byClass[event.label] = (tally.byClass[event.label] ?? 0) + 1;

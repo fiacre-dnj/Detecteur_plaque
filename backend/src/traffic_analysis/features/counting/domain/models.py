@@ -503,12 +503,21 @@ class DirectionTally:
     last_ms: float | None = None
 
     def record(self, label: str, timestamp_ms: float) -> None:
-        """Enregistre un passage. **Le seul endroit qui incrémente un sens.**"""
+        """Enregistre un passage. **Le seul endroit qui incrémente un sens.**
+
+        `min` / `max` et non « première écriture » / « dernière écriture », depuis
+        qu'un franchissement porte la date de son intersection avec le trait
+        (ADR 0038) et non celle de sa sortie de bande morte. La bande a une
+        épaisseur proportionnelle à la boîte du véhicule : un poids lourd la
+        traverse bien plus lentement qu'une moto, donc **deux véhicules peuvent
+        être comptabilisés dans l'ordre inverse de leur passage réel**. Ordonner
+        par l'ordre d'arrivée rendrait alors `first_ms > last_ms`, ce qui est
+        indéfendable pour deux champs nommés ainsi.
+        """
         self.total += 1
         self.by_class[label] = self.by_class.get(label, 0) + 1
-        if self.first_ms is None:
-            self.first_ms = timestamp_ms
-        self.last_ms = timestamp_ms
+        self.first_ms = timestamp_ms if self.first_ms is None else min(self.first_ms, timestamp_ms)
+        self.last_ms = timestamp_ms if self.last_ms is None else max(self.last_ms, timestamp_ms)
 
 
 @dataclass(slots=True)

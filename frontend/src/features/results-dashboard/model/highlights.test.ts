@@ -14,6 +14,7 @@ import {
   busiestVsQuietestShareGap,
   mostEnteredLine,
   mostExitedLine,
+  quietestLine,
   strongestInflowLine,
   strongestOutflowLine,
 } from "./highlights";
@@ -108,6 +109,49 @@ describe("busiestLine", () => {
     });
 
     expect(busiestLine(theStats, TWO_LINES)?.lineId).toBe("nord");
+  });
+});
+
+describe("quietestLine", () => {
+  it("rend `null` sans ligne", () => {
+    expect(quietestLine(stats({}), [])).toBeNull();
+  });
+
+  it("identifie la ligne la moins fréquentée, tous sens confondus", () => {
+    const theStats = stats({
+      nord: { positive: side(3), negative: side(2) },
+      est: { positive: side(8), negative: side(1) },
+    });
+
+    expect(quietestLine(theStats, TWO_LINES)).toMatchObject({ lineId: "nord", value: 5 });
+  });
+
+  it("rend une fréquentation positive, jamais le score inversé du maximum", () => {
+    const theStats = stats({
+      nord: { positive: side(3), negative: side(2) },
+      est: { positive: side(8), negative: side(1) },
+    });
+
+    expect(quietestLine(theStats, TWO_LINES)?.value).toBe(5);
+    expect(busiestLine(theStats, TWO_LINES)?.value).toBe(9);
+  });
+
+  it("nomme une ligne déserte : zéro passage est un résultat, pas une absence", () => {
+    const theStats = stats({
+      nord: { positive: side(0), negative: side(0) },
+      est: { positive: side(8), negative: side(1) },
+    });
+
+    expect(quietestLine(theStats, TWO_LINES)).toMatchObject({ lineId: "nord", value: 0 });
+  });
+
+  it("garde la première ligne du tracé en cas d'égalité", () => {
+    const theStats = stats({
+      nord: { positive: side(5), negative: side(0) },
+      est: { positive: side(5), negative: side(0) },
+    });
+
+    expect(quietestLine(theStats, TWO_LINES)?.lineId).toBe("nord");
   });
 });
 

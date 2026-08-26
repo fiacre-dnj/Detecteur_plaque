@@ -1,14 +1,21 @@
 /**
- * Les quatre chiffres **d'instant**, posés à l'extrémité de la barre du studio.
+ * Les cinq chiffres **d'instant**, posés à l'extrémité de la barre du studio.
  *
- * Pistes vivantes, cadence serveur, latence par image, durée de vidéo déjà
- * traitée : ils disent comment l'analyse se passe **en ce moment**, jamais ce
- * qu'elle a trouvé. Ils occupaient quatre des six cartes de tête de la colonne de
- * résultats, au même poids visuel que le bilan du comptage — donc les deux tiers
- * de l'espace le mieux placé de l'écran pour de la métrologie qu'on surveille du
- * coin de l'œil.
+ * Pistes vivantes, cadence serveur, latence par image, écart d'affichage, durée de
+ * vidéo déjà traitée : ils disent comment l'analyse se passe **en ce moment**,
+ * jamais ce qu'elle a trouvé. Quatre d'entre eux occupaient quatre des six cartes
+ * de tête de la colonne de résultats, au même poids visuel que le bilan du
+ * comptage — donc les deux tiers de l'espace le mieux placé de l'écran pour de la
+ * métrologie qu'on surveille du coin de l'œil.
  *
- * **« Objets suivis » ouvre la rangée**, et c'est le seul des quatre qui parle de
+ * **« Écart image » est le cinquième**, et il est d'une autre nature que les
+ * quatre autres : ceux-là décrivent le serveur, celui-ci décrit **l'accord entre
+ * le serveur et l'écran**. Il existe parce que « on dirait que le tracker est en
+ * avance » était irréfutable et invérifiable à la fois, exactement comme « cette
+ * voiture est passée et elle n'est pas comptée » — et pour la même raison, il se
+ * règle en donnant un chiffre plutôt qu'en discutant une impression.
+ *
+ * **« Objets suivis » ouvre la rangée**, et c'est le seul qui parle de
  * la scène plutôt que de la machine : c'est le nombre de pistes vivantes à *cette*
  * image, un chiffre qui monte et redescend, jamais un résultat qui s'accumule —
  * d'où sa place ici et non parmi les cartes du comptage. Sa contrepartie est
@@ -36,9 +43,21 @@ interface TechnicalMetricsProps {
   /** Cadence de traitement du **serveur**, distincte de la lecture vidéo. */
   processingFps: number;
   stats: AnalysisStats;
+  /**
+   * Écart entre l'image **affichée** et l'image **analysée**, en millisecondes.
+   *
+   * `null` quand il n'a pas été mesuré : navigateur sans `requestVideoFrameCallback`,
+   * suivi désactivé, ou rien encore présenté. On affiche alors « — » plutôt qu'un
+   * zéro, qui affirmerait une synchronisation qu'on n'a pas vérifiée.
+   */
+  displayLagMs?: number | null;
 }
 
-export function TechnicalMetrics({ processingFps, stats }: TechnicalMetricsProps) {
+export function TechnicalMetrics({
+  processingFps,
+  stats,
+  displayLagMs = null,
+}: TechnicalMetricsProps) {
   return (
     <dl className="flex items-center gap-3">
       <Metric
@@ -61,6 +80,19 @@ export function TechnicalMetrics({ processingFps, stats }: TechnicalMetricsProps
         // Dit ce que le chiffre mesure : le traitement d'une image côté serveur,
         // et non un aller-retour réseau — en différé, il n'y en a pas par image.
         hint="Temps de traitement d'une image côté serveur"
+      />
+      <Metric
+        label="Écart image"
+        value={displayLagMs === null ? "—" : displayLagMs.toFixed(0)}
+        unit={displayLagMs === null ? undefined : "ms"}
+        // **Le seul chiffre qui dise si l'overlay est calé.** Les boîtes attendent
+        // désormais que leur image soit affichée ; celui-ci mesure ce qu'il restait
+        // d'écart au moment où elle l'a été. Il doit osciller autour de zéro. S'il
+        // **dérive** avec la position dans la vidéo, la cause n'est pas le calage
+        // mais la cadence déclarée du conteneur (VFR, 29,97 arrondi, rotation en
+        // métadonnées) : le serveur date `index / fps`, le navigateur cherche par
+        // PTS, et les deux s'éloignent. Aucun autre affichage ne sépare ces cas.
+        hint="Écart entre l'image affichée et l'image analysée — proche de zéro quand l'overlay est calé"
       />
       <Metric
         label="Flux analysé"
@@ -89,7 +121,7 @@ function Metric({
 }: {
   label: string;
   value: string;
-  unit?: string;
+  unit?: string | undefined;
   hint: string;
 }) {
   return (

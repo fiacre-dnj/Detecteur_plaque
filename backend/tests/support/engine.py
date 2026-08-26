@@ -231,6 +231,14 @@ class FakePlateDetector:
                 )
                 for box in boxes
             )
+        # **Trois nombres se répondent, et rien ne le dit ailleurs.** Les scénarios
+        # ANPR utilisent `VEHICLE_SIZE = (160, 120)` et cette plaque vaut
+        # `largeur × 0,4`, soit **exactement 64,0 px** — c'est-à-dire pile la valeur
+        # de `PlateOcrOptions.min_width_px`, donc pile le plancher que la porte de
+        # lisibilité (ADR 0039) compare. Les deux comparaisons étant strictes, tout
+        # passe aujourd'hui ; mais changer l'un des trois — la taille de véhicule
+        # des tests, ce `0.4`, ou le plancher de lecture — ferait basculer plusieurs
+        # tests d'un coup, sans qu'aucun message ne mentionne la cause.
         return tuple(
             (
                 PlateDetection(
@@ -298,6 +306,14 @@ class FakePlateReader:
         #: retenu la meilleure vignette et non la troisième venue — un compteur
         #: dirait seulement qu'il y a eu autant de lectures.
         self.read_boxes: list[BoundingBox] = []
+        #: Les planchers de lecture **reçus**, un par appel.
+        #:
+        #: La doublure les applique au lieu de les ignorer, et c'est délibéré : un
+        #: réglage de requête que le port accepte sans effet est le pire état d'un
+        #: réglage, et c'est exactement par là que `plate_confidence` était resté
+        #: mort jusqu'à ADR 0007. Une doublure qui obéit rend le câblage vérifiable
+        #: sans onnxruntime.
+        self.min_scores: list[float | None] = []
 
     @property
     def available(self) -> bool:
@@ -307,15 +323,22 @@ class FakePlateReader:
         self,
         image: npt.NDArray[np.uint8],  # noqa: ARG002
         boxes: Sequence[BoundingBox],
+        min_score: float | None = None,
     ) -> tuple[PlateText | None, ...]:
         """Rend **exactement** un élément par boîte, dans le même ordre."""
         self.calls += 1
         self.crops += len(boxes)
         self.read_boxes.extend(boxes)
+        self.min_scores.append(min_score)
         if not self._available:
             return (None,) * len(boxes)
         if self._bad_length:
             return ()
+        # Le plancher est appliqué comme le ferait le vrai lecteur : la lecture ne
+        # devient pas un `PlateText`, elle ne traverse pas le port, donc elle ne vote
+        # pas. Un refus, jamais un texte étiqueté « peu sûr ».
+        if min_score is not None and self._score < min_score:
+            return (None,) * len(boxes)
         return tuple(
             PlateText(
                 text=self._text_for(box) if self._text_for is not None else self._text,

@@ -26,6 +26,7 @@ import {
   busiestVsQuietestShareGap,
   mostEnteredLine,
   mostExitedLine,
+  quietestLine,
   strongestInflowLine,
   strongestOutflowLine,
   type LineHighlight,
@@ -48,46 +49,80 @@ interface LineFlowDashboardProps {
   vehicles: readonly VehicleRecord[];
 }
 
+/** Un comparatif de la carte du bas : son libellé, sa ligne gagnante et sa justification. */
+interface HighlightItem {
+  label: string;
+  highlight: LineHighlight | null;
+  hint: (h: LineHighlight) => string;
+}
+
 export function LineFlowDashboard({ stats, lines, vehicles }: LineFlowDashboardProps) {
   if (lines.length === 0) return null;
 
   const entered = enteringVehicleCount(vehicles, lines);
 
   const busiest = busiestLine(stats, lines);
+  // Nommer la ligne la moins fréquentée n'a de sens qu'à partir de deux lignes :
+  // sur un tracé unique, la plus et la moins fréquentée sont la même, et
+  // l'afficher deux fois se lit comme un défaut d'affichage.
+  const quietest = lines.length > 1 ? quietestLine(stats, lines) : null;
   const mostEntered = mostEnteredLine(stats, lines);
   const mostExited = mostExitedLine(stats, lines);
   const inflow = strongestInflowLine(stats, lines);
   const outflow = strongestOutflowLine(stats, lines);
   const gap = busiestVsQuietestShareGap(stats, lines);
 
-  const highlightItems: { label: string; highlight: LineHighlight | null; hint: (h: LineHighlight) => string }[] = [
-    {
-      label: "Ligne la plus fréquentée",
-      highlight: busiest,
-      hint: (h) => `${h.value} passages, tous sens confondus`,
-    },
-    {
-      label: "Plus d'entrées",
-      highlight: mostEntered !== null && mostEntered.value > 0 ? mostEntered : null,
-      hint: (h) => `${h.value} entrées — la plus empruntée pour entrer`,
-    },
-    {
-      label: "Plus de sorties",
-      highlight: mostExited !== null && mostExited.value > 0 ? mostExited : null,
-      hint: (h) => `${h.value} sorties — la plus empruntée pour sortir`,
-    },
-    {
-      label: "Plus fort afflux",
-      highlight: inflow !== null && inflow.value > 0 ? inflow : null,
-      hint: (h) => `Solde +${h.value} — le carrefour s'y remplit le plus`,
-    },
-    {
-      label: "Plus fort reflux",
-      highlight: outflow !== null && outflow.value > 0 ? outflow : null,
-      hint: (h) => `Solde -${h.value} — le carrefour s'y vide le plus`,
-    },
+  // **Les comparatifs vont par paires**, et la mise en page le dit : chaque
+  // colonne porte une question et sa réciproque, l'une au-dessus de l'autre —
+  // entrées/sorties, afflux/reflux, la plus/la moins fréquentée — puis l'écart
+  // seul à droite. Une grille à plat les rangeait par ordre d'arrivée, et un
+  // comparatif se lit contre son pendant, jamais isolément.
+  //
+  // Le regroupement en colonnes est aussi ce qui rend le filtrage sûr : un
+  // comparatif absent (aucun rôle déclaré, aucun passage) laisse sa moitié de
+  // colonne vide sans décaler ceux des autres paires, ce qu'un simple
+  // `filter` sur une liste à plat ferait.
+  const highlightPairs: HighlightItem[][] = [
+    [
+      {
+        label: "Plus d'entrées",
+        highlight: mostEntered !== null && mostEntered.value > 0 ? mostEntered : null,
+        hint: (h) => `${h.value} entrées — la plus empruntée pour entrer`,
+      },
+      {
+        label: "Plus de sorties",
+        highlight: mostExited !== null && mostExited.value > 0 ? mostExited : null,
+        hint: (h) => `${h.value} sorties — la plus empruntée pour sortir`,
+      },
+    ],
+    [
+      {
+        label: "Plus fort afflux",
+        highlight: inflow !== null && inflow.value > 0 ? inflow : null,
+        hint: (h) => `Solde +${h.value} — le carrefour s'y remplit le plus`,
+      },
+      {
+        label: "Plus fort reflux",
+        highlight: outflow !== null && outflow.value > 0 ? outflow : null,
+        hint: (h) => `Solde -${h.value} — le carrefour s'y vide le plus`,
+      },
+    ],
+    [
+      {
+        label: "Ligne la plus fréquentée",
+        highlight: busiest,
+        hint: (h) => `${h.value} passages, tous sens confondus`,
+      },
+      {
+        label: "Ligne la moins fréquentée",
+        highlight: quietest,
+        hint: (h) => `${h.value} passages, tous sens confondus`,
+      },
+    ],
   ];
-  const shownHighlights = highlightItems.filter((item) => item.highlight !== null);
+  const shownColumns = highlightPairs
+    .map((column) => column.filter((item) => item.highlight !== null))
+    .filter((column) => column.length > 0);
 
   return (
     <section aria-labelledby="statistique-title" className="space-y-3">
@@ -115,13 +150,17 @@ export function LineFlowDashboard({ stats, lines, vehicles }: LineFlowDashboardP
         ))}
       </ul>
 
-      {shownHighlights.length > 0 && (
-        <div className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-card bg-surface p-3 shadow-card sm:grid-cols-3">
-          {shownHighlights.map(({ label, highlight, hint }) => (
-            <div key={label} className="min-w-0">
-              <p className="label-micro">{label}</p>
-              <p className="mt-0.5 truncate text-caption font-bold text-ink">{highlight?.lineName}</p>
-              <p className="text-micro text-ink-dim">{highlight !== null ? hint(highlight) : null}</p>
+      {(shownColumns.length > 0 || gap !== null) && (
+        <div className="grid grid-cols-1 gap-x-4 gap-y-3 rounded-card bg-surface p-3 shadow-card sm:grid-cols-2 lg:grid-cols-4">
+          {shownColumns.map((column) => (
+            <div key={column[0]?.label} className="min-w-0 space-y-3">
+              {column.map(({ label, highlight, hint }) => (
+                <div key={label} className="min-w-0">
+                  <p className="label-micro">{label}</p>
+                  <p className="mt-0.5 truncate text-caption font-bold text-ink">{highlight?.lineName}</p>
+                  <p className="text-micro text-ink-dim">{highlight !== null ? hint(highlight) : null}</p>
+                </div>
+              ))}
             </div>
           ))}
           {gap !== null && (

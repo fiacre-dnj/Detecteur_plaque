@@ -277,6 +277,62 @@ class PlateDetectOptions:
     #: quand le trafic monte ; il ne l'améliore pas dans le cas général.
     max_per_frame: int = 0
 
+    #: La porte de lisibilité est-elle armée ? Réglage de déploiement.
+    #:
+    #: Distinct de `readable_min_plate_width_px`, qui est la **valeur** du plancher et
+    #: vient de l'OCR : celui-ci est l'interrupteur, celui-là le seuil. Les confondre
+    #: obligerait le service à connaître un nombre pour dire « non ».
+    readable_gate: bool = True
+
+    #: Plancher de **lecture** de l'OCR, en pixels de **plaque**. `0` désactive.
+    #:
+    #: **La porte qui manquait, et c'est le plus gros levier de cadence de l'ANPR.**
+    #: Mesuré sur une vue de circulation réelle (ADR 0032) : la détection de plaques
+    #: pèse 73 % du budget, son coût est **linéaire en recadrages** — 21,5 ms pour un,
+    #: 139,7 pour huit — et **aucune plaque n'y est publiable**, parce qu'elles font
+    #: moins de 48 px pour un plancher de lecture à 64 (invariant 12). Les deux tiers
+    #: du budget partaient donc dans des inférences dont on pouvait *prouver*, mesure
+    #: en main, qu'elles ne rendraient jamais de texte.
+    #:
+    #: Dès qu'une piste a reçu **une seule** détection réelle, on connaît le rapport
+    #: `largeur_plaque / largeur_véhicule` **de cette piste-là** — mesuré sur elle, pas
+    #: estimé sur la scène. On sait donc quelle largeur de véhicule il faudrait pour
+    #: atteindre le plancher, et on peut se taire tant qu'elle n'est pas atteinte.
+    #:
+    #: **Ce qui distingue cette porte d'un abandon, et ce qui la rend sûre** :
+    #: `largeur_véhicule × rapport ≥ plancher` redevient vrai **tout seul** quand le
+    #: véhicule s'approche. Pas de facteur de croissance à régler, pas d'hystérésis,
+    #: pas de compteur à faire expirer — la porte **suspend**, elle n'abandonne pas.
+    #: C'est ce qui répond à l'objection décisive : on ne perd pas la plaque qu'une
+    #: piste publiera dans trois secondes, à dix mètres d'ici.
+    #:
+    #: **Aucun texte ne peut être perdu, par construction et pas en moyenne** : le
+    #: nombre comparé est le **même** que celui dont `PlateOcrOptions.min_width_px` se
+    #: sert déjà pour refuser de lire. Une plaque écartée ici est une plaque que l'OCR
+    #: aurait refusée de toute façon. Ce qui est réellement payé est ailleurs, et il
+    #: faut le dire : le **rectangle** disparaît sur ces véhicules, après les
+    #: `max_anchor_age` images de reprojection.
+    #:
+    #: Posé par le service, et **seulement quand l'OCR tourne vraiment** : sans
+    #: lecture, un rectangle sur une plaque de 20 px est exactement ce que
+    #: l'utilisateur a demandé, et le couper serait lui retirer sa fonctionnalité au
+    #: nom d'un texte qu'il n'attend pas.
+    readable_min_plate_width_px: float = 0.0
+
+    #: Mesures consécutives sous le plancher avant de suspendre la piste.
+    #:
+    #: `2` et non `1` : une plaque à moitié occultée ou vue de biais rend une mesure
+    #: courte qui ne décrit pas la piste. Deux mesures basses de suite décrivent une
+    #: situation, une seule décrit un instant.
+    readable_min_samples: int = 2
+
+    #: Réarmement d'office toutes les N images analysées. `0` = jamais.
+    #:
+    #: Quota d'exploration, désactivé par défaut : la porte se rouvre déjà seule
+    #: quand le véhicule grandit, donc ce réglage n'existe que pour le cas — non
+    #: observé à ce jour — d'une piste réellement lisible qui ne grandirait pas.
+    readable_retry_every: int = 0
+
     #: Nombre d'échecs consécutifs (détection soumise, aucune plaque trouvée)
     #: au-delà duquel une piste sans ancre retombe sur la cadence normale au lieu
     #: d'être retentée à chaque image analysée.
@@ -363,6 +419,16 @@ class PlateDetectPolicy:
     #: Remis à zéro par tout succès ; absent tant qu'aucune détection n'a été
     #: soumise.
     misses: dict[int, int] = field(default_factory=dict)
+    #: Identité → **meilleur** rapport largeur-plaque / largeur-véhicule mesuré.
+    #:
+    #: Un maximum, jamais la dernière valeur vue — même convention que
+    #: `PlateOcrPolicy.record`, et elle penche du bon côté : un maximum rouvre la
+    #: porte plus facilement qu'il ne la ferme.
+    best_ratio: dict[int, float] = field(default_factory=dict)
+    #: Identité → mesures consécutives dont la plaque était sous le plancher.
+    unreadable: dict[int, int] = field(default_factory=dict)
+    #: Identité → ordinal auquel la porte de lisibilité l'a suspendue.
+    suspended_at: dict[int, int] = field(default_factory=dict)
 
     def should_detect(
         self,
@@ -390,6 +456,22 @@ class PlateDetectPolicy:
         # 1. Vote acquis : on payait le goulot pour alimenter un consommateur qui
         #    n'écoute plus. **La plus grosse économie quand des plaques sont lues.**
         if self.options.stop_when_confident and vote_is_confident:
+            return False
+
+        # 1 bis. Lisibilité projetée : cette piste a été mesurée, on connaît le
+        #    rapport plaque/véhicule **de cette piste**, et il dit que sa plaque
+        #    n'atteindra pas le plancher de lecture à la taille où le véhicule est.
+        #    Payer achèterait une boîte que l'OCR refusera de lire — pas une plaque
+        #    de moins. **La porte se rouvre seule quand le véhicule grandit** : c'est
+        #    ce qui la distingue d'un abandon, et ce qui la rend sûre sur un véhicule
+        #    qui approche.
+        #
+        #    **Impérativement AVANT la garde 3**, et c'est le seul détail
+        #    d'implémentation qui peut faire échouer tout ce mécanisme en silence :
+        #    une piste suspendue ne mesure plus, donc son ancre vieillit et disparaît
+        #    à `max_anchor_age` ; la garde 3 (« pas d'ancre » → vrai inconditionnel)
+        #    la relancerait alors à chaque image et la porte n'économiserait **rien**.
+        if self._is_projected_unreadable(global_id, vehicle, ordinal):
             return False
 
         last = self.last_ordinal.get(global_id)
@@ -427,3 +509,62 @@ class PlateDetectPolicy:
             self.misses[global_id] = 0
         else:
             self.misses[global_id] = self.misses.get(global_id, 0) + 1
+
+    def observe_plate(self, global_id: int, vehicle_width: float, plate_width: float) -> None:
+        """Note ce qu'une détection **réelle** a mesuré sur cette piste.
+
+        Jamais une reprojection : une ancre reprojetée n'est pas une observation, et
+        la faire entrer ici ferait décider la porte sur une estimation d'estimation.
+        L'appelant garantit cette propriété en ne l'appelant que sur `measured`.
+
+        Le rapport retenu est un **maximum** : si la plaque a déjà été vue large une
+        fois sur cette piste, c'est qu'elle *peut* l'être, et la porte doit s'ouvrir
+        dès que le véhicule retrouve cette taille. Retenir la dernière mesure
+        laisserait une vue de biais fermer la porte pour de bon.
+
+        Le compteur d'illisibilité est remis à zéro par toute mesure au-dessus du
+        plancher, comme `misses` l'est par tout succès : ce sont des échecs
+        **consécutifs** qui décrivent une situation, pas un cumul sur la vie.
+        """
+        if vehicle_width <= 0.0 or plate_width <= 0.0:
+            return
+        ratio = plate_width / vehicle_width
+        self.best_ratio[global_id] = max(self.best_ratio.get(global_id, 0.0), ratio)
+        if plate_width >= self.options.readable_min_plate_width_px:
+            self.unreadable[global_id] = 0
+        else:
+            self.unreadable[global_id] = self.unreadable.get(global_id, 0) + 1
+
+    def _is_projected_unreadable(self, global_id: int, vehicle: BoundingBox, ordinal: int) -> bool:
+        """La plaque de cette piste sera-t-elle **certainement** illisible ici ?
+
+        « Certainement » au sens de ce qu'on a mesuré sur elle : on ne suspend
+        jamais une piste qu'on n'a pas soi-même vue rendre des plaques trop petites,
+        `readable_min_samples` fois de suite.
+        """
+        floor = self.options.readable_min_plate_width_px
+        if floor <= 0.0:
+            return False
+        if self.unreadable.get(global_id, 0) < max(1, self.options.readable_min_samples):
+            return False
+        ratio = self.best_ratio.get(global_id)
+        if ratio is None or ratio <= 0.0:
+            return False
+
+        # Le réarmement qui n'a besoin d'aucun réglage : le véhicule a grandi assez
+        # pour que sa plaque franchisse le plancher. C'est une mesure, pas un délai.
+        if vehicle.width * ratio >= floor:
+            return False
+
+        # Le quota d'exploration, désactivé par défaut. Il ne rouvre la porte que le
+        # temps d'une image : sans nouvelle mesure au-dessus du plancher, la piste
+        # est resuspendue aussitôt.
+        every = self.options.readable_retry_every
+        since = self.suspended_at.get(global_id)
+        if every > 0:
+            if since is None:
+                self.suspended_at[global_id] = ordinal
+            elif ordinal - since >= every:
+                self.suspended_at[global_id] = ordinal
+                return False
+        return True

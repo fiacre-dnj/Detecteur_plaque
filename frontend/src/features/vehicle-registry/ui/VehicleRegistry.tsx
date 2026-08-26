@@ -198,7 +198,6 @@ export function VehicleRegistry({
               serait une invention ; le taire ferait diverger le registre de la
               colonne « Passages », qui le compte. */}
           {hasUnroled && <Th className="w-40">Hors rôle</Th>}
-          <Th className="w-28">Zones</Th>
           {/* « Passages » remplace « Ré-id » : la ré-identification n'existe plus
               (ADR 0016), et le nombre de franchissements d'un véhicule est
               l'information qui rend une ligne du registre vérifiable — un 0 dit
@@ -246,13 +245,6 @@ export function VehicleRegistry({
             <RoleCrossingCell vehicle={vehicle} lines={lines} role="entry" />
             <RoleCrossingCell vehicle={vehicle} lines={lines} role="exit" />
             {hasUnroled && <UnroledCrossingCell vehicle={vehicle} lines={lines} />}
-            <Td className="text-ink-muted">
-              {vehicle.zonesVisited.length === 0 ? (
-                <span className="text-ink-dim">—</span>
-              ) : (
-                vehicle.zonesVisited.join(", ")
-              )}
-            </Td>
             <Td className="tabular">
               {vehicle.crossedLines.length === 0 ? "—" : vehicle.crossedLines.length}
             </Td>

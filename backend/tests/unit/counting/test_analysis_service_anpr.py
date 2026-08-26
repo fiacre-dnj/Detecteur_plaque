@@ -26,6 +26,7 @@ from traffic_analysis.features.counting.application.analysis_service import Anal
 from traffic_analysis.features.counting.application.dto import (
     AnalysisJobConfig,
     AnalysisResultData,
+    BoundingBox,
     PlateDetectOptions,
     PlateOcrOptions,
 )
@@ -94,6 +95,7 @@ def _run(
     detect: PlateDetectOptions | None = None,
     steps: int = 16,
     plate_confidence: float | None = None,
+    plate_text_confidence: float | None = None,
 ) -> AnalysisResultData:
     service = AnalysisService(
         FakeEngine(_frames(steps)),  # type: ignore[arg-type]
@@ -108,6 +110,7 @@ def _run(
         detect_plates=detect_plates,
         read_plate_text=read_plate_text,
         plate_confidence=plate_confidence,
+        plate_text_confidence=plate_text_confidence,
     )
     return service.run_video("job-anpr", VIDEO, config)
 
@@ -471,3 +474,158 @@ class TestPlafondParImage:
             if not track.plates
         ]
         assert muettes == []
+
+
+class TestPlancherDeLecture:
+    """« Confiance lecture » : le plancher de confiance d'une **lecture**.
+
+    Il existait déjà, mais seulement comme réglage de **déploiement**
+    (`plate_ocr_min_text_score`) : l'utilisateur devant sa vidéo ne pouvait pas
+    arbitrer « des plaques fausses, ou pas de plaques ». Il voyage désormais par
+    requête, exactement comme `plate_confidence`, et descend jusqu'à l'adaptateur en
+    argument de `read`.
+
+    Ces tests portent sur le **câblage**, qui est ce qui manquait : le seuil doit
+    arriver au lecteur, et un lecteur qui le refuse doit laisser le véhicule sans
+    plaque plutôt qu'avec une plaque incertaine.
+    """
+
+    def test_le_plancher_de_la_requete_arrive_au_lecteur(self) -> None:
+        """Le mode de panne visé : un réglage accepté au contrat et sans effet.
+
+        C'est l'état où `plate_confidence` est resté jusqu'à ADR 0007, et il ne se
+        voit d'aucune façon — l'écran affiche le curseur, le serveur accepte la
+        requête, et rien ne change dans les chiffres.
+        """
+        reader = FakePlateReader()
+        _run(reader=reader, plate_text_confidence=0.80)
+
+        assert reader.min_scores
+        assert set(reader.min_scores) == {0.80}
+
+    def test_sans_plancher_de_requete_le_lecteur_garde_celui_du_deploiement(self) -> None:
+        """`None` n'est pas `0` : il veut dire « garde ton réglage », pas « accepte tout »."""
+        reader = FakePlateReader()
+        _run(reader=reader)
+
+        assert reader.min_scores
+        assert set(reader.min_scores) == {None}
+
+    def test_une_lecture_sous_le_plancher_ne_publie_aucune_plaque(self) -> None:
+        """Un refus, jamais un texte étiqueté « peu sûr » : une chaîne affichée est crue.
+
+        Le lecteur rend 0,93 ; à 0,95 exigés, plus rien ne traverse le port, donc
+        rien ne vote — et le registre reste muet au lieu d'afficher une hésitation.
+        """
+        result = _run(reader=FakePlateReader(text="ab-123-cd"), plate_text_confidence=0.95)
+
+        assert result.vehicles
+        assert all(record.plate_text is None for record in result.vehicles)
+        assert not _texts(result)
+
+    def test_au_plancher_exact_la_lecture_passe(self) -> None:
+        """Comparaison **inclusive**, comme celle du vrai lecteur (`>=`).
+
+        Un seuil exclusif ferait qu'un curseur posé sur la valeur affichée par le
+        registre rejetterait précisément la lecture qu'on cherchait à garder.
+        """
+        result = _run(reader=FakePlateReader(text="ab-123-cd"), plate_text_confidence=0.93)
+
+        assert result.vehicles
+        assert all(record.plate_text == "AB-123-CD" for record in result.vehicles)
+
+
+class TestPorteDeLisibilite:
+    """La porte qui refuse de payer pour une plaque prouvée illisible — ADR 0039.
+
+    Mesuré sur une vue de circulation réelle : la détection de plaques pèse 73 % du
+    budget et **aucune plaque n'y est publiable**, les plaques faisant moins de
+    48 px pour un plancher de lecture à 64. Ces tests vérifient les deux moitiés de
+    la promesse — l'économie est réelle, et elle ne coûte aucun texte.
+    """
+
+    #: Une plaque de 20 px sur un véhicule de 160 : rapport 0,125, donc il faudrait
+    #: 512 px de véhicule pour atteindre le plancher de lecture de 64.
+    @staticmethod
+    def _narrow(box: BoundingBox) -> tuple[tuple[BoundingBox, float], ...]:
+        return (
+            (
+                BoundingBox(
+                    x=box.x + 20.0,
+                    y=box.y + box.height * 0.6,
+                    width=20.0,
+                    height=8.0,
+                ),
+                0.8,
+            ),
+        )
+
+    def _crops(self, *, gate: bool) -> tuple[int, list[str]]:
+        detector = FakePlateDetector(plates_for=self._narrow)
+        result = _run(
+            detector=detector,
+            reader=FakePlateReader(),
+            # La cadence et l'arrêt sur vote désarmés : la porte doit être la
+            # **seule** chose qui écarte des inférences, sinon le test mesurerait
+            # un étranglement pour un autre.
+            detect=PlateDetectOptions(
+                every_n_frames=1,
+                stop_when_confident=False,
+                max_consecutive_misses=99,
+                readable_gate=gate,
+            ),
+            ocr=PlateOcrOptions(every_n_frames=1, stop_when_confident=False, skip_above_iou=1.0),
+            steps=16,
+        )
+        return detector.crops, _texts(result)
+
+    def test_la_porte_effondre_le_nombre_d_inferences(self) -> None:
+        with_gate, _ = self._crops(gate=True)
+        without_gate, _ = self._crops(gate=False)
+
+        assert with_gate < without_gate
+
+    def test_et_elle_ne_coute_aucun_texte(self) -> None:
+        """**La moitié qui rend la porte livrable.**
+
+        Le plancher comparé est celui-là même dont `PlateOcrPolicy.should_read` se
+        sert pour refuser de lire : une plaque écartée par la porte est une plaque
+        que l'OCR aurait refusée. Les deux courses doivent donc publier exactement
+        les mêmes textes — ici aucun, puisque 20 px est très en dessous de 64.
+        """
+        _, with_gate = self._crops(gate=True)
+        _, without_gate = self._crops(gate=False)
+
+        assert with_gate == without_gate
+
+    def test_la_porte_reste_inerte_sans_ocr(self) -> None:
+        """Sans lecture, un rectangle sur une plaque de 20 px est ce qui est demandé.
+
+        Le service ne pose le plancher que si un lecteur tourne réellement : couper
+        la détection au nom d'un texte que personne n'attend retirerait à
+        l'utilisateur la fonctionnalité qu'il a cochée.
+        """
+        detector = FakePlateDetector(plates_for=self._narrow)
+        _run(
+            detector=detector,
+            read_plate_text=False,
+            detect=PlateDetectOptions(
+                every_n_frames=1, stop_when_confident=False, max_consecutive_misses=99
+            ),
+            steps=16,
+        )
+
+        without_gate = FakePlateDetector(plates_for=self._narrow)
+        _run(
+            detector=without_gate,
+            read_plate_text=False,
+            detect=PlateDetectOptions(
+                every_n_frames=1,
+                stop_when_confident=False,
+                max_consecutive_misses=99,
+                readable_gate=False,
+            ),
+            steps=16,
+        )
+
+        assert detector.crops == without_gate.crops

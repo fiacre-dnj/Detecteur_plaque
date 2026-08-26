@@ -88,16 +88,12 @@ CONFIG_DIR = Path(__file__).resolve().parents[5] / "config"
 TRACKER_CONFIG = CONFIG_DIR / "botsort_reid.yaml"
 
 
-@lru_cache(maxsize=1)
 def _base_tracker() -> dict[str, Any]:
     """Le fichier de suivi versionné, lu une fois par processus."""
-    import yaml
-
-    loaded: dict[str, Any] = yaml.safe_load(TRACKER_CONFIG.read_text(encoding="utf-8"))
-    return loaded
+    return _tracker_file(TRACKER_CONFIG)
 
 
-def detector_floor() -> float:
+def detector_floor(confidence: float) -> float:
     """Seuil de confiance à passer au **détecteur**, et non au comptage.
 
     **C'est le mécanisme BYTE, et il était débranché.** ByteTrack — dont BoT-SORT
@@ -124,8 +120,76 @@ def detector_floor() -> float:
     `track_high_thresh` et `new_track_thresh` (voir `resolved_tracker_config`). La
     création de pistes est **inchangée** — il faut toujours atteindre le seuil de
     l'utilisateur — seule la survie d'une piste déjà née s'améliore.
+
+    **Le plancher suit le curseur quand celui-ci descend, et c'est un correctif.**
+    Il était figé à la valeur du fichier de base (0,10), ce qui défaisait le
+    mécanisme ci-dessus à l'autre bout de la plage :
+
+    - **sous 0,10, le curseur était mort.** Le détecteur ne rendait jamais une
+      boîte à 0,07, donc rien ne pouvait ni créer ni prolonger une piste en dessous
+      du plancher figé. L'utilisateur qui descend le curseur pour récupérer des
+      petits objets — une moto, le plus petit gabarit COCO — ne voyait strictement
+      rien changer ;
+    - **pire, la bande basse devenait vide.** À confiance 0,05, le fichier dérivé
+      portait `track_high_thresh = 0,05` sous un `track_low_thresh = 0,10` resté
+      au niveau du fichier de base : l'ensemble `low < s < high` est alors vide, la
+      seconde association redevenait du code mort, et toute cette docstring cessait
+      d'être vraie sans qu'aucun message ne le dise.
+
+    **Le rapport de bande vient du fichier versionné lui-même** (`0,10 / 0,25`), et
+    non d'un nombre inventé ici : c'est l'écart que le déploiement a déjà choisi
+    entre « prolonger » et « créer ». Conséquence à connaître — `min` avec le
+    plancher de base signifie que **rien ne change au-dessus de `track_high_thresh`
+    du fichier**, donc rien ne change au défaut de 0,35 ni nulle part au-dessus de
+    0,25. Seul le bas de la plage descend, là où le curseur ne servait à rien.
+
+    `low < confidence` reste vrai sur toute la plage du contrat, quel que soit le
+    rapport, et un test le vérifie valeur par valeur.
     """
-    return float(_base_tracker()["track_low_thresh"])
+    base = _base_tracker()
+    base_low = float(base["track_low_thresh"])
+    base_high = float(base["track_high_thresh"])
+    band_ratio = base_low / base_high if base_high > 0 else 1.0
+    return min(base_low, confidence * band_ratio)
+
+
+#: Les clés de requête qui portent le seuil **de l'utilisateur**, tel quel.
+REQUEST_HIGH_KEYS = frozenset({"track_high_thresh", "new_track_thresh"})
+
+#: Les clés du fichier de suivi qui viennent de la **requête**, donc qui changent
+#: d'une analyse à l'autre dans un même processus.
+#:
+#: Nommées ici plutôt qu'écrites deux fois : `resolved_tracker_config` les écrit
+#: dans le fichier dérivé, et `reset_trackers` doit les reposer sur un tracker déjà
+#: construit — Ultralytics ne relisant jamais le fichier une fois ses trackers en
+#: place. Deux listes divergeraient sur un réglage annoncé et sans effet.
+#:
+#: `track_low_thresh` en fait partie **depuis que le plancher suit le curseur** : il
+#: est calculé à partir du seuil de la requête, donc il change avec elle, donc il
+#: doit être reposé comme les deux autres. L'oublier redonnerait la panne exacte
+#: qu'il corrige, à la deuxième analyse d'un processus.
+REQUEST_TRACKER_KEYS = REQUEST_HIGH_KEYS | frozenset({"track_low_thresh"})
+
+#: Les clés que le tracker relit **à chaque image**, sur `self.args`.
+#:
+#: Vérifié dans la roue installée (`trackers/byte_tracker.py`, `bot_sort.py`) : ce
+#: sont les seules qu'on puisse changer sur un tracker déjà construit. Toutes les
+#: autres — `track_buffer`, `gmc_method`, `with_reid`, `proximity_thresh`… — sont
+#: consommées dans `__init__` et gravées dans l'objet.
+#:
+#: `REQUEST_TRACKER_KEYS ⊆ LIVE_TRACKER_KEYS` est **la** condition qui rend
+#: `reset_trackers` suffisante, et un test la verrouille : le jour où un réglage de
+#: requête toucherait une clé consommée à la construction, il faudrait reconstruire
+#: le tracker et pas seulement reposer ses arguments.
+LIVE_TRACKER_KEYS = frozenset(
+    {
+        "track_high_thresh",
+        "track_low_thresh",
+        "new_track_thresh",
+        "match_thresh",
+        "fuse_score",
+    }
+)
 
 
 @lru_cache(maxsize=32)
@@ -163,11 +227,14 @@ def resolved_tracker_config(gmc_method: str, high_thresh: float) -> Path:
     import yaml
 
     base = _base_tracker()
-    overrides = {
-        "gmc_method": gmc_method,
-        "track_high_thresh": high_thresh,
-        "new_track_thresh": high_thresh,
-    }
+    overrides: dict[str, Any] = {"gmc_method": gmc_method}
+    overrides.update(dict.fromkeys(REQUEST_HIGH_KEYS, high_thresh))
+    # **Le plancher est écrit ici aussi, et il n'a pas la même valeur.** Il vaut le
+    # plancher du fichier de base tant que le seuil reste haut, et descend avec lui
+    # en dessous — sans quoi le fichier dérivé porterait un `track_low_thresh`
+    # supérieur à son `track_high_thresh` et la bande basse serait vide. Voir
+    # `detector_floor`, qui est le seul juge de cette valeur.
+    overrides["track_low_thresh"] = detector_floor(high_thresh)
     if all(base.get(key) == value for key, value in overrides.items()):
         return TRACKER_CONFIG
 
@@ -240,14 +307,29 @@ class UltralyticsEngine:
             "moteur configuré",
             gmc=self._gmc,
             tracker=str(TRACKER_CONFIG),
-            detector_floor=detector_floor(),
+            # **Le plancher DE BASE**, nommé pour ce qu'il est : celui d'une course
+            # dépend de son seuil de confiance, donc il n'est pas connu ici. Écrire
+            # « detector_floor » tout court annoncerait un plancher que la plupart
+            # des courses n'utilisent pas — exactement le genre de journal qui fait
+            # chercher la panne au mauvais endroit.
+            detector_floor_base=_base_tracker()["track_low_thresh"],
             imgsz=self._imgsz,
             batch=self._batch,
         )
 
     def _tracker_for(self, spec: EngineSpec) -> Path:
         """Le fichier de suivi de cette course : mouvement de déploiement, seuil de requête."""
-        return resolved_tracker_config(self._gmc, spec.confidence)
+        tracker_config = resolved_tracker_config(self._gmc, spec.confidence)
+        # Journalisé **par course** parce que ces trois valeurs sont exactement ce
+        # qu'on vient regarder quand un seuil semble sans effet : le curseur, ce que
+        # le détecteur laisse passer, et le fichier qui les porte.
+        logger.info(
+            "suivi résolu",
+            confidence=spec.confidence,
+            detector_floor=detector_floor(spec.confidence),
+            tracker=str(tracker_config),
+        )
+        return tracker_config
 
     def probe(self, video_path: Path) -> VideoInfo:
         """Dimensions, cadence et nombre d'images — et validation de format.
@@ -325,8 +407,12 @@ class UltralyticsEngine:
                 frame_stride=stride,
             )
 
+        tracker_config = self._tracker_for(spec)
         with self._registry.lease(spec.model_id) as model:
-            reset_trackers(model)
+            # Le fichier **et** le nettoyage : Ultralytics ne relit pas le premier
+            # une fois ses trackers en place, donc le seuil de cette requête-ci
+            # n'arriverait jamais jusqu'au tracker. Voir `reset_trackers`.
+            reset_trackers(model, tracker_config)
             batches = decode_ahead(
                 video_path,
                 stride=stride,
@@ -337,14 +423,14 @@ class UltralyticsEngine:
             for chunk in batches:
                 results = model.track(
                     source=[image for _, image in chunk],
-                    tracker=str(self._tracker_for(spec)),
+                    tracker=str(tracker_config),
                     # **Le plancher du détecteur, pas le seuil de l'utilisateur.** Ce
                     # dernier est passé au tracker comme `track_high_thresh` /
                     # `new_track_thresh` : la création de pistes reste à son niveau,
                     # mais les détections faibles atteignent enfin la seconde
                     # association, qui prolonge une piste dont la confiance plonge.
                     # Voir `detector_floor` pour la panne que cela corrige.
-                    conf=detector_floor(),
+                    conf=detector_floor(spec.confidence),
                     iou=spec.iou,
                     classes=list(spec.class_ids),
                     # **NMS inter-classes**, et c'est le piège 5 de prompt/13. Le NMS
@@ -411,8 +497,10 @@ class UltralyticsStream:
         self._model = self._lease.__enter__()
         # Une nouvelle session temps réel est une nouvelle scène : sans cette
         # remise à zéro, elle hériterait des pistes du job ou de la session
-        # précédente sur la même instance de modèle. Voir `reset_trackers`.
-        reset_trackers(self._model)
+        # précédente sur la même instance de modèle. Et sans le fichier en second
+        # argument, elle hériterait aussi de son **seuil** — le direct partage
+        # l'instance résidente avec le différé. Voir `reset_trackers`.
+        reset_trackers(self._model, tracker_config)
 
     def track(
         self,
@@ -429,7 +517,7 @@ class UltralyticsStream:
             # Le même plancher qu'en différé, et pour la même raison : les deux
             # modes doivent suivre à l'identique, sinon un même tracé ne donne pas
             # les mêmes chiffres selon qu'on rejoue un fichier ou qu'on filme.
-            conf=detector_floor(),
+            conf=detector_floor(self._spec.confidence),
             iou=self._spec.iou,
             classes=list(self._spec.class_ids),
             # Voir le mode différé : NMS inter-classes, sinon une camionnette
@@ -620,15 +708,18 @@ def _batched(frames: Iterator[_DecodedFrame], size: int) -> Iterator[_DecodedBat
         yield chunk
 
 
-def reset_trackers(model: Any) -> None:  # noqa: ANN401 — un `YOLO` n'est pas typé
-    """Repart d'un suivi vierge. **Obligatoire au début de chaque analyse.**
+def reset_trackers(model: Any, tracker_config: Path | None = None) -> None:  # noqa: ANN401
+    """Repart d'un suivi vierge, **avec les réglages de cette analyse-ci**.
 
-    Le bug que cette fonction supprime ne lève rien et ne se voit qu'en comptant.
-    `persist=True` fait d'une suite d'images un flux — c'est ce qu'on veut *à
-    l'intérieur* d'une vidéo — mais Ultralytics l'interprète aussi entre deux
-    appels : `register_tracker` **sort immédiatement** quand des trackers existent
-    déjà (`trackers/track.py`). Or le registre garde l'instance de modèle d'un job
-    à l'autre (invariant 9 : un bail par usage, mais la même instance résidente).
+    Obligatoire au début de chaque analyse, et pour **deux** pannes distinctes qui
+    ne lèvent ni l'une ni l'autre.
+
+    **1. L'état hérité.** `persist=True` fait d'une suite d'images un flux — c'est
+    ce qu'on veut *à l'intérieur* d'une vidéo — mais Ultralytics l'interprète aussi
+    entre deux appels : `register_tracker` **sort immédiatement** quand des
+    trackers existent déjà (`trackers/track.py`). Or le registre garde l'instance
+    de modèle d'un job à l'autre (invariant 9 : un bail par usage, mais la même
+    instance résidente).
 
     La deuxième analyse héritait donc des pistes, du filtre de Kalman et du
     compteur d'images de la première. Mesuré sur un même fichier **octet pour
@@ -643,12 +734,68 @@ def reset_trackers(model: Any) -> None:  # noqa: ANN401 — un `YOLO` n'est pas 
     compteur d'identifiants** — c'est-à-dire tout ce qui doit repartir de zéro
     quand la scène change.
 
-    Tolère un modèle sans prédicteur : au tout premier appel du processus, il n'y
-    a pas encore de tracker à remettre à zéro, et ce n'est pas une anomalie.
+    **2. Le réglage sans effet, et c'est « Confiance véhicules » qui le payait.**
+    La même sortie anticipée de `register_tracker` fait que le fichier de suivi
+    n'est **relu à aucun moment** une fois les trackers en place : le
+    `tracker=…` passé à `track()` est ignoré. Or c'est là que voyage le seuil de
+    l'utilisateur (`track_high_thresh` / `new_track_thresh`, ADR 0024). Toutes les
+    analyses d'un processus tournaient donc au seuil de la **première** — le curseur
+    bougeait, le fichier dérivé était bien écrit, le chemin bien journalisé, et rien
+    ne changeait dans les chiffres. La cinquième panne silencieuse de ce module.
+
+    On repose donc les clés de la requête sur les trackers vivants. C'est suffisant
+    **parce que** `REQUEST_TRACKER_KEYS ⊆ LIVE_TRACKER_KEYS` : ces clés-là sont
+    relues à chaque image sur `self.args`, jamais gravées à la construction. Les
+    reposer plutôt que reconstruire les trackers évite d'avoir à désinscrire les
+    rappels d'Ultralytics — l'appel de suivi suivant les ré-enregistrerait, et un
+    `on_predict_postprocess_end` en double appellerait `tracker.update()` deux fois
+    par image, ce qui serait bien pire que le bug corrigé.
+
+    `tracker_config` à `None` = « ne rien reposer », pour un appelant qui n'a que
+    l'état à nettoyer. Tolère un modèle sans prédicteur : au tout premier appel du
+    processus, il n'y a pas encore de tracker, et ce n'est pas une anomalie — c'est
+    même le seul cas où Ultralytics lira le fichier tout seul.
     """
     predictor = getattr(model, "predictor", None)
-    for tracker in getattr(predictor, "trackers", None) or ():
+    trackers = getattr(predictor, "trackers", None) or ()
+    for tracker in trackers:
         tracker.reset()
+    if tracker_config is not None:
+        _reapply_request_keys(trackers, tracker_config)
+
+
+def _reapply_request_keys(trackers: Any, tracker_config: Path) -> None:  # noqa: ANN401
+    """Repose les clés de requête du fichier sur des trackers déjà construits.
+
+    Silencieuse sur un tracker sans `args` — une doublure de test, une version
+    d'Ultralytics qui aurait changé de forme : ce serait alors le comportement
+    d'avant ce correctif, jamais une analyse qui échoue. Le désaccord est en
+    revanche **journalisé**, parce qu'un seuil qui ne descend pas est exactement ce
+    qu'on vient de corriger et qu'il ne doit pas redevenir invisible.
+    """
+    if not trackers:
+        return
+    wanted = {
+        key: value
+        for key, value in _tracker_file(tracker_config).items()
+        if key in REQUEST_TRACKER_KEYS
+    }
+    for tracker in trackers:
+        args = getattr(tracker, "args", None)
+        if args is None:
+            logger.warning("tracker sans arguments : seuil de requête non reposé")
+            continue
+        for key, value in wanted.items():
+            setattr(args, key, value)
+
+
+@lru_cache(maxsize=32)
+def _tracker_file(path: Path) -> dict[str, Any]:
+    """Contenu d'un fichier de suivi, lu une fois par chemin et par processus."""
+    import yaml
+
+    loaded: dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return loaded
 
 
 def _to_observations(result: Any) -> tuple[TrackObservation, ...]:  # noqa: ANN401

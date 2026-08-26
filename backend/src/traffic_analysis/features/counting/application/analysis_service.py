@@ -113,6 +113,25 @@ type CancellationCheck = Callable[[], bool]
 type PauseGate = Callable[[], float]
 
 
+def _crossing_order(event: CrossingEvent) -> tuple[float, int, str, int]:
+    """Ordre de publication d'un franchissement : **son instant d'abord**.
+
+    Depuis ADR 0038, un franchissement porte la date de son intersection avec le
+    trait et non celle de sa sortie de bande morte. Or la bande a une épaisseur
+    proportionnelle à la boîte du véhicule : un poids lourd la traverse bien plus
+    lentement qu'une moto, donc **l'ordre d'émission n'est plus l'ordre des dates**.
+    C'était l'unique objection d'ADR 0018 à ce remède, et c'est ici qu'elle se
+    règle.
+
+    Les trois clés secondaires ne servent qu'à rendre le tri **déterministe** : deux
+    passages exactement simultanés doivent être rangés pareil d'une course à
+    l'autre, sinon deux analyses du même fichier produisent deux journaux
+    différents — exactement le genre d'écart qu'on passe des jours à ne pas
+    comprendre.
+    """
+    return (event.timestamp_ms, event.frame_index, event.line_id, event.global_id)
+
+
 class AnalysisService:
     """Exécute une analyse complète : moteur → session de comptage → résultat."""
 
@@ -256,7 +275,23 @@ class AnalysisService:
             reader = None
         # Une politique par course : aucun état d'étranglement partagé entre jobs.
         policy = PlateOcrPolicy(self._plate_ocr) if reader is not None else None
-        detect_policy = PlateDetectPolicy(self._plate_detect)
+        detect_policy = PlateDetectPolicy(
+            replace(
+                self._plate_detect,
+                # **La porte de lisibilité n'existe que si l'OCR tourne vraiment.**
+                # Sans lecture, un rectangle sur une plaque de 20 px est exactement
+                # ce que l'utilisateur a demandé : le couper au nom d'un texte qu'il
+                # n'attend pas lui retirerait sa fonctionnalité. Le plancher est
+                # celui-là même dont `PlateOcrPolicy.should_read` se sert pour
+                # refuser de lire — c'est ce qui garantit qu'aucun texte publiable
+                # n'est perdu, par construction et pas en moyenne.
+                readable_min_plate_width_px=(
+                    self._plate_ocr.min_width_px
+                    if reader is not None and self._plate_detect.readable_gate
+                    else 0.0
+                ),
+            )
+        )
 
         # La session est construite **après** la résolution de l'OCR, et pas avant :
         # elle a besoin de savoir si la lecture tourne *réellement* — modèle présent
@@ -373,6 +408,7 @@ class AnalysisService:
                     ordinal=processed,
                     tracks=outcome.tracks,
                     confidence=config.plate_confidence,
+                    text_confidence=config.plate_text_confidence,
                 )
 
             # Le snapshot est pris **après** la passe ANPR ET la passe OCR, sinon les
@@ -430,7 +466,13 @@ class AnalysisService:
                             frame_width=info.width,
                             frame_height=info.height,
                             tracks=snapshots,
-                            crossings=tuple(pending_crossings),
+                            # Triés **dans la trame**, pour la même raison que
+                            # `result.crossings` l'est à la fin : une salve peut
+                            # porter deux passages datés à contre-sens de leur
+                            # ordre d'émission. Le désordre restant entre deux
+                            # trames est borné par la traversée de bande la plus
+                            # lente, et c'est le journal du client qui le referme.
+                            crossings=tuple(sorted(pending_crossings, key=_crossing_order)),
                             zone_events=tuple(pending_zone_events),
                             stats=session.stats(),
                             vehicles=vehicles,
@@ -457,6 +499,17 @@ class AnalysisService:
         result.processing_fps = self._fps(processed, started, paused_s)
         result.vehicles = session.vehicles()
         result.stats = session.stats()
+        # **Le journal redevient croissant.** Depuis qu'un franchissement porte la
+        # date de son intersection avec le trait (ADR 0038), il n'est plus émis dans
+        # l'ordre de ses dates : la bande morte a une épaisseur proportionnelle à la
+        # boîte, donc un poids lourd la traverse bien plus lentement qu'une moto et
+        # peut se faire dater *avant* un véhicule pourtant émis plus tôt. C'était
+        # l'unique objection d'ADR 0018 à ce remède.
+        #
+        # Trier ici et non dans le domaine : le compteur émet au fil de l'eau et n'a
+        # aucune raison de connaître l'ordre final. C'est l'orchestration qui range,
+        # et `crossingsUpTo` côté client suppose cet ordre pour rejouer un résultat.
+        result.crossings.sort(key=_crossing_order)
 
         if on_progress is not None:
             # Publication finale obligatoire : sans elle, la barre s'arrête au
@@ -516,6 +569,7 @@ class AnalysisService:
         ordinal: int,
         tracks: Sequence[SessionTrack],
         confidence: float | None,
+        text_confidence: float | None = None,
     ) -> None:
         """Détecte, reprojette, lit — dans cet ordre, et pour cette raison.
 
@@ -578,6 +632,18 @@ class AnalysisService:
             batch = detector.detect_many(image, [track.box for track in wanted], confidence)
             for track, plates in zip(wanted, batch, strict=True):
                 detect_policy.record(track.global_id, ordinal, found=bool(plates))
+                if plates:
+                    # **Une mesure réelle, jamais une reprojection** : c'est elle qui
+                    # apprend à la politique le rapport plaque/véhicule de cette
+                    # piste, donc la largeur de véhicule à partir de laquelle sa
+                    # plaque deviendra lisible. La plus large des plaques trouvées,
+                    # pour la même raison que l'ancre garde la mieux scorée : on
+                    # décide sur ce que la piste peut faire de mieux.
+                    detect_policy.observe_plate(
+                        track.global_id,
+                        track.box.width,
+                        max(plate.box.width for plate in plates),
+                    )
                 measured[track.global_id] = tuple(plates)
 
         for track in tracks:
@@ -591,7 +657,7 @@ class AnalysisService:
             self._remember_anchor(anchors, track, fresh)
             if reader is not None and ocr_policy is not None and fresh:
                 fresh = self._read_plate_text(
-                    reader, ocr_policy, session, image, ordinal, track, fresh
+                    reader, ocr_policy, session, image, ordinal, track, fresh, text_confidence
                 )
             session.record_plates(track, fresh)
 
@@ -649,6 +715,7 @@ class AnalysisService:
         ordinal: int,
         track: SessionTrack,
         plates: Sequence[PlateDetection],
+        min_score: float | None = None,
     ) -> tuple[PlateDetection, ...]:
         """Lit le texte des plaques qui le méritent, en **un seul** appel.
 
@@ -676,7 +743,11 @@ class AnalysisService:
         if not wanted:
             return tuple(plates)
 
-        texts = reader.read(image, [plate.box for _, plate in wanted])
+        # Le plancher de **cette** course, `None` gardant celui du déploiement. Il
+        # part au lecteur et n'est jamais réappliqué ici : filtrer des deux côtés
+        # laisserait deux endroits décider de ce qui vote, et ils finiraient par ne
+        # plus dire la même chose.
+        texts = reader.read(image, [plate.box for _, plate in wanted], min_score)
         if len(texts) != len(wanted):
             # Le port promet un élément par boîte. Un lecteur qui ne tient pas sa
             # promesse ne doit pas faire échouer un comptage : on renonce au texte de

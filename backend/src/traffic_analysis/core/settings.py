@@ -300,6 +300,31 @@ class Settings(BaseSettings):
     #: chacune payant ~800 ms par image analysée sans jamais bénéficier de
     #: l'étranglement. Résultat : 1,42 image/s traitée, contre 11 sans ANPR.
     plate_detect_max_consecutive_misses: int = Field(3, ge=1, le=30)
+    #: Suspendre une piste dont les plaques mesurées restent sous le plancher de lecture.
+    #:
+    #: **Le plus gros levier de cadence de l'ANPR, et il ne coûte aucun texte.** Sur une
+    #: vue de circulation réelle (ADR 0032), la détection de plaques pèse 73 % du budget
+    #: et **aucune plaque n'y est publiable** — elles font moins de 48 px pour un plancher
+    #: de lecture à 64 (invariant 12). La porte compare la largeur **mesurée sur cette
+    #: piste-là** au *même* nombre que l'OCR utilise déjà pour refuser de lire : une
+    #: plaque écartée est une plaque qui aurait été refusée de toute façon.
+    #:
+    #: Ce qui est réellement payé, et c'est pourquoi le réglage existe : le **rectangle**
+    #: disparaît sur ces véhicules, après les `max_anchor_age` images de reprojection. Le
+    #: service dit déjà pourquoi par `plate_unread_reason = too_small`. Mettre `false`
+    #: rend tous les rectangles, au prix de la cadence.
+    #:
+    #: Sans OCR, la porte ne s'arme **jamais** : le service ne la pose que si un lecteur
+    #: tourne réellement.
+    plate_detect_readable_gate: bool = True
+    #: Mesures consécutives sous le plancher avant de suspendre la piste.
+    plate_detect_readable_min_samples: int = Field(2, ge=1, le=10)
+    #: Réarmement d'office toutes les N images analysées. `0` = jamais, le défaut.
+    #:
+    #: La porte se rouvre déjà **seule** quand le véhicule s'approche — c'est une mesure,
+    #: pas un délai. Ce quota n'existe que pour le cas, non observé à ce jour, d'une piste
+    #: réellement lisible qui ne grandirait pas.
+    plate_detect_readable_retry_every: int = Field(0, ge=0, le=300)
     #: Recadrages soumis au détecteur par image analysée, au plus. `0` = illimité.
     #:
     #: **Le seul plafond qui rende le coût de l'ANPR indépendant de la scène.** Sans

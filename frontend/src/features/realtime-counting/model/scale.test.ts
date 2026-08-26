@@ -63,6 +63,7 @@ const REQUEST: AnalysisRequest = {
   classIds: [2, 3, 5, 7],
   detectPlates: false,
   plateConfidence: null,
+  plateTextConfidence: null,
   readPlateText: false,
   // Sans dimension, donc rejouée telle quelle par la mise à l'échelle — et sans
   // effet en direct de toute façon : c'est le client qui cadence son envoi.

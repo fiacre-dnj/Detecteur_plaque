@@ -117,6 +117,18 @@ class AnalysisRequestSchema(CamelModel):
     frame_stride: int = Field(1, ge=1, le=10)
     detect_plates: bool = False
     plate_confidence: float | None = Field(None, ge=0.05, le=0.95)
+    plate_text_confidence: float | None = Field(
+        None,
+        ge=0.0,
+        le=0.95,
+        description=(
+            "Plancher de confiance d'une **lecture** de plaque. Sous ce seuil, la "
+            "chaîne n'atteint pas le vote, donc ne peut rien publier. `null` garde "
+            "le plancher du déploiement (`plateOcrMinTextScore`, 0,50). `0` accepte "
+            "toutes les lectures ; la borne haute s'arrête à 0,95, parce qu'à 1,0 "
+            "plus aucune lecture ne passerait jamais."
+        ),
+    )
     read_plate_text: bool = Field(
         False,
         description=(
@@ -305,6 +317,7 @@ class AnalysisRequestSchema(CamelModel):
             frame_stride=self.frame_stride,
             detect_plates=self.detect_plates,
             plate_confidence=self.plate_confidence,
+            plate_text_confidence=self.plate_text_confidence,
             read_plate_text=self.read_plate_text,
             max_lost_ms=self.max_lost_ms,
             lines=tuple(line.to_domain() for line in self.lines),

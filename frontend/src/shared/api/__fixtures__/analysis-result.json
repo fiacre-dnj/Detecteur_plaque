@@ -1230,8 +1230,8 @@
       "label": "car",
       "category": "vehicle",
       "direction": 1,
-      "timestampMs": 240.0,
-      "frameIndex": 6,
+      "timestampMs": 200.0,
+      "frameIndex": 5,
       "plateText": "AB-123-CD",
       "plateTextScore": 0.93
     },
@@ -1242,8 +1242,8 @@
       "label": "truck",
       "category": "vehicle",
       "direction": -1,
-      "timestampMs": 280.0,
-      "frameIndex": 7,
+      "timestampMs": 240.0,
+      "frameIndex": 6,
       "plateText": null,
       "plateTextScore": null
     }
@@ -1259,7 +1259,7 @@
         {
           "lineId": "l1",
           "direction": 1,
-          "timestampMs": 240.0
+          "timestampMs": 200.0
         }
       ],
       "zonesVisited": [],
@@ -1280,7 +1280,7 @@
         {
           "lineId": "l1",
           "direction": -1,
-          "timestampMs": 280.0
+          "timestampMs": 240.0
         }
       ],
       "zonesVisited": [],
@@ -1336,16 +1336,16 @@
             "byClass": {
               "car": 1
             },
-            "firstMs": 240.0,
-            "lastMs": 240.0
+            "firstMs": 200.0,
+            "lastMs": 200.0
           },
           "negative": {
             "total": 1,
             "byClass": {
               "truck": 1
             },
-            "firstMs": 280.0,
-            "lastMs": 280.0
+            "firstMs": 240.0,
+            "lastMs": 240.0
           }
         }
       }

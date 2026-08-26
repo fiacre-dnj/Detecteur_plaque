@@ -127,6 +127,29 @@ describe("loadSettings — jamais d'exception, toujours des valeurs utilisables"
 
     expect(loadSettings(fakeStorage(stored)).confidenceThreshold).toBeNull();
   });
+
+  it("relit un plancher de lecture persisté, `0` compris", () => {
+    // `0` est une valeur, pas une absence : « accepte toutes les lectures ». Un
+    // relecteur qui le confondrait avec « non renseigné » remettrait silencieusement
+    // le plancher du serveur sur un réglage que l'écran affiche à zéro.
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { plateTextConfidence: 0 },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).plateTextConfidence).toBe(0);
+  });
+
+  it("reprend le défaut du plancher de lecture sur un stockage antérieur au champ", () => {
+    // La fusion est champ par champ : un `localStorage` écrit avant ce réglage est le
+    // cas **normal** après une mise à jour, pas une anomalie.
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { minHits: 4 },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).plateTextConfidence).toBeNull();
+  });
 });
 
 describe("saveSettings", () => {
@@ -200,6 +223,52 @@ describe("toRequest — la traduction vers le serveur", () => {
     );
 
     expect(request.plateConfidence).toBeNull();
+  });
+
+  it("transmet le plancher de lecture quand l'ANPR et l'OCR sont actifs", () => {
+    const request = toRequest(
+      { ...DEFAULT_SETTINGS, detectPlates: true, readPlateText: true, plateTextConfidence: 0.7 },
+      LINES,
+      [],
+    );
+
+    expect(request.plateTextConfidence).toBe(0.7);
+  });
+
+  it("n'envoie pas de plancher de lecture quand l'OCR est désactivée", () => {
+    // Un plancher sur ce que l'OCR rend, sans OCR, est un réglage sans effet — même
+    // règle que `plateConfidence` sans ANPR. Le laisser passer demanderait au serveur
+    // d'arbitrer une incohérence que le client pouvait éviter.
+    const request = toRequest(
+      { ...DEFAULT_SETTINGS, detectPlates: true, readPlateText: false, plateTextConfidence: 0.7 },
+      LINES,
+      [],
+    );
+
+    expect(request.plateTextConfidence).toBeNull();
+  });
+
+  it("laisse `null` signifier « suivre le défaut du serveur »", () => {
+    // `null` n'est pas `0` : l'un garde le plancher du déploiement (0,50), l'autre
+    // accepte **toutes** les lectures. Les confondre publierait des plaques que le
+    // serveur refusait jusque-là.
+    const request = toRequest(
+      { ...DEFAULT_SETTINGS, detectPlates: true, readPlateText: true },
+      LINES,
+      [],
+    );
+
+    expect(request.plateTextConfidence).toBeNull();
+  });
+
+  it("transmet un plancher de lecture nul, qui n'est pas une absence de réglage", () => {
+    const request = toRequest(
+      { ...DEFAULT_SETTINGS, detectPlates: true, readPlateText: true, plateTextConfidence: 0 },
+      LINES,
+      [],
+    );
+
+    expect(request.plateTextConfidence).toBe(0);
   });
 
   it("**désactive le masque quand aucune zone n'existe**", () => {

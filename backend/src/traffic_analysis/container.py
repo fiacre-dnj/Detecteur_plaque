@@ -320,6 +320,9 @@ def build_counting_stack(
             max_anchor_age=settings.plate_detect_max_anchor_age,
             max_consecutive_misses=settings.plate_detect_max_consecutive_misses,
             max_per_frame=settings.plate_detect_max_per_frame,
+            readable_gate=settings.plate_detect_readable_gate,
+            readable_min_samples=settings.plate_detect_readable_min_samples,
+            readable_retry_every=settings.plate_detect_readable_retry_every,
         ),
     )
     return CountingStack(

@@ -57,6 +57,7 @@ import {
   ANALYSIS_SPEEDS,
   BOUNDS,
   DEFAULT_CONFIDENCE,
+  DEFAULT_PLATE_TEXT_CONFIDENCE,
   type AnalysisSettings,
 } from "../model/settings";
 
@@ -362,6 +363,40 @@ export function SettingsPanels({
           />
         )}
 
+        {/* Le pendant de « Confiance plaques », et **pas** son doublon : celui-ci
+            porte sur la localisation, celui-là sur la lecture. Une plaque peut être
+            parfaitement encadrée et illisible, ou l'inverse — c'est d'ailleurs
+            pourquoi le registre affiche les deux confiances côte à côte. Subordonné à
+            l'OCR pour la même raison que l'OCR l'est à l'ANPR : sans lecture, il n'y a
+            rien à filtrer. */}
+        {settings.detectPlates && settings.readPlateText && (
+          <Slider
+            label="Confiance lecture"
+            value={settings.plateTextConfidence ?? DEFAULT_PLATE_TEXT_CONFIDENCE}
+            bounds={BOUNDS.plateTextConfidence}
+            disabled={disabled || !plates.canRead}
+            format={(value) => (value <= 0 ? "aucune" : `${Math.round(value * 100)} %`)}
+            // Ce qu'il ne fait pas est aussi important que ce qu'il fait : il
+            // n'économise **aucune** inférence — la lecture a lieu, elle est ensuite
+            // refusée. Monter ce curseur pour accélérer l'analyse est le contresens
+            // que cette phrase existe pour éviter.
+            hint={
+              "Décide ce qui est cru, pas ce qui est lu : sous ce seuil, la chaîne " +
+              "ne vote pas et le véhicule reste sans plaque plutôt qu'avec une " +
+              "plaque douteuse. Ne fait gagner aucun temps de calcul. " +
+              (settings.plateTextConfidence === null
+                ? "Suit le défaut du serveur."
+                : "Valeur explicite : conservée d'une analyse à l'autre.")
+            }
+            onChange={(plateTextConfidence) => onChange({ plateTextConfidence })}
+            onReset={
+              settings.plateTextConfidence === null
+                ? undefined
+                : () => onChange({ plateTextConfidence: null })
+            }
+          />
+        )}
+
         {/* **Déplacé depuis « Affichage & analyse »**, où il n'avait rien à faire :
             ce réglage ne change pas ce qu'on voit, il change ce que le détecteur
             reçoit — donc les chiffres. Sa place est ici, à côté du seuil de confiance
@@ -435,12 +470,11 @@ export function SettingsPanels({
           <p className="rounded-input bg-base p-2 text-micro text-ink-dim">
             <strong className="text-ink-muted">Décidé pour vous.</strong> Une bande
             morte entoure chaque trait — un quart de demi-boîte du véhicule — pour
-            qu'un véhicule arrêté sur la ligne ne compte pas trois fois. Elle a un
-            prix : l'instant publié est celui de la <em>sortie</em> de bande, jusqu'à
-            deux secondes après le contact pour un gros véhicule qui aborde le trait
-            presque parallèlement. Une piste qui naît dans la bande est rattrapée,
-            donc un véhicule qui entre dans le champ juste au bord du trait est bien
-            compté.
+            qu'un véhicule arrêté sur la ligne ne compte pas trois fois. Le comptage
+            attend donc que le véhicule soit franchement d'un côté ; l'heure publiée,
+            elle, est celle du passage <em>sur le trait</em>. Une piste qui naît dans
+            la bande est rattrapée, donc un véhicule qui entre dans le champ juste au
+            bord du trait est bien compté.
           </p>
         </PanelGridFullRow>
 

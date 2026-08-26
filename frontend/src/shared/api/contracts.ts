@@ -295,6 +295,19 @@ export interface AnalysisRequest {
   detectPlates: boolean;
   plateConfidence: number | null;
   /**
+   * Plancher de confiance d'une **lecture** de plaque — « Confiance lecture ».
+   *
+   * À ne pas confondre avec `plateConfidence`, qui est celui de la **localisation** :
+   * une plaque peut être parfaitement encadrée et illisible, et l'inverse. Celui-ci
+   * décide de ce qui atteint le vote : sous ce seuil, la chaîne lue n'existe pas pour
+   * la suite de la chaîne, donc elle ne peut rien publier.
+   *
+   * `null` — le défaut — garde le plancher du déploiement (0,50). `0` accepte toutes
+   * les lectures ; le serveur s'arrête à 0,95, parce qu'à 1,0 plus rien ne passerait
+   * jamais. Ignoré si `readPlateText` est faux.
+   */
+  plateTextConfidence: number | null;
+  /**
    * Lire le **texte** des plaques localisées, en plus de les encadrer.
    *
    * Subordonné à `detectPlates` — sans boîte, il n'y a rien à lire — et ignoré si

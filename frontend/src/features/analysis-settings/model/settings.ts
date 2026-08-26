@@ -44,6 +44,19 @@ export interface AnalysisSettings {
   detectPlates: boolean;
   plateConfidence: number | null;
   /**
+   * Plancher de confiance d'une **lecture** — `null` = suivre le défaut du serveur.
+   *
+   * Même convention que `confidenceThreshold`, et pour la même raison : `null`
+   * signifie « suivre le défaut du déploiement » et une valeur explicite « je sais ce
+   * que je fais ». Le bouton « Défaut » est le chemin de retour.
+   *
+   * Il ne décide pas ce qui est **lu** mais ce qui est **cru** : une lecture sous ce
+   * seuil ne vote pas, donc ne peut rien publier, et le véhicule reste sans plaque
+   * avec la raison « lecture incertaine ». Il ne fait donc économiser aucune
+   * inférence — c'est un réglage de justesse, jamais de vitesse.
+   */
+  plateTextConfidence: number | null;
+  /**
    * Lire le **texte** des plaques, en plus de les encadrer.
    *
    * Subordonné à `detectPlates` — sans boîte, il n'y a rien à lire — et gardé par
@@ -110,6 +123,7 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   frameStride: 1,
   detectPlates: false,
   plateConfidence: null,
+  plateTextConfidence: null,
   // Faux par défaut : l'OCR est un surcoût, et persister un texte de plaque franchit
   // un cran de confidentialité qui doit être choisi, pas hérité.
   readPlateText: false,
@@ -186,6 +200,15 @@ export function sanitiseClassIds(
 /** Confiance effective quand l'utilisateur suit le défaut. */
 export const DEFAULT_CONFIDENCE = 0.35;
 
+/**
+ * Plancher de lecture effectif quand l'utilisateur suit le défaut.
+ *
+ * Miroir de `plate_ocr_min_text_score` côté serveur. Recopié ici pour que le curseur
+ * parte de la valeur qui s'appliquera réellement : le montrer à zéro laisserait croire
+ * qu'aucune lecture n'est refusée, alors que le serveur en refuse depuis toujours.
+ */
+export const DEFAULT_PLATE_TEXT_CONFIDENCE = 0.5;
+
 /** Bornes acceptées par le serveur — les dépasser produirait un 422. */
 export const BOUNDS = {
   confidenceThreshold: { min: 0.01, max: 0.99, step: 0.01 },
@@ -194,6 +217,12 @@ export const BOUNDS = {
   maxLostMs: { min: 200, max: 15_000, step: 100 },
   frameStride: { min: 1, max: 5, step: 1 },
   plateConfidence: { min: 0.05, max: 0.95, step: 0.05 },
+  // Descend jusqu'à `0` — « accepte toutes les lectures » — là où le seuil de
+  // localisation part de 0,05 : un détecteur à confiance nulle rendrait des
+  // rectangles partout, alors qu'une lecture, elle, est déjà filtrée par la
+  // normalisation du domaine et par le vote. La borne haute s'arrête à 0,95 parce
+  // qu'à 1,0 plus aucune lecture ne passerait jamais.
+  plateTextConfidence: { min: 0, max: 0.95, step: 0.05 },
 } as const;
 
 /**
@@ -219,6 +248,12 @@ export function toRequest(
     frameStride: settings.frameStride,
     detectPlates: settings.detectPlates,
     plateConfidence: settings.detectPlates ? settings.plateConfidence : null,
+    // Subordonné à la **lecture** et non à la seule détection : c'est un plancher
+    // sur ce que l'OCR rend, et sans OCR il n'y a rien à filtrer. L'envoyer quand
+    // même demanderait au serveur d'arbitrer une incohérence que le client pouvait
+    // éviter — même règle que `readPlateText` juste dessous.
+    plateTextConfidence:
+      settings.detectPlates && settings.readPlateText ? settings.plateTextConfidence : null,
     // Subordonné à `detectPlates`, comme côté serveur : lire sans détecter n'a pas de
     // sens, et laisser passer `true` seul demanderait au serveur d'arbitrer une
     // incohérence que le client pouvait éviter.
@@ -350,6 +385,10 @@ function mergeSettings(source: Record<string, unknown>): AnalysisSettings {
   merged.maxLostMs = boundedNumber(source.maxLostMs, merged.maxLostMs, BOUNDS.maxLostMs);
   merged.frameStride = boundedNumber(source.frameStride, merged.frameStride, BOUNDS.frameStride);
   merged.plateConfidence = nullableNumber(source.plateConfidence, merged.plateConfidence);
+  merged.plateTextConfidence = nullableNumber(
+    source.plateTextConfidence,
+    merged.plateTextConfidence,
+  );
   // Écarté plutôt que borné, contrairement aux curseurs : une cadence hors bornes
   // n'est pas un intervalle qui a changé entre deux versions, c'est une valeur qui
   // ne correspond à aucun des trois choix de l'écran. La ramener à 8× afficherait

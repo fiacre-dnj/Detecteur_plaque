@@ -145,6 +145,29 @@ class _LineState:
     # Il est mis en attente, pas jeté : le jeter perdrait tout véhicule qui
     # franchit dans ses premières frames — fréquent avec une ligne près du bord.
     pending_direction: int | None = None
+    # **La date de ce franchissement en attente, portée avec lui.** Relire
+    # `crossing_ms` au moment de l'émission serait faux : l'étape 5 a pu l'écraser
+    # entre-temps, et l'événement porterait l'instant d'un autre basculement.
+    pending_ms: float | None = None
+    pending_frame: int = 0
+    # Écart **signé** au trait de l'image précédente, avec son instant et son index.
+    #
+    # Le flottant et non le signe : c'est lui qui permet d'**interpoler** l'instant
+    # de l'intersection au lieu de le rabattre sur une frontière d'image. Le signe
+    # seul obligerait à repartir des centroïdes et à refaire la même arithmétique.
+    #
+    # Tenu à **chaque** image observée, y compris dans la bande morte — c'est
+    # justement là que le franchissement a lieu, et la bande n'existe que pour
+    # retarder la *décision*, jamais l'*observation*.
+    raw_offset: float | None = None
+    raw_ms: float = 0.0
+    raw_frame: int = 0
+    # Instant **interpolé** du dernier basculement de côté de la *droite* (sans
+    # bande morte), et l'image qui le précède. C'est la date qu'un franchissement
+    # portera, à la place de l'instant de sa sortie de bande. `None` = jamais
+    # observé, et l'émission retombe alors sur l'instant courant.
+    crossing_ms: float | None = None
+    crossing_frame: int = 0
     # Ce couple a-t-il déjà fait bouger un compteur ? **Ce n'est pas un garde** —
     # rien ne le lit pour refuser un franchissement (ADR 0016). Il ne sert qu'au
     # diagnostic : une piste qui a franchi n'est jamais un quasi-franchissement.
@@ -304,14 +327,31 @@ class LineCrossingCounter:
         if not state.crossed:
             state.last_ratio = _near_miss_ratio(track, line)
 
+        # 0-bis. Mémoire de l'**instant** du franchissement, tenue à chaque image
+        #        observée — donc, comme le diagnostic, avant les retours anticipés.
+        #        Le compteur ne peut *prouver* un franchissement qu'à la sortie de
+        #        bande, mais il peut le *dater* dès qu'il le voit : la bande morte
+        #        décide de compter, elle n'a pas à décider quand. Voir ADR 0038.
+        self._remember_crossing_instant(state, track, line, timestamp_ms, frame_index)
+
         # 1. Émission différée : la piste vient de se confirmer, et un
         #    franchissement l'attendait. Elle porte désormais un numéro — la
         #    session le lui a donné dans `_number_tracks`, juste avant `observe`.
         if state.pending_direction is not None and confirmed:
             events.append(
-                self._tally(track, line, state.pending_direction, timestamp_ms, frame_index)
+                self._tally(
+                    track,
+                    line,
+                    state.pending_direction,
+                    # **La date du franchissement, pas celle de la confirmation.**
+                    # L'événement est émis quand la piste porte enfin un numéro ;
+                    # il décrit un fait qui a eu lieu avant.
+                    state.pending_ms if state.pending_ms is not None else timestamp_ms,
+                    state.pending_frame if state.pending_ms is not None else frame_index,
+                )
             )
             state.pending_direction = None
+            state.pending_ms = None
             state.crossed = True
 
         # 2. Dans la bande morte : on ne tranche pas de côté et on attend une image
@@ -354,11 +394,14 @@ class LineCrossingCounter:
                 and self._crossing_is_in_scope(track, line)
                 and segments_intersect(state.origin_centroid, track.centroid, line.a, line.b)
             ):
-                if confirmed:
-                    events.append(self._tally(track, line, side, timestamp_ms, frame_index))
-                    state.crossed = True
-                else:
-                    state.pending_direction = side
+                self._emit_or_defer(
+                    state, track, line, side, confirmed, timestamp_ms, frame_index, events
+                )
+            # **La mémoire d'intersection est effacée par tout amorçage**, qu'il ait
+            # rattrapé un franchissement ou non : elle décrivait un instant où la
+            # piste n'avait pas encore de côté tranché, donc elle ne peut pas dater
+            # le franchissement *suivant*. Après la lecture, jamais avant.
+            state.crossing_ms = None
             return
 
         if side == state.side:
@@ -377,17 +420,102 @@ class LineCrossingCounter:
             line.b,
         )
         if accepted:
-            if confirmed:
-                events.append(self._tally(track, line, side, timestamp_ms, frame_index))
-                state.crossed = True
-            else:
-                state.pending_direction = side
+            self._emit_or_defer(
+                state, track, line, side, confirmed, timestamp_ms, frame_index, events
+            )
+        state.crossing_ms = None
 
         # 5. Le côté est écrit **même quand le franchissement est rejeté**.
         #    Sans cela, la piste « regarde dans le mauvais sens » et son
         #    franchissement suivant compte à l'envers (piège 11 de prompt/13).
         state.side = side
         state.settled_centroid = track.centroid
+
+    @staticmethod
+    def _remember_crossing_instant(
+        state: _LineState,
+        track: SessionTrack,
+        line: CountingLineDef,
+        timestamp_ms: float,
+        frame_index: int,
+    ) -> None:
+        """Retient **quand** la piste a traversé la droite, sans rien décider.
+
+        La bande morte existe pour ne pas compter du bruit (ADR 0018), et elle fait
+        très bien ce travail — mais elle datait aussi le franchissement de sa
+        **sortie de bande**, mesurée jusqu'à 2,2 s après le trait pour un gros
+        véhicule abordant une ligne presque parallèlement. Compter juste, dater
+        tard : le registre et la chronologie s'en servent au dixième de seconde.
+
+        La séparation est celle-ci : le côté **tranché** décide *s'il faut compter*,
+        l'écart **brut** dit *quand c'est arrivé*. On interpole linéairement entre
+        les deux images qui encadrent le changement de signe — la même hypothèse de
+        vitesse constante que `segments_intersect` fait déjà pour accepter le
+        franchissement.
+
+        **Le dernier basculement écrase le précédent**, et c'est la sémantique déjà
+        écrite d'ADR 0018 : un véhicule qui frémit sur le trait « en produira un
+        quand il repartira, du côté où il repart ». Retenir le premier daterait un
+        aller-retour de son premier frémissement.
+
+        `previous * offset < 0.0` est **strict** : un écart exactement nul ne
+        déclenche pas de basculement, la branche `offset == 0.0` s'en charge à
+        l'image où il se produit, et `0.0 * x` n'étant jamais négatif, l'image
+        suivante ne l'écrase pas.
+
+        La première image d'une piste ne date rien : il n'y a rien à interpoler.
+        """
+        offset = signed_line_offset(line.a, line.b, track.centroid)
+        previous = state.raw_offset
+        if previous is not None:
+            if previous * offset < 0.0:
+                ratio = abs(previous) / (abs(previous) + abs(offset))
+                state.crossing_ms = state.raw_ms + ratio * (timestamp_ms - state.raw_ms)
+                # L'image qui **précède** l'intersection : l'instant retenu tombe
+                # dans `[t(raw_frame), t(image courante)[`, donc `frameIndexAt` en
+                # relecture — « dernière ligne dont l'instant ne dépasse pas » —
+                # désigne exactement cette ligne-là.
+                state.crossing_frame = state.raw_frame
+            elif offset == 0.0:
+                # Pile sur la droite : l'instant n'a pas à être estimé, il est là.
+                state.crossing_ms = timestamp_ms
+                state.crossing_frame = frame_index
+        state.raw_offset = offset
+        state.raw_ms = timestamp_ms
+        state.raw_frame = frame_index
+
+    def _emit_or_defer(
+        self,
+        state: _LineState,
+        track: SessionTrack,
+        line: CountingLineDef,
+        direction: int,
+        confirmed: bool,
+        timestamp_ms: float,
+        frame_index: int,
+        events: list[CrossingEvent],
+    ) -> None:
+        """Compte maintenant, ou met en attente — avec **sa** date dans les deux cas.
+
+        Les deux points d'acceptation (sortie de bande et rattrapage d'une piste née
+        dans la bande) faisaient exactement le même choix, écrit deux fois. Les
+        réunir n'est pas de la cosmétique : c'est ce qui garantit qu'ils datent leur
+        événement de la même façon, et qu'un correctif sur l'un ne manque pas
+        l'autre.
+
+        Repli sur l'instant courant quand aucune intersection n'a pu être datée —
+        boîte dégénérée, piste dont c'est la première image observée. C'est
+        exactement le comportement d'avant, donc jamais une régression.
+        """
+        crossing_ms = state.crossing_ms if state.crossing_ms is not None else timestamp_ms
+        crossing_frame = state.crossing_frame if state.crossing_ms is not None else frame_index
+        if confirmed:
+            events.append(self._tally(track, line, direction, crossing_ms, crossing_frame))
+            state.crossed = True
+        else:
+            state.pending_direction = direction
+            state.pending_ms = crossing_ms
+            state.pending_frame = crossing_frame
 
     @staticmethod
     def _settled_side(track: SessionTrack, line: CountingLineDef) -> int:

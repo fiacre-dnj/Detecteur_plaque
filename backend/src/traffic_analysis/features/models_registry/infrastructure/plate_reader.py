@@ -437,9 +437,18 @@ class OnnxPlateReader:
         return self._path.is_file() and self._charset_path.is_file()
 
     def read(
-        self, image: npt.NDArray[np.uint8], boxes: Sequence[BoundingBox]
+        self,
+        image: npt.NDArray[np.uint8],
+        boxes: Sequence[BoundingBox],
+        min_score: float | None = None,
     ) -> tuple[PlateText | None, ...]:
         """Lit un lot de plaques. Ne lève **jamais**.
+
+        `min_score` est le plancher de **cette** course, `None` gardant celui du
+        déploiement. Il est appliqué ici et pas plus loin : une lecture sous le
+        plancher ne devient jamais un `PlateText`, donc elle ne vote pas, donc elle ne
+        peut pas être publiée. Filtrer plus tard dans la chaîne laisserait une
+        hésitation traverser le port — et une chaîne affichée est crue.
 
         Le tableau de résultats est pré-rempli de `None` : **c'est** l'implémentation
         du contrat d'alignement positionnel du port. Une vignette écartée par
@@ -487,8 +496,9 @@ class OnnxPlateReader:
                 if incumbent is None or reading.total > incumbent.total:
                     best[owner] = reading
 
+            floor = self._min_score if min_score is None else float(min_score)
             for owner, reading in best.items():
-                if reading.score >= self._min_score:
+                if reading.score >= floor:
                     results[owner] = PlateText(
                         text=reading.text,
                         score=reading.score,

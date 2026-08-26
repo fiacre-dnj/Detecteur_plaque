@@ -146,6 +146,26 @@ describe("statsAt — les compteurs suivent la tête de lecture", () => {
     }
   });
 
+  it("retient le plus tôt et le plus tard, même sur des dates désordonnées", () => {
+    // **Le miroir de `DirectionTally.record`** (ADR 0038). Un franchissement porte
+    // la date de son intersection avec le trait ; la bande morte étant
+    // proportionnelle à la boîte du véhicule, un poids lourd peut être daté
+    // *avant* une moto pourtant comptée plus tôt. Prendre la première écriture
+    // rendrait `firstMs > lastMs`, et la relecture contredirait le résultat
+    // qu'elle rejoue.
+    const shuffled: AnalysisResult = {
+      ...result,
+      crossings: [...result.crossings].reverse(),
+    };
+
+    for (const tally of Object.values(statsAt(shuffled, result.video.durationMs).byLine)) {
+      for (const side of [tally.byDirection.positive, tally.byDirection.negative]) {
+        if (side.firstMs === null || side.lastMs === null) continue;
+        expect(side.firstMs).toBeLessThanOrEqual(side.lastMs);
+      }
+    }
+  });
+
   it("ne compte pas un véhicule avant sa première apparition", () => {
     // Compter tout le registre afficherait le total final dès la première seconde.
     const first = Math.min(...result.vehicles.map((vehicle) => vehicle.firstSeenMs));

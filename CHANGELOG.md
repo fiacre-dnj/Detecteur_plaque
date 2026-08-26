@@ -11,6 +11,21 @@ plus deux fois dans le même sens » si.
 
 ### Ajouté
 
+- **Un curseur « Confiance lecture », dans le tiroir Détection.** Il décide de la
+  sûreté minimale d'une lecture de plaque : sous ce seuil, le texte n'est pas retenu et
+  le véhicule reste sans plaque plutôt qu'avec une plaque douteuse. Le serveur
+  appliquait déjà cette règle, mais à une valeur fixée dans sa configuration, hors de
+  portée. À ne pas confondre avec « Confiance plaques », qui porte sur le **repérage**
+  du rectangle : une plaque peut être parfaitement encadrée et illisible. Le bouton
+  « Défaut » revient au réglage du serveur, et le curseur descend jusqu'à « aucune »
+  pour qui préfère tout voir. Il ne change pas la durée d'une analyse : la lecture a
+  lieu de toute façon, elle est seulement retenue ou non.
+- **Tracer la première zone coche « Ignorer hors zone ».** Le geste dit « ce qui
+  m'intéresse est là-dedans » ; jusqu'ici il fallait encore aller cocher une case dans
+  un autre tiroir pour que ce soit vrai, sans quoi tout ce qui passait à l'extérieur
+  était compté quand même. La case reste décochable, et une deuxième zone ne la recoche
+  pas — une géométrie chargée depuis un preset garde, elle, le réglage enregistré avec
+  elle.
 - Socle du dépôt : licence AGPL-3.0, hooks de pré-commit, journal, guide de
   contribution, et les cinq premières décisions d'architecture documentées.
 - Le service répond : `GET /api/v1/health/live` (vivacité),
@@ -287,6 +302,15 @@ plus deux fois dans le même sens » si.
 
 ### Corrigé
 
+- **Le curseur « Confiance véhicules » agit enfin sur toutes les analyses, pas
+  seulement sur la première.** Après le démarrage du serveur, la première analyse
+  utilisait bien le seuil demandé ; toutes les suivantes reprenaient le sien en
+  silence, quel que soit l'endroit où l'on posait le curseur. Rien ne le signalait :
+  l'écran, la requête et les journaux annonçaient tous la bonne valeur. Mesuré sur une
+  même vidéo, trois analyses de suite dans le même serveur — `20 % → 80 % → 20 %`
+  rendait **3, 3 puis 3** véhicules ; il rend désormais **3, 1 puis 3**. Le direct
+  était concerné aussi : une session caméra ouverte après une analyse héritait du seuil
+  de celle-ci.
 - **L'analyse avec repérage de plaques est 1,3× à 2× plus rapide.** Elle s'arrêtait
   net pendant une seconde entière, plusieurs fois par minute : sur une route calme, ces
   pauses représentaient les trois quarts du temps passé à repérer les plaques. Le

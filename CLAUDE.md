@@ -32,7 +32,30 @@ même tracé donne les mêmes chiffres dans les deux :
   **aperçu** échantillonné (`event: preview`, ~5 Hz) : la vidéo locale se cale
   sur l'image analysée et le navigateur y dessine les boîtes, les compteurs et
   les franchissements du serveur **pendant** l'analyse
-  ([ADR 0006](docs/adr/0006-apercu-live-des-analyses.md)). Il porte aussi le
+  ([ADR 0006](docs/adr/0006-apercu-live-des-analyses.md)).
+
+  **Les boîtes suivent l'image, les compteurs suivent le serveur** (2026-08-25) —
+  et c'est la règle à ne pas « harmoniser ». `useSyncedPreview` ne publie les boîtes
+  de l'aperçu *N* qu'une fois l'image *N* **réellement présentée**
+  (`requestVideoFrameCallback`, repli `seeked`). Avant, `GeometryCanvas` peignait au
+  rendu React qui suit la trame SSE pendant que `currentTime = …` ne fait que
+  *demander* une image : l'overlay courait devant la vidéo de tout le temps de
+  décodage — « on dirait que le tracker est en avance ». Quatre points :
+  - **`shouldSeek` compare désormais l'image AFFICHÉE**, pas la cible *demandée*.
+    C'était le défaut de fond : le retard ne pouvait ni se voir ni se rattraper. La
+    tolérance de 40 ms n'a pas changé, son opérande si ;
+  - **une seule cible en attente, écrasée** — jamais une file, sinon un décodeur
+    lent ferait rejouer le retard au lieu de le rattraper ;
+  - **les compteurs, le journal et les flashs de ligne restent sur l'aperçu
+    vivant.** Une boîte est un *état*, qu'on peut sauter sans rien perdre ; un
+    franchissement est un *événement*, et l'aperçu qui le porte est le seul à le
+    porter ;
+  - **« Écart image »** (5ᵉ chiffre de `TechnicalMetrics`) mesure ce qui restait
+    d'écart. Il doit osciller autour de zéro ; s'il **dérive** avec la position dans
+    la vidéo, la cause est la cadence déclarée du conteneur (VFR, 29,97, rotation) et
+    non le calage. Rien d'autre ne sépare ces deux cas.
+
+  Le flux SSE porte aussi le
   **registre** des véhicules, à une cadence propre et plus lente (1 s), ce qui
   fait vivre les quatre sections du bas de page pendant l'analyse
   ([ADR 0026](docs/adr/0026-le-registre-se-remplit-pendant-l-analyse.md)) ;
@@ -54,7 +77,7 @@ Le dossier [`prompt/`](prompt/) (15 fichiers, à lire dans l'ordre depuis
 [`prompt/README.md`](prompt/README.md)) **est** le cahier des charges. Quand il
 écrit « obligatoire », « jamais » ou « exactement », c'est une contrainte qui a
 coûté un bug dans une version antérieure.
-[`prompt/13-PIEGES-CONNUS.md`](prompt/13-PIEGES-CONNUS.md) en tient la liste (66
+[`prompt/13-PIEGES-CONNUS.md`](prompt/13-PIEGES-CONNUS.md) en tient la liste (67
 entrées) — **le relire avant de déboguer quoi que ce soit**.
 
 Si une contrainte semble fausse : le dire avec la preuve, proposer l'alternative,
@@ -72,7 +95,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1532 tests
+uv run pytest                                                            # 1529 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -86,7 +109,7 @@ uv run python scripts/audit_lignes.py                # « pourquoi cette ligne e
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 628 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 721 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -236,8 +259,9 @@ l'écran dès qu'on lisait un résultat.
   des réglages ne connaît pas `geometry-editor`, c'est le studio qui câble, même
   règle que `leading`/`trailing`. `GeometryPanel` a **perdu sa carte et son
   titre** : le tiroir est déjà une région nommée « Géométrie » ;
-- **les chiffres d'instant** — **objets suivis**, cadence serveur, latence et flux
-  analysé — sont à l'extrémité de la barre (`TechnicalMetrics`, `trailing`), en
+- **les chiffres d'instant** — **objets suivis**, cadence serveur, latence, **écart
+  image** et flux analysé — sont à l'extrémité de la barre (`TechnicalMetrics`,
+  `trailing`), en
   libellé plus chiffre sur deux lignes, sans carte. Ils tenaient quatre des six
   `MetricCard` de tête, à égalité visuelle avec le bilan du comptage. Ils étaient
   trois jusqu'au soir du 2026-08-19 : « Objets suivis » les a rejoints pour la même
@@ -376,17 +400,26 @@ décrivaient un comportement d'avant ADR 0024 et ADR 0025, et deux chiffres du
 diagnostic n'étaient renseignés par personne.
 
 - **Détection** — modèle, confiance véhicules, classes à compter, ANPR, confiance
-  plaques, OCR, **et « Ignorer hors zone »**, qui vivait dans « Affichage » alors
-  qu'il ne change pas ce qu'on voit mais ce que le détecteur reçoit, donc les
-  chiffres. Deux textes étaient devenus faux : la confiance ne filtre plus le
-  détecteur (elle décide ce qui *devient* une piste), et « Repérer les plaques »
-  connaît désormais les **trois** états du serveur — absent, présent mais illisible
-  (`plateAvailable && plateLoadable === false`), disponible. Le deuxième laissait
-  cocher une option qui ralentissait l'analyse sans jamais rendre une plaque ;
-  `model/plateCapability.ts` le tranche en un endroit, testé ;
+  plaques, OCR, **confiance lecture**, **et « Ignorer hors zone »**, qui vivait dans
+  « Affichage » alors qu'il ne change pas ce qu'on voit mais ce que le détecteur
+  reçoit, donc les chiffres. Deux textes étaient devenus faux : la confiance ne
+  filtre plus le détecteur (elle décide ce qui *devient* une piste), et « Repérer les
+  plaques » connaît désormais les **trois** états du serveur — absent, présent mais
+  illisible (`plateAvailable && plateLoadable === false`), disponible. Le deuxième
+  laissait cocher une option qui ralentissait l'analyse sans jamais rendre une plaque ;
+  `model/plateCapability.ts` le tranche en un endroit, testé.
+
+  **« Confiance lecture » (2026-08-24) n'est pas le doublon de « Confiance plaques »** :
+  celle-ci porte sur la **localisation**, celle-là sur la **lecture**, et une plaque
+  peut être parfaitement encadrée et illisible — c'est d'ailleurs pourquoi le registre
+  affiche les deux confiances côte à côte. Elle n'apparaît qu'avec l'OCR (sans lecture,
+  rien à filtrer), descend jusqu'à `0` (« aucune ») là où le seuil de localisation part
+  de 0,05, et porte un bouton « Défaut » qui rend `null` — « suivre le plancher du
+  serveur », qui n'est **pas** `0` (décision 27) ;
 - **Comptage** — images avant comptage, survie d'une piste perdue, seuil IoU, un
-  encart « décidé pour vous » qui énonce la bande morte et son coût (l'horodatage
-  est celui de la *sortie* de bande), le diagnostic, et les
+  encart « décidé pour vous » qui énonce la bande morte (le comptage attend que le
+  véhicule soit franchement d'un côté ; **la date, elle, est celle du passage sur le
+  trait** depuis ADR 0038), le diagnostic, et les
   **quasi-franchissements**, redevenus visibles ;
 - **Affichage & analyse** — trajectoires (le seul réglage purement visuel), pas
   d'analyse et les deux cadences. L'**échelle globale** px/m y a vécu jusqu'au
@@ -419,6 +452,25 @@ points qui ne se devinent pas :
   serait du bruit ; rien sur un clic dans le vide, qui **désélectionne** — c'est la
   fin d'un réglage, pas son début. Fermer reste à `Échap`, au re-clic sur la pilule
   et au clic hors de la scène.
+
+**Tracer la première zone coche « Ignorer hors zone »** (2026-08-24). Le geste dit
+« ce qui m'intéresse est là-dedans », et il n'avait pourtant aucun effet sur les
+chiffres tant qu'une case restée décochée dans un **autre** tiroir n'était pas
+trouvée : l'utilisateur voyait son polygone dessiné, comptait toujours ce qui passait
+dehors, et n'avait aucune raison d'aller chercher la cause dans « Détection ». Trois
+bornes, et elles sont ce qui distingue un défaut d'une contrainte :
+
+- **la première zone seulement** (`geometry.zones.length === 0` au moment du tracé).
+  Décocher puis tracer une deuxième zone recocherait la case : ce serait combattre un
+  choix explicite. Le passage de « aucune zone » à « une zone » est le seul moment où
+  la question n'a jamais été posée ;
+- **le tracé, pas le chargement.** Un preset porte son propre `maskOutsideZones` et
+  l'impose. Un `useEffect` sur `zones.length` les ferait entrer en collision — le
+  preset poserait `false`, l'effet verrait passer une zone et remettrait `true` ; c'est
+  pourquoi la règle vit dans `handleCompleteZone`, sur l'événement, et non dans un
+  effet ;
+- **rien n'est verrouillé** : la case reste décochable, et `toRequest` retombe de
+  toute façon à `false` s'il ne reste aucune zone.
 
 Les boutons du tiroir sont **grisés tant qu'aucune vidéo n'est chargée** : régler
 la détection, le comptage, l'affichage ou la géométrie n'a rien à quoi s'appliquer
@@ -1090,6 +1142,93 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     - **ne pas « corriger » en forçant `rect=False` sur les plaques.** Même gain, et une
       plaque publiée en moins : le remplissage change la boîte d'un sous-pixel, donc la
       vignette d'OCR, donc le vote.
+26. **« Confiance véhicules » n'atteignait le tracker qu'à la première analyse d'un
+    processus.** Même sortie anticipée d'Ultralytics que celle qui avait motivé
+    `reset_trackers` : `on_predict_start` **sort immédiatement** quand
+    `predictor.trackers` existe et que `persist` est vrai, donc le fichier de suivi
+    n'est **jamais relu** — et c'est lui qui porte le seuil de l'utilisateur depuis
+    ADR 0024. Le curseur bougeait, le fichier dérivé était écrit, son chemin
+    journalisé, et aucun chiffre ne changeait. Mesuré, trois analyses de suite dans un
+    même processus sur la même fenêtre : `0,20 → 0,80 → 0,20` rendait **3, 3, 3**
+    véhicules ; il rend désormais **3, 1, 3**. Trois points :
+    - **la panne est invisible en développement**, parce que la première analyse après
+      un démarrage est la seule qui obéit — et c'est celle qu'on regarde ;
+    - **`reset_trackers(model, tracker_config)` repose les clés de requête** sur les
+      trackers vivants. C'est suffisant parce que `REQUEST_TRACKER_KEYS ⊆
+      LIVE_TRACKER_KEYS` : ces clés-là sont relues à chaque image sur `self.args`, pas
+      gravées à la construction. Un test verrouille l'inclusion, un autre le fait que
+      le fichier dérivé ne change rien d'autre ;
+    - **ne pas « simplifier » en supprimant `predictor.trackers`.** Ultralytics
+      ré-enregistrerait ses rappels, `model.callbacks` **empile**, et un
+      `on_predict_postprocess_end` en double appelle `tracker.update()` deux fois par
+      image — des chiffres plausibles et complètement faux. Les rappels par défaut de
+      la bibliothèque portent les mêmes noms que ceux du tracker, donc les
+      désinscrire à la main n'est pas fiable.
+
+    [ADR 0035](docs/adr/0035-le-seuil-de-confiance-n-atteignait-le-tracker-qu-une-fois.md).
+27. **La confiance de **lecture** est un réglage de l'utilisateur, pas du déploiement.**
+    `plate_ocr_min_text_score` (0,50) refusait déjà toute lecture moins sûre, mais depuis
+    un fichier de configuration. « Des plaques fausses, ou pas de plaques » est pourtant
+    une question de scène, pas de machine — la seule des seuils d'OCR qui le soit.
+    `plateTextConfidence` voyage donc par requête, comme `plate_confidence`, et descend
+    jusqu'à l'adaptateur en argument de `PlateReader.read`. Trois points :
+    - **`null` n'est pas `0`** : le premier garde le plancher du déploiement, le second
+      accepte **toutes** les lectures. Les confondre publierait des plaques que le
+      serveur refusait jusque-là ;
+    - **le filtre vit dans l'adaptateur et nulle part ailleurs** : une lecture sous le
+      plancher ne devient pas un `PlateText`, donc ne traverse pas le port, donc ne
+      vote pas. Filtrer des deux côtés laisserait deux endroits décider de ce qui vote ;
+    - **il n'économise aucune inférence** — la lecture a lieu puis est refusée. L'aide
+      à l'écran le dit, parce que monter ce curseur pour accélérer une analyse est le
+      contresens naturel. Un véhicule dont toutes les lectures sont refusées tombe sur
+      `no_consensus`, ce qui est exact : la tentative a bien eu lieu.
+
+    Mesuré sur le vrai lecteur : `null` et `0` publient `A8254S`, `0,99` refuse les
+    trois lectures et ne publie rien.
+    [ADR 0036](docs/adr/0036-la-confiance-de-lecture-devient-un-reglage-de-l-utilisateur.md).
+28. **Le plancher du détecteur suit le curseur quand celui-ci descend.** `detector_floor`
+    lisait `track_low_thresh` du fichier de base et le rendait tel quel, ce qui défaisait
+    ADR 0024 à l'autre bout de sa plage : **sous 0,10 le curseur était mort** — le
+    détecteur ne rendait jamais une boîte à 0,07 — et pire, le fichier dérivé obtenait
+    `track_high_thresh < track_low_thresh`, donc **une bande basse vide** et la seconde
+    association BYTE de nouveau morte. Il rend désormais
+    `min(base_low, confiance × base_low / base_high)`, le rapport venant du **fichier
+    versionné lui-même** (0,10 / 0,25). Trois points :
+    - **rien ne change au défaut** : au-dessus de `track_high_thresh` du fichier (0,25), le
+      `min` rend exactement l'ancienne valeur. Seul le bas de la plage descend, là où le
+      curseur ne servait à rien ;
+    - `track_low_thresh` rejoint `REQUEST_TRACKER_KEYS` — il dépend de la requête, donc il
+      doit être reposé par `reset_trackers` (ADR 0035). La condition
+      `REQUEST_TRACKER_KEYS ⊆ LIVE_TRACKER_KEYS` tient **sans rien faire** : la clé y était
+      déjà ;
+    - **ce n'est pas toute la cause du problème de motos.** `nms.py` fait `cls.max(1)`
+      **puis** filtre par classe : l'évidence `motorcycle 0,48` d'une ancre dont le top-1
+      est `person 0,55` est jetée sans recours. `multi_label=True` serait le remède mais la
+      clé n'existe pas dans `cfg/default.yaml` — à mesurer, jamais à adopter en défaut.
+
+    [ADR 0037](docs/adr/0037-le-plancher-du-detecteur-suit-le-curseur-quand-il-descend.md).
+29. **Un franchissement porte la date de son intersection, pas de sa preuve.**
+    Voir « Ce véhicule est compté deux fois » plus bas pour le mécanisme complet.
+    [ADR 0038](docs/adr/0038-un-franchissement-est-date-de-son-intersection.md).
+30. **On ne paie plus d'inférence pour une plaque prouvée illisible.** Sur une vue de
+    circulation réelle, la détection de plaques pesait **73 % du budget pour zéro plaque
+    publiable** — elles font moins de 48 px pour un plancher de lecture à 64. Dès qu'une
+    piste a reçu **une seule** détection réelle, on connaît son rapport
+    plaque/véhicule et donc la largeur de véhicule qu'il faudrait ; on se tait tant qu'elle
+    n'est pas atteinte. Quatre points :
+    - **elle suspend, elle n'abandonne pas** : `largeur × rapport ≥ plancher` redevient
+      vrai **tout seul** quand le véhicule s'approche. C'est une mesure, pas un délai, et
+      c'est ce qui répond à « on perdrait la plaque publiée trois secondes plus tard » ;
+    - **aucun texte ne peut être perdu, par construction** : le nombre comparé est le
+      **même** que celui dont `PlateOcrPolicy.should_read` se sert pour refuser de lire.
+      Ce qui est payé est le **rectangle**, d'où `TRAFFIC_PLATE_DETECT_READABLE_GATE` ;
+    - **sans OCR la porte ne s'arme jamais** : le service ne pose le plancher que si un
+      lecteur tourne réellement ;
+    - **la garde est en position 1 bis, avant celle de l'ancre**, et c'est le seul détail
+      qui peut faire échouer tout le mécanisme en silence : une piste suspendue perd son
+      ancre, et « pas d'ancre → toujours détecter » la relancerait à chaque image.
+
+    [ADR 0039](docs/adr/0039-ne-pas-payer-pour-une-plaque-prouvee-illisible.md).
 
 ## Il n'y a plus de mesure de vitesse
 
@@ -1259,9 +1398,32 @@ publient désormais **les mêmes 14 passages** sur `video_7.mp4`, aux mêmes sec
 Avant la bande, ils différaient de quatre.
 [ADR 0018](docs/adr/0018-une-bande-morte-autour-du-trait.md).
 
-**L'horodatage d'un passage est celui de la sortie de bande**, pas du contact avec le
-trait : mesuré jusqu'à **2,2 s** de retard pour un gros véhicule abordant une ligne
-presque parallèlement. Le comptage est juste, sa date est tardive.
+**L'horodatage d'un passage était celui de la sortie de bande** — jusqu'à **2,2 s**
+de retard pour un gros véhicule abordant une ligne presque parallèlement, le
+comptage juste et sa date tardive. Corrigé le 2026-08-25 ([ADR
+0038](docs/adr/0038-un-franchissement-est-date-de-son-intersection.md), qui
+**complète** ADR 0018 sans rien lui retirer) : le compteur retient à chaque image
+l'**écart signé** au trait, et quand le signe bascule il retient l'instant
+**interpolé** de l'intersection. Le côté tranché décide *s'il faut compter*, l'écart
+brut dit *quand c'est arrivé*. **Aucun comptage ne change** — c'est la propriété qui
+rend le changement livrable, et tous les tests de `TestBandeMorte` sont intacts.
+
+Trois conséquences qui ne se devinent pas :
+
+- **l'ordre d'émission n'est plus l'ordre des dates.** La bande est proportionnelle
+  à la boîte, donc un poids lourd peut être daté *avant* une moto pourtant comptée
+  plus tôt. C'était l'unique objection d'ADR 0018, et elle se règle en trois
+  endroits : `result.crossings` trié après la boucle, `pending_crossings` trié par
+  trame SSE, et `appendCrossings` qui **insère** au lieu d'empiler. Sans le
+  troisième, `previous.deltaMs` — le temps de traversée du carrefour — deviendrait
+  négatif. La base de données, elle, triait déjà ;
+- **`DirectionTally.record` prend `min` / `max`** au lieu de « première » et
+  « dernière écriture », des deux côtés (`models.py` et `replay.ts`). Sinon un sens
+  rendrait `first_ms > last_ms` ;
+- **un résultat archivé garde ses anciennes dates.** Il n'est pas réanalysé, aucune
+  clé ne change, il ne cesse pas de se relire — il est simplement daté à l'ancienne.
+  Deux analyses du même clip, avant et après, montrent **les mêmes totaux à des
+  secondes différentes**.
 
 **La bande avait un angle mort, corrigé le 2026-08-17** ([ADR
 0023](docs/adr/0023-un-vehicule-compte-est-un-vehicule-qui-franchit.md)) : une piste
@@ -1312,11 +1474,12 @@ le piège 11 de `prompt/13` reste couvert.
 
 ## Pièges d'environnement de cette machine
 
-- `uv` a été installé par winget et vit dans
-  `%LOCALAPPDATA%\Microsoft\WinGet\Packages\astral-sh.uv_*\`. **Il n'est pas sur le
-  `PATH` du shell Bash ni de PowerShell** : les hooks pre-commit qui appellent
-  `uv run` échouent alors avec « Executable `uv` not found ». Ajouter ce dossier au
-  `PATH` avant de committer.
+- `uv` vit dans **`C:\Users\User\.local\bin\uv.exe`** (et plus dans
+  `%LOCALAPPDATA%\Microsoft\WinGet\Packages\astral-sh.uv_*\`, que les versions
+  antérieures de ce fichier indiquaient : ne pas l'y chercher). Ce dossier **est** sur
+  le `PATH` de PowerShell ; il ne l'est pas toujours pour un shell lancé autrement, et
+  les hooks pre-commit qui appellent `uv run` échouent alors avec « Executable `uv` not
+  found ». L'ajouter au `PATH` avant de committer.
 - Le Python du système est un **3.14** : il ne peut pas faire tourner ce backend.
   Toujours passer par `uv run`.
 - **Jamais de commentaire en fin de ligne après une valeur vide dans un `.env`.**
@@ -1418,7 +1581,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1532 (1 skip) | 628 |
+| Nombre | 1529 (1 skip) | 721 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

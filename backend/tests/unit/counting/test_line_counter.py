@@ -102,7 +102,16 @@ class TestFranchissementSimple:
         assert counter.by_line["l1"].negative.total == 1
 
     def test_l_evenement_porte_l_instant_et_la_frame_du_franchissement(self) -> None:
-        """Le temps est du temps de scène, pas l'heure de l'horloge."""
+        """Le temps est du temps de scène, pas l'heure de l'horloge.
+
+        **Et c'est l'instant du franchissement, pas celui de sa preuve** (ADR 0038).
+        Le trajet `y = 300, 400, 500, 600, 700` à 40 ms croise la ligne `y = 500` à
+        l'image 2, où le centroïde est **exactement** sur le trait : l'instant n'est
+        pas estimé, il est observé. L'image 3 est seulement celle où la piste
+        ressort de la bande morte, donc celle où le compteur peut *prouver* le
+        franchissement — c'est elle que l'événement portait avant, avec jusqu'à
+        2,2 s de retard sur un gros véhicule et une ligne quasi parallèle.
+        """
         counter = LineCrossingCounter((LINE,), (), min_hits=2)
         path = straight_line((900.0, 300.0), (900.0, 700.0), steps=5)
         track = session_track(track_path(1, CAR, path)[0], hits=5)
@@ -110,8 +119,8 @@ class TestFranchissementSimple:
         events = _run(counter, track, path, step_ms=40.0)
 
         event = events[0]
-        assert event.frame_index == 3  # type: ignore[attr-defined]
-        assert event.timestamp_ms == 120.0  # type: ignore[attr-defined]
+        assert event.frame_index == 2  # type: ignore[attr-defined]
+        assert event.timestamp_ms == 80.0  # type: ignore[attr-defined]
         assert event.line_id == "l1"  # type: ignore[attr-defined]
 
 
@@ -241,8 +250,13 @@ class TestReportSousMinHits:
             events.extend(counter.observe((track,), index * 40.0, index))
 
         assert len(events) == 1
-        # L'événement est émis à la confirmation, pas à l'instant du franchissement.
-        assert events[0].frame_index == len(path) - 1  # type: ignore[attr-defined]
+        # **Émis à la confirmation, daté du franchissement** (ADR 0038). Le trajet
+        # à 8 pas croise la ligne entre `t = 120` (écart −28,57) et `t = 160`
+        # (+28,57), donc à mi-chemin : 140 ms. L'émission, elle, n'a lieu qu'à la
+        # dernière image, quand la piste porte enfin un numéro — les deux instants
+        # sont distincts et l'événement doit porter le premier.
+        assert events[0].timestamp_ms == 140.0  # type: ignore[attr-defined]
+        assert events[0].frame_index == 3  # type: ignore[attr-defined]
 
     def test_une_piste_qui_meurt_avant_confirmation_ne_compte_pas(self) -> None:
         """Une boîte parasite qui traverse et disparaît n'est pas un véhicule."""
@@ -420,8 +434,10 @@ class TestDetailParSens:
 
         positive = counter.by_line["l1"].positive
         assert positive.total == 3
-        assert positive.first_ms == 120.0, "le franchissement tombe à la 4e frame du trajet"
-        assert positive.last_ms == 12_120.0
+        # Trajet à 6 pas, écarts `−200, −120, −40, +40, …` : le basculement tombe
+        # entre `t = 80` et `t = 120`, à mi-chemin des deux écarts opposés.
+        assert positive.first_ms == 100.0, "le franchissement est daté du trait, pas de sa preuve"
+        assert positive.last_ms == 12_100.0
         # Le sens jamais emprunté ne prétend pas avoir vu quelque chose.
         assert counter.by_line["l1"].negative.first_ms is None
         assert counter.by_line["l1"].negative.last_ms is None
@@ -906,3 +922,116 @@ class TestTexteDePlaqueTamponne:
         event = events[0]
         assert isinstance(event, CrossingEvent)
         assert event.plate_text is None
+
+
+class TestDateDuFranchissement:
+    """La **date** d'un passage — ADR 0038, qui complète ADR 0018 sans l'abroger.
+
+    La bande morte décide *s'il faut compter* ; l'écart brut au trait dit *quand
+    c'est arrivé*. Aucun test de cette classe ne regarde un total : c'est la
+    propriété centrale du changement, et le reste du fichier la vérifie déjà.
+
+    La boîte par défaut fait 80×60, donc une demi-boîte vaut 40 px et la bande
+    s'étend à ±10 px du trait — c'est elle qui retardait la date.
+    """
+
+    def _hover(
+        self, counter: LineCrossingCounter, offsets: list[float], *, step_ms: float = 33.0
+    ) -> list[object]:
+        """Rejoue une piste dont le centroïde suit ces écarts au trait, en y."""
+        track = session_track(track_path(1, CAR, [(900.0, 500.0 + offsets[0])])[0], hits=5)
+        events: list[object] = []
+        for index, offset in enumerate(offsets):
+            if index > 0:
+                _advance(track, (900.0, 500.0 + offset))
+            events.extend(counter.observe((track,), index * step_ms, index))
+        return events
+
+    def test_la_date_est_interpolee_entre_les_deux_images_qui_encadrent_le_trait(self) -> None:
+        """**Le cœur d'ADR 0038** : ni le milieu, ni une frontière d'image.
+
+        Écarts −10 puis +30 à 40 ms : le trait est franchi au **quart** de
+        l'intervalle, soit 10 ms. Rabattre sur l'une des deux images donnerait 0 ou
+        40, et prendre le milieu donnerait 20 — les trois sont faux, et le
+        troisième est le plus tentant.
+        """
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+
+        events = self._hover(counter, [-50.0, -10.0, 30.0, 70.0], step_ms=40.0)
+
+        assert len(events) == 1
+        assert events[0].timestamp_ms == 50.0  # type: ignore[attr-defined]
+
+    def test_un_aller_retour_dans_la_bande_est_date_du_depart_definitif(self) -> None:
+        """Le **dernier** basculement gagne, jamais le premier.
+
+        C'est la sémantique déjà écrite d'ADR 0018 : un véhicule qui frémit sur le
+        trait « en produira un quand il repartira, du côté où il repart ». Retenir
+        le premier basculement daterait ce passage de son premier frémissement,
+        c'est-à-dire de bien avant le moment où il a réellement changé de côté.
+        """
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+
+        # Franchement dessus, puis trois frémissements dans la bande, puis départ.
+        events = self._hover(counter, [-40.0, -2.0, 2.0, -2.0, 2.0, 25.0, 50.0], step_ms=40.0)
+
+        assert len(events) == 1
+        # Dernier changement de signe : entre l'image 3 (−2) et l'image 4 (+2), donc
+        # à mi-chemin de 120 et 160 ms. Le premier basculement, lui, valait 60 ms.
+        assert events[0].timestamp_ms == 140.0  # type: ignore[attr-defined]
+
+    def test_la_date_precede_toujours_la_sortie_de_bande(self) -> None:
+        """La nouvelle date est un **point** de l'intervalle dont l'ancienne était la borne.
+
+        C'est l'argument qui rend le changement inattaquable : on ne peut pas être
+        moins juste qu'avant, puisqu'on remplace la borne supérieure de la fenêtre
+        où le franchissement a prouvablement eu lieu par un point de cette fenêtre.
+        """
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        offsets = [-40.0, -8.0, -3.0, 4.0, 9.0, 30.0]
+
+        events = self._hover(counter, offsets, step_ms=40.0)
+
+        assert len(events) == 1
+        crossing_ms = events[0].timestamp_ms  # type: ignore[attr-defined]
+        # La sortie de bande est l'image 5 (écart +30, au-delà des ±10 px).
+        assert crossing_ms < 5 * 40.0
+        # Et jamais avant l'image où la piste était encore de l'autre côté.
+        assert crossing_ms > 2 * 40.0
+
+    def test_une_boite_degeneree_retombe_sur_l_instant_courant(self) -> None:
+        """Sans surface, pas de bande morte — et la datation doit rester définie.
+
+        `_settled_side` retombe sur le test de côté strict quand la demi-boîte est
+        nulle ; la date, elle, ne dépend pas de la boîte et marche à l'identique. Ce
+        test existe pour qu'un repli reste un repli et non une exception.
+        """
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        track = session_track(track_path(1, CAR, [(900.0, 400.0)], box_size=(0.0, 0.0))[0], hits=5)
+        events: list[object] = []
+        for index, y in enumerate((400.0, 600.0)):
+            if index > 0:
+                track.previous_centroid = track.centroid
+                track.box = box_at((900.0, y), size=(0.0, 0.0))
+                track.centroid = track.box.centroid
+            events.extend(counter.observe((track,), index * 40.0, index))
+
+        assert len(events) == 1
+        # 400 → 600 sur une ligne à 500 : le trait est franchi à mi-chemin.
+        assert events[0].timestamp_ms == 20.0  # type: ignore[attr-defined]
+
+    def test_un_basculement_hors_du_segment_ne_date_aucun_franchissement(self) -> None:
+        """Mémoriser une date n'est pas compter.
+
+        Le pendant de `test_une_piste_qui_passe_au_dela_des_extremites_ne_compte_pas` :
+        la piste change bien de côté de la **droite**, donc un instant est mémorisé,
+        mais elle passe au-delà de l'extrémité du **segment**. Rien ne doit être
+        émis — sans quoi la datation deviendrait un second chemin de comptage, ce
+        qu'elle n'est pas.
+        """
+        counter = LineCrossingCounter((LINE,), (), min_hits=2)
+        # `make_line` trace de x = 0 à x = 1920 ; on passe largement au-delà.
+        path = straight_line((3000.0, 300.0), (3000.0, 700.0), steps=5)
+        track = session_track(track_path(1, CAR, path)[0], hits=5)
+
+        assert _run(counter, track, path) == []

@@ -150,6 +150,18 @@ l'application, ou une contrainte d'environnement qui a fait perdre du temps.
     rien confirmé. Ce n'est pas une erreur.
 34. **Ne jamais déduire une caractéristique d'un modèle de son nom de fichier.**
     Le palier vit dans le catalogue.
+67. **Le fichier de suivi n'est lu qu'une fois par instance de modèle.**
+    `on_predict_start` d'Ultralytics **sort immédiatement** quand `predictor.trackers`
+    existe et que `persist` est vrai : le `tracker=…` passé à chaque appel est alors
+    ignoré. Comme le registre garde l'instance d'un job à l'autre, **toutes les
+    analyses d'un processus tournaient au seuil de la première** — « Confiance
+    véhicules » était sans effet dès la deuxième, et le direct héritait du seuil de
+    l'analyse précédente. Rien ne lève, et la première analyse après un démarrage — la
+    seule qu'on regarde en développement — obéit parfaitement.
+    `reset_trackers(model, tracker_config)` **repose** les clés de requête sur les
+    trackers vivants ; ne pas « simplifier » en supprimant `predictor.trackers`, ce qui
+    ferait ré-enregistrer les rappels par-dessus les anciens et appellerait
+    `tracker.update()` deux fois par image (ADR 0035).
 
 ## G. Environnement, navigateur, outillage
 
