@@ -269,7 +269,7 @@ describe("crossingFacets", () => {
 
     const facets = crossingFacets(entries, LINES);
 
-    expect(facets.byRole).toEqual({ entry: 2, exit: 1, neutral: 0 });
+    expect(facets.byRole).toEqual({ entry: 2, exit: 1, forbidden: 0, transit: 0, neutral: 0 });
     expect(facets.byLine.map((facet) => [facet.lineId, facet.count])).toEqual([
       ["l1", 2],
       ["l2", 1],

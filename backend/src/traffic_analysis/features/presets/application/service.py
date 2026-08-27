@@ -177,6 +177,14 @@ def describe(
 
 
 def _describe_line(line: PresetLine) -> dict[str, Any]:
+    """La ligne telle que l'API la rend, `LineSchema` comprise.
+
+    **Ni les champs de sens ni les classes autorisées ne sont mis à l'échelle**,
+    contrairement aux sommets : `scaled_to` ne touche qu'à des coordonnées. Un rôle,
+    un libellé et une règle de voie réservée décrivent le trait, pas sa position —
+    recharger un preset sur une autre résolution déplace la ligne sans jamais changer
+    ce qui entre, ce qui sort ni ce qui est interdit.
+    """
     return {
         "id": line.id,
         "name": line.name,
@@ -184,6 +192,13 @@ def _describe_line(line: PresetLine) -> dict[str, Any]:
         "zoneId": line.zone_id,
         "a": {"x": line.a.x, "y": line.a.y},
         "b": {"x": line.b.x, "y": line.b.y},
+        "positiveName": line.positive_name,
+        "negativeName": line.negative_name,
+        "positiveRole": line.positive_role,
+        "negativeRole": line.negative_role,
+        "allowedClassIds": (
+            None if line.allowed_class_ids is None else list(line.allowed_class_ids)
+        ),
     }
 
 

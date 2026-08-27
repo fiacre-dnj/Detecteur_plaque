@@ -294,11 +294,20 @@ function drawLineLabels(
     const negatedNormal = { x: -normal.x, y: -normal.y };
     const positive = directionText(line, "positive");
     const negative = directionText(line, "negative");
+    const positiveRole = directionRole(line, "positive");
+    const negativeRole = directionRole(line, "negative");
     // La flèche n'occupe la place qu'elle prend réellement (`ARROW_RESERVED_WIDTH`)
-    // sur un sens marqué entrée ou sortie : `neutral` n'en affiche pas, il n'y a
-    // rien à orienter.
-    const positiveArrow = directionRole(line, "positive") === "neutral" ? null : normal;
-    const negativeArrow = directionRole(line, "negative") === "neutral" ? null : negatedNormal;
+    // sur un sens qui déclare quelque chose : seul `neutral` n'en affiche pas, il
+    // n'y a rien à orienter. Un sens **interdit** garde la sienne — c'est bien un
+    // sens, et savoir de quel côté il est interdit est toute l'information.
+    const positiveArrow = positiveRole === "neutral" ? null : normal;
+    const negativeArrow = negativeRole === "neutral" ? null : negatedNormal;
+    // Le rouge ne dit pas *quelle* ligne — le trait le dit déjà, dans sa propre
+    // teinte, juste à côté. Il dit qu'on n'aurait pas dû passer là. C'est la seule
+    // couleur du canvas qui encode une valeur plutôt qu'une identité, et elle est
+    // volontairement bornée au mot « Interdit ».
+    const positiveColor = positiveRole === "forbidden" ? CANVAS.forbidden : line.color;
+    const negativeColor = negativeRole === "forbidden" ? CANVAS.forbidden : line.color;
     const sizes = {
       positive: withArrowWidth(measureLabel(ctx, positive), positiveArrow),
       negative: withArrowWidth(measureLabel(ctx, negative), negativeArrow),
@@ -315,7 +324,7 @@ function drawLineLabels(
     wanted.push({
       key: `${line.id}:positive`,
       text: positive,
-      color: line.color,
+      color: positiveColor,
       centre: anchors.positive,
       escape: normal,
       size: sizes.positive,
@@ -328,7 +337,7 @@ function drawLineLabels(
     wanted.push({
       key: `${line.id}:negative`,
       text: negative,
-      color: line.color,
+      color: negativeColor,
       centre: anchors.negative,
       escape: negatedNormal,
       size: sizes.negative,

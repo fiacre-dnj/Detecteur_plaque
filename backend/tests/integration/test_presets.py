@@ -36,6 +36,10 @@ def _draft(**overrides: object) -> dict[str, Any]:
                 "zoneId": "z1",
                 "a": {"x": 100.0, "y": 400.0},
                 "b": {"x": 1180.0, "y": 400.0},
+                "positiveName": "Vers le centre",
+                "negativeName": "Vers la rocade",
+                "positiveRole": "entry",
+                "negativeRole": "exit",
             }
         ],
         "zones": [
@@ -90,6 +94,13 @@ class TestEnregistrement:
         assert line["color"] == "#38bdf8"
         assert line["zoneId"] == "z1"
         assert line["a"] == {"x": 100.0, "y": 400.0}
+        # Les rôles de sens, et c'est le maillon qui manquait : ils étaient
+        # acceptés à l'entrée puis jetés avant la persistance, donc tout preset
+        # rechargé rendait des lignes `neutral`.
+        assert line["positiveRole"] == "entry"
+        assert line["negativeRole"] == "exit"
+        assert line["positiveName"] == "Vers le centre"
+        assert line["negativeName"] == "Vers la rocade"
         assert body["zones"][0]["points"][2] == {"x": 640.0, "y": 360.0}
         assert body["maskOutsideZones"] is True
 
@@ -233,6 +244,85 @@ class TestMiseALEchelle:
         assert body["lines"][0]["a"] == {"x": 100.0, "y": 400.0}
 
 
+class TestRolesDeSens:
+    """Les rôles de sens survivent au preset, et c'est ce qui le rend rechargeable.
+
+    Depuis ADR 0021 le rôle **est** le libellé affiché et range chaque passage en
+    entrée ou en sortie. Un preset qui les perd rend des lignes que le serveur compte
+    encore correctement mais que plus rien n'affiche : « Passages en entrée » à « — »,
+    comparatifs de Statistique à `null`, registre sans heure d'entrée ni de sortie,
+    chronologie retombée sur « sens ↑ ». Aucune erreur nulle part — la forme de panne
+    que ce dépôt paie le plus cher.
+    """
+
+    async def test_les_roles_survivent_a_une_mise_a_l_echelle(self, client: AsyncClient) -> None:
+        """Un rôle décrit le trait, pas sa position : convertir ne le touche pas.
+
+        C'est le parcours réel — on recharge un preset **parce qu'on change de
+        vidéo**, donc presque toujours avec conversion.
+        """
+        created = await client.post(PRESETS_URL, json=_draft())
+        preset_id = created.json()["id"]
+
+        body = (await client.get(f"{PRESETS_URL}/{preset_id}?width=640&height=360")).json()
+
+        assert body["scaled"] is True
+        line = body["lines"][0]
+        assert line["a"] == {"x": 50.0, "y": 200.0}
+        assert line["positiveRole"] == "entry"
+        assert line["negativeRole"] == "exit"
+        assert line["positiveName"] == "Vers le centre"
+
+    async def test_la_liste_porte_les_roles_elle_aussi(self, client: AsyncClient) -> None:
+        # La liste et la lecture unitaire passent par le même sérialiseur : deux
+        # chemins finiraient par diverger, et l'un des deux montrerait des rôles
+        # que l'autre tait.
+        await client.post(PRESETS_URL, json=_draft())
+
+        body = (await client.get(PRESETS_URL)).json()
+
+        assert body["items"][0]["lines"][0]["positiveRole"] == "entry"
+
+    async def test_un_remplacement_ecrit_les_nouveaux_roles(self, client: AsyncClient) -> None:
+        """`PUT` passe par un autre chemin d'écriture que `POST` — il l'oubliait aussi."""
+        created = await client.post(PRESETS_URL, json=_draft())
+        preset_id = created.json()["id"]
+        inverted = _draft()["lines"][0] | {"positiveRole": "exit", "negativeRole": "entry"}
+
+        await client.put(
+            f"{PRESETS_URL}/{preset_id}",
+            json=_draft(lines=[inverted]),
+        )
+        body = (await client.get(f"{PRESETS_URL}/{preset_id}")).json()
+
+        assert body["lines"][0]["positiveRole"] == "exit"
+        assert body["lines"][0]["negativeRole"] == "entry"
+
+    async def test_un_preset_sans_role_reste_neutre_et_ne_devine_rien(
+        self, client: AsyncClient
+    ) -> None:
+        """Le cas des presets enregistrés avant ce correctif.
+
+        Ils se rechargent — les refuser viderait la liste de l'utilisateur — et
+        rendent `neutral`, jamais une devinette : deviner « entrée » fausserait un
+        bilan que personne n'a demandé, alors que `neutral` fait afficher le repère
+        « à préciser » du panneau de géométrie.
+        """
+        bare = {
+            key: value
+            for key, value in _draft()["lines"][0].items()
+            if key not in ("positiveRole", "negativeRole", "positiveName", "negativeName")
+        } | {"zoneId": None}
+
+        created = await client.post(PRESETS_URL, json=_draft(lines=[bare], zones=[]))
+        body = (await client.get(f"{PRESETS_URL}/{created.json()['id']}")).json()
+
+        line = body["lines"][0]
+        assert line["positiveRole"] == "neutral"
+        assert line["negativeRole"] == "neutral"
+        assert line["positiveName"] == ""
+
+
 class TestListe:
     async def test_la_liste_rend_les_presets_enregistres(self, client: AsyncClient) -> None:
         await client.post(PRESETS_URL, json=_draft(name="A"))
@@ -353,3 +443,67 @@ class TestPresetInconnu:
         assert response.status_code == 404
         assert response.json()["code"] == "preset_not_found"
         assert "inexistant" in response.json()["detail"]
+
+
+class TestReglesDeLigne:
+    """Sens interdit et voie réservée survivent au preset, comme les rôles.
+
+    Même forme de panne, et elle a déjà été payée une fois : `LineSchema` accepte le
+    champ, le client l'envoie, et une conversion oubliée le laisse tomber en
+    silence. Le preset s'enregistre sans erreur, se recharge sans erreur, et rend une
+    voie de bus qui ne signale plus rien — sans qu'aucun compteur soit faux.
+    """
+
+    async def test_un_sens_interdit_se_recharge_tel_quel(self, client: AsyncClient) -> None:
+        draft = _draft()
+        draft["lines"][0]["negativeRole"] = "forbidden"
+        created = await client.post(PRESETS_URL, json=draft)
+
+        line = (await client.get(f"{PRESETS_URL}/{created.json()['id']}")).json()["lines"][0]
+
+        assert line["negativeRole"] == "forbidden"
+
+    async def test_une_voie_reservee_se_recharge_telle_quelle(self, client: AsyncClient) -> None:
+        draft = _draft()
+        draft["lines"][0]["allowedClassIds"] = [5, 7]
+        created = await client.post(PRESETS_URL, json=draft)
+
+        line = (await client.get(f"{PRESETS_URL}/{created.json()['id']}")).json()["lines"][0]
+
+        assert line["allowedClassIds"] == [5, 7]
+
+    async def test_une_voie_reservee_survit_a_une_mise_a_l_echelle(
+        self, client: AsyncClient
+    ) -> None:
+        """Une règle décrit le trait, pas sa position — comme un rôle.
+
+        C'est le parcours réel : on recharge un preset **parce qu'on change de
+        vidéo**, donc presque toujours avec conversion.
+        """
+        draft = _draft()
+        draft["lines"][0]["negativeRole"] = "forbidden"
+        draft["lines"][0]["allowedClassIds"] = [5]
+        created = await client.post(PRESETS_URL, json=draft)
+        preset_id = created.json()["id"]
+
+        body = (await client.get(f"{PRESETS_URL}/{preset_id}?width=640&height=360")).json()
+
+        assert body["scaled"] is True
+        line = body["lines"][0]
+        assert line["a"] == {"x": 50.0, "y": 200.0}
+        assert line["negativeRole"] == "forbidden"
+        assert line["allowedClassIds"] == [5]
+
+    async def test_une_ligne_sans_voie_reservee_rend_null_et_jamais_une_liste_vide(
+        self, client: AsyncClient
+    ) -> None:
+        """`null` dit « rien n'est restreint », `[]` dirait « personne ne passe ».
+
+        Se tromper de repli fabriquerait un écran d'alertes entièrement faux sur une
+        géométrie qui n'a jamais rien restreint.
+        """
+        created = await client.post(PRESETS_URL, json=_draft())
+
+        line = (await client.get(f"{PRESETS_URL}/{created.json()['id']}")).json()["lines"][0]
+
+        assert line["allowedClassIds"] is None

@@ -215,7 +215,13 @@ export function crossingFacets(
   entries: readonly CrossingEntry[],
   lines: readonly CountingLine[],
 ): { byRole: Readonly<Record<DirectionRole, number>>; byLine: readonly LineFacet[] } {
-  const byRole: Record<DirectionRole, number> = { entry: 0, exit: 0, neutral: 0 };
+  const byRole: Record<DirectionRole, number> = {
+    entry: 0,
+    exit: 0,
+    forbidden: 0,
+    transit: 0,
+    neutral: 0,
+  };
   const counts = new Map<string, number>();
 
   for (const entry of entries) {

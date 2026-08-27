@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import func, select
 
 from traffic_analysis.core.pagination import Page
+from traffic_analysis.features.counting.application.dto import DirectionRole
 from traffic_analysis.features.presets.domain.records import (
     Preset,
     PresetLine,
@@ -132,6 +133,18 @@ def _to_record(model: PresetModel) -> Preset:
 
 
 def _line_payload(line: PresetLine) -> dict[str, Any]:
+    """La ligne écrite en colonne texte.
+
+    Les clés sont en `camelCase` comme le reste du JSON persisté ; c'est le format
+    déjà en base pour `zoneId`, et un mélange de conventions dans le même document
+    rendrait toute relecture manuelle piégeuse.
+
+    **Aucune migration n'accompagne l'ajout des champs de sens ni celui des classes
+    autorisées** : la géométrie vit dans une colonne JSON, précisément pour que sa
+    forme puisse évoluer sans toucher au schéma. Un preset écrit avant ces ajouts se
+    relit donc sans erreur — `_read_line` lui rend les défauts, et son propriétaire
+    n'a qu'à redéclarer ses règles une fois puis réenregistrer.
+    """
     return {
         "id": line.id,
         "name": line.name,
@@ -139,6 +152,13 @@ def _line_payload(line: PresetLine) -> dict[str, Any]:
         "zoneId": line.zone_id,
         "a": {"x": line.a.x, "y": line.a.y},
         "b": {"x": line.b.x, "y": line.b.y},
+        "positiveName": line.positive_name,
+        "negativeName": line.negative_name,
+        "positiveRole": line.positive_role,
+        "negativeRole": line.negative_role,
+        "allowedClassIds": (
+            None if line.allowed_class_ids is None else list(line.allowed_class_ids)
+        ),
     }
 
 
@@ -184,6 +204,23 @@ def _number(raw: object) -> float:
     return 0.0
 
 
+def _role(raw: object) -> DirectionRole:
+    """Un rôle de sens relu du JSON, ou `neutral`.
+
+    **La validation ici n'est pas de la prudence de principe, elle protège toute la
+    liste.** `PresetSchema` type ces champs par un `Literal` : une valeur inattendue
+    en base — preset écrit à la main, colonne bricolée, futur rôle rétroporté — ferait
+    échouer la validation de la *réponse*, donc un 500 sur `GET /presets` qui rendrait
+    **tous** les presets inaccessibles à cause d'un seul. Le repli dégrade une ligne
+    et laisse le reste lisible, comme `_load` le fait déjà pour une colonne corrompue.
+
+    `neutral` et non une devinette : deviner « entrée » pour un rôle qu'on ne sait pas
+    lire fausserait un bilan que personne n'a demandé, alors que `neutral` fait
+    afficher le repère « à préciser » du panneau de géométrie.
+    """
+    return raw if raw in ("entry", "exit", "forbidden", "transit", "neutral") else "neutral"
+
+
 def _read_line(raw: dict[str, Any]) -> PresetLine:
     return PresetLine(
         id=str(raw.get("id", "")),
@@ -192,7 +229,37 @@ def _read_line(raw: dict[str, Any]) -> PresetLine:
         zone_id=raw.get("zoneId") if isinstance(raw.get("zoneId"), str) else None,
         a=_point(raw.get("a")),
         b=_point(raw.get("b")),
+        # `str(raw.get(...))` rendrait la chaîne « None » sur une clé absente, que
+        # l'interface afficherait telle quelle de part et d'autre du trait.
+        positive_name=_text(raw.get("positiveName")),
+        negative_name=_text(raw.get("negativeName")),
+        positive_role=_role(raw.get("positiveRole")),
+        negative_role=_role(raw.get("negativeRole")),
+        allowed_class_ids=_class_ids(raw.get("allowedClassIds")),
     )
+
+
+def _class_ids(raw: object) -> tuple[int, ...] | None:
+    """Les classes autorisées relues du JSON, ou `None` — aucune restriction.
+
+    Même rôle que `_role` et même raison : `PresetSchema` type ce champ, donc une
+    valeur inattendue en base ferait échouer la validation de la **réponse** et
+    emporterait toute la liste des presets pour une seule ligne fautive.
+
+    Le repli est `None` et jamais une liste vide : `None` dit « rien n'est
+    restreint », une liste vide dirait « aucune classe n'a le droit de passer » —
+    donc **tout** franchissement en infraction. Se tromper de repli fabriquerait ici
+    un écran d'alertes entièrement faux.
+    """
+    if not isinstance(raw, list):
+        return None
+    kept = [item for item in raw if isinstance(item, int) and not isinstance(item, bool)]
+    return tuple(dict.fromkeys(kept)) if kept else None
+
+
+def _text(raw: object) -> str:
+    """Un libellé de sens, ou la chaîne vide qui demande le défaut géométrique."""
+    return raw if isinstance(raw, str) else ""
 
 
 def _read_zone(raw: dict[str, Any]) -> PresetZone:

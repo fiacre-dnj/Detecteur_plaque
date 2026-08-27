@@ -21,7 +21,7 @@
  *   l'onglet plusieurs secondes à chaque rendu.
  */
 
-import { ArrowUp } from "lucide-react";
+import { ArrowUp, Ban, ShieldAlert } from "lucide-react";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -43,6 +43,7 @@ import {
   directionArrow,
   lineName,
 } from "@/shared/lib/directions";
+import type { LineRule } from "@/shared/lib/lineRules";
 import { plateCell, plateTitle } from "@/shared/lib/plate";
 import { Button } from "@/shared/ui/Button";
 
@@ -53,9 +54,11 @@ import {
   resultJson,
   vehiclesCsv,
 } from "../model/exportCsv";
+import { filterByLine } from "../model/filterLine";
 import { filterByPlate } from "../model/filterPlate";
 import { plateBestGuessMessage, plateUnreadLabel, plateUnreadMessage } from "../model/plateUnread";
 import { crossingsWithRole, crossingsWithoutRole } from "../model/roleCrossings";
+import { vehicleViolations, type VehicleViolation } from "../model/vehicleViolations";
 import { INITIAL_ROWS, ROW_HEIGHT, shouldVirtualise, visibleWindow } from "../model/virtualise";
 
 interface VehicleRegistryProps {
@@ -82,6 +85,14 @@ interface VehicleRegistryProps {
    * défaut géométrique se déduit de `a` et `b`.
    */
   lines: readonly CountingLine[];
+  /**
+   * Les règles du tracé courant — sens interdits, voies réservées.
+   *
+   * Fournies par le studio et jamais recalculées ici : elles demandent le catalogue
+   * de classes du serveur, que cette feature ne connaît pas. Une `Map` vide signifie
+   * « aucune règle », et la colonne « Infraction » n'apparaît alors jamais.
+   */
+  rules: ReadonlyMap<string, LineRule>;
 }
 
 /** Hauteur du conteneur virtualisé. */
@@ -91,6 +102,7 @@ export function VehicleRegistry({
   result,
   vehicles,
   lines,
+  rules,
 }: VehicleRegistryProps) {
   const [expanded, setExpanded] = useState(false);
   const [scrollTop, setScrollTop] = useState(0);
@@ -102,9 +114,29 @@ export function VehicleRegistry({
   // Le champ répond au clavier, le tableau rattrape. Pas de debounce maison : React sait
   // déjà déprioriser ce rendu, et il n'existe aucun utilitaire de debounce dans ce dépôt.
   const deferredQuery = useDeferredValue(plateQuery);
+  // Même nature que `plateQuery` : un état de vue de ce tableau. Les deux filtres se
+  // composent — « les motos passées par la ligne 2 » est une question qu'on pose
+  // d'un seul geste, pas deux.
+  const [lineFilter, setLineFilter] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
-  const filtered = useMemo(() => filterByPlate(vehicles, deferredQuery), [vehicles, deferredQuery]);
+  const filtered = useMemo(
+    () => filterByPlate(filterByLine(vehicles, lineFilter), deferredQuery),
+    [vehicles, lineFilter, deferredQuery],
+  );
+
+  /**
+   * Une infraction, **quelque part** dans le registre ?
+   *
+   * Sur `vehicles` et non sur les lignes rendues ni sur `filtered` : une colonne qui
+   * apparaîtrait au défilement d'un tableau virtualisé — ou au changement d'un
+   * filtre — décalerait toutes les autres sous le curseur. Elle existe pour tout le
+   * tableau, ou pour aucun. Même raisonnement que `hasUnroled` juste dessous.
+   */
+  const hasViolation = useMemo(
+    () => vehicles.some((entry) => vehicleViolations(entry, rules).length > 0),
+    [vehicles, rules],
+  );
 
   const virtualised = expanded && shouldVirtualise(filtered.length);
   const shown = expanded ? filtered : filtered.slice(0, INITIAL_ROWS);
@@ -138,13 +170,15 @@ export function VehicleRegistry({
     if (element !== null) setScrollTop(element.scrollTop);
   }, []);
 
-  // Remise à zéro du défilement quand la recherche change : sinon `visibleWindow`
-  // calcule une fenêtre au-delà de la fin d'un jeu réduit, et le tableau **paraît vide**
-  // alors qu'il contient des lignes.
+  // Remise à zéro du défilement quand **l'un des deux filtres** change : sinon
+  // `visibleWindow` calcule une fenêtre au-delà de la fin d'un jeu réduit, et le
+  // tableau **paraît vide** alors qu'il contient des lignes. Le filtre par ligne y
+  // est aussi exposé que la recherche, et davantage : il peut faire passer un
+  // registre de 4 000 lignes à 12 d'un seul clic.
   useEffect(() => {
     setScrollTop(0);
     if (scroller.current !== null) scroller.current.scrollTop = 0;
-  }, [deferredQuery]);
+  }, [deferredQuery, lineFilter]);
 
   // Ce garde reste sur la liste **non filtrée** : il annoncerait sinon un registre vide
   // alors que c'est la recherche qui ne rend rien — deux causes très différentes.
@@ -192,12 +226,25 @@ export function VehicleRegistry({
               dont la virtualisation dépend. */}
           <Th className="w-44">Entrée par</Th>
           <Th className="w-44">Sortie par</Th>
-          {/* N'existe que si une ligne du tableau en porte : un franchissement dont
-              le rôle n'est plus lisible — ligne retirée du tracé, ou sens resté
-              neutre sur un tracé antérieur à ADR 0021. Le ranger sous un rôle
-              serait une invention ; le taire ferait diverger le registre de la
-              colonne « Passages », qui le compte. */}
-          {hasUnroled && <Th className="w-40">Hors rôle</Th>}
+          {/* N'existe que si une ligne du tableau en porte : un franchissement
+              qu'aucune colonne ne réclame — ligne retirée du tracé, sens resté
+              neutre sur un tracé antérieur à ADR 0021, ou ligne en « comptage seul »,
+              qui compte sans rien classer. Le ranger sous un rôle serait une
+              invention ; le taire ferait diverger le registre de la colonne
+              « Passages », qui le compte.
+
+              **« Autres passages » et non « Hors rôle »** depuis que `transit`
+              existe : ce dernier *a* un rôle, délibérément choisi, et le dire « hors
+              rôle » se lirait comme un oubli de l'utilisateur. */}
+          {hasUnroled && <Th className="w-40">Autres passages</Th>}
+          {/* N'existe que si une ligne du tableau en porte, et le calcul se fait sur
+              le registre **entier** : une colonne qui apparaîtrait au défilement ou
+              au changement d'un filtre décalerait toutes les autres sous le curseur.
+
+              Un seul nom — « Infraction » — et non « Sens interdit », qui deviendrait
+              faux dès qu'une voie réservée existe. Deux noms pour une colonne, c'est
+              deux colonnes dans la tête du lecteur. */}
+          {hasViolation && <Th className="w-44">Infraction</Th>}
           {/* « Passages » remplace « Ré-id » : la ré-identification n'existe plus
               (ADR 0016), et le nombre de franchissements d'un véhicule est
               l'information qui rend une ligne du registre vérifiable — un 0 dit
@@ -245,6 +292,7 @@ export function VehicleRegistry({
             <RoleCrossingCell vehicle={vehicle} lines={lines} role="entry" />
             <RoleCrossingCell vehicle={vehicle} lines={lines} role="exit" />
             {hasUnroled && <UnroledCrossingCell vehicle={vehicle} lines={lines} />}
+            {hasViolation && <ViolationCell vehicle={vehicle} rules={rules} />}
             <Td className="tabular">
               {vehicle.crossedLines.length === 0 ? "—" : vehicle.crossedLines.length}
             </Td>
@@ -326,6 +374,31 @@ export function VehicleRegistry({
               className="w-44 rounded-input bg-elevated px-3 py-1.5 text-small text-ink placeholder:text-ink-dim"
             />
           </label>
+          {/* Juste à côté de la recherche, parce que les deux répondent à la même
+              question posée autrement : « lequel ». Les noms viennent du tracé
+              **courant** — renommer une ligne renomme l'option sans réanalyser, comme
+              partout ailleurs dans cette interface.
+
+              Masqué s'il n'y a qu'une ligne : un menu à un seul choix n'en est pas
+              un, et il occuperait la place du champ voisin sur une fenêtre étroite. */}
+          {lines.length > 1 && (
+            <label className="flex items-center gap-2">
+              <span className="sr-only">Filtrer par ligne franchie</span>
+              <select
+                value={lineFilter ?? ""}
+                onChange={(event) => setLineFilter(event.target.value || null)}
+                title="N'afficher que les véhicules ayant franchi cette ligne, dans un sens ou dans l'autre"
+                className="max-w-44 rounded-input bg-elevated px-3 py-1.5 text-small text-ink"
+              >
+                <option value="">Toutes les lignes</option>
+                {lines.map((line) => (
+                  <option key={line.id} value={line.id}>
+                    {line.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {/* Les exports restent sur `result` complet : un CSV amputé par une recherche
               à l'écran serait un fichier dont personne ne saurait ce qu'il contient.
               **La même règle explique leur absence pendant l'analyse** : `result`
@@ -382,13 +455,19 @@ export function VehicleRegistry({
           et conclut que l'analyse a échoué. */}
       {filtered.length === 0 ? (
         <p className="rounded-card bg-surface p-4 text-caption text-ink-dim shadow-card">
-          Aucune plaque ne contient « {plateQuery} ».{" "}
+          {/* Le vide **nomme le filtre qui l'a produit** : avec deux filtres qui se
+              composent, « aucune plaque ne contient X » enverrait corriger la
+              recherche alors que c'est la ligne choisie qui ne porte rien. */}
+          {emptyReason(plateQuery, lineFilter, lines)}{" "}
           <button
             type="button"
-            onClick={() => setPlateQuery("")}
+            onClick={() => {
+              setPlateQuery("");
+              setLineFilter(null);
+            }}
             className="underline transition-colors hover:text-ink"
           >
-            Effacer la recherche
+            Réinitialiser les filtres
           </button>
         </p>
       ) : (
@@ -605,4 +684,73 @@ function describeCrossing(
     crossingDirectionName(lines, crossing.lineId, crossing.direction) ??
     `sens ${directionArrow(crossing.direction)}`;
   return `${lineName(lines, crossing.lineId)} à ${formatSceneTimePrecise(crossing.timestampMs)}, ${way}`;
+}
+
+/**
+ * Pourquoi le tableau est vide, en nommant **le** filtre en cause.
+ *
+ * Deux filtres qui se composent produisent trois vides distincts, et les confondre
+ * envoie corriger le mauvais : « aucune plaque ne contient 2418 » sur un registre
+ * dont la ligne choisie n'a jamais rien compté fait chercher une faute de frappe
+ * pendant que le menu voisin porte la cause.
+ */
+function emptyReason(
+  plateQuery: string,
+  lineFilter: string | null,
+  lines: readonly CountingLine[],
+): string {
+  const searching = plateQuery.trim() !== "";
+  const named = lineFilter === null ? null : lineName(lines, lineFilter);
+  if (searching && named !== null) {
+    return `Aucun véhicule passé par ${named} ne porte une plaque contenant « ${plateQuery} ».`;
+  }
+  if (named !== null) return `Aucun véhicule n'a franchi ${named}.`;
+  return `Aucune plaque ne contient « ${plateQuery} ».`;
+}
+
+/**
+ * Les infractions d'un véhicule, une pastille par fait.
+ *
+ * Une seule rangée par cellule, comme ses voisines : empiler casserait `ROW_HEIGHT`,
+ * dont dépend la virtualisation au-delà de 200 lignes. Au-delà de la première, les
+ * suivantes sont **annoncées** par « +N » et jamais fusionnées — deux infractions du
+ * même véhicule sont deux faits, pas un doublon d'affichage.
+ */
+function ViolationCell({
+  vehicle,
+  rules,
+}: {
+  vehicle: VehicleRecord;
+  rules: ReadonlyMap<string, LineRule>;
+}) {
+  const found = vehicleViolations(vehicle, rules);
+  if (found.length === 0) return <Td className="text-ink-dim">—</Td>;
+
+  const [first, ...rest] = found as [VehicleViolation, ...VehicleViolation[]];
+  const Icon = first.kind === "reserved-lane" ? ShieldAlert : Ban;
+
+  return (
+    <Td>
+      <span
+        className="flex min-w-0 items-center gap-1"
+        title={found
+          .map((entry) => `${violationWord(entry.kind)} — ${entry.lineName}`)
+          .join("\n")}
+      >
+        <Icon aria-hidden="true" className="size-3 shrink-0 text-negative" />
+        <span className="min-w-0 truncate font-bold text-negative">
+          {violationWord(first.kind)}
+        </span>
+        <span className="min-w-0 truncate text-ink-dim">{first.lineName}</span>
+        {rest.length > 0 && <span className="shrink-0 text-ink-dim">+{rest.length}</span>}
+      </span>
+    </Td>
+  );
+}
+
+/** Le mot d'une infraction. Court : la cellule fait `w-44` et porte déjà un nom de ligne. */
+function violationWord(kind: VehicleViolation["kind"]): string {
+  if (kind === "reserved-lane") return "Voie réservée";
+  if (kind === "closed-line") return "Infranchissable";
+  return "Sens interdit";
 }

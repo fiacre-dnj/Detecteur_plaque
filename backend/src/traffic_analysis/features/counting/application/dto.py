@@ -249,6 +249,19 @@ class AnalysisJobConfig:
     #: Incluse, une fenêtre `[0 ; 1000]` et une fenêtre `[1000 ; 2000]` partageraient
     #: l'image de 1000 ms, donc compteraient deux fois ce qui s'y passe.
     end_ms: float | None = None
+    #: Plaques recherchées, telles que l'utilisateur les a saisies.
+    #:
+    #: **Le domaine ne les lit jamais.** Elles traversent l'orchestration pour être
+    #: persistées dans la configuration du job et rendues à l'interface, qui compare
+    #: elle-même le texte **voté** de chaque véhicule (invariant 4). Même doctrine
+    #: que les rôles de sens, et les mêmes deux conséquences : corriger la liste ne
+    #: demande pas de réanalyser, et la règle de correspondance n'existe qu'à un
+    #: seul endroit — donc elle ne peut pas diverger entre l'aperçu vivant et un
+    #: résultat rouvert.
+    #:
+    #: Ni canonisées ni comparées ici : voir `_clean_watchlist` dans le schéma de
+    #: requête. Sans effet si `read_plate_text` est faux.
+    plate_watchlist: tuple[str, ...] = ()
 
     def engine_spec(self) -> EngineSpec:
         """Ce que le moteur doit savoir : les seuils **vivants** de la requête."""

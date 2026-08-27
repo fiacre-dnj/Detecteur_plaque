@@ -54,6 +54,7 @@ const ZONE: Zone = {
 
 const REQUEST: AnalysisRequest = {
   modelId: "yolo11m",
+  plateWatchlist: [],
   confidenceThreshold: 0.35,
   iouThreshold: 0.45,
   minHits: 3,

@@ -187,6 +187,8 @@ describe("flowBalance", () => {
       entries: 7,
       exits: 5,
       net: 2,
+      forbidden: 0,
+      transit: 0,
       neutral: 0,
       declared: true,
     });

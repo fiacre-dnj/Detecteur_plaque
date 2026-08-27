@@ -19,9 +19,24 @@ véhicule, et c'est le tracker qui décide ce qu'est un objet suivi
 ([ADR 0016](docs/adr/0016-compter-les-objets-suivis.md)). Deux comptages coexistent et ne
 se divisent jamais l'un par l'autre — les **véhicules** (`trackedVehicles`, tracé ou pas)
 et les **passages** (`crossings`, par ligne et par sens). Chaque ligne porte deux sens,
-et depuis le 2026-08-16 chacun est **obligatoirement** entrée ou sortie ([ADR
+et depuis le 2026-08-16 chacun est **obligatoirement** déclaré ([ADR
 0021](docs/adr/0021-le-role-de-sens-devient-obligatoire.md)) — ce rôle donne le bilan
 du carrefour et **est** le libellé affiché, il n'y a plus de nom libre à taper.
+
+**Une ligne porte aussi un type depuis le 2026-08-27** ([ADR
+0040](docs/adr/0040-une-ligne-porte-un-type.md)) : deux sens, sens unique en entrée,
+sens unique en sortie, infranchissable, ou comptage seul. Le type est **dérivé** de
+la paire de rôles (`lineKind` / `rolesForKind` dans `shared/lib/directions.ts`) et
+n'existe dans aucun champ du contrat — deux sources pour la même vérité finiraient
+par se contredire. Les rôles sont donc cinq : `entry`, `exit`, `forbidden`
+(« Interdit »), `transit` (« Passage », compté hors bilan) et `neutral`, hérité et
+jamais produit par l'éditeur. Une ligne peut en plus être **réservée** à certaines
+classes (`allowedClassIds`), indépendamment de son type — une voie de bus à sens
+unique porte les deux.
+
+**Un franchissement interdit reste compté** : une infraction est un passage
+*qualifié*, pas un passage retiré, et l'invariant 3 en dépend. C'est le client, et
+lui seul, qui qualifie — voir « Ce que l'analyse signale » plus bas.
 
 Deux modes partagent **le même** code de comptage — la même `AnalysisSession`, les
 mêmes schémas de requête, les mêmes sérialiseurs — et c'est ce qui garantit qu'un
@@ -95,7 +110,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1529 tests
+uv run pytest                                                            # 1560 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -109,7 +124,7 @@ uv run python scripts/audit_lignes.py                # « pourquoi cette ligne e
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 721 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 786 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -178,8 +193,16 @@ domaine.
 
 ### Frontend — Feature-Sliced Design
 
-`frontend/src/` : `app/` (câblage), `features/<capacité>/` (13), `entities/`,
+`frontend/src/` : `app/` (câblage), `features/<capacité>/` (14), `entities/`,
 `shared/`. Aucun dossier `components/`, `hooks/` ou `utils/` global.
+
+La quatorzième est **`alerts`** (2026-08-27) : ce que l'analyse *signale*, par
+opposition à ce qu'elle compte — infractions au tracé et plaques recherchées. Elle
+n'importe aucune autre feature ; les **règles** qu'elle applique vivent dans
+`shared/lib/lineRules.ts` et `shared/lib/lineViolations.ts`, parce que le tableau de
+bord les compte et que le registre les affiche. Trois lecteurs, un seul juge — la
+même raison qui a fait naître `shared/lib/directions.ts`
+([ADR 0041](docs/adr/0041-les-alertes-se-calculent-cote-client.md)).
 
 ```
 app → features → entities → shared
@@ -239,8 +262,9 @@ Quatre conséquences à connaître avant d'y toucher :
 │ STATISTIQUE — KPI de tête, une rangée par ligne,  │  les trois sections
 │   comparatifs groupés en une carte                │  vivent PENDANT
 │ [camembert flux/ligne] [camembert entrées/type]   │  l'analyse et après
-│ REGISTRE — tableau par véhicule, export CSV/JSON  │  exports à la fin
-│ FRANCHISSEMENTS — chronologie, PENDANT ET APRÈS   │  jamais en direct
+│ REGISTRE — par véhicule, 2 filtres, export CSV    │  exports à la fin
+│ ALERTES — infractions et plaques recherchées      │  masquée si aucune
+│ (FRANCHISSEMENTS — chronologie, MASQUÉE 08-27)    │  règle ni plaque
 └──────────────────────────────────────────────────┘
 ```
 
@@ -400,7 +424,8 @@ décrivaient un comportement d'avant ADR 0024 et ADR 0025, et deux chiffres du
 diagnostic n'étaient renseignés par personne.
 
 - **Détection** — modèle, confiance véhicules, classes à compter, ANPR, confiance
-  plaques, OCR, **confiance lecture**, **et « Ignorer hors zone »**, qui vivait dans
+  plaques, OCR, **confiance lecture**, **les plaques recherchées** (2026-08-27),
+  **et « Ignorer hors zone »**, qui vivait dans
   « Affichage » alors qu'il ne change pas ce qu'on voit mais ce que le détecteur
   reçoit, donc les chiffres. Deux textes étaient devenus faux : la confiance ne
   filtre plus le détecteur (elle décide ce qui *devient* une piste), et « Repérer les
@@ -425,7 +450,10 @@ diagnostic n'étaient renseignés par personne.
   d'analyse et les deux cadences. L'**échelle globale** px/m y a vécu jusqu'au
   2026-08-21 : elle est supprimée avec toute la mesure de vitesse
   ([ADR 0034](docs/adr/0034-la-mesure-de-vitesse-est-retiree.md)) ;
-- **Géométrie**, depuis le 2026-08-19 — lignes, zones, presets et rôles de sens.
+- **Géométrie**, depuis le 2026-08-19 — lignes, zones, presets, **type de ligne** et
+  voie réservée (2026-08-27, ADR 0040 ; le sélecteur de type remplace l'affichage nu
+  des deux rôles, et le bouton d'inversion échange désormais la paire quel que soit
+  le type).
   Fourni par le studio (`panels`) et non par cette feature, qui ne connaît pas
   `geometry-editor`. La longueur réelle par ligne en a disparu le 2026-08-21, pour
   la même raison.
@@ -571,7 +599,18 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
     un test le verrouille. La colonne est décidée sur `vehicles` entier et non sur
     les lignes rendues : une colonne qui apparaîtrait au défilement d'un tableau
     virtualisé décalerait toutes les autres sous le curseur ;
-- **les Franchissements sont une chronologie, plus un tableau** (2026-08-17).
+- **les Franchissements sont MASQUÉS depuis le 2026-08-27**, et remplacés à cette
+  place par la section **Alertes** ([ADR
+  0041](docs/adr/0041-les-alertes-se-calculent-cote-client.md)). Un seul mot à
+  changer pour les rendre : `SHOW_CROSSING_TIMELINE` dans `StudioPage`, typé
+  `boolean` exprès pour que TypeScript ne réduise pas la condition à `false` et que
+  le lint ne la signale pas comme inutile. `CrossingTimeline.tsx`,
+  `model/crossingTimeline.ts` et leurs tests sont **intacts** — ils compilent
+  toujours, `ROLE_STYLE` et `crossingFacets` ayant reçu les deux nouveaux rôles.
+  La raison du masquage : la chronologie posait un fait par rangée sans dire lequel
+  méritait qu'on aille voir, ce à quoi une alerte répond directement. Ce qui suit
+  décrit donc du code **conservé mais non monté** ;
+- **la chronologie, telle qu'elle est écrite** (2026-08-17).
   `CrossingLog` est **supprimé**, remplacé par
   `analysis-job/ui/CrossingTimeline.tsx` et son modèle
   `model/crossingTimeline.ts`. Le tableau posait un fait par rangée sans rien dire
@@ -619,7 +658,19 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
   le registre écrivait `Voiture` pour le même véhicule — invariant 12 ;
 - **`shared/ui/Tabs.tsx` reste**, sans consommateur pour l'instant — une
   primitive ARIA générique et accessible (flèches, Home/Fin, roving `tabIndex`),
-  gardée pour un futur besoin plutôt que supprimée pour un gain nul.
+  gardée pour un futur besoin plutôt que supprimée pour un gain nul ;
+- **le Registre porte deux filtres qui se composent** (2026-08-27) : la recherche
+  par plaque et un **filtre par ligne**, dont les options portent les noms saisis par
+  l'utilisateur et se renomment sans réanalyser. `filterByLine` est le jumeau de
+  `filterByPlate`, discipline référentielle comprise — rendre le tableau *par
+  référence* quand aucune ligne n'est choisie, sinon la fenêtre virtualisée se
+  recalcule à chaque frappe dans le champ voisin. Le `useEffect` qui remet
+  `scrollTop` à zéro prend **les deux** en dépendance : un filtre qui réduit le jeu
+  sans replier le défilement laisse une fenêtre au-delà de la fin, et le tableau
+  *paraît* vide. Le message d'état vide **nomme le filtre en cause** — avec deux
+  filtres, « aucune plaque ne contient X » enverrait corriger la recherche alors que
+  c'est la ligne choisie qui ne porte rien. Les exports continuent d'ignorer les
+  deux.
 
 #### Une flèche, trois écrans — `directionHeadingDeg`
 
@@ -767,6 +818,31 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     convertit à la lecture et **l'annonce** par `scaled`. Une conversion
     silencieuse serait pire que pas de conversion : une géométrie qui bouge sans
     prévenir se lit comme un bug.
+
+    **Il porte aussi les quatre champs de sens, et c'est une quatrième panne
+    silencieuse de la même famille** (corrigée le 2026-08-26). `LineSchema` les
+    acceptait — le client les envoyait donc — mais `_line_to_domain` les laissait
+    tomber avant la persistance : `PresetLine` n'avait tout simplement pas ces
+    champs. Un preset s'enregistrait sans erreur, se rechargeait sans erreur, et
+    rendait des lignes dont tous les sens valaient `neutral`. Les **comptages
+    restaient justes** ; c'est tout l'aval qui se taisait d'un coup — « Passages en
+    entrée » à « — », cartes par ligne sans entrées ni sorties, comparatifs de
+    Statistique tous à `null`, registre sans heure d'entrée ni de sortie **plus**
+    une colonne « Hors rôle » apparue, chronologie retombée sur « sens ↑ ». Depuis
+    ADR 0021 le rôle **est** le libellé affiché : le perdre éteint l'écran sans
+    fausser un chiffre. Quatre points :
+    - **aucune migration** : la géométrie vit dans une colonne JSON, précisément
+      pour que sa forme évolue sans toucher au schéma. Un preset antérieur se relit
+      et rend `neutral` ;
+    - **`neutral` et jamais une devinette.** Deviner « entrée » fausserait un bilan
+      que personne n'a demandé, alors que `neutral` déclenche le repère « à
+      préciser » du panneau de géométrie, qui force un choix explicite ;
+    - **la relecture valide le rôle contre les trois valeurs admises.** `PresetSchema`
+      les type par un `Literal` : une valeur inattendue en base ferait échouer la
+      validation de la *réponse*, donc un 500 sur `GET /presets` qui emporterait
+      **toute** la liste pour une seule ligne fautive. Même doctrine que `_load` ;
+    - **les champs de sens ne sont pas mis à l'échelle.** `scaled_to` ne touche
+      qu'à des coordonnées : un rôle décrit le trait, pas sa position.
 
 ## Décisions déjà prises — ne pas les rediscuter
 
@@ -1229,6 +1305,90 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       ancre, et « pas d'ancre → toujours détecter » la relancerait à chaque image.
 
     [ADR 0039](docs/adr/0039-ne-pas-payer-pour-une-plaque-prouvee-illisible.md).
+31. **Une ligne porte un type, et le type est dérivé de ses deux rôles.** Cinq rôles
+    (`entry`, `exit`, `forbidden`, `transit`, `neutral`), cinq types choisissables,
+    aucun champ `lineKind` dans le contrat. Une ligne peut en plus être **réservée** à
+    certaines classes, indépendamment de son type. Trois points à ne pas rediscuter :
+    - **le serveur ne lit rien de tout cela**, exactement comme les rôles depuis
+      ADR 0016. `test_regles_de_ligne.py` verrouille la propriété : quatre
+      descriptions de la même ligne rendent les mêmes totaux, les mêmes ventilations
+      par classe **et** les mêmes horodatages ;
+    - **un franchissement interdit reste compté.** L'invariant 3 en dépend, et c'est
+      ce qui rend l'infraction dérivable côté client ;
+    - **`null` et jamais `[]` pour `allowedClassIds`.** Une liste vide dirait « aucune
+      classe ne passe », donc **tout** franchissement en infraction — se tromper de
+      repli fabrique un écran d'alertes entièrement faux. Le repli est écrit trois
+      fois (reducer, schéma de requête, relecture de preset) et testé aux trois.
+
+    [ADR 0040](docs/adr/0040-une-ligne-porte-un-type.md).
+32. **Les alertes se calculent côté client, et leurs compteurs viennent de `stats`.**
+    Infractions au tracé et plaques recherchées partagent une seule feature,
+    `features/alerts`. Quatre points :
+    - **`plateWatchlist` voyage dans la requête sans être comparé à quoi que ce
+      soit** : le serveur borne (dix entrées, seize caractères, quatre alphanumériques
+      minimum) et **ne canonise pas** — la canonique du domaine conserve le tiret,
+      celle de la comparaison client non, et deux définitions de « la même plaque »
+      finiraient par diverger ;
+    - **le journal d'alertes est borné (200) et sa borne est annoncée ; les KPI, eux,
+      sortent de `stats.byLine[*].byDirection[*]`** et ne plafonnent pas. Afficher
+      `alerts.length` comme un total est le défaut que l'ancienne chronologie a déjà
+      payé (invariant 3) ;
+    - **une seule infraction par franchissement**, sens interdit prioritaire sur voie
+      réservée. `violationOf` et `violationCounts` appliquent la **même** priorité, et
+      un test le verrouille : sans elle, la liste et le KPI diraient deux chiffres
+      différents sur le même écran ;
+    - **la liste de plaques n'est pas persistée** — elle décrit une recherche en
+      cours, et écrire un numéro de plaque dans le `localStorage` du poste franchirait
+      le cran de confidentialité que le projet impose déjà en laissant l'OCR décoché.
+
+    [ADR 0041](docs/adr/0041-les-alertes-se-calculent-cote-client.md).
+
+## Ce que l'analyse signale — les alertes
+
+Depuis le 2026-08-27, l'écran ne fait plus que compter et ranger : il **signale**.
+Deux familles, une seule feature (`features/alerts`), un seul type d'alerte —
+elles partagent tout ce qui compte à l'écran : un véhicule, un instant, une
+gravité, un motif.
+
+- **les infractions** — sens interdit, ligne infranchissable, voie réservée. Le
+  prédicat vit dans `shared/lib/lineViolations.ts`, les règles résolues dans
+  `shared/lib/lineRules.ts` : les alertes signalent, le tableau de bord compte, le
+  registre affiche, et un seul juge les départage ;
+- **les plaques recherchées** — saisies dans le tiroir Détection, comparées au
+  **vote** de plaque (invariant 4). Correspondance *exacte* en rouge, *probable* —
+  l'une contient l'autre — en orange, parce qu'ADR 0029 documente que l'OCR perd
+  régulièrement le premier caractère d'une plaque. Différé seulement : le direct n'a
+  pas d'ANPR.
+
+Cinq points qui ne se devinent pas :
+
+- **deux sources, et la seconde remplace la première.** `useAlertLog` accumule
+  pendant l'analyse depuis l'aperçu **vivant** — une alerte est un *événement*, elle
+  suit le serveur, là où une boîte suit l'image. Une fois terminé, `alertsFromResult`
+  relit le résultat complet à la tête de lecture, sur le tracé **courant** : déclarer
+  un sens interdit après coup fait apparaître ses alertes sans réanalyser ;
+- **on filtre avant de borner, jamais l'inverse.** `crossingsBefore` existe pour cela
+  au lieu de réutiliser `crossingsUpTo`, qui borne à 200 *franchissements* : sur un
+  carrefour chargé, les infractions les plus anciennes disparaîtraient avant d'avoir
+  été cherchées ;
+- **les pistes plutôt que le registre pour les plaques, pendant l'analyse.** Le
+  registre de l'aperçu est restreint aux franchisseurs (ADR 0026) ; une plaque
+  recherchée peut appartenir à un véhicule à l'arrêt ;
+- **la couleur encode la gravité, l'icône encode la nature.** Rouge pour une
+  infraction et pour une plaque trouvée à coup sûr, orange pour une correspondance
+  probable. C'est un amendement assumé à « le rouge est réservé aux échecs » de
+  `StaleResultBanner` : il veut désormais aussi dire « la scène présente une
+  infraction », et le titre porte la différence ;
+- **rien ne s'affiche tant qu'aucune règle n'est posée ni aucune plaque cherchée.**
+  Un « 0 infraction » sous une règle que personne n'a déclarée se lit « aucune
+  infraction », l'inverse de la vérité — même honnêteté que le « — » de « Passages en
+  entrée ».
+
+Une alerte est **cliquable** et amène la tête de lecture à son instant — la seule
+chose de cet écran qui le soit. L'ancienne chronologie cliquable avait été retirée
+parce qu'on y *parcourait* le temps, ce que la barre de lecture fait déjà ; ici on
+saute à un fait précis, et une alerte invérifiable ne vaut rien. Le geste est
+désactivé pendant une analyse et en direct, où la vidéo est pilotée par l'aperçu.
 
 ## Il n'y a plus de mesure de vitesse
 
@@ -1581,7 +1741,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1529 (1 skip) | 721 |
+| Nombre | 1560 (1 skip) | 786 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

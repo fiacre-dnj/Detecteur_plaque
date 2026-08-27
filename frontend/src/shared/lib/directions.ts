@@ -55,13 +55,33 @@ export function signOf(direction: number): DirectionSign {
  */
 export function directionName(line: CountingLine, sign: DirectionSign): string {
   const role = directionRole(line, sign);
-  if (role === "entry") return "Entrée";
-  if (role === "exit") return "Sortie";
+  const named = ROLE_NAMES[role];
+  if (named !== null) return named;
   const given = sign === "positive" ? line.positiveName : line.negativeName;
   if (given !== undefined && given.trim() !== "") return given;
   const defaults = defaultDirectionNames(line.a, line.b);
   return sign === "positive" ? defaults.positive : defaults.negative;
 }
+
+/**
+ * Le libellé de chaque rôle, ou `null` quand il n'y en a pas à afficher.
+ *
+ * Une table et non une cascade de `if` : c'est ce qui fait échouer la compilation
+ * le jour où un rôle s'ajoute au contrat sans que ce module le nomme. Un rôle
+ * silencieusement retombé sur le nom géométrique — « Vers le haut » là où on
+ * attendait « Interdit » — ne planterait jamais, et se lirait comme un bug de
+ * tracé.
+ */
+const ROLE_NAMES: Readonly<Record<DirectionRole, string | null>> = {
+  entry: "Entrée",
+  exit: "Sortie",
+  forbidden: "Interdit",
+  // « Passage » et non « Neutre » : le mot doit décrire ce que fait le véhicule,
+  // pas la catégorie interne du rôle. Sur une route qui n'est pas un carrefour,
+  // « il passe » est exactement ce que la ligne mesure.
+  transit: "Passage",
+  neutral: null,
+};
 
 /** Le rôle déclaré d'un sens. `neutral` par défaut, y compris sur une ligne ancienne. */
 export function directionRole(line: CountingLine, sign: DirectionSign): DirectionRole {
@@ -149,7 +169,153 @@ export function directionArrow(direction: number): string {
 
 /** Libellé court du rôle, ou `null` pour `neutral` — rien à afficher. */
 export function roleLabel(role: DirectionRole): string | null {
-  if (role === "entry") return "entrée";
-  if (role === "exit") return "sortie";
-  return null;
+  const named = ROLE_NAMES[role];
+  return named === null ? null : named.toLocaleLowerCase("fr");
+}
+
+/**
+ * Un sens interdit — **le seul prédicat qui en décide**.
+ *
+ * Exporté plutôt que laissé en comparaison inline, pour la même raison
+ * qu'`isEntryRow` du tableau de bord : quatre écrans posent la question, et quatre
+ * comparaisons finiraient par diverger le jour où un second rôle interdit
+ * apparaîtrait. Une infraction changerait alors d'écran en écran.
+ */
+export function isForbiddenRole(role: DirectionRole): boolean {
+  return role === "forbidden";
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Le type d'une ligne — **dérivé** de sa paire de rôles, jamais stocké.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Ce qu'une ligne déclare, lu depuis ses deux rôles.
+ *
+ * **Aucun champ `lineKind` dans le contrat, et c'est la décision principale de ce
+ * bloc.** Un type stocké *à côté* des rôles serait une seconde source pour la même
+ * vérité : changer un rôle sans toucher au type — ou l'inverse — donnerait une
+ * ligne qui s'affiche « sens unique » tout en comptant deux sens, sans que rien ne
+ * plante. C'est la famille de bug que ce dépôt documente le plus.
+ *
+ * `undeclared` n'est pas un type qu'on choisit : c'est ce que rend une ligne
+ * héritée dont un sens est resté `neutral`, ou une paire que l'éditeur ne produit
+ * pas — « entrée des deux côtés », venue d'un `configJson` bricolé. Le panneau
+ * affiche alors « à préciser », et le premier choix la range.
+ */
+export type LineKind =
+  | "bidirectional"
+  | "oneway-entry"
+  | "oneway-exit"
+  | "closed"
+  | "transit"
+  | "undeclared";
+
+/** Le type de cette ligne, lu sur ses deux rôles. */
+export function lineKind(line: CountingLine): LineKind {
+  const positive = directionRole(line, "positive");
+  const negative = directionRole(line, "negative");
+
+  if (isForbiddenRole(positive) && isForbiddenRole(negative)) return "closed";
+  if (isForbiddenRole(positive) || isForbiddenRole(negative)) {
+    const allowed = isForbiddenRole(positive) ? negative : positive;
+    if (allowed === "entry") return "oneway-entry";
+    if (allowed === "exit") return "oneway-exit";
+    return "undeclared";
+  }
+  if (positive === "transit" && negative === "transit") return "transit";
+  if (
+    (positive === "entry" && negative === "exit") ||
+    (positive === "exit" && negative === "entry")
+  ) {
+    return "bidirectional";
+  }
+  return "undeclared";
+}
+
+/**
+ * La paire de rôles qu'impose un type, **positif d'abord**.
+ *
+ * L'inverse exact de `lineKind` pour les cinq types choisissables, ce qu'un test
+ * vérifie en aller-retour. `undeclared` n'est pas choisissable : il n'a pas de
+ * paire à imposer, seulement une paire à quitter — d'où le repli sur le défaut
+ * d'une ligne fraîchement tracée plutôt que sur `neutral`, qui laisserait
+ * l'utilisateur dans l'état qu'il cherchait justement à quitter.
+ */
+export function rolesForKind(kind: LineKind): {
+  positive: DirectionRole;
+  negative: DirectionRole;
+} {
+  switch (kind) {
+    case "oneway-entry":
+      return { positive: "entry", negative: "forbidden" };
+    case "oneway-exit":
+      return { positive: "exit", negative: "forbidden" };
+    case "closed":
+      return { positive: "forbidden", negative: "forbidden" };
+    case "transit":
+      return { positive: "transit", negative: "transit" };
+    case "bidirectional":
+    case "undeclared":
+      return { positive: "entry", negative: "exit" };
+  }
+}
+
+/** Un type choisissable, son libellé, et ce qu'il change concrètement. */
+export interface LineKindOption {
+  kind: LineKind;
+  label: string;
+  /** Une conséquence, jamais une définition : ce que ce choix fait aux chiffres. */
+  hint: string;
+}
+
+/**
+ * Les cinq types proposés à l'utilisateur, dans l'ordre d'affichage.
+ *
+ * `undeclared` n'y est pas : on ne le choisit pas, on en sort. L'ordre va du plus
+ * courant au plus rare — un carrefour ordinaire d'abord, une ligne infranchissable
+ * ensuite.
+ */
+export const LINE_KINDS: readonly LineKindOption[] = [
+  {
+    kind: "bidirectional",
+    label: "Deux sens",
+    hint: "Un sens entre dans le carrefour, l'autre en sort. Le cas ordinaire.",
+  },
+  {
+    kind: "oneway-entry",
+    label: "Sens unique · entrée",
+    hint: "Un seul sens autorisé, qui entre. Tout passage en face est signalé comme contresens.",
+  },
+  {
+    kind: "oneway-exit",
+    label: "Sens unique · sortie",
+    hint: "Un seul sens autorisé, qui sort. Une bretelle de sortie, une voie de dégagement.",
+  },
+  {
+    kind: "closed",
+    label: "Infranchissable",
+    hint: "Les deux sens sont interdits — ligne continue, accès fermé. Tout passage est signalé.",
+  },
+  {
+    kind: "transit",
+    label: "Comptage seul",
+    hint: "Compte les passages sans entrer dans le bilan du carrefour, pour une route qui n'en est pas un.",
+  },
+];
+
+/**
+ * Une ligne dont au moins un sens est interdit, ou qui restreint les classes.
+ *
+ * C'est **la** condition d'affichage de tout ce qui parle d'infraction : le KPI
+ * rouge, la colonne du registre, la section des alertes. Un « 0 infraction » sous
+ * une règle que personne n'a posée se lit comme « aucune infraction », l'inverse
+ * de la vérité — c'est le même raisonnement que le `null` de `LineFlow.entries`.
+ */
+export function lineHasRule(line: CountingLine): boolean {
+  return (
+    isForbiddenRole(directionRole(line, "positive")) ||
+    isForbiddenRole(directionRole(line, "negative")) ||
+    (line.allowedClassIds ?? null) !== null
+  );
 }

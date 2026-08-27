@@ -63,6 +63,12 @@ import {
   type AnalysisRange,
 } from "@/entities/analysis-range";
 import {
+  AlertToasts,
+  AlertsSection,
+  alertsFromResult,
+  useAlertLog,
+} from "@/features/alerts";
+import {
   CrossingTimeline,
   JobProgressBar,
   LaunchDialog,
@@ -104,9 +110,11 @@ import {
 import { crossingsUpTo, useReplay, vehiclesAt } from "@/features/timeline-replay";
 import { VehicleRegistry } from "@/features/vehicle-registry";
 import { PlaybackFpsBadge, TransportBar } from "@/features/video-transport";
-import type { CrossingEvent, Point, Preset } from "@/shared/api/contracts";
+import type { CrossingEvent, Point, Preset, TrackSnapshot } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
 import { VEHICLE_CLASSES } from "@/shared/lib/classes";
+import { lineRules } from "@/shared/lib/lineRules";
+import { hasAnyRule } from "@/shared/lib/lineViolations";
 import { Button } from "@/shared/ui/Button";
 
 import { analysisSummaryRows } from "../model/analysisSummary";
@@ -148,7 +156,28 @@ interface SceneSize {
 
 const NO_TRAILS: ReadonlyMap<number, readonly Point[]> = new Map();
 /** Référence figée : un tableau vide recréé à chaque rendu relancerait les flashs. */
+/**
+ * La chronologie des franchissements est **masquée**, pas supprimée.
+ *
+ * `CrossingTimeline`, son modèle (`analysis-job/model/crossingTimeline.ts`) et
+ * leurs tests sont intacts : remettre ce drapeau à `true` la rend telle quelle. Elle
+ * a laissé sa place à la section « Alertes », qui répond à la question voisine et
+ * plus urgente — non pas « qu'est-il passé » mais « qu'est-ce qui mérite qu'on aille
+ * voir ».
+ *
+ * Typé `boolean` et non laissé au littéral : sans cette annotation, TypeScript
+ * réduit le type à `false` et l'analyse de lint signale une condition inutile — sur
+ * une constante dont l'intérêt est justement de pouvoir changer d'un mot.
+ */
+const SHOW_CROSSING_TIMELINE: boolean = false;
+
 const NO_CROSSINGS: readonly CrossingEvent[] = [];
+
+/**
+ * Le même figé pour les pistes, et pour la même raison référentielle : un tableau
+ * neuf à chaque rendu relancerait les effets qui accumulent les alertes.
+ */
+const NO_TRACKS: readonly TrackSnapshot[] = [];
 
 /**
  * L'identifiant du tiroir « Géométrie », **nommé une fois**.
@@ -430,8 +459,14 @@ export function StudioPage() {
     // choisi — et une borne au-delà de sa durée le ferait refuser en 422, sur un
     // écran dont toutes les valeurs paraissent valides.
     setRange(FULL_RANGE);
+    // Les plaques recherchées suivent l'intervalle, et pour la même raison : elles
+    // décrivent une **recherche en cours**, pas une préférence. Héritées d'un
+    // fichier précédent, elles feraient clignoter des alertes sur une vidéo où
+    // personne ne cherchait rien — et l'utilisateur n'aurait aucune raison d'aller
+    // voir dans le tiroir Détection pourquoi.
+    updateSettings({ plateWatchlist: [] });
     session.reset();
-  }, [session, live]);
+  }, [session, live, updateSettings]);
 
   const handleFile = useCallback(
     (file: File) => {
@@ -635,6 +670,24 @@ export function StudioPage() {
   );
 
   /**
+   * Les règles du tracé — sens interdits et voies réservées — lues sur la géométrie
+   * **courante**.
+   *
+   * Calculées ici et non dans les features qui les consomment : elles demandent le
+   * catalogue de classes du serveur, que ni `results-dashboard`, ni
+   * `vehicle-registry`, ni `alerts` ne connaissent. Le studio est le seul à voir les
+   * deux, comme pour `selectedClasses` juste au-dessus.
+   *
+   * Sur la géométrie courante, donc : déclarer un sens interdit **après** une
+   * analyse fait apparaître ses alertes, son KPI et sa colonne de registre sans rien
+   * réanalyser — exactement comme basculer un sens entrée ↔ sortie.
+   */
+  const alertRules = useMemo(
+    () => lineRules(geometry.lines, detectableClasses ?? []),
+    [geometry.lines, detectableClasses],
+  );
+
+  /**
    * Les rangées du récapitulatif d'avant-analyse.
    *
    * Assemblées ici et pas dans le composant, pour la raison qui vaut partout dans
@@ -653,9 +706,14 @@ export function StudioPage() {
           .map((entry) => entry.label),
         lineCount: geometry.lines.length,
         zoneCount: geometry.zones.length,
+        // Compté sur les règles **résolues** et non sur les champs bruts : une voie
+        // réservée dont aucune classe n'est reconnue par le catalogue ne restreint
+        // rien, et l'annoncer ferait attendre des alertes qui ne viendraient pas.
+        ruledLineCount: [...alertRules.values()].filter((rule) => rule.restricted).length,
         range,
         detectPlates: settings.detectPlates,
-        readPlateText: settings.readPlateText,
+        readPlateText: settings.detectPlates && settings.readPlateText,
+        watchedPlateCount: settings.plateWatchlist.length,
         analysisSpeed: settings.analysisSpeed,
         maxAnalysisFps: settings.maxAnalysisFps,
       }),
@@ -665,8 +723,10 @@ export function StudioPage() {
       settings.classIds,
       settings.detectPlates,
       settings.readPlateText,
+      settings.plateWatchlist.length,
       settings.analysisSpeed,
       settings.maxAnalysisFps,
+      alertRules,
       geometry.lines.length,
       geometry.zones.length,
       range,
@@ -859,6 +919,81 @@ export function StudioPage() {
   const lineFlashes = useLineFlashes(flashCrossings);
 
   /**
+   * Le journal d'alertes **vivant**, alimenté par l'aperçu.
+   *
+   * Il sert les deux modes : les infractions se dérivent des franchissements, que le
+   * différé comme le direct publient. Les plaques, non — le direct n'a pas d'ANPR,
+   * donc ses pistes arrivent sans texte et aucune alerte de plaque n'en sort.
+   */
+  const liveAlerts = useAlertLog({
+    crossings: flashCrossings,
+    // L'aperçu **vivant** : une alerte est un événement, elle suit le serveur, là où
+    // une boîte suit l'image (voir `flashCrossings` juste au-dessus).
+    tracks: preview?.tracks ?? NO_TRACKS,
+    timestampMs: preview?.timestampMs ?? 0,
+    rules: alertRules,
+    watchlist: settings.plateWatchlist,
+    // Le job identifie la course ; `"live"` couvre la caméra, qui n'a pas de job.
+    // Un changement vide le journal, sinon les alertes de l'analyse précédente
+    // s'afficheraient au-dessus des nouvelles avec des horodatages qui ne désignent
+    // plus rien.
+    runId: session.job?.jobId ?? (live.active ? "live" : null),
+  });
+
+  /**
+   * Les alertes d'un résultat **terminé**, relues à la tête de lecture.
+   *
+   * Elles remplacent le journal vivant plutôt que de s'y ajouter : le journal est
+   * borné, le résultat ne l'est pas, et les règles y sont relues sur le tracé
+   * courant. `null` tant qu'aucun résultat n'existe.
+   */
+  const replayAlerts = useMemo(() => {
+    if (session.result === null) return null;
+    return alertsFromResult({
+      crossings: session.result.crossings,
+      // **Tous** les véhicules apparus, pas seulement ceux qui ont franchi une
+      // ligne : une plaque recherchée peut appartenir à un véhicule à l'arrêt, et le
+      // restreindre ferait manquer exactement le cas qu'on cherche.
+      vehicles: vehiclesAt(session.result, replay.timeMs),
+      timeMs: replay.timeMs,
+      rules: alertRules,
+      watchlist: settings.plateWatchlist,
+    });
+  }, [session.result, replay.timeMs, alertRules, settings.plateWatchlist]);
+
+  const alerts = replayAlerts ?? liveAlerts;
+
+  /**
+   * Y a-t-il quelque chose à signaler ?
+   *
+   * Sans règle posée ni plaque recherchée, la section « Alertes » et la pile
+   * flottante n'existent pas du tout : une section vide de ce nom se lirait « rien à
+   * signaler », alors que la vérité est « on n'a rien demandé de signaler ».
+   */
+  const alertsArmed = hasAnyRule(alertRules) || settings.plateWatchlist.length > 0;
+
+  /**
+   * Amène la vidéo à l'instant d'une alerte.
+   *
+   * Le seul endroit de cet écran où un clic déplace la lecture, et c'est assumé :
+   * l'ancienne chronologie cliquable a été retirée parce qu'on y **parcourait** le
+   * temps, ce que la barre de lecture fait déjà. Ici on saute à un fait précis, dont
+   * l'instant est justement ce qu'on vient de lire — et une alerte invérifiable ne
+   * vaut rien.
+   *
+   * Inutilisable pendant une analyse ou un direct : la vidéo y est pilotée par
+   * l'aperçu, et la déplacer se battrait avec le calage image par image.
+   */
+  const seekToAlert = useCallback(
+    (timestampMs: number) => {
+      const element = video.current;
+      if (element === null) return;
+      element.currentTime = Math.max(0, timestampMs / 1000);
+    },
+    [],
+  );
+
+  /**
    * Charge un preset **déjà mis à l'échelle par le serveur**.
    *
    * La géométrie arrive dans le repère de la vidéo courante : elle remplace donc le
@@ -970,8 +1105,14 @@ export function StudioPage() {
                 onSelect={(selection) => dispatch({ type: "select", selection })}
                 onRenameLine={(id, name) => dispatch({ type: "renameLine", id, name })}
                 onRenameZone={(id, name) => dispatch({ type: "renameZone", id, name })}
-                onSetDirectionRole={(id, sign, role) =>
-                  dispatch({ type: "setDirectionRole", id, sign, role })
+                // Le catalogue vient du serveur et traverse le studio : la feature
+                // `geometry-editor` ne connaît ni `analysis-settings` ni la route qui
+                // le publie — même câblage que `onOpenPresets` juste dessous.
+                classes={detectableClasses ?? []}
+                onSetLineKind={(id, kind) => dispatch({ type: "setLineKind", id, kind })}
+                onSwapDirections={(id) => dispatch({ type: "swapLineDirections", id })}
+                onSetLineClasses={(id, classIds) =>
+                  dispatch({ type: "setLineClasses", id, classIds })
                 }
                 onSetLineZone={(id, zoneId) => dispatch({ type: "setLineZone", id, zoneId })}
                 onRemoveLine={(id) => dispatch({ type: "removeLine", id })}
@@ -1128,6 +1269,23 @@ export function StudioPage() {
                 )}
               </div>
             )}
+            {/* La pile d'alertes, sur la scène et **pendant** que ça tourne : au
+                moment où un véhicule remonte une ligne à sens unique, l'écran montre
+                la vidéo, pas le bas de page. Une alerte qui n'apparaît que dans une
+                section qu'il faut aller chercher n'alerte personne.
+
+                Le journal **vivant** et non `alerts` : une fois l'analyse terminée,
+                les alertes se relisent dans leur section, où l'on peut les filtrer
+                et cliquer — les empiler sur la vidéo qu'on est en train de vérifier
+                masquerait justement ce qu'on vérifie.
+
+                Marquée comme la surface de tracé : un clic pour renvoyer une alerte
+                ne doit pas refermer le tiroir de réglages ouvert à côté. */}
+            {alertsArmed && (analysing || live.active) && (
+              <div className="contents" {...{ [KEEP_PANELS_OPEN_ATTR]: "" }}>
+                <AlertToasts alerts={liveAlerts} lines={geometry.lines} />
+              </div>
+            )}
           </VideoScene>
           </DropZone>
 
@@ -1239,6 +1397,7 @@ export function StudioPage() {
               l'autre. */}
           {resultStats !== null && (
             <ResultsDashboard
+              rules={alertRules}
               stats={resultStats.stats}
               lines={geometry.lines}
               selectedClasses={selectedClasses}
@@ -1361,6 +1520,7 @@ export function StudioPage() {
             result={session.result}
             vehicles={countedVehicles}
             lines={geometry.lines}
+            rules={alertRules}
           />
         </>
       )}
@@ -1383,9 +1543,27 @@ export function StudioPage() {
           se lit comme un comptage en panne. Le direct n'a pas de journal, et c'est ce
           qu'il faut dire en n'affichant rien plutôt qu'un vide qui ne se remplira
           jamais. */}
-      {timelineEvents !== null && !live.active && (
+      {SHOW_CROSSING_TIMELINE && timelineEvents !== null && !live.active && (
         <CrossingTimeline events={timelineEvents} lines={geometry.lines} live={analysing} />
       )}
+
+      {/* **Les alertes prennent la place de la chronologie**, en dernier et pour la
+          même raison : la section grandit au fil de l'analyse, et la placer plus haut
+          repousserait les sections stables hors de l'écran à chaque événement.
+
+          Elle vit dans les **trois** modes, contrairement à la chronologie : ses
+          infractions se dérivent des franchissements, que le direct publie aussi. Ce
+          qui manque en caméra est la recherche de plaque, faute d'ANPR — et cela se
+          voit dans le tiroir Détection, pas ici. */}
+      <AlertsSection
+        alerts={alerts}
+        lines={geometry.lines}
+        armed={alertsArmed}
+        // Aucun déplacement de la vidéo pendant qu'elle est pilotée par l'aperçu :
+        // le calage image par image reprendrait la main aussitôt, et le clic
+        // paraîtrait sans effet.
+        onSeek={session.result !== null && !analysing && !live.active ? seekToAlert : undefined}
+      />
 
       {/* Monté seulement une fois ouvert : le `<dialog>` est un composant lourd
           — liste réseau comprise — dont personne n'a besoin avant le clic.

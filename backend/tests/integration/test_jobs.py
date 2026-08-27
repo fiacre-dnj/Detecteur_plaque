@@ -616,6 +616,92 @@ class TestConfigurationDUnJob:
         assert lines[0]["a"] == {"x": 0.0, "y": 500.0}
         assert lines[0]["b"] == {"x": 1920.0, "y": 500.0}
 
+    async def test_les_regles_de_ligne_font_l_aller_retour_sans_etre_interpretees(
+        self, client: AsyncClient
+    ) -> None:
+        """Sens interdit et voie réservée : **acceptés, persistés, rendus tels quels**.
+
+        Le serveur ne les lit jamais (voir `unit/counting/test_regles_de_ligne.py`) ;
+        ils voyagent pour que l'interface puisse qualifier un franchissement
+        d'infraction et pour qu'un résultat rouvert retrouve les règles qui étaient
+        posées. Les perdre en route n'aurait fait échouer aucun compteur — c'est
+        exactement la panne silencieuse que le correctif des presets a payée.
+        """
+        created = await _post_job(
+            client,
+            lines=[
+                {
+                    **LINE,
+                    "positiveRole": "entry",
+                    "negativeRole": "forbidden",
+                    "allowedClassIds": [5, 7],
+                }
+            ],
+        )
+        job_id = created["body"]["jobId"]
+
+        line = (await client.get(f"/api/v1/jobs/{job_id}/config")).json()["configJson"]["lines"][0]
+
+        assert line["positiveRole"] == "entry"
+        assert line["negativeRole"] == "forbidden"
+        assert line["allowedClassIds"] == [5, 7]
+
+    async def test_les_plaques_recherchees_sont_rendues_telles_qu_elles_ont_ete_saisies(
+        self, client: AsyncClient
+    ) -> None:
+        """Ni canonisées ni comparées : la correspondance vit côté client.
+
+        Canoniser ici installerait une **seconde** définition de « la même plaque »,
+        et la canonique du domaine n'est pas celle du client — elle conserve le
+        tiret. Deux règles pour une seule question finissent par diverger.
+        """
+        created = await _post_job(
+            client,
+            detectPlates=True,
+            readPlateText=True,
+            plateWatchlist=["AB-123-CD", " ef 456 gh "],
+        )
+        job_id = created["body"]["jobId"]
+
+        config = (await client.get(f"/api/v1/jobs/{job_id}/config")).json()["configJson"]
+
+        assert config["plateWatchlist"] == ["AB-123-CD", "ef 456 gh"]
+
+    async def test_une_plaque_trop_courte_est_refusee(self, client: AsyncClient) -> None:
+        """Sous quatre caractères, une entrée correspondrait à presque tout.
+
+        Elle serait un générateur de fausses alertes, pas une recherche — et une
+        alerte fausse coûte plus cher qu'une alerte manquée.
+        """
+        created = await _post_job(client, plateWatchlist=["AB1"])
+
+        assert created["status_code"] == 422
+
+    async def test_une_liste_de_classes_autorisees_vide_est_refusee(
+        self, client: AsyncClient
+    ) -> None:
+        """`[]` dirait « aucune classe ne passe », ce que `forbidden` exprime déjà.
+
+        Les confondre rendrait toute ligne infranchissable en silence, sur une
+        géométrie dont l'écran affiche une voie réservée ordinaire.
+        """
+        created = await _post_job(client, lines=[{**LINE, "allowedClassIds": []}])
+
+        assert created["status_code"] == 422
+
+    async def test_une_classe_autorisee_hors_catalogue_est_refusee(
+        self, client: AsyncClient
+    ) -> None:
+        """Même refus que `classIds`, et pour le même mode de panne muet.
+
+        Une classe hors COCO ne correspondrait à aucun `by_class` : la voie réservée
+        n'accepterait jamais rien, et **tout** franchissement deviendrait une
+        infraction.
+        """
+        created = await _post_job(client, lines=[{**LINE, "allowedClassIds": [4242]}])
+
+        assert created["status_code"] == 422
+
     async def test_la_route_porte_aussi_l_etat_du_job(self, client: AsyncClient) -> None:
         """Elle étend `JobSchema` : un seul appel suffit à l'historique."""
         created = await _post_job(client)

@@ -18,9 +18,11 @@ const BASE: AnalysisSummaryInput = {
   classLabels: ["Voiture", "Camion"],
   lineCount: 2,
   zoneCount: 0,
+  ruledLineCount: 0,
   range: FULL_RANGE,
   detectPlates: false,
   readPlateText: false,
+  watchedPlateCount: 0,
   analysisSpeed: 1,
   maxAnalysisFps: 30,
 };

@@ -114,6 +114,26 @@ export function mostExitedLine(
 }
 
 /**
+ * La ligne la plus **empruntée à contresens**.
+ *
+ * Le seul comparatif qui désigne un endroit plutôt qu'un flux : il répond à « où
+ * faut-il aller voir », pas à « comment le carrefour se remplit ». Une ligne à sens
+ * unique que dix véhicules remontent chaque heure est un problème de terrain — un
+ * panneau invisible, un marquage effacé — et c'est la ligne, pas le total, qui le
+ * dit.
+ *
+ * Compte les seuls sens **interdits** (`LineFlow.forbidden`), donc jamais une voie
+ * réservée franchie par la mauvaise classe : les deux sont des infractions, mais la
+ * question « quelle ligne remonte-t-on » n'a de sens que pour la première.
+ */
+export function mostForbiddenLine(
+  stats: AnalysisStats,
+  lines: readonly CountingLine[],
+): LineHighlight | null {
+  return best(lineFlows(stats, lines), (flow) => flow.forbidden ?? 0);
+}
+
+/**
  * Écart de part entre la ligne la plus et la moins fréquentée, en points de
  * pourcentage du total des passages.
  *

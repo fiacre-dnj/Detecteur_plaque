@@ -100,9 +100,21 @@ export interface FlowBalance {
   exits: number;
   /** `entries - exits`. Positif = la zone se remplit, négatif = elle se vide. */
   net: number;
-  /** Passages sur des sens sans rôle déclaré — du transit, ou un rôle oublié. */
+  /** Passages sur des sens marqués « interdit ». Comptés, et signalés ailleurs. */
+  forbidden: number;
+  /** Passages sur des sens marqués « passage » — comptés, hors bilan, voulus. */
+  transit: number;
+  /** Passages sur des sens sans rôle déclaré — un rôle oublié, jamais un choix. */
   neutral: number;
-  /** Un rôle a-t-il été déclaré quelque part ? Sinon, l'écran affiche « — ». */
+  /**
+   * Un sens **entrée ou sortie** a-t-il été déclaré quelque part ?
+   *
+   * Sinon, l'écran affiche « — ». La définition est restée exactement celle-là
+   * malgré l'arrivée de `transit` et `forbidden`, et c'est délibéré : une géométrie
+   * entièrement en « comptage seul » n'a pas de bilan de carrefour à montrer, et
+   * afficher `0` y dirait « personne n'entre » au lieu de « ce n'est pas un
+   * carrefour ». C'est la même honnêteté que le `null` de `LineFlow.entries`.
+   */
   declared: boolean;
 }
 
@@ -127,15 +139,26 @@ export function isEntryRow(row: DirectionRow): boolean {
 export function flowBalance(stats: AnalysisStats, lines: readonly CountingLine[]): FlowBalance {
   let entries = 0;
   let exits = 0;
+  let forbidden = 0;
+  let transit = 0;
   let neutral = 0;
   let declared = false;
 
   for (const row of directionRows(stats, lines)) {
-    if (row.role !== "neutral") declared = true;
-    if (isEntryRow(row)) entries += row.tally.total;
-    else if (row.role === "exit") exits += row.tally.total;
-    else neutral += row.tally.total;
+    if (isEntryRow(row)) {
+      declared = true;
+      entries += row.tally.total;
+    } else if (row.role === "exit") {
+      declared = true;
+      exits += row.tally.total;
+    } else if (row.role === "forbidden") {
+      forbidden += row.tally.total;
+    } else if (row.role === "transit") {
+      transit += row.tally.total;
+    } else {
+      neutral += row.tally.total;
+    }
   }
 
-  return { entries, exits, net: entries - exits, neutral, declared };
+  return { entries, exits, net: entries - exits, forbidden, transit, neutral, declared };
 }

@@ -67,9 +67,20 @@ type CountCategory = Literal["vehicle", "person"]
 #: domaine de comptage est délibéré — c'est une étiquette de lecture, et lui donner
 #: un effet sur les totaux ferait dépendre un chiffre d'un mot.
 #:
-#: `neutral` est le défaut, et il est fréquent : une ligne posée en travers d'une
-#: voie de transit ne fait entrer ni sortir de nulle part.
-type DirectionRole = Literal["entry", "exit", "neutral"]
+#: Cinq valeurs, parce qu'il y a cinq significations distinctes :
+#:
+#: - `entry` / `exit` — le bilan du carrefour ;
+#: - `forbidden` — le sens est interdit. **Le franchissement est compté quand
+#:   même** : une infraction est un passage qualifié, pas un passage retiré, et
+#:   l'invariant `crossings == Σ by_line[*].total` en dépend ;
+#: - `transit` — compté, délibérément hors bilan (une route qui n'est pas un
+#:   carrefour) ;
+#: - `neutral` — **hérité uniquement** : « personne ne l'a dit ». L'éditeur ne le
+#:   produit plus depuis ADR 0021, mais un preset ou un `config_json` antérieur
+#:   peut encore le porter. Le distinguer de `transit` est ce qui permet à
+#:   l'interface de continuer à séparer « aucun rôle déclaré » d'un choix
+#:   explicite.
+type DirectionRole = Literal["entry", "exit", "forbidden", "transit", "neutral"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,11 +225,11 @@ class CountingLineDef:
     précise d'un carrefour sans compter la voie voisine que la même ligne
     traverse.
 
-    Les quatre champs de sens sont **de la description, pas du comptage** : le
-    compteur ne les lit jamais. Ils traversent le domaine pour être persistés dans
-    la configuration du job et rendus à l'interface, qui seule sait ce que veut
-    dire « entrée ». Un chiffre ne doit pas dépendre d'un mot que l'utilisateur
-    peut corriger après coup.
+    Les champs de sens et `allowed_class_ids` sont **de la description, pas du
+    comptage** : le compteur ne les lit jamais. Ils traversent le domaine pour être
+    persistés dans la configuration du job et rendus à l'interface, qui seule sait
+    ce que veut dire « entrée » ou « interdit ». Un chiffre ne doit pas dépendre
+    d'un mot que l'utilisateur peut corriger après coup.
     """
 
     id: str
@@ -235,6 +246,14 @@ class CountingLineDef:
     negative_name: str = ""
     positive_role: DirectionRole = "neutral"
     negative_role: DirectionRole = "neutral"
+    #: Classes autorisées à franchir cette ligne, par identifiant COCO — `None`
+    #: signifie « aucune restriction », ce que porte toute ligne existante.
+    #:
+    #: **De la description, comme les rôles** : le compteur ne la lit pas, et une
+    #: classe non autorisée est comptée exactement comme les autres. C'est
+    #: l'interface qui qualifie le franchissement d'infraction, ce qui rend la règle
+    #: corrigeable après coup sans réanalyser.
+    allowed_class_ids: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)

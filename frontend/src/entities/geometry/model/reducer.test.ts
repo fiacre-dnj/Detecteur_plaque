@@ -330,7 +330,10 @@ describe("nommage des sens", () => {
   });
 
   it("laisse intacts les champs déjà présents", () => {
-    // Garde-fou du test précédent : le complément ne doit pas écraser un libellé.
+    // Garde-fou du test précédent : le complément ne doit écraser ni un libellé, ni
+    // une voie réservée. Une restriction de classe silencieusement effacée au
+    // rechargement d'un preset rendrait la ligne franchissable par tout le monde,
+    // sans qu'aucune alerte ne manque à l'écran pour le signaler.
     const named: CountingLine = {
       id: "l1",
       name: "Voie nord",
@@ -342,9 +345,30 @@ describe("nommage des sens", () => {
       negativeName: "Sortie",
       positiveRole: "entry",
       negativeRole: "exit",
+      allowedClassIds: [5],
     };
 
     expect(withDirectionDefaults(named)).toEqual(named);
+  });
+
+  it("rend `null` et jamais `[]` pour une ligne sans voie réservée", () => {
+    // `[]` dirait « aucune classe n'a le droit de passer », donc **tout**
+    // franchissement en infraction : se tromper de repli fabriquerait un écran
+    // d'alertes entièrement faux sur une géométrie qui n'a rien restreint.
+    const plain = {
+      id: "l1",
+      name: "Voie nord",
+      color: "#539df5",
+      zoneId: null,
+      a: { x: 0, y: 600 },
+      b: { x: 1920, y: 600 },
+      positiveName: "",
+      negativeName: "",
+      positiveRole: "entry",
+      negativeRole: "exit",
+    } as unknown as CountingLine;
+
+    expect(withDirectionDefaults(plain).allowedClassIds).toBeNull();
   });
 });
 
@@ -539,5 +563,98 @@ describe("mise à l'échelle d'un preset", () => {
     expect(scaled.zones[0]?.id).toBe("z1");
     expect(scaled.zones[0]?.name).toBe("Carrefour");
     expect(scaled.zones[0]?.points[1]).toEqual({ x: 40, y: 20 });
+  });
+});
+
+describe("le type d'une ligne", () => {
+  function withLine(): GeometryState {
+    return geometryReducer(EMPTY_GEOMETRY, { type: "addLine", width: 1920, height: 1080 });
+  }
+
+  it("pose la paire entière en un geste", () => {
+    // La cohérence de la paire est **structurelle** : poser les rôles un par un
+    // laisserait exister, entre les deux gestes, une paire que `lineKind` ne sait
+    // pas nommer — et un rendu intermédiaire l'afficherait « à préciser ».
+    const state = withLine();
+    const id = state.lines[0]?.id ?? "";
+
+    const oneway = geometryReducer(state, { type: "setLineKind", id, kind: "oneway-entry" });
+    expect(oneway.lines[0]?.positiveRole).toBe("entry");
+    expect(oneway.lines[0]?.negativeRole).toBe("forbidden");
+
+    const closed = geometryReducer(oneway, { type: "setLineKind", id, kind: "closed" });
+    expect(closed.lines[0]?.positiveRole).toBe("forbidden");
+    expect(closed.lines[0]?.negativeRole).toBe("forbidden");
+  });
+
+  it("échange les deux sens sans en juger", () => {
+    // Un seul geste pour deux opérations qui n'en sont qu'une : inverser entrée et
+    // sortie sur une ligne ordinaire, et faire passer le côté interdit d'un bord du
+    // trait à l'autre sur une ligne à sens unique.
+    const state = withLine();
+    const id = state.lines[0]?.id ?? "";
+
+    const oneway = geometryReducer(state, { type: "setLineKind", id, kind: "oneway-entry" });
+    const swapped = geometryReducer(oneway, { type: "swapLineDirections", id });
+
+    expect(swapped.lines[0]?.positiveRole).toBe("forbidden");
+    expect(swapped.lines[0]?.negativeRole).toBe("entry");
+  });
+
+  it("pose la paire par défaut sur une ligne héritée plutôt que de deviner", () => {
+    // Règle d'ADR 0021 conservée : un sens resté `neutral` n'a rien à échanger, et
+    // deviner un bilan que personne n'a demandé serait pire que de ne rien poser.
+    const state = geometryReducer(EMPTY_GEOMETRY, {
+      type: "replace",
+      lines: [
+        {
+          id: "l1",
+          name: "Héritée",
+          color: "#539df5",
+          zoneId: null,
+          a: { x: 0, y: 600 },
+          b: { x: 1920, y: 600 },
+        } as unknown as CountingLine,
+      ],
+      zones: [],
+    });
+
+    const swapped = geometryReducer(state, { type: "swapLineDirections", id: "l1" });
+
+    expect(swapped.lines[0]?.positiveRole).toBe("entry");
+    expect(swapped.lines[0]?.negativeRole).toBe("exit");
+  });
+});
+
+describe("la voie réservée", () => {
+  function withLine(): GeometryState {
+    return geometryReducer(EMPTY_GEOMETRY, { type: "addLine", width: 1920, height: 1080 });
+  }
+
+  it("écrit `null` et jamais `[]` quand la dernière classe est retirée", () => {
+    // `[]` dirait « aucune classe n'a le droit de passer », donc **tout**
+    // franchissement en infraction. C'est le type « Infranchissable » qui exprime
+    // cela, en le disant.
+    const state = withLine();
+    const id = state.lines[0]?.id ?? "";
+
+    const reserved = geometryReducer(state, { type: "setLineClasses", id, classIds: [5] });
+    expect(reserved.lines[0]?.allowedClassIds).toEqual([5]);
+
+    const cleared = geometryReducer(reserved, { type: "setLineClasses", id, classIds: [] });
+    expect(cleared.lines[0]?.allowedClassIds).toBeNull();
+  });
+
+  it("écarte les doublons sans changer l'ordre", () => {
+    const state = withLine();
+    const id = state.lines[0]?.id ?? "";
+
+    const reserved = geometryReducer(state, {
+      type: "setLineClasses",
+      id,
+      classIds: [5, 2, 5],
+    });
+
+    expect(reserved.lines[0]?.allowedClassIds).toEqual([5, 2]);
   });
 });

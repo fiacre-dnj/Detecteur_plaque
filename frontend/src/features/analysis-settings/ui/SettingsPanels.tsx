@@ -40,8 +40,8 @@
  * connaisse `geometry-editor`, même règle que `leading` et `trailing`.
  */
 
-import { ChevronDown } from "lucide-react";
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { ChevronDown, X } from "lucide-react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import { ModelPicker } from "@/features/model-picker";
 import type {
@@ -50,6 +50,7 @@ import type {
   Diagnostics,
   VehicleModel,
 } from "@/shared/api/contracts";
+import { normalisePlate } from "@/shared/lib/plate";
 
 import { plateCapability } from "../model/plateCapability";
 import {
@@ -58,6 +59,9 @@ import {
   BOUNDS,
   DEFAULT_CONFIDENCE,
   DEFAULT_PLATE_TEXT_CONFIDENCE,
+  MAX_WATCHED_PLATES,
+  MAX_WATCHED_PLATE_LENGTH,
+  MIN_WATCHED_PLATE_CHARS,
   type AnalysisSettings,
 } from "../model/settings";
 
@@ -396,6 +400,36 @@ export function SettingsPanels({
             }
           />
         )}
+
+        {/* La recherche de plaque, juste sous les réglages de lecture dont elle
+            dépend entièrement. Sur toute la largeur : les pastilles s'accumulent et
+            une demi-colonne les ferait passer à la ligne dès la deuxième. */}
+        {settings.detectPlates && settings.readPlateText && (
+          <PanelGridFullRow>
+            <PlateWatchlist
+              entries={settings.plateWatchlist}
+              disabled={disabled || !plates.canRead}
+              onChange={(plateWatchlist) => onChange({ plateWatchlist })}
+            />
+          </PanelGridFullRow>
+        )}
+
+        {/* **La panne silencieuse à empêcher** : une liste saisie puis laissée en
+            place après avoir décoché l'OCR chercherait dans un texte que personne ne
+            lit. Le champ, lui, disparaît avec l'OCR — sans cet avertissement, la
+            recherche disparaîtrait avec lui, sans un mot. */}
+        {settings.plateWatchlist.length > 0 &&
+          !(settings.detectPlates && settings.readPlateText) && (
+            <PanelGridFullRow>
+              <p role="status" className="text-small text-warning">
+                {settings.plateWatchlist.length} plaque
+                {settings.plateWatchlist.length > 1 ? "s" : ""} recherchée
+                {settings.plateWatchlist.length > 1 ? "s" : ""}, mais la lecture des
+                plaques est désactivée : aucune ne pourra être trouvée. Réactivez
+                « Lire le texte des plaques » pour que la recherche ait lieu.
+              </p>
+            </PanelGridFullRow>
+          )}
 
         {/* **Déplacé depuis « Affichage & analyse »**, où il n'avait rien à faire :
             ce réglage ne change pas ce qu'on voit, il change ce que le détecteur
@@ -1049,6 +1083,115 @@ function Toggle({ label, checked, disabled, hint, onChange }: ToggleProps) {
         {label}
       </label>
       {hint !== undefined && <p className="mt-1 ps-6 text-micro text-ink-dim">{hint}</p>}
+    </div>
+  );
+}
+
+/**
+ * La liste des plaques recherchées.
+ *
+ * **Un champ d'ajout puis des pastilles supprimables**, et non une zone de texte à
+ * lignes : une liste doit se lire d'un coup d'œil et se corriger entrée par entrée.
+ * Une saisie libre obligerait à relire tout le bloc pour retirer une plaque, et
+ * laisserait passer des lignes vides que le serveur refuserait en 422.
+ *
+ * Trois bornes, toutes reprises du serveur (`settings.ts` en tient le miroir) : dix
+ * entrées, seize caractères, quatre caractères alphanumériques au minimum. La
+ * dernière est celle qui compte : en dessous, une entrée correspondrait à trop de
+ * plaques pour signaler quoi que ce soit — elle serait un générateur de fausses
+ * alertes plutôt qu'une recherche.
+ *
+ * **La normalisation n'a pas lieu ici.** La forme comparable est calculée à la
+ * comparaison, par `normalisePlate`, exactement comme pour la recherche du
+ * registre : une seule définition de « la même plaque » dans toute l'application.
+ * Ce composant ne s'en sert que pour repérer un doublon déjà présent, ce qui est
+ * une question d'ergonomie de saisie, pas une règle de correspondance.
+ */
+function PlateWatchlist({
+  entries,
+  disabled,
+  onChange,
+}: {
+  entries: readonly string[];
+  disabled: boolean;
+  onChange: (entries: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const full = entries.length >= MAX_WATCHED_PLATES;
+  const trimmed = draft.trim();
+  const significant = trimmed.replace(/[^0-9A-Za-z]/g, "").length;
+  const duplicate = entries.some((entry) => normalisePlate(entry) === normalisePlate(trimmed));
+  const addable = significant >= MIN_WATCHED_PLATE_CHARS && !duplicate && !full;
+
+  const add = (): void => {
+    if (!addable) return;
+    onChange([...entries, trimmed]);
+    setDraft("");
+  };
+
+  return (
+    <div>
+      <p className="label-micro mb-1">Plaques recherchées</p>
+
+      <div className="flex flex-wrap gap-1.5">
+        <input
+          type="search"
+          value={draft}
+          disabled={disabled || full}
+          maxLength={MAX_WATCHED_PLATE_LENGTH}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            // Entrée ajoute, et n'envoie **pas** le formulaire : le tiroir vit dans
+            // la page du studio, où une soumission rechargerait tout.
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            add();
+          }}
+          placeholder={full ? "Liste complète" : "ex. AB-123-CD"}
+          aria-label="Ajouter une plaque à rechercher"
+          className="w-44 rounded-input bg-elevated px-3 py-1.5 text-small text-ink placeholder:text-ink-dim disabled:opacity-50"
+        />
+        <button
+          type="button"
+          onClick={add}
+          disabled={disabled || !addable}
+          className="rounded-input px-2 py-1 text-small text-ink-muted transition-colors hover:bg-elevated hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Ajouter
+        </button>
+      </div>
+
+      {entries.length > 0 && (
+        <ul className="mt-1.5 flex flex-wrap gap-1">
+          {entries.map((entry) => (
+            <li key={entry}>
+              <button
+                type="button"
+                onClick={() => onChange(entries.filter((kept) => kept !== entry))}
+                disabled={disabled}
+                aria-label={`Retirer ${entry} de la recherche`}
+                title="Retirer de la recherche"
+                className="flex items-center gap-1 rounded-pill bg-elevated px-2 py-0.5 text-micro text-ink tabular transition-colors hover:bg-negative/15 hover:text-negative disabled:opacity-50"
+              >
+                {entry}
+                <X aria-hidden="true" className="size-3" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* L'aide dit ce que la recherche **fait**, et ce qu'elle ne fait pas : elle
+          ne change aucun chiffre, ne ralentit rien, et la liste n'est pas conservée
+          d'une session à l'autre — trois questions qu'on se pose en la remplissant. */}
+      <p className="mt-1 text-micro text-ink-dim">
+        {duplicate && trimmed !== ""
+          ? "Cette plaque est déjà dans la liste."
+          : trimmed !== "" && significant < MIN_WATCHED_PLATE_CHARS
+            ? `Au moins ${MIN_WATCHED_PLATE_CHARS} caractères : plus court, la recherche correspondrait à presque tout.`
+            : "Alerte dès qu'une plaque lue correspond, exactement ou à un caractère près. La casse et les séparateurs sont ignorés. La liste n'est pas conservée après fermeture."}
+      </p>
     </div>
   );
 }

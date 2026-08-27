@@ -69,6 +69,26 @@ export interface AnalysisSettings {
    */
   readPlateText: boolean;
   /**
+   * Plaques recherchées pendant l'analyse — la liste de surveillance.
+   *
+   * **Le seul réglage qui n'est pas persisté**, et c'est délibéré à deux titres.
+   * Il décrit une *recherche en cours* et non une préférence — comme l'intervalle
+   * d'analyse, qui vit pour la même raison dans `entities/analysis-range`. Et
+   * écrire un numéro de plaque dans le `localStorage` du poste franchit le cran de
+   * confidentialité que ce projet impose déjà en laissant l'OCR décoché par
+   * défaut : on ne persiste pas silencieusement ce qu'on a demandé un
+   * consentement explicite pour lire.
+   *
+   * `mergeSettings` ne la relit donc pas et `saveSettings` ne l'écrit pas — le
+   * champ vit dans l'état du studio, remis à neuf à chaque nouvelle source.
+   *
+   * Les entrées sont stockées **telles que l'utilisateur les tape**. La forme
+   * comparable est calculée à la comparaison, par `normalisePlate` — la même
+   * fonction que la recherche du registre. Une seule définition de « la même
+   * plaque » dans toute l'application.
+   */
+  plateWatchlist: string[];
+  /**
    * Classes à détecter et à compter, par identifiant COCO.
    *
    * Le **catalogue** vient du serveur (`GET /api/v1/models/classes`) ; seule la
@@ -127,6 +147,7 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   // Faux par défaut : l'OCR est un surcoût, et persister un texte de plaque franchit
   // un cran de confidentialité qui doit être choisi, pas hérité.
   readPlateText: false,
+  plateWatchlist: [],
   // Les quatre véhicules de COCO : voiture, moto, bus, camion. C'est le
   // comportement historique de l'application, donc qui ne touche à rien retrouve
   // exactement ses chiffres d'avant. Les personnes se cochent quand on les veut.
@@ -200,6 +221,50 @@ export function sanitiseClassIds(
 /** Confiance effective quand l'utilisateur suit le défaut. */
 export const DEFAULT_CONFIDENCE = 0.35;
 
+/* ── La liste de plaques recherchées : les bornes du serveur, recopiées ─────────
+   Les dépasser vaudrait un 422 sur un écran dont toutes les valeurs paraissent
+   valides — le mode de panne que ce module existe pour éviter. Miroir de
+   `MAX_WATCHED_PLATES`, `MAX_WATCHED_PLATE_LENGTH` et `MIN_WATCHED_PLATE_CHARS`
+   dans `counting/application/request_schema.py`. */
+
+/** Au-delà, ce n'est plus une surveillance mais un fichier. */
+export const MAX_WATCHED_PLATES = 10;
+
+/** Longueur maximale d'une entrée, séparateurs compris. */
+export const MAX_WATCHED_PLATE_LENGTH = 16;
+
+/**
+ * En dessous, une entrée correspondrait à trop de plaques pour signaler quoi que ce
+ * soit : elle serait un générateur de fausses alertes, pas une recherche.
+ */
+export const MIN_WATCHED_PLATE_CHARS = 4;
+
+/**
+ * Les entrées que le serveur acceptera, dans l'ordre de saisie.
+ *
+ * **Un filtre et non une correction** : une entrée trop courte ou trop longue est
+ * écartée, jamais tronquée ni complétée. Corriger une plaque à la place de
+ * l'utilisateur produirait une recherche qu'il n'a pas demandée, et qui trouverait
+ * peut-être quelque chose — le pire des deux résultats.
+ *
+ * Le champ de saisie refuse déjà ces cas ; ce garde couvre le chemin qui l'aurait
+ * évité, exactement comme `analysisWindow` pour les bornes de la fenêtre.
+ */
+export function watchlistForRequest(entries: readonly string[]): string[] {
+  const kept: string[] = [];
+  for (const raw of entries) {
+    const entry = raw.trim();
+    if (entry.length > MAX_WATCHED_PLATE_LENGTH) continue;
+    if (countAlphanumeric(entry) < MIN_WATCHED_PLATE_CHARS) continue;
+    if (!kept.includes(entry)) kept.push(entry);
+  }
+  return kept.slice(0, MAX_WATCHED_PLATES);
+}
+
+function countAlphanumeric(entry: string): number {
+  return entry.replace(/[^0-9A-Za-z]/g, "").length;
+}
+
 /**
  * Plancher de lecture effectif quand l'utilisateur suit le défaut.
  *
@@ -258,6 +323,15 @@ export function toRequest(
     // sens, et laisser passer `true` seul demanderait au serveur d'arbitrer une
     // incohérence que le client pouvait éviter.
     readPlateText: settings.detectPlates && settings.readPlateText,
+    // Subordonnée à la **lecture**, comme le plancher de confiance juste au-dessus :
+    // sans texte lu, il n'y a rien à comparer, et envoyer quand même la liste
+    // afficherait dans « Configuration système » une recherche que rien ne peut
+    // satisfaire. Le tiroir Détection avertit séparément si une liste survit à un
+    // décochage de l'OCR — c'est la panne silencieuse à éviter, pas le tri fait ici.
+    plateWatchlist:
+      settings.detectPlates && settings.readPlateText
+        ? watchlistForRequest(settings.plateWatchlist)
+        : [],
     // Jamais vide : le serveur refuse une liste vide, et il a raison. Le repli sur
     // les quatre véhicules est le même que celui de `sanitiseClassIds` — l'écran
     // reste utilisable quand l'utilisateur a tout décoché.
@@ -435,16 +509,29 @@ function nullableNumber(value: unknown, fallback: number | null): number | null 
   return value;
 }
 
-/** Écrit les réglages. Silencieux en cas d'échec : ce n'est pas critique. */
+/**
+ * Écrit les réglages. Silencieux en cas d'échec : ce n'est pas critique.
+ *
+ * **`plateWatchlist` est retirée avant l'écriture**, et c'est le seul champ dans ce
+ * cas. Elle décrit une recherche en cours et non une préférence ; et surtout, écrire
+ * un numéro de plaque dans le `localStorage` du poste franchirait le cran de
+ * confidentialité que ce projet impose déjà en laissant l'OCR décoché par défaut.
+ * Ce qu'on demande un consentement explicite pour **lire** ne se persiste pas par
+ * effet de bord.
+ *
+ * Le retrait est fait ici et pas seulement à la relecture : un champ absent du
+ * stockage ne peut pas y rester après une mise à jour qui changerait `mergeSettings`.
+ */
 export function saveSettings(
   settings: AnalysisSettings,
   storage: Pick<Storage, "setItem"> | null = safeStorage(),
 ): void {
   if (storage === null) return;
+  const { plateWatchlist: _unsaved, ...persisted } = settings;
   try {
     storage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ version: SETTINGS_SCHEMA_VERSION, settings }),
+      JSON.stringify({ version: SETTINGS_SCHEMA_VERSION, settings: persisted }),
     );
   } catch {
     // Quota dépassé ou navigation privée : perdre une préférence n'est pas une

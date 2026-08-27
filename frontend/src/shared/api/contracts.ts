@@ -226,11 +226,24 @@ export interface Point {
  *
  * Purement descriptif côté serveur : **aucun total n'en dépend**. C'est le
  * frontend, et lui seul, qui s'en sert pour agréger « combien de véhicules entrent
- * dans cette rue ». Deux conséquences voulues : corriger un rôle est instantané et
- * ne demande pas de relancer l'analyse, et la règle de classement n'existe pas en
- * double.
+ * dans cette rue » et pour décider qu'un passage est une infraction. Deux
+ * conséquences voulues : corriger un rôle est instantané et ne demande pas de
+ * relancer l'analyse, et la règle de classement n'existe pas en double.
+ *
+ * Cinq valeurs, parce qu'il y a cinq significations distinctes :
+ *
+ * - `entry` / `exit` — le bilan du carrefour ;
+ * - `forbidden` — le sens est interdit. **Le franchissement est compté quand
+ *   même** : une infraction est un passage qualifié, pas un passage retiré, et
+ *   l'invariant `crossings === Σ byLine[*].total` en dépend ;
+ * - `transit` — compté, délibérément hors bilan : une route qui n'est pas un
+ *   carrefour, où « Passages en entrée » n'a rien à dire ;
+ * - `neutral` — **hérité uniquement** : « personne ne l'a dit ». L'éditeur ne le
+ *   produit plus depuis ADR 0021, mais un preset ou un `configJson` archivé peut
+ *   encore le porter. Le distinguer de `transit` est ce qui permet à
+ *   `flowBalance.declared` de continuer à séparer un oubli d'un choix explicite.
  */
-export type DirectionRole = 'entry' | 'exit' | 'neutral';
+export type DirectionRole = 'entry' | 'exit' | 'forbidden' | 'transit' | 'neutral';
 
 /** Les deux sens d'une ligne, dans la convention du serveur. */
 export type DirectionSign = 'positive' | 'negative';
@@ -267,6 +280,24 @@ export interface CountingLine {
   negativeName: string;
   positiveRole: DirectionRole;
   negativeRole: DirectionRole;
+  /**
+   * Classes autorisées à franchir cette ligne, par identifiant COCO — une voie de
+   * bus, une piste cyclable. `null` = aucune restriction, ce que porte toute ligne
+   * qui n'en déclare pas.
+   *
+   * **Jamais interprété par le serveur** : une classe non autorisée est comptée
+   * exactement comme les autres, et c'est l'interface qui qualifie le
+   * franchissement d'infraction. Même doctrine que les rôles, et la même
+   * conséquence — corriger la règle ne demande pas de réanalyser.
+   *
+   * Des **identifiants** et non des noms COCO : c'est la monnaie d'`AnalysisRequest.classIds`
+   * et du catalogue `GET /models/classes`. La traduction vers les noms — les clés
+   * de `byClass` — se fait une seule fois, contre ce catalogue.
+   *
+   * Optionnel à la lecture : un `configJson` ou un preset archivé avant ce champ
+   * n'en porte pas, et son absence se lit « aucune restriction ».
+   */
+  allowedClassIds?: number[] | null;
 }
 
 export interface Zone {
@@ -375,6 +406,22 @@ export interface AnalysisRequest {
    * passe à leur jointure.
    */
   endMs: number | null;
+  /**
+   * Plaques recherchées pendant l'analyse — la liste de surveillance.
+   *
+   * **Le serveur les accepte et les rend telles quelles, il ne compare rien.** La
+   * correspondance est calculée par l'interface, sur le texte *voté* de chaque
+   * véhicule (invariant 4), avec la même normalisation que la recherche du
+   * registre. Deux conséquences voulues, les mêmes que pour les rôles : corriger la
+   * liste ne demande pas de relancer l'analyse, et la règle de correspondance
+   * n'existe qu'à un seul endroit — donc elle ne peut pas diverger entre l'aperçu
+   * vivant et un résultat rouvert.
+   *
+   * Elles voyagent ici pour être persistées avec la configuration du job : rouvrir
+   * un résultat doit savoir ce qu'on cherchait. Vide si `readPlateText` est faux —
+   * sans lecture, il n'y a aucun texte à comparer.
+   */
+  plateWatchlist: string[];
   lines: CountingLine[];
   zones: Zone[];
 }

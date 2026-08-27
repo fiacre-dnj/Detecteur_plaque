@@ -46,14 +46,18 @@
  * comparatifs, reste sous la vidéo — voir `StudioPage`.
  */
 
+import { Ban } from "lucide-react";
+
 import type { AnalysisStats, CountingLine } from "@/shared/api/contracts";
 import { classLabel } from "@/shared/lib/classes";
+import type { LineRule } from "@/shared/lib/lineRules";
 import { MetricCard } from "@/shared/ui/MetricCard";
 
 import { flowBalance } from "../model/directions";
 import { entriesByClass } from "../model/entriesByClass";
 import { crossroadFlowSentence, plural } from "../model/labels";
 import { lineFlows, type LineFlow } from "../model/lineFlows";
+import { violationCounts } from "../model/violationCounts";
 import { visibleClasses } from "../model/visibleClasses";
 import { EntryExitBar } from "./EntryExitBar";
 
@@ -73,12 +77,28 @@ interface ResultsDashboardProps {
    * `visibleClasses` plus bas).
    */
   selectedClasses: readonly string[];
+  /**
+   * Les règles du tracé courant — sens interdits, voies réservées.
+   *
+   * Calculées par l'appelant, qui seul dispose du catalogue de classes du serveur.
+   * Une `Map` vide veut dire « aucune règle », et **le KPI d'infraction n'apparaît
+   * alors pas du tout** : un « 0 » sous une règle que personne n'a posée se lit
+   * « aucune infraction », l'inverse de la vérité. Même honnêteté que le « — » de
+   * « Passages en entrée » quand aucun rôle n'est déclaré.
+   */
+  rules: ReadonlyMap<string, LineRule>;
 }
 
-export function ResultsDashboard({ stats, lines, selectedClasses }: ResultsDashboardProps) {
+export function ResultsDashboard({
+  stats,
+  lines,
+  selectedClasses,
+  rules,
+}: ResultsDashboardProps) {
   const flow = flowBalance(stats, lines);
   const entries = entriesByClass(stats, lines);
   const classes = visibleClasses(selectedClasses, entries);
+  const violations = violationCounts(stats, lines, rules);
 
   return (
     <section aria-labelledby="cards-title">
@@ -109,6 +129,50 @@ export function ResultsDashboard({ stats, lines, selectedClasses }: ResultsDashb
           />
         </div>
 
+        {/* **L'infraction, juste sous le bilan, et seulement si une règle existe.**
+            Le rouge dit ici la gravité d'un fait de la scène et non un échec de
+            l'application : c'est la seule extension consentie à l'usage du jeton
+            `negative`, et le mot « Franchissements interdits » porte la différence.
+
+            Le chiffre vient de `stats` et **jamais** de la longueur du journal
+            d'alertes, qui est borné : un compte plafonné affiché comme un total est
+            un défaut que ce dépôt a déjà payé une fois (invariant 3). */}
+        {violations.declared && (
+          <div className="col-span-2">
+            <div
+              className={[
+                "rounded-card p-4 ring-1",
+                violations.total > 0
+                  ? "bg-negative/10 ring-negative/40"
+                  : "bg-surface shadow-card ring-transparent",
+              ].join(" ")}
+            >
+              <div className="flex items-center gap-1.5">
+                <Ban
+                  aria-hidden="true"
+                  className={`size-3.5 shrink-0 ${violations.total > 0 ? "text-negative" : "text-ink-dim"}`}
+                />
+                <span className="label-micro">Franchissements interdits</span>
+              </div>
+              <output
+                aria-live="polite"
+                className={[
+                  "mt-1 block text-[1.75rem] font-bold leading-tight tabular",
+                  violations.total > 0 ? "text-negative" : "text-ink",
+                ].join(" ")}
+              >
+                {violations.total}
+              </output>
+              {/* Le détail des deux natures, et **seulement quand les deux
+                  existent** : « 0 voie réservée » sur un tracé qui n'en déclare
+                  aucune serait la même erreur de lecture, un cran plus bas. */}
+              <p className="text-small text-ink-dim">
+                {violationSummary(violations.forbidden, violations.reservedLane)}
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Le détail du chiffre de tête, dans la même grille et sous son poids :
             un type de véhicule par carte, et **les entrées seulement** — jamais
             les détections ni les passages totaux, sinon la somme cesserait
@@ -129,11 +193,30 @@ export function ResultsDashboard({ stats, lines, selectedClasses }: ResultsDashb
             basculer un sens entrée ↔ sortie se voit ici **sans réanalyser**, tout
             étant dérivé de `stats.byLine` et du tracé courant. */}
         {lineFlows(stats, lines).map((line) => (
-          <LineMetricCard key={line.lineId} flow={line} />
+          <LineMetricCard
+            key={line.lineId}
+            flow={line}
+            reservedLane={rules.get(line.lineId)?.allowedClasses != null}
+          />
         ))}
       </div>
     </section>
   );
+}
+
+/**
+ * Ce que le chiffre d'infraction recouvre, en une phrase.
+ *
+ * Les deux natures ne sont nommées que si les deux existent : « 0 voie réservée »
+ * sur un tracé qui n'en déclare aucune se lirait comme un comptage, et c'est la
+ * même erreur de lecture que le KPI lui-même existe pour éviter, un cran plus bas.
+ */
+function violationSummary(forbidden: number, reservedLane: number): string {
+  if (forbidden > 0 && reservedLane > 0) {
+    return `${forbidden} à contresens, ${reservedLane} sur voie réservée`;
+  }
+  if (reservedLane > 0) return "Passages sur une voie réservée à d'autres types";
+  return "Passages sur un sens marqué « Interdit »";
 }
 
 /**
@@ -151,8 +234,14 @@ export function ResultsDashboard({ stats, lines, selectedClasses }: ResultsDashb
  * passé ». La phrase-bilan complète part en `aria-label`, comme en bas de page —
  * c'est elle qui porte la précision « entrer dans la zone, pas dans la rue ».
  */
-function LineMetricCard({ flow }: { flow: LineFlow }) {
-  const { entries, exits } = flow;
+function LineMetricCard({
+  flow,
+  reservedLane,
+}: {
+  flow: LineFlow;
+  reservedLane: boolean;
+}) {
+  const { entries, exits, forbidden, transit } = flow;
   const net = entries !== null && exits !== null ? entries - exits : null;
 
   return (
@@ -169,6 +258,14 @@ function LineMetricCard({ flow }: { flow: LineFlow }) {
         {/* `truncate` et `min-w-0` : la colonne fait 24 rem, et un nom de ligne
             long doit se couper au lieu de pousser le compteur hors de la carte. */}
         <span className="min-w-0 flex-1 truncate label-micro">{flow.lineName}</span>
+        {/* La règle est annoncée sur la carte, même à zéro infraction : c'est ce qui
+            distingue « rien à signaler ici » de « on ne surveille rien ici ». Le
+            chiffre, lui, n'apparaît que s'il y en a un. */}
+        {reservedLane && (
+          <span className="shrink-0 rounded-badge bg-elevated px-1 text-micro text-ink-dim">
+            voie réservée
+          </span>
+        )}
         <span className="shrink-0 text-micro text-ink-dim tabular">
           {plural(flow.total, "passage", "passages")}
         </span>
@@ -189,6 +286,26 @@ function LineMetricCard({ flow }: { flow: LineFlow }) {
               {exits}
             </span>
             sorties
+          </span>
+        )}
+        {/* « Interdits » prend la place de « Sorties » sur une ligne à sens unique,
+            au même rang typographique : c'est le second chiffre de la ligne, celui
+            qu'on lit en face du premier. En rouge parce qu'il ne se compare pas aux
+            entrées — il les contredit. */}
+        {forbidden !== null && (
+          <span className="text-micro text-ink-dim">
+            <span className="me-1 text-heading font-bold leading-tight text-negative tabular">
+              {forbidden}
+            </span>
+            interdits
+          </span>
+        )}
+        {transit !== null && (
+          <span className="text-micro text-ink-dim">
+            <span className="me-1 text-heading font-bold leading-tight text-ink tabular">
+              {transit}
+            </span>
+            passages
           </span>
         )}
         {net !== null && (

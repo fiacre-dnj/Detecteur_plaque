@@ -104,6 +104,23 @@ export const CANVAS = {
   centroid: "#ffffff",
   /** Plaque détectée : un contour fin, sans remplissage. */
   plate: "#ffd54f",
+  /**
+   * Le libellé d'un sens **interdit**, et lui seul.
+   *
+   * La seule couleur du canvas qui n'encode pas *quelle* chose on regarde mais
+   * *ce qu'elle vaut* — et l'exception est étroite exprès : le trait garde
+   * `line.color`, qui dit quelle ligne c'est, et la boîte du véhicule garde sa
+   * couleur de classe. Seul le mot « Interdit » vire au rouge.
+   *
+   * Sans elle, un sens interdit s'écrivait dans la teinte de sa ligne, à côté
+   * d'« Entrée » écrit dans la même teinte : la seule différence était le mot, à
+   * lire, sur une vidéo qui défile. Le rouge est ici la convention routière, pas
+   * une décoration.
+   *
+   * Le même rouge que `--color-negative` du thème sombre, recopié parce que le
+   * canvas est posé sur de la vidéo et ne suit pas le thème de la page (ADR 0004).
+   */
+  forbidden: "#f3727f",
 } as const;
 
 /** Opacité des trajectoires, imposée par `prompt/09` §2.4. */

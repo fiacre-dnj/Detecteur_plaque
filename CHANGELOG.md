@@ -11,6 +11,39 @@ plus deux fois dans le même sens » si.
 
 ### Ajouté
 
+- **Une ligne de comptage a maintenant un type, et un sens peut être interdit.**
+  Cinq choix dans le tiroir Géométrie : deux sens (le cas ordinaire), sens unique en
+  entrée, sens unique en sortie, infranchissable, ou comptage seul. Sur une ligne à
+  sens unique, les deux sens s'appellent « Entrée » et « Interdit », et le mot
+  interdit s'écrit en rouge sur la vidéo, du bon côté du trait. Le comptage ne change
+  pas d'un chiffre : un véhicule qui passe là où c'est interdit est compté comme les
+  autres — il est en plus **signalé**. Changer le type d'une ligne après coup ne
+  demande pas de relancer l'analyse.
+- **Une ligne peut être réservée à certains types de véhicules** — une voie de bus,
+  une piste cyclable. Tout autre type qui la franchit est signalé. Le réglage est
+  indépendant du type de ligne : une voie de bus à sens unique se décrit avec les
+  deux.
+- **Des alertes, pendant l'analyse et après.** Sur la vidéo, une pile de cartes
+  annonce ce qui vient de se passer — le numéro du véhicule, son type, sa plaque, la
+  ligne franchie, la flèche à l'angle réel du tracé et l'instant au dixième de
+  seconde. En bas de page, une section « Alertes » les reprend toutes, filtrables par
+  nature, et **cliquer une alerte amène la vidéo au moment du fait**. Les alertes
+  n'apparaissent que si une règle a été posée ou une plaque recherchée : un « 0 » sous
+  une règle que personne n'a déclarée se lirait comme « aucune infraction ».
+- **On peut rechercher une plaque pendant l'analyse.** Jusqu'à dix numéros se
+  saisissent dans le tiroir Détection ; dès qu'une plaque lue correspond, une alerte
+  le dit. La casse et les séparateurs sont ignorés, et une lecture à un caractère près
+  déclenche une alerte « probable » plutôt que rien — la lecture perd régulièrement le
+  premier caractère d'une plaque. La liste n'est pas conservée après fermeture, et un
+  avertissement prévient si elle est remplie alors que la lecture des plaques est
+  désactivée.
+- **De nouveaux chiffres pour les infractions.** Un compteur « Franchissements
+  interdits » en tête de la colonne de résultats, le détail sur chaque carte de ligne,
+  la ligne la plus empruntée à contresens parmi les comparatifs de Statistique, et une
+  colonne « Infraction » au registre — qui n'apparaît que si le tracé en déclare une.
+- **Un filtre par ligne au registre des véhicules**, à côté de la recherche de plaque,
+  avec les noms que vous avez donnés aux lignes. Les deux filtres se composent, et le
+  message affiché quand rien ne correspond dit lequel des deux est en cause.
 - **Un curseur « Confiance lecture », dans le tiroir Détection.** Il décide de la
   sûreté minimale d'une lecture de plaque : sous ce seuil, le texte n'est pas retenu et
   le véhicule reste sans plaque plutôt qu'avec une plaque douteuse. Le serveur
@@ -300,8 +333,34 @@ plus deux fois dans le même sens » si.
   conservent désormais leur état, y compris la position de lecture de la vidéo, une
   analyse en cours et la position de défilement de chacune.
 
+### Modifié
+
+- **La section « Franchissements » du bas de page est masquée.** Sa chronologie
+  posait un fait par rangée sans dire lequel méritait qu'on aille voir ; la section
+  « Alertes » prend sa place et répond à cette question-là. Rien n'est perdu : le
+  détail complet des franchissements reste exportable en CSV, et la section peut être
+  rendue telle quelle.
+- **La colonne « Hors rôle » du registre s'appelle « Autres passages ».** Elle
+  accueille désormais aussi les franchissements des lignes en « comptage seul », qui
+  ont un rôle — délibérément choisi — et que « hors rôle » ferait passer pour un
+  oubli.
+
 ### Corrigé
 
+- **Un preset rechargé retrouve enfin ses sens d'entrée et de sortie.** Enregistrer une
+  géométrie conservait le tracé, les noms et les couleurs, mais perdait en silence le
+  rôle de chaque sens — entrée ou sortie — et les libellés qui vont avec. Le preset se
+  rechargeait sans le moindre message, les lignes étaient au bon endroit, et pourtant
+  presque tout l'écran se taisait : « Passages en entrée » affichait « — », les cartes
+  par ligne perdaient leurs entrées et leurs sorties, la Statistique ne désignait plus
+  aucune ligne dans ses comparatifs, le Registre n'avait plus d'heure d'entrée ni de
+  sortie et faisait apparaître une colonne « Hors rôle », et la chronologie des
+  Franchissements retombait sur son libellé générique. Les comptages, eux, restaient
+  justes — ce qui rendait la panne d'autant plus difficile à nommer : le carrefour
+  semblait analysé pour rien. Les presets déjà enregistrés se rechargent toujours et
+  affichent « à préciser » sur leurs sens : redéclarez-les une fois, réenregistrez, et
+  le preset est à jour. Rien n'est deviné à votre place — supposer « entrée » aurait
+  produit un bilan faux sans le dire.
 - **Le curseur « Confiance véhicules » agit enfin sur toutes les analyses, pas
   seulement sur la première.** Après le démarrage du serveur, la première analyse
   utilisait bien le seuil demandé ; toutes les suivantes reprenaient le sien en

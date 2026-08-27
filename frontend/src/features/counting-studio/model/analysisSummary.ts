@@ -40,9 +40,13 @@ export interface AnalysisSummaryInput {
   classLabels: readonly string[];
   lineCount: number;
   zoneCount: number;
+  /** Lignes portant au moins un sens interdit ou une voie réservée. */
+  ruledLineCount: number;
   range: AnalysisRange;
   detectPlates: boolean;
   readPlateText: boolean;
+  /** Plaques recherchées — leur nombre suffit, le récapitulatif ne les liste pas. */
+  watchedPlateCount: number;
   /** Multiples du temps réel, `null` = aucune borne relative. */
   analysisSpeed: number | null;
   /** Plafond absolu en images par seconde réelle, `null` = aucun. */
@@ -54,9 +58,52 @@ export function analysisSummaryRows(input: AnalysisSummaryInput): AnalysisSummar
     { label: "Modèle", value: input.modelLabel },
     countedObjects(input.classLabels),
     geometrySummary(input.lineCount, input.zoneCount),
+    ...surveillance(input.ruledLineCount, input.watchedPlateCount, input.readPlateText),
     { label: "Portion analysée", value: rangeSummary(input.range) },
     { label: "Plaques", value: plateSummary(input.detectPlates, input.readPlateText) },
     { label: "Cadence", value: paceSummary(input.analysisSpeed, input.maxAnalysisFps) },
+  ];
+}
+
+/**
+ * Ce que l'analyse va **signaler** — la ligne n'existe que s'il y a quelque chose.
+ *
+ * Une rangée « Surveillance : rien » sur une analyse ordinaire serait du bruit :
+ * l'immense majorité des tracés ne déclare aucune règle et ne cherche aucune plaque.
+ * D'où un tableau, vide ou à une entrée, plutôt qu'une rangée toujours présente.
+ *
+ * **L'avertissement est celui qui compte de toute cette page** : une liste de
+ * plaques saisie puis laissée en place après avoir décoché l'OCR chercherait dans un
+ * texte que personne ne lit. Rien ne planterait, aucune alerte ne sortirait, et
+ * l'utilisateur conclurait que la plaque n'est jamais passée.
+ */
+function surveillance(
+  ruledLineCount: number,
+  watchedPlateCount: number,
+  readPlateText: boolean,
+): AnalysisSummaryRow[] {
+  const parts: string[] = [];
+  if (ruledLineCount > 0) {
+    parts.push(
+      `${ruledLineCount} ${ruledLineCount === 1 ? "ligne à règle" : "lignes à règles"}`,
+    );
+  }
+  if (watchedPlateCount > 0) {
+    parts.push(
+      `${watchedPlateCount} ${watchedPlateCount === 1 ? "plaque recherchée" : "plaques recherchées"}`,
+    );
+  }
+  if (parts.length === 0) return [];
+
+  return [
+    {
+      label: "Surveillance",
+      value: parts.join(" · "),
+      warning:
+        watchedPlateCount > 0 && !readPlateText
+          ? "La lecture des plaques est désactivée : aucune plaque recherchée ne pourra être trouvée."
+          : undefined,
+    },
   ];
 }
 

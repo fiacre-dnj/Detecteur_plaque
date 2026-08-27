@@ -547,3 +547,47 @@ describe("maxAnalysisFps — le plafond absolu de cadence", () => {
     expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBe(30);
   });
 });
+
+describe("les plaques recherchées", () => {
+  it("ne sont ni écrites ni relues du stockage", () => {
+    // Le seul réglage non persisté, à deux titres : il décrit une **recherche en
+    // cours** et non une préférence, et écrire un numéro de plaque dans le
+    // `localStorage` du poste franchirait le cran de confidentialité que ce projet
+    // impose déjà en laissant l'OCR décoché par défaut.
+    let written = "";
+    saveSettings(
+      { ...DEFAULT_SETTINGS, plateWatchlist: ["AB-123-CD"] },
+      { setItem: (_key, value) => (written = value) },
+    );
+
+    expect(written).not.toContain("AB-123-CD");
+    expect(loadSettings(fakeStorage(written)).plateWatchlist).toEqual([]);
+  });
+
+  it("ne partent qu'avec la lecture des plaques", () => {
+    // Sans OCR, aucun texte n'existe à comparer : envoyer la liste quand même
+    // afficherait dans « Configuration système » une recherche que rien ne peut
+    // satisfaire. Le tiroir Détection avertit séparément, ce qui est la vraie
+    // protection contre la panne silencieuse.
+    const base = { ...DEFAULT_SETTINGS, plateWatchlist: ["AB-123-CD"] };
+
+    expect(toRequest(base, [], []).plateWatchlist).toEqual([]);
+    expect(
+      toRequest({ ...base, detectPlates: true, readPlateText: true }, [], []).plateWatchlist,
+    ).toEqual(["AB-123-CD"]);
+  });
+
+  it("écarte les entrées que le serveur refuserait, sans les corriger", () => {
+    // Un filtre et non une correction : compléter ou tronquer une plaque à la place
+    // de l'utilisateur produirait une recherche qu'il n'a pas demandée, et qui
+    // trouverait peut-être quelque chose — le pire des deux résultats.
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      detectPlates: true,
+      readPlateText: true,
+      plateWatchlist: ["AB1", "AB-123-CD", "AB-123-CD", "0123456789ABCDEFGH"],
+    };
+
+    expect(toRequest(settings, [], []).plateWatchlist).toEqual(["AB-123-CD"]);
+  });
+});

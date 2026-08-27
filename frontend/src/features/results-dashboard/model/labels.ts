@@ -29,36 +29,15 @@ export function formatSceneTime(ms: number): string {
 }
 
 /**
- * Formate un **instant** de scène en `mm:ss,d` — au dixième de seconde.
+ * L'instant précis d'un fait, au dixième de seconde.
  *
- * Distinct de `formatSceneTime`, et les deux cohabitent pour une raison précise :
- * une **fenêtre de présence** (« vu de 00:55 à 01:02 ») se lit à la seconde, mais
- * un **franchissement** est un événement ponctuel, et deux passages du même
- * véhicule sur deux lignes voisines tombent régulièrement dans la même seconde.
- * Arrondir les afficherait à la même heure, donc indistinguables, alors que le
- * dixième dit lequel a eu lieu d'abord — la seule information qui permette de
- * retrouver le passage dans la vidéo.
- *
- * Le point et non la virgule décimale française, **par alignement** : le journal
- * des franchissements (`analysis-job/model/previewLog.ts`) écrit `00:12.4` depuis
- * l'origine, et les deux se lisent sur le même écran. Deux ponctuations pour le
- * même instant se remarquent bien plus qu'un séparateur non francisé.
- *
- * **Ce n'est pas une heure d'horloge.** C'est du temps de scène (invariant 1) :
- * `frame_index / fps`, compté depuis le début de la vidéo.
+ * **Déménagé dans `shared/lib/sceneTime.ts`** et seulement réexporté ici : les
+ * alertes en ont besoin elles aussi, et une feature n'importe jamais une autre
+ * feature. Réexporter plutôt que déplacer l'appel garde intacte l'API publique de
+ * `results-dashboard`, dont le registre dépend (`formatSceneTimePrecise` y date les
+ * colonnes « Entrée par » et « Sortie par »).
  */
-export function formatSceneTimePrecise(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return "--:--";
-  // Tronqué et non arrondi, pour rester cohérent avec `formatSceneTime` : un
-  // franchissement à 59 950 ms doit s'afficher 00:59,9 et non 01:00,0, sinon il
-  // paraît tomber après une fenêtre de présence qui, elle, se termine à 00:59.
-  const tenths = Math.floor(ms / 100);
-  const minutes = Math.floor(tenths / 600);
-  const seconds = Math.floor(tenths / 10) % 60;
-  return `${minutes.toString().padStart(2, "0")}:${seconds
-    .toString()
-    .padStart(2, "0")}.${tenths % 10}`;
-}
+export { formatSceneTimePrecise } from "@/shared/lib/sceneTime";
 
 /**
  * Temps moyen de traitement d'une image, en millisecondes.

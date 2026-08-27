@@ -42,6 +42,20 @@ from traffic_analysis.features.models_registry.application.catalogue_access impo
     known_model_ids,
 )
 
+#: Combien de plaques peuvent être recherchées à la fois.
+#:
+#: Dix, parce qu'au-delà ce n'est plus une surveillance mais un fichier — et parce
+#: que la comparaison est faite côté client à chaque image d'aperçu : le coût est
+#: linéaire en entrées, et une liste sans borne le rendrait perceptible.
+MAX_WATCHED_PLATES = 10
+
+#: Longueur maximale d'une entrée recherchée, séparateurs compris.
+MAX_WATCHED_PLATE_LENGTH = 16
+
+#: En dessous, une entrée correspondrait à trop de plaques pour signaler quoi que ce
+#: soit. Même seuil que `MIN_ALPHANUMERIC` du domaine, et pour la même raison.
+MIN_WATCHED_PLATE_CHARS = 4
+
 
 class PointSchema(CamelModel):
     x: float
@@ -78,6 +92,45 @@ class LineSchema(CamelModel):
     negative_name: str = Field(default="", max_length=60, examples=["Vers la rocade"])
     positive_role: DirectionRole = "neutral"
     negative_role: DirectionRole = "neutral"
+    #: Classes autorisées à franchir cette ligne — `None` (le défaut) = aucune
+    #: restriction. Une voie de bus, une piste cyclable.
+    #:
+    #: **Le serveur ne l'interprète pas** : une classe non autorisée est comptée
+    #: comme les autres, et c'est l'interface qui qualifie le franchissement
+    #: d'infraction. Même doctrine que les rôles de sens — un chiffre ne dépend pas
+    #: d'une règle que l'utilisateur peut corriger après coup.
+    #:
+    #: Bornée à 80 entrées : c'est la taille de COCO, donc une liste plus longue ne
+    #: peut être qu'une répétition ou une erreur.
+    allowed_class_ids: list[int] | None = Field(default=None, max_length=80)
+
+    @field_validator("allowed_class_ids")
+    @classmethod
+    def _clean_allowed_classes(cls, value: list[int] | None) -> list[int] | None:
+        """Écarte les doublons, refuse une liste vide.
+
+        Une liste **vide** n'est pas « aucune restriction » : elle dirait « aucune
+        classe n'a le droit de passer », ce qui est un cas déjà couvert — et bien
+        mieux nommé — par les deux sens en `forbidden`. La confondre avec `None`
+        rendrait toute ligne infranchissable en silence.
+        """
+        if value is None:
+            return None
+        unique = list(dict.fromkeys(value))
+        if not unique:
+            message = (
+                "allowedClassIds ne peut pas être vide : utilisez null pour ne rien restreindre."
+            )
+            raise ValueError(message)
+        unknown = sorted(set(unique) - DETECTABLE_CLASS_IDS)
+        if unknown:
+            # Même mode de défaillance muet que `class_ids` : une classe hors COCO
+            # ne correspondrait à aucun `by_class`, donc la voie réservée
+            # n'accepterait jamais rien et **tout** franchissement deviendrait une
+            # infraction. Un refus vaut mieux qu'un écran d'alertes fausses.
+            message = f"Classes autorisées inconnues : {unknown}."
+            raise ValueError(message)
+        return unique
 
     def to_domain(self) -> CountingLineDef:
         return CountingLineDef(
@@ -90,6 +143,9 @@ class LineSchema(CamelModel):
             negative_name=self.negative_name,
             positive_role=self.positive_role,
             negative_role=self.negative_role,
+            allowed_class_ids=(
+                None if self.allowed_class_ids is None else tuple(self.allowed_class_ids)
+            ),
         )
 
 
@@ -197,8 +253,58 @@ class AnalysisRequestSchema(CamelModel):
         ),
         examples=[300000],
     )
+    plate_watchlist: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_WATCHED_PLATES,
+        description=(
+            "Plaques recherchées pendant l'analyse. Le serveur les **accepte et les "
+            "rend telles quelles** sans jamais les comparer à quoi que ce soit : la "
+            "correspondance est calculée par l'interface, sur le texte voté, ce qui "
+            "permet de corriger la liste après coup sans relancer l'analyse. Elles "
+            "voyagent ici pour être persistées avec la configuration du job, donc "
+            "pour qu'un résultat rouvert sache ce qu'on cherchait. Sans effet si "
+            "`readPlateText` est faux — il n'y a alors aucun texte à comparer."
+        ),
+        examples=[["AB-123-CD"]],
+    )
     lines: list[LineSchema] = Field(default_factory=list)
     zones: list[ZoneSchema] = Field(default_factory=list)
+
+    @field_validator("plate_watchlist")
+    @classmethod
+    def _clean_watchlist(cls, value: list[str]) -> list[str]:
+        """Borne les entrées, sans jamais les **canoniser**.
+
+        Le serveur ne compare rien : la correspondance est calculée par l'interface,
+        avec la même normalisation que la recherche du registre. Canoniser ici
+        installerait une **seconde** définition de « la même plaque » — et la
+        canonique du domaine (`normalise_plate_text`) n'est justement pas celle-là,
+        puisqu'elle **conserve le tiret**. Deux règles pour une seule question, c'est
+        la famille de bug que ce dépôt documente le plus.
+
+        Ce qui est vérifié est donc une **borne**, pas une forme : sous
+        `MIN_WATCHED_PLATE_CHARS` caractères alphanumériques, une entrée
+        correspondrait à trop de plaques pour signaler quoi que ce soit — elle serait
+        un générateur de fausses alertes, pas une recherche.
+        """
+        cleaned: list[str] = []
+        for raw in value:
+            entry = raw.strip()
+            if len(entry) > MAX_WATCHED_PLATE_LENGTH:
+                message = (
+                    f"« {raw} » dépasse {MAX_WATCHED_PLATE_LENGTH} caractères : ce "
+                    "n'est pas une plaque."
+                )
+                raise ValueError(message)
+            if sum(1 for character in entry if character.isalnum()) < MIN_WATCHED_PLATE_CHARS:
+                message = (
+                    f"« {raw} » est trop court pour être recherché : il faut au moins "
+                    f"{MIN_WATCHED_PLATE_CHARS} caractères alphanumériques."
+                )
+                raise ValueError(message)
+            if entry not in cleaned:
+                cleaned.append(entry)
+        return cleaned
 
     @field_validator("class_ids")
     @classmethod
@@ -327,4 +433,5 @@ class AnalysisRequestSchema(CamelModel):
             max_analysis_fps=self.max_analysis_fps,
             start_ms=self.start_ms,
             end_ms=self.end_ms,
+            plate_watchlist=tuple(self.plate_watchlist),
         )

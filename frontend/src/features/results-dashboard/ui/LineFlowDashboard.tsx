@@ -26,6 +26,7 @@ import {
   busiestVsQuietestShareGap,
   mostEnteredLine,
   mostExitedLine,
+  mostForbiddenLine,
   quietestLine,
   strongestInflowLine,
   strongestOutflowLine,
@@ -49,11 +50,28 @@ interface LineFlowDashboardProps {
   vehicles: readonly VehicleRecord[];
 }
 
-/** Un comparatif de la carte du bas : son libellé, sa ligne gagnante et sa justification. */
+/**
+ * Un comparatif de la carte du bas : son libellé, sa ligne gagnante et sa
+ * justification.
+ *
+ * **La justification est découpée pour que son chiffre puisse ressortir.** Elle
+ * était une phrase d'un seul tenant, rendue entièrement en `text-ink-dim` : le
+ * seul élément en pleine encre était le *nom* de la ligne, si bien que « 3
+ * entrées » ou « Solde +2 » — la mesure qui justifie la sélection — se lisait au
+ * même niveau que le texte d'explication autour.
+ *
+ * Le découpage reste des chaînes et non du JSX : la donnée d'un comparatif doit
+ * rester testable et traduisible sans passer par un rendu.
+ */
 interface HighlightItem {
   label: string;
   highlight: LineHighlight | null;
-  hint: (h: LineHighlight) => string;
+  /** Ce qui précède le chiffre — « Solde », ou rien. */
+  lead?: string;
+  /** Le chiffre qui justifie la sélection, rendu en pleine encre et en gras. */
+  metric: (h: LineHighlight) => string;
+  /** L'unité puis l'explication, en second plan. Commence par son espace. */
+  trail: string;
 }
 
 export function LineFlowDashboard({ stats, lines, vehicles }: LineFlowDashboardProps) {
@@ -70,6 +88,7 @@ export function LineFlowDashboard({ stats, lines, vehicles }: LineFlowDashboardP
   const mostExited = mostExitedLine(stats, lines);
   const inflow = strongestInflowLine(stats, lines);
   const outflow = strongestOutflowLine(stats, lines);
+  const mostForbidden = mostForbiddenLine(stats, lines);
   const gap = busiestVsQuietestShareGap(stats, lines);
 
   // **Les comparatifs vont par paires**, et la mise en page le dit : chaque
@@ -87,36 +106,56 @@ export function LineFlowDashboard({ stats, lines, vehicles }: LineFlowDashboardP
       {
         label: "Plus d'entrées",
         highlight: mostEntered !== null && mostEntered.value > 0 ? mostEntered : null,
-        hint: (h) => `${h.value} entrées — la plus empruntée pour entrer`,
+        metric: (h) => String(h.value),
+        trail: " entrées — la plus empruntée pour entrer",
       },
       {
         label: "Plus de sorties",
         highlight: mostExited !== null && mostExited.value > 0 ? mostExited : null,
-        hint: (h) => `${h.value} sorties — la plus empruntée pour sortir`,
+        metric: (h) => String(h.value),
+        trail: " sorties — la plus empruntée pour sortir",
       },
     ],
     [
       {
         label: "Plus fort afflux",
         highlight: inflow !== null && inflow.value > 0 ? inflow : null,
-        hint: (h) => `Solde +${h.value} — le carrefour s'y remplit le plus`,
+        lead: "Solde ",
+        metric: (h) => `+${h.value}`,
+        trail: " — le carrefour s'y remplit le plus",
       },
       {
         label: "Plus fort reflux",
         highlight: outflow !== null && outflow.value > 0 ? outflow : null,
-        hint: (h) => `Solde -${h.value} — le carrefour s'y vide le plus`,
+        lead: "Solde ",
+        // `value` vaut `-net`, donc un nombre positif : le signe est écrit ici.
+        metric: (h) => `-${h.value}`,
+        trail: " — le carrefour s'y vide le plus",
+      },
+      // **Le seul comparatif qui désigne un endroit plutôt qu'un flux.** Il répond
+      // à « où faut-il aller voir » : une ligne à sens unique que dix véhicules
+      // remontent est un problème de terrain — un panneau invisible, un marquage
+      // effacé — et c'est la ligne, pas le total, qui le dit. Absent tant que rien
+      // n'a été enfreint : ce comparatif ne se lit qu'avec un chiffre.
+      {
+        label: "Plus de contresens",
+        highlight: mostForbidden !== null && mostForbidden.value > 0 ? mostForbidden : null,
+        metric: (h) => String(h.value),
+        trail: " passages interdits — la ligne à surveiller",
       },
     ],
     [
       {
         label: "Ligne la plus fréquentée",
         highlight: busiest,
-        hint: (h) => `${h.value} passages, tous sens confondus`,
+        metric: (h) => String(h.value),
+        trail: " passages, tous sens confondus",
       },
       {
         label: "Ligne la moins fréquentée",
         highlight: quietest,
-        hint: (h) => `${h.value} passages, tous sens confondus`,
+        metric: (h) => String(h.value),
+        trail: " passages, tous sens confondus",
       },
     ],
   ];
@@ -154,11 +193,25 @@ export function LineFlowDashboard({ stats, lines, vehicles }: LineFlowDashboardP
         <div className="grid grid-cols-1 gap-x-4 gap-y-3 rounded-card bg-surface p-3 shadow-card sm:grid-cols-2 lg:grid-cols-4">
           {shownColumns.map((column) => (
             <div key={column[0]?.label} className="min-w-0 space-y-3">
-              {column.map(({ label, highlight, hint }) => (
+              {column.map(({ label, highlight, lead, metric, trail }) => (
                 <div key={label} className="min-w-0">
                   <p className="label-micro">{label}</p>
-                  <p className="mt-0.5 truncate text-caption font-bold text-ink">{highlight?.lineName}</p>
-                  <p className="text-micro text-ink-dim">{highlight !== null ? hint(highlight) : null}</p>
+                  <p className="mt-0.5 truncate text-caption font-bold text-ink">
+                    {highlight?.lineName}
+                  </p>
+                  {/* Même forme que la rangée par ligne juste au-dessus : le
+                      chiffre en pleine encre dans une phrase atténuée. Deux
+                      façons d'écrire un chiffre dans la même section se
+                      liraient comme deux natures de chiffre. */}
+                  <p className="text-micro text-ink-dim">
+                    {highlight !== null && (
+                      <>
+                        {lead}
+                        <span className="font-bold text-ink tabular">{metric(highlight)}</span>
+                        {trail}
+                      </>
+                    )}
+                  </p>
                 </div>
               ))}
             </div>
@@ -197,6 +250,8 @@ function LineFlowRow({
   const flow = lineFlows(stats, [line])[0];
   const entries = flow?.entries ?? null;
   const exits = flow?.exits ?? null;
+  const forbidden = flow?.forbidden ?? null;
+  const transit = flow?.transit ?? null;
   const net = entries !== null && exits !== null ? entries - exits : null;
   const share = flow?.shareOfTotal ?? null;
 
@@ -221,6 +276,20 @@ function LineFlowRow({
         {exits !== null && (
           <span className="text-micro text-ink-dim tabular">
             <span className="font-bold text-ink">{exits}</span> sorties
+          </span>
+        )}
+        {/* Le chiffre en rouge dans une phrase atténuée, exactement comme ses
+            voisins : c'est la forme de toute cette section. Seule la teinte du
+            nombre change, parce qu'il ne se compare pas aux entrées — il les
+            contredit. */}
+        {forbidden !== null && (
+          <span className="text-micro text-ink-dim tabular">
+            <span className="font-bold text-negative">{forbidden}</span> interdits
+          </span>
+        )}
+        {transit !== null && (
+          <span className="text-micro text-ink-dim tabular">
+            <span className="font-bold text-ink">{transit}</span> passages
           </span>
         )}
         {net !== null && (
