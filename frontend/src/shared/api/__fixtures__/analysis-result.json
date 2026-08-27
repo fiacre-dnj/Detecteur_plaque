@@ -1269,7 +1269,9 @@
       "plateUnreadReason": null,
       "plateBestWidthPx": 64.0,
       "plateBestGuess": null,
-      "plateBestGuessScore": null
+      "plateBestGuessScore": null,
+      "snapshotScore": null,
+      "snapshotMs": null
     },
     {
       "globalId": 2,
@@ -1290,7 +1292,9 @@
       "plateUnreadReason": "too_blurry",
       "plateBestWidthPx": 64.0,
       "plateBestGuess": null,
-      "plateBestGuessScore": null
+      "plateBestGuessScore": null,
+      "snapshotScore": null,
+      "snapshotMs": null
     },
     {
       "globalId": 3,
@@ -1305,7 +1309,9 @@
       "plateUnreadReason": "no_consensus",
       "plateBestWidthPx": 64.0,
       "plateBestGuess": "AB-123-CD",
-      "plateBestGuessScore": 0.93
+      "plateBestGuessScore": 0.93,
+      "snapshotScore": null,
+      "snapshotMs": null
     }
   ],
   "stats": {

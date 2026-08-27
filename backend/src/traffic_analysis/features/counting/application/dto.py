@@ -20,6 +20,7 @@ from traffic_analysis.features.counting.application.ports import (
     EngineFrame,
     EngineSpec,
     PlateText,
+    VehicleSnapshot,
 )
 from traffic_analysis.features.counting.domain.geometry import Point
 from traffic_analysis.features.counting.domain.models import (
@@ -116,6 +117,9 @@ __all__ = [
     "Progress",
     "TimelineRow",
     "TrackObservation",
+    # La capture d'un véhicule, publiée pour que `jobs` sache l'écrire sans importer
+    # le domaine du comptage — même règle que tout ce qui précède.
+    "VehicleSnapshot",
     "VideoInfo",
     "ZoneDef",
     "is_plausible",
@@ -410,6 +414,16 @@ class AnalysisResultData:
     zone_events: list[ZoneEntryEvent] = field(default_factory=list)
     vehicles: tuple[VehicleRecord, ...] = ()
     stats: AnalysisStats | None = None
+    #: Les captures retenues, par numéro de véhicule. **En mémoire seulement.**
+    #:
+    #: Jamais sérialisées dans `result.json.gz` : ce sont des octets d'image, et un
+    #: résultat JSON qui les porterait en base64 grossirait d'un ordre de grandeur
+    #: pour une donnée que personne ne lit dans ce fichier. Le `JobManager` les écrit
+    #: en fichiers séparés, à côté du résultat, et l'interface les demande par URL.
+    #:
+    #: Vide quand aucun encodeur n'est fourni ou qu'aucune plaque n'est lue — le cas
+    #: le plus fréquent.
+    snapshots: dict[int, VehicleSnapshot] = field(default_factory=dict)
 
 
 class AnalysisCancelled(Exception):

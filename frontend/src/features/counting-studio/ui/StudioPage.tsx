@@ -66,6 +66,7 @@ import {
   AlertToasts,
   AlertsSection,
   alertsFromResult,
+  matchPlate,
   useAlertLog,
 } from "@/features/alerts";
 import {
@@ -112,10 +113,13 @@ import { VehicleRegistry } from "@/features/vehicle-registry";
 import { PlaybackFpsBadge, TransportBar } from "@/features/video-transport";
 import type { CrossingEvent, Point, Preset, TrackSnapshot } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
-import { VEHICLE_CLASSES } from "@/shared/lib/classes";
+import { platePhotoUrl, vehicleSnapshotUrl } from "@/shared/api/jobUrls";
+import { VEHICLE_CLASSES, classLabel } from "@/shared/lib/classes";
 import { lineRules } from "@/shared/lib/lineRules";
 import { hasAnyRule } from "@/shared/lib/lineViolations";
+import { formatSceneTimePrecise } from "@/shared/lib/sceneTime";
 import { Button } from "@/shared/ui/Button";
+import { SnapshotDialog } from "@/shared/ui/SnapshotDialog";
 
 import { analysisSummaryRows } from "../model/analysisSummary";
 import { useAnalysisSession } from "../model/useAnalysisSession";
@@ -973,6 +977,19 @@ export function StudioPage() {
   const alertsArmed = hasAnyRule(alertRules) || settings.plateWatchlist.length > 0;
 
   /**
+   * La capture ouverte en grand depuis une **alerte**.
+   *
+   * Tenue ici et non dans `alerts` : la modale a besoin du texte lu, donc du
+   * registre complet, que seule cette page possède. Le registre a la sienne, et les
+   * deux sont indépendantes — ce sont deux surfaces, pas un état partagé.
+   */
+  const [alertSnapshot, setAlertSnapshot] = useState<number | null>(null);
+  const alertSnapshotVehicle =
+    alertSnapshot === null || session.result === null
+      ? null
+      : (session.result.vehicles.find((entry) => entry.globalId === alertSnapshot) ?? null);
+
+  /**
    * Amène la vidéo à l'instant d'une alerte.
    *
    * Le seul endroit de cet écran où un clic déplace la lecture, et c'est assumé :
@@ -1521,6 +1538,11 @@ export function StudioPage() {
             vehicles={countedVehicles}
             lines={geometry.lines}
             rules={alertRules}
+            // Le job **terminé**, et lui seul : les captures sont écrites à la fin,
+            // donc pendant l'analyse il n'y a aucun fichier à demander. Passer
+            // l'identifiant du job en cours ferait clignoter des images cassées sur
+            // tout le tableau, exactement pendant qu'il se remplit.
+            jobId={session.result?.jobId ?? null}
           />
         </>
       )}
@@ -1559,11 +1581,39 @@ export function StudioPage() {
         alerts={alerts}
         lines={geometry.lines}
         armed={alertsArmed}
+        // Le job terminé seulement : les captures sont écrites à la fin, et une
+        // vignette demandée pendant l'analyse afficherait une image cassée sur
+        // chaque alerte — au moment précis où elles arrivent.
+        jobId={session.result?.jobId ?? null}
+        onOpenSnapshot={setAlertSnapshot}
         // Aucun déplacement de la vidéo pendant qu'elle est pilotée par l'aperçu :
         // le calage image par image reprendrait la main aussitôt, et le clic
         // paraîtrait sans effet.
         onSeek={session.result !== null && !analysing && !live.active ? seekToAlert : undefined}
       />
+
+      {/* La capture ouverte depuis une alerte. Montée seulement une fois ouverte :
+          un `<dialog>` fermé ne rend rien, et ses deux images ne doivent pas se
+          charger tant que personne ne les regarde. */}
+      {session.result !== null && alertSnapshotVehicle !== null && (
+        <SnapshotDialog
+          open
+          onClose={() => setAlertSnapshot(null)}
+          title={`${classLabel(alertSnapshotVehicle.label)} #${alertSnapshotVehicle.globalId}`}
+          subtitle={
+            alertSnapshotVehicle.snapshotMs == null
+              ? undefined
+              : `capturée à ${formatSceneTimePrecise(alertSnapshotVehicle.snapshotMs)}`
+          }
+          vehicleSrc={vehicleSnapshotUrl(session.result.jobId, alertSnapshotVehicle.globalId)}
+          plateSrc={platePhotoUrl(session.result.jobId, alertSnapshotVehicle.globalId)}
+          plateText={alertSnapshotVehicle.plateText}
+          // La plaque **recherchée** sous la plaque **lue** : c'est là que
+          // l'opérateur tranche, en regardant la vignette. Une correspondance
+          // annoncée « probable » ne se valide pas autrement.
+          watched={matchPlate(alertSnapshotVehicle.plateText, settings.plateWatchlist)?.watched}
+        />
+      )}
 
       {/* Monté seulement une fois ouvert : le `<dialog>` est un composant lourd
           — liste réseau comprise — dont personne n'a besoin avant le clic.

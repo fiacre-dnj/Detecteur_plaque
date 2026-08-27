@@ -21,7 +21,7 @@
  *   l'onglet plusieurs secondes à chaque rendu.
  */
 
-import { ArrowUp, Ban, ShieldAlert } from "lucide-react";
+import { ArrowUp, Ban, ImageOff, ShieldAlert } from "lucide-react";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -43,9 +43,11 @@ import {
   directionArrow,
   lineName,
 } from "@/shared/lib/directions";
+import { platePhotoUrl, vehicleSnapshotUrl } from "@/shared/api/jobUrls";
 import type { LineRule } from "@/shared/lib/lineRules";
 import { plateCell, plateTitle } from "@/shared/lib/plate";
 import { Button } from "@/shared/ui/Button";
+import { SnapshotDialog } from "@/shared/ui/SnapshotDialog";
 
 import {
   crossingsCsv,
@@ -58,8 +60,15 @@ import { filterByLine } from "../model/filterLine";
 import { filterByPlate } from "../model/filterPlate";
 import { plateBestGuessMessage, plateUnreadLabel, plateUnreadMessage } from "../model/plateUnread";
 import { crossingsWithRole, crossingsWithoutRole } from "../model/roleCrossings";
+import {
+  capturedVehicles,
+  hasSnapshot,
+  hasSnapshots,
+  neighbourVehicle,
+  snapshotRowHeight,
+} from "../model/snapshots";
 import { vehicleViolations, type VehicleViolation } from "../model/vehicleViolations";
-import { INITIAL_ROWS, ROW_HEIGHT, shouldVirtualise, visibleWindow } from "../model/virtualise";
+import { INITIAL_ROWS, shouldVirtualise, visibleWindow } from "../model/virtualise";
 
 interface VehicleRegistryProps {
   /**
@@ -93,6 +102,15 @@ interface VehicleRegistryProps {
    * « aucune règle », et la colonne « Infraction » n'apparaît alors jamais.
    */
   rules: ReadonlyMap<string, LineRule>;
+  /**
+   * L'identifiant du job, pour construire les adresses des captures.
+   *
+   * `null` pendant une analyse — les captures sont écrites à la fin — et la colonne
+   * n'existe alors pas du tout. Même règle, et même raison, que les trois boutons
+   * d'export : afficher une vignette dont le fichier n'existe pas encore ferait
+   * clignoter des images cassées sur tout le tableau.
+   */
+  jobId: string | null;
 }
 
 /** Hauteur du conteneur virtualisé. */
@@ -103,8 +121,11 @@ export function VehicleRegistry({
   vehicles,
   lines,
   rules,
+  jobId,
 }: VehicleRegistryProps) {
   const [expanded, setExpanded] = useState(false);
+  //: Le véhicule dont la capture est ouverte en grand, ou `null`.
+  const [openSnapshot, setOpenSnapshot] = useState<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   // L'état de recherche vit **ici**, comme `expanded` et `scrollTop` : c'est un état de
   // vue de ce tableau. Le hisser dans `StudioPage` ferait remonter chaque frappe dans le
@@ -138,6 +159,39 @@ export function VehicleRegistry({
     [vehicles, rules],
   );
 
+  /**
+   * Une capture existe-t-elle **quelque part** dans ce registre ?
+   *
+   * Même règle et même raison que les deux drapeaux ci-dessus : calculé sur
+   * `vehicles` entier, jamais sur `filtered` ni sur les rangées rendues.
+   *
+   * `jobId` le conditionne parce que les fichiers ne sont écrits qu'à la fin de
+   * l'analyse : pendant, les enregistrements de l'aperçu portent déjà un score de
+   * capture, mais l'image n'existe pas encore.
+   */
+  const withSnapshots = jobId !== null && hasSnapshots(vehicles);
+  // La virtualisation calcule ses décalages depuis cette hauteur : elle doit être la
+  // **même** que celle posée en style sur `<tr>`, sinon les rangées dérivent sous le
+  // curseur au-delà de 200 lignes.
+  const rowHeight = snapshotRowHeight(withSnapshots);
+
+  /**
+   * Les captures entre lesquelles la modale navigue, et celle qui est ouverte.
+   *
+   * Sur `filtered` et non sur `vehicles` : après avoir filtré sur une ligne ou sur
+   * une plaque, « suivant » doit rester dans ce qu'on regarde. Sortir du filtre
+   * donnerait l'impression que le tableau ment.
+   */
+  const navigable = useMemo(() => capturedVehicles(filtered), [filtered]);
+  const shownSnapshot =
+    openSnapshot === null
+      ? null
+      : (navigable.find((entry) => entry.globalId === openSnapshot) ?? null);
+  const previousSnapshot =
+    shownSnapshot === null ? null : neighbourVehicle(navigable, shownSnapshot.globalId, -1);
+  const nextSnapshot =
+    shownSnapshot === null ? null : neighbourVehicle(navigable, shownSnapshot.globalId, 1);
+
   const virtualised = expanded && shouldVirtualise(filtered.length);
   const shown = expanded ? filtered : filtered.slice(0, INITIAL_ROWS);
   const remaining = filtered.length - shown.length;
@@ -145,9 +199,9 @@ export function VehicleRegistry({
   const window = useMemo(
     () =>
       virtualised
-        ? visibleWindow(filtered.length, scrollTop, VIEWPORT_HEIGHT)
+        ? visibleWindow(filtered.length, scrollTop, VIEWPORT_HEIGHT, rowHeight)
         : { start: 0, end: shown.length, totalHeight: 0, offsetTop: 0 },
-    [virtualised, filtered.length, scrollTop, shown.length],
+    [virtualised, filtered.length, scrollTop, shown.length, rowHeight],
   );
 
   const rows = virtualised ? filtered.slice(window.start, window.end) : shown;
@@ -245,6 +299,13 @@ export function VehicleRegistry({
               faux dès qu'une voie réservée existe. Deux noms pour une colonne, c'est
               deux colonnes dans la tête du lecteur. */}
           {hasViolation && <Th className="w-44">Infraction</Th>}
+          {/* La photo juste avant le texte qu'elle prouve : l'une se lit contre
+              l'autre, et les séparer obligerait à recoller deux colonnes du regard.
+
+              Conditionnelle et calculée sur le registre **entier** — jamais sur les
+              rangées rendues ni sur le jeu filtré, sinon la colonne apparaîtrait au
+              défilement et décalerait toutes les autres sous le curseur. */}
+          {withSnapshots && <Th className="w-16">Capture</Th>}
           {/* « Passages » remplace « Ré-id » : la ré-identification n'existe plus
               (ADR 0016), et le nombre de franchissements d'un véhicule est
               l'information qui rend une ligne du registre vérifiable — un 0 dit
@@ -267,7 +328,7 @@ export function VehicleRegistry({
         {rows.map((vehicle, index) => (
           <tr
             key={vehicle.globalId}
-            style={{ height: ROW_HEIGHT }}
+            style={{ height: rowHeight }}
             className={`border-t border-line/40 transition-colors hover:bg-elevated/60 ${
               index % 2 === 1 ? "bg-elevated/20" : ""
             }`}
@@ -293,6 +354,13 @@ export function VehicleRegistry({
             <RoleCrossingCell vehicle={vehicle} lines={lines} role="exit" />
             {hasUnroled && <UnroledCrossingCell vehicle={vehicle} lines={lines} />}
             {hasViolation && <ViolationCell vehicle={vehicle} rules={rules} />}
+            {withSnapshots && (
+              <SnapshotCell
+                vehicle={vehicle}
+                jobId={jobId}
+                onOpen={() => setOpenSnapshot(vehicle.globalId)}
+              />
+            )}
             <Td className="tabular">
               {vehicle.crossedLines.length === 0 ? "—" : vehicle.crossedLines.length}
             </Td>
@@ -501,8 +569,42 @@ export function VehicleRegistry({
         </button>
       )}
 
+      {/* Montée seulement une fois ouverte : un `<dialog>` fermé n'a rien à rendre,
+          et surtout ses deux `<img>` ne doivent pas se charger tant que personne ne
+          les regarde — ce serait deux requêtes de plus par ligne du tableau, ce que
+          `loading="lazy"` sur la vignette existe justement pour éviter. */}
+      {jobId !== null && shownSnapshot !== null && (
+        <SnapshotDialog
+          open
+          onClose={() => setOpenSnapshot(null)}
+          title={`${classLabel(shownSnapshot.label)} #${shownSnapshot.globalId}`}
+          subtitle={snapshotCaption(shownSnapshot)}
+          vehicleSrc={vehicleSnapshotUrl(jobId, shownSnapshot.globalId)}
+          plateSrc={platePhotoUrl(jobId, shownSnapshot.globalId)}
+          plateText={shownSnapshot.plateText}
+          // La navigation porte sur les véhicules **affichés**, filtres compris :
+          // après avoir filtré sur une ligne, « suivant » doit rester dans ce qu'on
+          // regarde.
+          onPrevious={previousSnapshot === null ? undefined : () => setOpenSnapshot(previousSnapshot.globalId)}
+          onNext={nextSnapshot === null ? undefined : () => setOpenSnapshot(nextSnapshot.globalId)}
+        />
+      )}
     </section>
   );
+}
+
+/**
+ * Ce que la modale dit sous le titre : quand la photo a été prise, et à quel point
+ * la plaque y était sûre.
+ *
+ * Les deux ensemble, parce qu'ils répondent à deux questions différentes — « où
+ * regarder dans la vidéo » et « pourquoi cette image-là a été gardée ».
+ */
+function snapshotCaption(vehicle: VehicleRecord): string | undefined {
+  const parts: string[] = [];
+  if (vehicle.snapshotMs != null) parts.push(`capturée à ${formatSceneTimePrecise(vehicle.snapshotMs)}`);
+  if (vehicle.snapshotScore != null) parts.push(`lecture ${formatScore(vehicle.snapshotScore)}`);
+  return parts.length === 0 ? undefined : parts.join(" · ");
 }
 
 /**
@@ -753,4 +855,76 @@ function violationWord(kind: VehicleViolation["kind"]): string {
   if (kind === "reserved-lane") return "Voie réservée";
   if (kind === "closed-line") return "Infranchissable";
   return "Sens interdit";
+}
+
+/**
+ * La vignette du véhicule, cliquable.
+ *
+ * `loading="lazy"` **est** toute l'histoire de performance côté client : seules les
+ * rangées visibles demandent leur image, ce qui rend un registre de deux cents lignes
+ * aussi léger qu'un registre de douze. Sans lui, ouvrir le tableau déclencherait deux
+ * cents requêtes d'un coup — et la limite de débit du serveur exempte justement les
+ * lectures de job pour que ce cas reste possible.
+ *
+ * Dimensions posées en attributs **et** en classes : l'attribut réserve la place
+ * avant que l'image arrive, ce qui évite que la rangée saute à son chargement.
+ */
+function SnapshotCell({
+  vehicle,
+  jobId,
+  onOpen,
+}: {
+  vehicle: VehicleRecord;
+  jobId: string;
+  onOpen: () => void;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  if (!hasSnapshot(vehicle)) return <Td className="text-ink-dim">—</Td>;
+
+  if (failed) {
+    // Purgée avec la vidéo : le cas **normal** après le TTL, pas une panne. Un repère
+    // muet le dit mieux que l'image cassée du navigateur.
+    return (
+      <Td>
+        <span title="Capture purgée — elle est effacée en même temps que la vidéo.">
+          <ImageOff aria-hidden="true" className="size-4 text-ink-dim" />
+        </span>
+      </Td>
+    );
+  }
+
+  return (
+    // **Son propre `<td>` et pas le `Td` partagé, à cause d'une seule chose : le
+    // rembourrage vertical.** `Td` dépense `py-2`, ce qui ajoute 16 px à une vignette
+    // de 40 et pousse la rangée à 57 px — alors que la virtualisation en calcule 48.
+    // Les rangées dérivent alors sous le curseur, et seulement au-delà de 200 lignes,
+    // donc jamais sur un jeu de test à la main.
+    //
+    // Le `height` d'une rangée n'est qu'un **minimum** en CSS : le contenu doit tenir
+    // dessous, il ne suffit pas de le déclarer. D'où `py-0` ici, qui laisse 8 px de
+    // marge sous les 48.
+    <td className="px-3 py-0 align-middle">
+      <button
+        type="button"
+        onClick={onOpen}
+        title={`Voir la capture du véhicule #${vehicle.globalId}`}
+        className="block overflow-hidden rounded-input ring-1 ring-line/40 transition-transform hover:scale-105"
+      >
+        <img
+          src={vehicleSnapshotUrl(jobId, vehicle.globalId)}
+          alt={`Capture du véhicule #${vehicle.globalId}`}
+          width={40}
+          height={40}
+          loading="lazy"
+          decoding="async"
+          // `cover` ici et `contain` dans la modale : la vignette est un repère, on
+          // accepte qu'elle rogne ; la grande image est une preuve, on ne la rogne
+          // jamais.
+          className="block size-10 bg-base object-cover"
+          onError={() => setFailed(true)}
+        />
+      </button>
+    </td>
+  );
 }

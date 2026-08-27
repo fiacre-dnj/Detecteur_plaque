@@ -27,6 +27,9 @@ from traffic_analysis.features.counting.application.dto import (
     PlateGeometry,
     PlateOcrOptions,
 )
+from traffic_analysis.features.counting.infrastructure.opencv_snapshot_encoder import (
+    OpenCvSnapshotEncoder,
+)
 from traffic_analysis.features.jobs.application.job_manager import JobManager
 from traffic_analysis.features.jobs.application.progress_hub import ProgressHub
 from traffic_analysis.features.jobs.infrastructure.result_store import FileResultStore
@@ -60,6 +63,7 @@ if TYPE_CHECKING:
         DetectionTrackingEngine,
         PlateDetector,
         PlateReader,
+        VehicleSnapshotEncoder,
     )
     from traffic_analysis.features.jobs.application.ports import JobRepository
 
@@ -249,6 +253,7 @@ def build_counting_stack(
     engine: DetectionTrackingEngine | None = None,
     plate_detector: PlateDetector | None = None,
     plate_reader: PlateReader | None = None,
+    snapshot_encoder: VehicleSnapshotEncoder | None = None,
 ) -> CountingStack:
     """Assemble le moteur, les deux étages de plaques et l'`AnalysisService`.
 
@@ -324,6 +329,12 @@ def build_counting_stack(
             readable_min_samples=settings.plate_detect_readable_min_samples,
             readable_retry_every=settings.plate_detect_readable_retry_every,
         ),
+        # La capture des véhicules. Aucun réglage : son seuil de déclenchement est
+        # déjà celui de l'utilisateur — une plaque n'existe qu'au-dessus de
+        # « Confiance plaques », un texte qu'au-dessus de « Confiance lecture ». Un
+        # troisième seuil serait un réglage de plus, capable de contredire les deux
+        # autres.
+        snapshot_encoder or OpenCvSnapshotEncoder(),
     )
     return CountingStack(
         engine=resolved_engine,

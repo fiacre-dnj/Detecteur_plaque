@@ -48,6 +48,8 @@ if TYPE_CHECKING:
         DetectionTrackingEngine,
         PlateDetector,
         PlateReader,
+        VehicleSnapshot,
+        VehicleSnapshotEncoder,
     )
     from traffic_analysis.features.counting.domain.models import (
         CrossingEvent,
@@ -60,6 +62,16 @@ logger = get_logger("traffic_analysis.analysis")
 # La progression est publiée toutes les N images analysées. Plus souvent, on noie
 # le flux SSE ; moins souvent, la barre paraît figée.
 PROGRESS_EVERY_FRAMES = 10
+
+#: Combien de captures de véhicules une analyse peut retenir en mémoire.
+#:
+#: Une borne défensive, pas une limite attendue : la capture ne concerne que les
+#: véhicules dont une plaque est **lue**, soit une poignée sur une centaine suivis
+#: en pratique. À ~15 Ko la capture, 500 tiennent dans une douzaine de mégaoctets.
+#:
+#: Elle est **annoncée** quand elle est atteinte : une analyse qui cesserait
+#: silencieusement de capturer se lirait comme une panne de l'OCR.
+MAX_SNAPSHOTS = 500
 
 #: Intervalle minimal entre deux aperçus, en secondes.
 #:
@@ -141,6 +153,7 @@ class AnalysisService:
         "_plate_detector",
         "_plate_ocr",
         "_plate_reader",
+        "_snapshot_encoder",
     )
 
     def __init__(
@@ -150,10 +163,14 @@ class AnalysisService:
         plate_reader: PlateReader | None = None,
         plate_ocr: PlateOcrOptions | None = None,
         plate_detect: PlateDetectOptions | None = None,
+        snapshot_encoder: VehicleSnapshotEncoder | None = None,
     ) -> None:
         self._engine = engine
         self._plate_detector = plate_detector
         self._plate_reader = plate_reader
+        # `None` désactive proprement la capture : le comptage, les plaques et le
+        # registre sont identiques, les véhicules n'ont simplement pas de photo.
+        self._snapshot_encoder = snapshot_encoder
         self._plate_ocr = plate_ocr or PlateOcrOptions()
         # Réglages de déploiement, comme ceux de l'OCR : ils ne voyagent pas par
         # requête, parce qu'ils arbitrent du débit contre de la fraîcheur de
@@ -404,7 +421,9 @@ class AnalysisService:
                     reader=reader,
                     ocr_policy=policy,
                     session=session,
+                    snapshots=result.snapshots,
                     image=frame.image,
+                    timestamp_ms=frame.timestamp_ms,
                     ordinal=processed,
                     tracks=outcome.tracks,
                     confidence=config.plate_confidence,
@@ -565,7 +584,9 @@ class AnalysisService:
         reader: PlateReader | None,
         ocr_policy: PlateOcrPolicy | None,
         session: AnalysisSession,
+        snapshots: dict[int, VehicleSnapshot],
         image: npt.NDArray[np.uint8],
+        timestamp_ms: float,
         ordinal: int,
         tracks: Sequence[SessionTrack],
         confidence: float | None,
@@ -660,6 +681,62 @@ class AnalysisService:
                     reader, ocr_policy, session, image, ordinal, track, fresh, text_confidence
                 )
             session.record_plates(track, fresh)
+            # **Sur la branche fraîche, et seulement elle.** Une boîte reprojetée
+            # n'est pas une mesure de cette image (ADR 0010) : la recadrer produirait
+            # une vignette de plaque décalée, et la donner pour la meilleure capture
+            # d'un véhicule serait un faux témoignage.
+            self._capture_vehicle(session, snapshots, image, timestamp_ms, track, fresh)
+
+    def _capture_vehicle(
+        self,
+        session: AnalysisSession,
+        snapshots: dict[int, VehicleSnapshot],
+        image: npt.NDArray[np.uint8],
+        timestamp_ms: float,
+        track: SessionTrack,
+        plates: Sequence[PlateDetection],
+    ) -> None:
+        """Garde la photo du véhicule quand sa plaque vient d'être **mieux** lue.
+
+        Trois gardes, dans cet ordre, et l'ordre est ce qui rend le poste
+        négligeable :
+
+        1. **une lecture, pas seulement un rectangle.** La capture suit l'OCR : sans
+           texte lu, il n'y a rien à prouver et rien à classer. Le seuil de
+           déclenchement n'est écrit nulle part ici parce qu'il est déjà appliqué —
+           une plaque n'existe qu'au-dessus de « Confiance plaques », et un texte
+           qu'au-dessus de « Confiance lecture » (ADR 0036). La capture hérite donc
+           des réglages de l'utilisateur sans en ajouter un troisième ;
+        2. **elle doit battre la précédente.** C'est la règle demandée : 0,80 capture,
+           0,90 remplace, 0,85 ensuite ne fait rien. La comparaison est faite **avant**
+           l'encodage, donc l'immense majorité des images ne coûte qu'un test ;
+        3. **l'encodage peut refuser.** On n'enregistre le score qu'une fois les
+           octets réellement produits, sinon un véhicule annoncerait une capture sans
+           fichier — et l'interface afficherait une image cassée.
+
+        La borne `MAX_SNAPSHOTS` est **annoncée** quand elle est atteinte : une
+        analyse qui cesse silencieusement de capturer se lirait comme une panne de
+        l'OCR.
+        """
+        encoder = self._snapshot_encoder
+        if encoder is None:
+            return
+
+        best = _best_readable_plate(plates)
+        if best is None or best.text_score is None:
+            return
+        if not session.should_capture(track.global_id, best.text_score):
+            return
+        if track.global_id not in snapshots and len(snapshots) >= MAX_SNAPSHOTS:
+            if len(snapshots) == MAX_SNAPSHOTS:
+                logger.warning("capture de véhicules bornée", limit=MAX_SNAPSHOTS)
+            return
+
+        snapshot = encoder.encode(image, track.box, best.box)
+        if snapshot is None:
+            return
+        snapshots[track.global_id] = snapshot
+        session.record_snapshot(track.global_id, best.text_score, timestamp_ms)
 
     @staticmethod
     def _remember_anchor(
@@ -836,3 +913,19 @@ class AnalysisService:
                 expected_frames=total,
                 threshold=TIMELINE_WARNING_THRESHOLD,
             )
+
+
+def _best_readable_plate(plates: Sequence[PlateDetection]) -> PlateDetection | None:
+    """La plaque **mesurée et lue** la plus sûre de cette image, ou `None`.
+
+    Le filtre `not stale` est le même que celui de `record_plates` : une boîte
+    reprojetée ne nourrit aucun agrégat, et une capture est un agrégat comme un
+    autre. Sans texte, aucune capture — la vignette existe pour prouver une lecture.
+    """
+    best: PlateDetection | None = None
+    for plate in plates:
+        if plate.stale or not plate.text or plate.text_score is None:
+            continue
+        if best is None or plate.text_score > (best.text_score or 0.0):
+            best = plate
+    return best

@@ -13,6 +13,7 @@ import {
   INITIAL_ROWS,
   OVERSCAN,
   ROW_HEIGHT,
+  SNAPSHOT_ROW_HEIGHT,
   VIRTUALISE_THRESHOLD,
   shouldVirtualise,
   visibleWindow,
@@ -127,5 +128,32 @@ describe("seuil de virtualisation", () => {
   it("garde les valeurs de la spécification", () => {
     expect(VIRTUALISE_THRESHOLD).toBe(200);
     expect(INITIAL_ROWS).toBe(12);
+  });
+});
+
+describe("la hauteur de rangée des captures", () => {
+  /**
+   * **Le calcul doit suivre la hauteur réellement rendue.**
+   *
+   * `visibleWindow` place les rangées par un décalage calculé, pas par le flux : si
+   * la hauteur passée ici cesse de correspondre au style posé sur `<tr>`, les rangées
+   * dérivent sous le curseur — et seulement au-delà de 200 lignes, donc jamais sur un
+   * jeu de test à la main.
+   */
+  it("place les rangées sur la hauteur qu'on lui donne", () => {
+    const dense = visibleWindow(1_000, 480, 420, ROW_HEIGHT);
+    const tall = visibleWindow(1_000, 480, 420, SNAPSHOT_ROW_HEIGHT);
+
+    expect(dense.totalHeight).toBe(1_000 * ROW_HEIGHT);
+    expect(tall.totalHeight).toBe(1_000 * SNAPSHOT_ROW_HEIGHT);
+    // À défilement égal, une rangée plus haute fait démarrer la fenêtre plus tôt.
+    expect(tall.start).toBeLessThan(dense.start);
+  });
+
+  it("laisse une vignette de 40 px respirer", () => {
+    // 48 px de rangée moins le `py-2` des cellules : la vignette a la place, et le
+    // chiffre est écrit ici pour que le changer casse un test plutôt qu'un alignement.
+    expect(SNAPSHOT_ROW_HEIGHT).toBe(48);
+    expect(SNAPSHOT_ROW_HEIGHT - 16).toBeGreaterThanOrEqual(32);
   });
 });

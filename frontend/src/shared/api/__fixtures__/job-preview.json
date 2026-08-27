@@ -195,7 +195,9 @@
       "plateUnreadReason": null,
       "plateBestWidthPx": 64.0,
       "plateBestGuess": null,
-      "plateBestGuessScore": null
+      "plateBestGuessScore": null,
+      "snapshotScore": null,
+      "snapshotMs": null
     },
     {
       "globalId": 2,
@@ -216,7 +218,9 @@
       "plateUnreadReason": "too_blurry",
       "plateBestWidthPx": 64.0,
       "plateBestGuess": null,
-      "plateBestGuessScore": null
+      "plateBestGuessScore": null,
+      "snapshotScore": null,
+      "snapshotMs": null
     }
   ]
 }

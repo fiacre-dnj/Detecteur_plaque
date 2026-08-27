@@ -802,3 +802,73 @@ class TestConfigurationDUnJob:
         )
 
         assert response.status_code == 422
+
+
+class TestCapturesDeVehicules:
+    """Les deux routes d'image, et ce qu'elles refusent.
+
+    Le moteur factice ne lit aucune plaque par défaut, donc aucune capture n'existe :
+    ces tests portent sur les **refus**, qui sont le cas courant à l'écran. Ce qui est
+    capturé et pourquoi est testé sur la règle elle-même
+    (`unit/counting/test_capture_de_vehicule.py`), sans pixels ni HTTP.
+    """
+
+    async def test_une_capture_absente_rend_409_et_non_404(self, client: AsyncClient) -> None:
+        """409 et non 404 : le véhicule existe, sa photo non.
+
+        Un 404 enverrait chercher un identifiant faux. Le code distingue en plus ce
+        refus de celui de la vidéo (`input_missing`) : il n'y a rien à redéposer, ce
+        véhicule n'a simplement pas de plaque lue.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+        await _wait_until_done(client, job_id)
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/vehicles/1/snapshot.jpg")
+
+        assert response.status_code == 409
+        assert response.json()["code"] == "snapshot_missing"
+
+    async def test_la_vignette_de_plaque_refuse_de_la_meme_facon(self, client: AsyncClient) -> None:
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+        await _wait_until_done(client, job_id)
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/vehicles/1/plate.jpg")
+
+        assert response.status_code == 409
+        assert response.json()["code"] == "snapshot_missing"
+
+    async def test_un_job_inconnu_rend_404(self, client: AsyncClient) -> None:
+        response = await client.get("/api/v1/jobs/inexistant/vehicles/1/snapshot.jpg")
+
+        assert response.status_code == 404
+
+    async def test_une_capture_est_servie_en_jpeg_et_immuable(
+        self, client: AsyncClient, settings: Settings
+    ) -> None:
+        """Le fichier est posé sur le volume du job, comme le service l'écrirait.
+
+        Écrire directement plutôt que faire lire une plaque au moteur factice : ce
+        test porte sur la **route**, et lui faire dépendre de la chaîne ANPR entière
+        le ferait échouer pour des raisons sans rapport.
+
+        `immutable` et `private` : la capture d'un couple job + véhicule ne change
+        jamais, et elle porte une plaque et un visage — un cache partagé n'a pas à la
+        garder.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+        await _wait_until_done(client, job_id)
+
+        directory = settings.data_dir / "jobs" / job_id / "snapshots"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "1-vehicle.jpg").write_bytes(b"\xff\xd8\xff-voiture")
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/vehicles/1/snapshot.jpg")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/jpeg"
+        assert "immutable" in response.headers["cache-control"]
+        assert "private" in response.headers["cache-control"]
+        assert response.content == b"\xff\xd8\xff-voiture"

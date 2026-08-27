@@ -21,6 +21,23 @@ export const VIRTUALISE_THRESHOLD = 200;
 export const ROW_HEIGHT = 36;
 
 /**
+ * Hauteur d'une rangée **quand la colonne « Capture » existe**.
+ *
+ * 48 px laissent une vignette de 40, ce qui est le minimum pour reconnaître un
+ * véhicule ; à 36 px il n'en reste que 20 une fois le `py-2` des cellules déduit, et
+ * l'image ne dirait plus que « il y a une photo ».
+ *
+ * **Conditionnelle et non globale** : un tracé sans plaques garde exactement la
+ * densité d'avant. Payer 33 % de hauteur sur toutes les analyses pour une colonne
+ * que la plupart n'ont pas serait un mauvais échange.
+ *
+ * `visibleWindow` accepte déjà la hauteur en paramètre — c'est une constante à
+ * passer, pas une refonte. Elle doit correspondre au style en ligne posé sur `<tr>`,
+ * sinon les rangées dérivent sous le curseur au-delà du seuil de virtualisation.
+ */
+export const SNAPSHOT_ROW_HEIGHT = 48;
+
+/**
  * Lignes rendues en plus, de part et d'autre de la fenêtre visible.
  *
  * Sans cette marge, un défilement rapide laisse apparaître du vide le temps du

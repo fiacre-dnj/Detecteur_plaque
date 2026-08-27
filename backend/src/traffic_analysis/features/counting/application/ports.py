@@ -277,3 +277,51 @@ class PlateReader(Protocol):
         `PlateDetector.available` : l'interface interroge `/health` en permanence.
         """
         ...
+
+
+@dataclass(frozen=True, slots=True)
+class VehicleSnapshot:
+    """La capture d'un véhicule : lui, et sa plaque.
+
+    **Deux JPEG et non une image composite.** La mise en page — la plaque sous la
+    voiture — est faite par l'interface, en CSS. Composer ici figerait une décision
+    d'affichage dans la donnée stockée, alors que la vignette de plaque a sa propre
+    vie : c'est elle qui valide une alerte de plaque recherchée, et on veut pouvoir
+    la montrer seule, plus grande, ou à côté du texte cherché.
+
+    Des octets déjà encodés et non des pixels : l'encodage a lieu dans la boucle
+    d'analyse, au moment où l'image est valide, et ce qui traverse ensuite est
+    ~15 Ko au lieu des mégaoctets d'un recadrage brut.
+    """
+
+    vehicle_jpeg: bytes
+    plate_jpeg: bytes
+
+
+@runtime_checkable
+class VehicleSnapshotEncoder(Protocol):
+    """Recadre un véhicule et sa plaque, et rend deux JPEG.
+
+    Un port et non un appel direct à OpenCV, pour la raison qui vaut pour tous les
+    autres ici : `cv2` est interdit dans `application/**` comme dans `domain/**`, et
+    la CI doit pouvoir tourner sans pixels. La doublure de test rend des octets
+    quelconques, et les tests de la règle de capture n'en demandent pas plus.
+    """
+
+    def encode(
+        self,
+        image: npt.NDArray[np.uint8],
+        vehicle: BoundingBox,
+        plate: BoundingBox,
+    ) -> VehicleSnapshot | None:
+        """Rend la capture, ou `None` s'il n'y a rien d'exploitable à recadrer.
+
+        Les deux boîtes sont en coordonnées de l'image **complète**, comme partout
+        ailleurs dans ces ports.
+
+        **Ne lève jamais.** Une capture ratée n'est pas une analyse ratée : le
+        véhicule reste compté, son texte reste publié, il n'a simplement pas de
+        photo. `None` est donc un refus honnête — recadrage vide, boîte hors image,
+        encodeur en panne — et l'appelant n'enregistre alors aucun score.
+        """
+        ...

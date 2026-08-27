@@ -644,6 +644,28 @@ export interface VehicleRecord {
   plateBestGuess: string | null;
   /** Confiance moyenne de `plateBestGuess`. `null` ssi lui-même l'est. */
   plateBestGuessScore: number | null;
+  /**
+   * Confiance de **lecture** de la capture retenue pour ce véhicule.
+   *
+   * **Sa non-nullité est le drapeau « il existe une photo »** : pas de booléen en
+   * plus, et surtout pas d'URL — le serveur ne fabrique pas les adresses du client,
+   * qui les construit lui-même (`vehicleSnapshotUrl`), exactement comme pour la
+   * vidéo déposée.
+   *
+   * C'est la confiance de l'**image retenue** et non celle du vote : le vote est une
+   * moyenne sur toute la vie du véhicule, il bouge quand une *autre* image est lue.
+   * Les deux se lisent côte à côte au registre, et ils ne disent pas la même chose.
+   *
+   * Optionnel : un résultat archivé avant cette fonctionnalité n'en porte pas.
+   */
+  snapshotScore?: number | null;
+  /**
+   * Instant de **scène** de cette capture. `null` ssi `snapshotScore` l'est.
+   *
+   * Il dit *quand* regarder dans la vidéo — c'est ce qui rend la photo vérifiable
+   * plutôt que seulement consultable.
+   */
+  snapshotMs?: number | null;
 }
 
 /**

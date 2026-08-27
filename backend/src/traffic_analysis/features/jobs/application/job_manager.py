@@ -58,6 +58,7 @@ if TYPE_CHECKING:
         JobRepository,
         ModelPreparer,
         ResultStore,
+        SnapshotKind,
     )
 
 logger = get_logger("traffic_analysis.jobs")
@@ -266,6 +267,36 @@ class JobManager:
                 "résultat. Les chiffres restent affichables ; redéposez le fichier "
                 "pour revoir les boîtes sur l'image.",
                 code="input_missing",
+            )
+        return path
+
+    async def snapshot_path(self, job_id: str, global_id: int, kind: SnapshotKind) -> Path:
+        """Chemin d'une capture, ou une erreur qui dit **pourquoi** elle manque.
+
+        Trois refus distincts, parce qu'ils appellent trois gestes différents — la
+        même discipline que `input_video_path` juste au-dessus :
+
+        - job inconnu : 404, par `self.get` ;
+        - job non terminé : les captures sont écrites à la fin, il n'y a encore rien
+          à servir. `job_not_finished`, le même code que la vidéo ;
+        - capture absente : soit ce véhicule n'en a jamais eu — aucune plaque lue —
+          soit elle a été purgée avec la vidéo. `snapshot_missing`, distinct de
+          `input_missing` : l'utilisateur n'a pas à redéposer un fichier, il n'y a
+          simplement pas de photo pour ce véhicule-là.
+        """
+        record = await self.get(job_id)
+        if record.status != "done":
+            raise ConflictError(
+                f"La capture n'est pas disponible : le job est « {record.status} ».",
+                code="job_not_finished",
+            )
+        path = self._result_store.snapshot_path_for(job_id, global_id, kind)
+        if path is None:
+            raise ConflictError(
+                "Aucune capture pour ce véhicule — soit aucune plaque n'y a été lue, "
+                "soit les captures ont été purgées avec la vidéo. Les chiffres du "
+                "registre restent intacts.",
+                code="snapshot_missing",
             )
         return path
 
@@ -527,6 +558,16 @@ class JobManager:
         await anyio.to_thread.run_sync(
             lambda: self._result_store.write(job_id, serialise_result(result))
         )
+        # Les captures de véhicules, en une passe et **au même endroit** que le
+        # résultat : ce sont des fichiers, donc du disque en volume, donc un thread
+        # (invariant 11). Les écrire image par image dans la boucle d'analyse aurait
+        # posé une pause sur le chemin critique pour une donnée que personne ne lit
+        # avant la fin.
+        if result.snapshots:
+            written = await anyio.to_thread.run_sync(
+                lambda: self._result_store.write_snapshots(job_id, result.snapshots)
+            )
+            logger.info("captures écrites", job_id=job_id, files=written)
         await self._repository.save_result_aggregates(job_id, result)
         await self._finish(job_id, "done")
 

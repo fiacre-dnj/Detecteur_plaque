@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Response
+from fastapi.responses import FileResponse
 
 from traffic_analysis.core.errors import UnavailableError
 from traffic_analysis.core.pagination import Page, PageParams, page_params
@@ -148,4 +149,64 @@ async def export_csv(
             # JavaScript ne voit pas le nom de fichier.
             "Cache-Control": "no-store",
         },
+    )
+
+
+SNAPSHOT_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {"content": {"image/jpeg": {}}, "description": "Vignette JPEG"},
+    404: {"model": ProblemDetails, "description": "Job inconnu"},
+    409: {
+        "model": ProblemDetails,
+        "description": "Job non terminé, ou capture absente / purgée",
+    },
+}
+
+#: Un an, immuable : la capture d'un couple job + véhicule ne change **jamais**.
+#:
+#: `private` et non `public` : ces images portent des plaques et des visages, et un
+#: cache partagé n'a pas à les garder. C'est le même en-tête que la vidéo déposée.
+SNAPSHOT_CACHE_CONTROL = "private, max-age=31536000, immutable"
+
+
+@router.get(
+    "/{job_id}/vehicles/{global_id}/snapshot.jpg",
+    operation_id="getVehicleSnapshot",
+    summary="Photo du véhicule, au moment où sa plaque a été le mieux lue",
+    description=(
+        "Le recadrage du véhicule sur l'image dont la lecture de plaque est la plus "
+        "sûre. Une seule capture par véhicule : une lecture moins bonne ne remplace "
+        "jamais une meilleure.\n\n"
+        "**Un 409 `snapshot_missing` n'est pas une panne** : soit aucune plaque n'a "
+        "été lue sur ce véhicule, soit les captures ont été purgées avec la vidéo — "
+        "elles suivent son TTL, parce qu'une voiture et sa plaque recadrées sont "
+        "exactement la donnée que ce TTL court existe pour effacer."
+    ),
+    responses=SNAPSHOT_RESPONSES,
+)
+async def get_vehicle_snapshot(manager: JobManagerDep, job_id: str, global_id: int) -> FileResponse:
+    path = await manager.snapshot_path(job_id, global_id, "vehicle")
+    return FileResponse(
+        path, media_type="image/jpeg", headers={"Cache-Control": SNAPSHOT_CACHE_CONTROL}
+    )
+
+
+@router.get(
+    "/{job_id}/vehicles/{global_id}/plate.jpg",
+    operation_id="getVehiclePlatePhoto",
+    summary="Vignette de la plaque, extraite de la même image que la photo",
+    description=(
+        "La plaque telle qu'elle a été lue, recadrée sur **la même image** que "
+        "`snapshot.jpg`. C'est la preuve qui permet de valider une lecture à l'œil, "
+        "et notamment de confirmer une plaque recherchée avant d'agir.\n\n"
+        "Deux fichiers et non une image composée : la mise en page appartient à "
+        "l'interface, et la vignette de plaque doit pouvoir être montrée seule."
+    ),
+    responses=SNAPSHOT_RESPONSES,
+)
+async def get_vehicle_plate_photo(
+    manager: JobManagerDep, job_id: str, global_id: int
+) -> FileResponse:
+    path = await manager.snapshot_path(job_id, global_id, "plate")
+    return FileResponse(
+        path, media_type="image/jpeg", headers={"Cache-Control": SNAPSHOT_CACHE_CONTROL}
     )

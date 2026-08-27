@@ -652,6 +652,24 @@ class VehicleRecord:
     plate_best_guess: str | None = None
     #: Confiance moyenne du candidat ci-dessus. `None` ssi `plate_best_guess` l'est.
     plate_best_guess_score: float | None = None
+    #: Confiance de **lecture** de la capture retenue pour ce véhicule, ou `None`.
+    #:
+    #: **Sa non-nullité est le drapeau « il existe une capture »** : pas de booléen
+    #: en plus, et surtout pas d'URL — le serveur ne fabrique pas les adresses du
+    #: client, qui les construit lui-même depuis l'identifiant du job et le numéro
+    #: du véhicule (même convention que la vidéo déposée).
+    #:
+    #: C'est la confiance de l'**image retenue**, jamais celle du vote : le vote est
+    #: une moyenne sur toute la vie du véhicule, donc il bouge quand une *autre*
+    #: image est lue. Classer les images sur lui ferait recapturer pour une raison
+    #: qui n'a rien à voir avec la qualité de l'image courante.
+    snapshot_score: float | None = None
+    #: Instant de **scène** de cette capture (invariant 1). `None` ssi
+    #: `snapshot_score` l'est.
+    #:
+    #: Il dit *quand* regarder dans la vidéo, et c'est ce qui rend la capture
+    #: vérifiable plutôt que seulement consultable.
+    snapshot_ms: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

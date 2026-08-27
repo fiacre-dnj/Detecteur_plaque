@@ -11,6 +11,22 @@ plus deux fois dans le même sens » si.
 
 ### Ajouté
 
+- **Une photo par véhicule dont la plaque est lue.** Le registre gagne une colonne
+  « Capture » : la voiture recadrée, et sa plaque en dessous. Un clic ouvre l'image en
+  grand, avec l'instant de la prise de vue et la confiance de lecture ; les flèches du
+  clavier passent d'un véhicule à l'autre sans refermer.
+  **C'est la meilleure lecture qui décide de l'image gardée** — à 80 % de confiance on
+  capture, à 90 % on remplace, et une lecture moins sûre ensuite ne change plus rien.
+  Une seule photo par véhicule, donc, et c'est la plus lisible.
+  Le cas le plus utile est celui qu'on n'attendait pas : quand l'OCR **refuse** de
+  publier une plaque faute de consensus, la photo permet de la lire soi-même.
+  La capture se déclenche avec les réglages déjà en place — il n'y a aucun nouveau
+  seuil à régler — et elle ne coûte rien : **98 ms sur 176 s d'analyse, soit
+  0,056 %**, mesurés sur une vraie course.
+- **La capture apparaît aussi sur les alertes de plaque recherchée**, à côté de
+  l'alerte. La grande image y montre le texte **lu** face au texte **cherché** : c'est
+  là qu'on tranche, en regardant la plaque — l'OCR perd régulièrement un caractère, et
+  une correspondance annoncée « probable » ne se valide pas autrement.
 - **Une ligne de comptage a maintenant un type, et un sens peut être interdit.**
   Cinq choix dans le tiroir Géométrie : deux sens (le cas ordinaire), sens unique en
   entrée, sens unique en sortie, infranchissable, ou comptage seul. Sur une ligne à
@@ -335,6 +351,10 @@ plus deux fois dans le même sens » si.
 
 ### Modifié
 
+- **Les captures de véhicules sont effacées en même temps que la vidéo**, plus tôt
+  que les chiffres. Une voiture et sa plaque recadrées sont exactement ce que la
+  purge de la vidéo existe pour effacer ; le registre garde ses colonnes et affiche
+  « capture purgée » à la place de la vignette.
 - **La section « Franchissements » du bas de page est masquée.** Sa chronologie
   posait un fait par rangée sans dire lequel méritait qu'on aille voir ; la section
   « Alertes » prend sa place et répond à cette question-là. Rien n'est perdu : le

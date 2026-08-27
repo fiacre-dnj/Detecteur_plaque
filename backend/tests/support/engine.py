@@ -14,7 +14,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from traffic_analysis.features.counting.application.ports import EngineFrame, PlateText
+from traffic_analysis.features.counting.application.ports import (
+    EngineFrame,
+    PlateText,
+    VehicleSnapshot,
+)
 from traffic_analysis.features.counting.domain.models import (
     BoundingBox,
     PlateDetection,
@@ -278,10 +282,17 @@ class FakePlateReader:
         is_readable: Callable[[BoundingBox], bool] | None = None,
         bad_length: bool = False,
         text_for: Callable[[BoundingBox], str] | None = None,
+        score_for: Callable[[], float] | None = None,
     ) -> None:
         self._available = available
         self._text = text
         self._score = score
+        #: Permet à un test de faire **varier** la confiance d'une image à l'autre,
+        #: ce qu'aucune valeur fixe ne sait exprimer. C'est ce dont la règle de
+        #: capture a besoin : « 0,80 puis 0,90 puis 0,85 » est une suite, pas un
+        #: réglage. Sans argument, pour que l'appelant n'ait pas à connaître la boîte
+        #: — il compte les appels, il ne les identifie pas.
+        self._score_for = score_for
         #: Permet à un test — et au script de génération des fixtures — de produire
         #: l'état « plaque vue mais illisible », que l'interface rate le plus
         #: facilement. `None` signifie « tout est lisible ».
@@ -342,9 +353,45 @@ class FakePlateReader:
         return tuple(
             PlateText(
                 text=self._text_for(box) if self._text_for is not None else self._text,
-                score=self._score,
+                score=self._score_for() if self._score_for is not None else self._score,
             )
             if self._is_readable is None or self._is_readable(box)
             else None
             for box in boxes
         )
+
+
+class FakeSnapshotEncoder:
+    """Encodeur de captures factice — des octets quelconques, jamais des pixels.
+
+    La CI n'a pas d'images utiles, et la règle qu'on teste ici n'en a pas besoin :
+    « la meilleure lecture gagne » est une comparaison de nombres, pas de pixels. La
+    doublure rend donc des octets reconnaissables, et compte ses appels — c'est ce
+    comptage qui **prouve** l'optimisation : une lecture moins bonne que la
+    précédente ne doit déclencher aucun encodage, pas seulement aucun remplacement.
+
+    `fails` couvre l'autre moitié du contrat : un encodeur qui refuse ne doit laisser
+    aucun score derrière lui, sinon un véhicule annoncerait une capture sans fichier.
+    """
+
+    def __init__(self, *, fails: bool = False) -> None:
+        self._fails = fails
+        #: Nombre d'encodages **réellement demandés**. Le chiffre qui dit si la règle
+        #: monotone protège bien le chemin critique.
+        self.calls = 0
+        #: Les boîtes reçues, dans l'ordre — pour vérifier qu'on recadre le véhicule
+        #: et sa plaque, et pas deux fois la même chose.
+        self.boxes: list[tuple[BoundingBox, BoundingBox]] = []
+
+    def encode(
+        self,
+        image: npt.NDArray[np.uint8],
+        vehicle: BoundingBox,
+        plate: BoundingBox,
+    ) -> VehicleSnapshot | None:
+        del image
+        self.calls += 1
+        self.boxes.append((vehicle, plate))
+        if self._fails:
+            return None
+        return VehicleSnapshot(vehicle_jpeg=b"vehicle-jpeg", plate_jpeg=b"plate-jpeg")

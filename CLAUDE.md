@@ -86,6 +86,13 @@ mesurée, reprojetée sur la boîte du véhicule
 ([ADR 0010](docs/adr/0010-etranglement-du-detecteur-de-plaques.md)). Le direct n'a
 pas d'ANPR du tout.
 
+**Un véhicule dont la plaque est lue reçoit une photo depuis le 2026-08-27** ([ADR
+0042](docs/adr/0042-une-capture-par-vehicule.md)) : deux JPEG — lui recadré, sa
+plaque — pris sur l'image dont la **lecture** est la plus sûre, une seule par
+véhicule. Ils vivent dans `data/jobs/<id>/snapshots/`, sont servis par
+`GET /jobs/{id}/vehicles/{n}/{snapshot,plate}.jpg`, et **partent avec la vidéo** et
+non avec le résultat — ce sont des plaques et des visages.
+
 ## `prompt/` est la spécification, pas de la documentation
 
 Le dossier [`prompt/`](prompt/) (15 fichiers, à lire dans l'ordre depuis
@@ -110,7 +117,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1560 tests
+uv run pytest                                                            # 1586 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -124,7 +131,7 @@ uv run python scripts/audit_lignes.py                # « pourquoi cette ligne e
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 786 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 803 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -659,6 +666,25 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
 - **`shared/ui/Tabs.tsx` reste**, sans consommateur pour l'instant — une
   primitive ARIA générique et accessible (flèches, Home/Fin, roving `tabIndex`),
   gardée pour un futur besoin plutôt que supprimée pour un gain nul ;
+- **le Registre montre la voiture** (2026-08-27) : une colonne « Capture » porte une
+  vignette de 40 px du véhicule dont une plaque a été lue, et le clic l'ouvre en
+  grand — le véhicule, sa plaque en dessous, l'instant et la confiance. La modale est
+  `shared/ui/SnapshotDialog.tsx`, partagée avec les alertes, sur le patron `<dialog>`
+  + `showModal()` de `PresetDialog`. Quatre points qui ne se devinent pas :
+  - **la colonne n'existe qu'à la fin** (`result !== null`) : les fichiers sont écrits
+    après l'analyse, et une vignette demandée plus tôt afficherait une image cassée
+    par rangée. Même règle que les trois boutons d'export ;
+  - **la rangée passe à 48 px, et seulement alors.** `visibleWindow` accepte déjà une
+    hauteur en paramètre. **Le `height` d'une rangée n'est qu'un minimum en CSS** : la
+    cellule de capture supprime son rembourrage vertical (`py-0`, son propre `<td>` et
+    non le `Td` partagé), sinon la rangée rendue fait 57 px là où la virtualisation en
+    calcule 48 — et les rangées dérivent au-delà de 200 lignes, jamais avant ;
+  - **`loading="lazy"` est toute l'histoire de performance côté client** : seules les
+    rangées visibles demandent leur image. Les routes sont exemptées de la limite de
+    débit parce que ce sont des `GET /jobs/…` (ADR 0027), ce qui est indispensable
+    ici ;
+  - **une capture absente n'est pas une panne** : `onError` bascule sur un repère muet
+    titré « capture purgée », le cas normal après le TTL de la vidéo ;
 - **le Registre porte deux filtres qui se composent** (2026-08-27) : la recherche
   par plaque et un **filtre par ligne**, dont les options portent les noms saisis par
   l'utilisateur et se renomment sans réanalyser. `filterByLine` est le jumeau de
@@ -1342,6 +1368,27 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       le cran de confidentialité que le projet impose déjà en laissant l'OCR décoché.
 
     [ADR 0041](docs/adr/0041-les-alertes-se-calculent-cote-client.md).
+33. **Un véhicule dont la plaque est lue reçoit une photo, et une seule.** Deux JPEG
+    — le véhicule recadré, sa plaque — pris sur la **même** image, celle dont la
+    lecture est la plus sûre. Cinq points :
+    - **le score est celui de l'image, jamais celui du vote.** `PlateTextVote.score`
+      est une moyenne sur la vie du véhicule : il bouge quand une *autre* image est
+      lue, donc classer les images dessus ferait recapturer sans rapport avec la
+      qualité de l'image courante. Mesuré : capture 0,982 pour un vote à 0,852 ;
+    - **aucun nouveau seuil.** Une plaque n'existe qu'au-dessus de « Confiance
+      plaques » et un texte qu'au-dessus de « Confiance lecture » (ADR 0036) : la
+      capture hérite des deux gratuitement ;
+    - **jamais depuis une boîte reprojetée** (ADR 0010) : le point d'accroche est la
+      branche *mesure fraîche* de `_detect_plates`, la seule où les deux boîtes, le
+      texte et les pixels coexistent ;
+    - **encodage à l'amélioration, écriture à la fin.** Mesuré sur 1 800 images :
+      **41 encodages, 98 ms, 0,056 %** du temps d'analyse. Le chiffre qui compte est
+      41 — c'est la règle monotone qui protège le chemin critique, pas la vitesse de
+      l'encodeur, et un test **compte les appels** pour cette raison ;
+    - **les captures sont purgées avec la vidéo**, pas avec le résultat : ce sont des
+      plaques et des visages, la donnée même que le TTL court efface.
+
+    [ADR 0042](docs/adr/0042-une-capture-par-vehicule.md).
 
 ## Ce que l'analyse signale — les alertes
 
@@ -1741,7 +1788,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1560 (1 skip) | 786 |
+| Nombre | 1586 (1 skip) | 803 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

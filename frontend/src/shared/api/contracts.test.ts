@@ -377,8 +377,24 @@ describe("contrat du registre des véhicules", () => {
       "plateText",
       "plateTextScore",
       "plateUnreadReason",
+      // La capture retenue : une confiance et un instant, **jamais une URL**. Le
+      // serveur ne fabrique pas les adresses du client, qui les construit depuis
+      // l'identifiant du job et le numéro du véhicule — même convention que la
+      // vidéo déposée. La non-nullité de `snapshotScore` est le drapeau
+      // « il existe une photo ».
+      "snapshotMs",
+      "snapshotScore",
       "zonesVisited",
     ]);
+  });
+
+  it("une capture porte toujours son instant, et réciproquement", () => {
+    // Les deux champs sont un seul fait : une confiance sans instant ne dirait pas
+    // où regarder dans la vidéo, et un instant sans confiance ne dirait pas
+    // pourquoi cette image-là a été gardée.
+    for (const vehicle of result.vehicles) {
+      expect(vehicle.snapshotScore === null).toBe(vehicle.snapshotMs === null);
+    }
   });
 
   it("un texte lu implique toujours une plaque détectée", () => {

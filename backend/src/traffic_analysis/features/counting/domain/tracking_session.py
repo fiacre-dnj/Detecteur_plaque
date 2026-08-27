@@ -157,6 +157,14 @@ class _VehicleAggregate:
     #: dégage. Sans ce drapeau, les deux se confondraient en « pas de texte », et
     #: les deux appellent pourtant des gestes opposés.
     plate_read_attempted: bool = False
+    #: Confiance de lecture de la **capture** retenue, ou `None` — aucune capture.
+    #:
+    #: Le pendant exact de `best_plate_score` pour l'image plutôt que pour la boîte,
+    #: et la règle est la même : strictement croissante. Une lecture moins sûre que
+    #: la précédente ne remplace rien.
+    snapshot_score: float | None = None
+    #: Instant de scène de cette capture. `None` ssi `snapshot_score` l'est.
+    snapshot_ms: float | None = None
 
 
 class AnalysisSession:
@@ -592,6 +600,40 @@ class AnalysisSession:
         aggregate = self._aggregates.get(global_id)
         return aggregate is not None and aggregate.plate_vote.is_confident
 
+    def should_capture(self, global_id: int, score: float) -> bool:
+        """Cette lecture bat-elle la capture déjà retenue pour ce véhicule ?
+
+        **La règle que l'utilisateur a décrite, et rien d'autre** : à 0,80 on
+        capture, à 0,90 on remplace, à 0,85 ensuite on ne touche plus à rien. Une
+        comparaison stricte, donc monotone croissante — une capture ne peut jamais
+        être remplacée par moins bien.
+
+        Une **question pure**, séparée de `record_snapshot` : l'appelant doit
+        pouvoir demander « est-ce que ça vaut le coup » *avant* de dépenser un
+        encodage, et n'enregistrer qu'une fois les octets réellement produits. Les
+        fondre en un seul appel laisserait, sur un encodage raté, un véhicule qui
+        annonce une capture sans fichier.
+
+        Rend `False` sur une identité inconnue — `0` en est une, et le service la
+        rencontre — comme `plate_text_is_confident` juste au-dessus.
+        """
+        aggregate = self._aggregates.get(global_id)
+        if aggregate is None:
+            return False
+        return aggregate.snapshot_score is None or score > aggregate.snapshot_score
+
+    def record_snapshot(self, global_id: int, score: float, timestamp_ms: float) -> None:
+        """Retient la capture qui vient d'être produite. À appeler **après** succès.
+
+        Ne revérifie pas `should_capture` : le service a déjà posé la question, et
+        la reposer ici ferait exister deux endroits qui décident de la même chose.
+        """
+        aggregate = self._aggregates.get(global_id)
+        if aggregate is None:
+            return
+        aggregate.snapshot_score = score
+        aggregate.snapshot_ms = timestamp_ms
+
     # ── Sorties ──────────────────────────────────────────────────────────────
 
     def stats(self) -> AnalysisStats:
@@ -755,6 +797,8 @@ class AnalysisSession:
                     plate_best_width_px=aggregate.best_plate_width_px,
                     plate_best_guess=best_guess[0] if best_guess else None,
                     plate_best_guess_score=best_guess[1] if best_guess else None,
+                    snapshot_score=aggregate.snapshot_score,
+                    snapshot_ms=aggregate.snapshot_ms,
                 )
             )
         return tuple(records)

@@ -22,6 +22,7 @@
 import { useMemo, useState } from "react";
 
 import type { CountingLine } from "@/shared/api/contracts";
+import { vehicleSnapshotUrl } from "@/shared/api/jobUrls";
 
 import { ALERT_LIMIT, isViolation, type Alert } from "../model/alerts";
 import { AlertCard } from "./AlertCard";
@@ -37,9 +38,25 @@ interface AlertsSectionProps {
   /** Une règle est-elle déclarée, ou une plaque recherchée ? Sinon rien à dire. */
   armed: boolean;
   onSeek?: ((timestampMs: number) => void) | undefined;
+  /**
+   * Le job **terminé**, pour construire les adresses des captures.
+   *
+   * `null` pendant l'analyse : les fichiers sont écrits à la fin, et une vignette
+   * demandée trop tôt afficherait une image cassée sur chaque alerte.
+   */
+  jobId?: string | null | undefined;
+  /** Ouvre la capture en grand. Absent = la vignette n'est pas cliquable. */
+  onOpenSnapshot?: ((globalId: number) => void) | undefined;
 }
 
-export function AlertsSection({ alerts, lines, armed, onSeek }: AlertsSectionProps) {
+export function AlertsSection({
+  alerts,
+  lines,
+  armed,
+  onSeek,
+  jobId = null,
+  onOpenSnapshot,
+}: AlertsSectionProps) {
   const [facet, setFacet] = useState<Facet>("all");
   const [expanded, setExpanded] = useState(false);
 
@@ -99,8 +116,21 @@ export function AlertsSection({ alerts, lines, armed, onSeek }: AlertsSectionPro
         <>
           <ul className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {shown.map((alert) => (
-              <li key={alert.key}>
-                <AlertCard alert={alert} lines={lines} onSeek={onSeek} />
+              <li key={alert.key} className="flex items-start gap-2">
+                {/* La vignette **à côté** de la carte, pas dedans : la carte est
+                    déjà un bouton qui déplace la lecture, et un bouton dans un
+                    bouton est du HTML invalide. Les deux gestes sont d'ailleurs
+                    distincts — l'un montre le fait, l'autre le prouve. */}
+                {jobId !== null && (
+                  <AlertSnapshot
+                    jobId={jobId}
+                    globalId={alert.globalId}
+                    onOpen={() => onOpenSnapshot?.(alert.globalId)}
+                  />
+                )}
+                <span className="min-w-0 flex-1">
+                  <AlertCard alert={alert} lines={lines} onSeek={onSeek} />
+                </span>
               </li>
             ))}
           </ul>
@@ -155,6 +185,52 @@ function FacetChip({
     >
       {label}
       <span className="ms-1 tabular">{count}</span>
+    </button>
+  );
+}
+
+/**
+ * La preuve, à côté de l'alerte : la photo du véhicule signalé.
+ *
+ * C'est elle qui répond à la question qu'une alerte de plaque pose forcément —
+ * « est-ce bien celle-là ? ». L'OCR perd régulièrement un caractère (ADR 0029), donc
+ * une correspondance annoncée « probable » ne se tranche qu'en regardant.
+ *
+ * **Silencieuse quand il n'y a rien.** La plupart des véhicules n'ont pas de capture,
+ * et la moitié des alertes sont des infractions, où aucune plaque n'a forcément été
+ * lue. Un cadre vide à côté de chaque carte serait du bruit ; `onError` fait
+ * simplement disparaître la vignette.
+ */
+function AlertSnapshot({
+  jobId,
+  globalId,
+  onOpen,
+}: {
+  jobId: string;
+  globalId: number;
+  onOpen: () => void;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed) return null;
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={`Voir la capture du véhicule #${globalId}`}
+      className="shrink-0 overflow-hidden rounded-input ring-1 ring-line/40 transition-transform hover:scale-105"
+    >
+      <img
+        src={vehicleSnapshotUrl(jobId, globalId)}
+        alt={`Capture du véhicule #${globalId}`}
+        width={40}
+        height={40}
+        loading="lazy"
+        decoding="async"
+        className="size-10 bg-base object-cover"
+        onError={() => setFailed(true)}
+      />
     </button>
   );
 }

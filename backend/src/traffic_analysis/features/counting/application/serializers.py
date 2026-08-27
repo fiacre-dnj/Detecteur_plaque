@@ -191,6 +191,13 @@ def serialise_vehicle(record: VehicleRecord) -> dict[str, Any]:
         "plateBestGuessScore": None
         if record.plate_best_guess_score is None
         else _score(record.plate_best_guess_score),
+        # La capture retenue. **Un score et un instant, jamais une URL** : le serveur
+        # ne fabrique pas les adresses du client, qui les construit lui-même depuis
+        # l'identifiant du job et le numéro du véhicule — même convention que la
+        # vidéo déposée. La non-nullité de `snapshotScore` est le drapeau « il existe
+        # une capture ».
+        "snapshotScore": None if record.snapshot_score is None else _score(record.snapshot_score),
+        "snapshotMs": record.snapshot_ms,
     }
 
 

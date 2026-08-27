@@ -7,10 +7,20 @@ routes. Le `JobManager` ne connaît que ces protocoles.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
+
+#: Les deux faces d'une capture de véhicule.
+#:
+#: Déclaré **ici**, dans la couche application, et non dans l'adaptateur qui écrit
+#: les fichiers : c'est un élément de la signature du port, donc l'infrastructure en
+#: dépend et jamais l'inverse (`infrastructure → application → domain`).
+#:
+#: Un `Literal` et non une chaîne libre : ce mot compose un nom de fichier, et un
+#: type fermé est ce qui garantit qu'aucune valeur venue du client n'y entre.
+type SnapshotKind = Literal["vehicle", "plate"]
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
     from typing import Any
 
@@ -18,6 +28,7 @@ if TYPE_CHECKING:
     from traffic_analysis.features.counting.application.dto import (
         AnalysisResultData,
         Progress,
+        VehicleSnapshot,
     )
     from traffic_analysis.features.jobs.domain.records import JobRecord, VideoMetadata
     from traffic_analysis.features.jobs.domain.status import JobStatus
@@ -145,13 +156,32 @@ class ResultStore(Protocol):
         """
         ...
 
+    def write_snapshots(self, job_id: str, snapshots: Mapping[int, VehicleSnapshot]) -> int:
+        """Écrit les captures de véhicules et rend le nombre de fichiers écrits.
+
+        En une passe, à la fin de l'analyse : l'écriture disque n'a rien à faire dans
+        la boucle d'images. Ne lève pas sur une capture isolée — un disque plein ne
+        doit pas faire échouer une analyse dont tous les chiffres sont justes.
+        """
+        ...
+
+    def snapshot_path_for(self, job_id: str, global_id: int, kind: SnapshotKind) -> Path | None:
+        """Chemin d'une capture si elle est encore là, `None` sinon.
+
+        `None` est un état **normal** : les captures suivent le TTL de la vidéo, donc
+        un résultat intact peut très bien les avoir perdues.
+        """
+        ...
+
     def delete_input(self, job_id: str) -> bool:
-        """Supprime **la vidéo déposée** en gardant le résultat. Idempotent.
+        """Supprime **la vidéo déposée et les captures**, garde le résultat. Idempotent.
 
         Une opération distincte de `delete` parce que les deux données n'ont pas la
         même durée de vie légitime : une scène de trafic contient des plaques
         réelles et des visages, un résultat ne contient que des boîtes et des
-        compteurs. La donnée sensible a donc son propre TTL, plus court.
+        compteurs. La donnée sensible a donc son propre TTL, plus court — et une
+        capture recadrée sur une voiture et sa plaque est cette donnée-là, en plus
+        concentré.
 
         Rend `True` si un fichier a réellement été supprimé — ce qui permet à la
         boucle de purge de ne journaliser que ce qui a changé.
