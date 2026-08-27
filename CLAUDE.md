@@ -131,7 +131,7 @@ uv run python scripts/audit_lignes.py                # « pourquoi cette ligne e
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 803 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 817 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -244,35 +244,37 @@ Quatre conséquences à connaître avant d'y toucher :
   recadre `scrollY`, et l'enregistrer au moment de la bascule sauvegarderait la
   valeur déjà tronquée.
 
-#### La disposition du studio, depuis le 2026-08-12 (barre collante, géométrie en tiroir et actions dans le lecteur le 2026-08-19)
+#### La disposition du studio, depuis le 2026-08-12 (barre collante, géométrie en tiroir et actions dans le lecteur le 2026-08-19 ; troisième colonne d'alertes le 2026-08-27)
 
 ```
 ━━ barre COLLANTE sous l'entête (sticky, top: --app-header-h, z-30) ━━━━━━━━━━
 [⇧ Importer] [Détection ▾] [Comptage ▾] [Affichage ▾] [Géométrie ▾]  suivis · cadence · latence · flux →
              └─ tiroir flottant du panneau ouvert, 2 colonnes, PAR-DESSUS la page
-┌──────────────────────────────┬──────────────────┐
-│ nom du fichier ⟨   ⟩ WxH · fps│ RÉSULTATS         │  aside 24 rem
-│ vidéo + canvas + HUD          │ 1 KPI de tête,    │
-│ ┌ LECTURE ───── mm:ss/mm:ss ┐ │   PLEINE LARGEUR  │
-│ │ rail de position          │ │ + 4 (5) cartes    │
-│ │ INTERVALLE ─── mm:ss→mm:ss│ │   par type        │
-│ │ rail d'intervalle         │ │ + 1 carte PAR     │
-│ │ ⏵ ⏮ ⏪ ±1i ⏩ ⏭ ↺  Vitesse  │ │   LIGNE tracée    │
-│ │              [LANCER] [Fermer] │                  │
-│                                │ AVANT L'ANALYSE : │
-│                                │ le KPI de tête à  │
-│                                │ « — », puis AVANT │
-│                                │ DE LANCER, le     │
-│                                │ récapitulatif des │
-│                                │ réglages          │
-├──────────────────────────────┴──────────────────┤
-│ STATISTIQUE — KPI de tête, une rangée par ligne,  │  les trois sections
-│   comparatifs groupés en une carte                │  vivent PENDANT
-│ [camembert flux/ligne] [camembert entrées/type]   │  l'analyse et après
-│ REGISTRE — par véhicule, 2 filtres, export CSV    │  exports à la fin
-│ ALERTES — infractions et plaques recherchées      │  masquée si aucune
-│ (FRANCHISSEMENTS — chronologie, MASQUÉE 08-27)    │  règle ni plaque
-└──────────────────────────────────────────────────┘
+┌─────────────────────────┬────────────────┬──────────────┐
+│ nom du fichier ⟨ ⟩ WxH  │ RÉSULTATS ⌾    │ ALERTES ⌾    │  20 rem + 18 rem
+│ vidéo + canvas + HUD    │ KPI de tête    │ COLLANTE,    │
+│ RIEN d'autre par-dessus │  COLLÉ en haut │ défilement   │
+│ ┌ LECTURE ── mm:ss ────┐│ + KPI interdits│ propre       │
+│ │ rail de position     ││ + 4 (5) cartes │ ⌾ en direct  │
+│ │ INTERVALLE ── →──────││   par type     │ [Tout][Infr.]│
+│ │ rail d'intervalle    ││ + 1 carte PAR  │ [Plaques]    │
+│ │ ⏵ ⏮ ⏪ ±1i ⏩ ⏭ ↺ Vit. ││   LIGNE tracée │ ─ cartes ─   │
+│ │       [LANCER] [Fermer]│                │ vignette +   │
+│                          │ AVANT L'ANALYSE│ quoi/qui/où/ │
+│                          │ le KPI à « — » │ quand, clic  │
+│                          │ puis le récapi-│ = aller à    │
+│                          │ tulatif des    │ l'instant    │
+│                          │ réglages       │              │
+│                          │                │ ABSENTE si   │
+│                          │                │ aucune règle │
+│                          │                │ ni plaque    │
+├─────────────────────────┴────────────────┴──────────────┤
+│ STATISTIQUE — KPI de tête, une rangée par ligne (PAGINÉE   │  les trois sections
+│   au-delà de 6), comparatifs groupés en une carte          │  vivent PENDANT
+│ [camembert flux/ligne] [camembert entrées/type]           │  l'analyse et après
+│ REGISTRE — par véhicule, 2 filtres, export CSV            │  exports à la fin
+│ (FRANCHISSEMENTS — chronologie, MASQUÉE 08-27)            │
+└──────────────────────────────────────────────────────────┘
 ```
 
 **Ce qui a bougé le 2026-08-19, et pourquoi.** Cinq déplacements, tous motivés par
@@ -553,7 +555,28 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
   `mostExitedLine` donnent le compte **brut** (« quelle ligne sert le plus à
   entrer »), là où `strongestInflowLine` / `strongestOutflowLine` donnent le
   **solde net** — une ligne qui reçoit 10 entrées et laisse ressortir 9 est la
-  plus entrée sans être le plus fort afflux, cas verrouillé par un test ;
+  plus entrée sans être le plus fort afflux, cas verrouillé par un test.
+
+  **La liste des lignes est paginée depuis le 2026-08-27**, six rangées par page
+  (`LINES_PER_PAGE`, `model/paging.ts`, testé). La section est **sous** la vidéo :
+  au-delà, la liste devenait le plus long bloc de la page pour sa partie la moins
+  consultée, et repoussait la carte de comparatifs — qui répond déjà à « quelle
+  ligne » — hors de l'écran. Quatre points qui ne se devinent pas :
+  - **la page est bornée à la lecture, jamais corrigée par un effet.** Retirer trois
+    lignes du tracé pendant qu'on lit la dernière page laisserait sinon, le temps
+    d'un rendu, une liste vide sous une pagination qui annonce des rangées.
+    `pageWindow` ramène la page demandée dans les bornes et c'est le cas que son
+    test vise en premier ;
+  - **l'ordre reste celui du tracé**, jamais un tri par fréquentation. La pastille
+    de couleur relie la rangée à un trait sur la vidéo, et les chiffres changent à
+    chaque image pendant l'analyse : trier ferait sauter les rangées sous le
+    curseur. Le classement par valeur existe — il est dans les camemberts et les
+    comparatifs, là où il ne coûte pas ce repère ;
+  - **le rang de chaque ligne est écrit** : deux pages de rangées identiques en tout
+    point sauf les chiffres ne disent pas laquelle on regarde ;
+  - **les commandes n'existent que si elles servent** (`paginated`), et le décompte
+    « Lignes 7–12 sur 14 » passe avant les deux chevrons : c'est lui qui dit qu'il y
+    a une suite, et le seul élément utile quand les deux boutons sont grisés ;
 - **les deux graphiques sont des camemberts côte à côte** (2026-08-17), sur une
   primitive partagée `ui/PieChart.tsx` — un SVG maison de `<path>`, légende et
   chiffres en HTML à côté (même règle que l'ancien histogramme : jamais de
@@ -563,7 +586,37 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
   désormais à « quelle part » : **`flowBucketsByLine` et le clic-pour-se-déplacer
   sont supprimés**, pas masqués — un camembert n'a pas de position temporelle
   sur laquelle caler la lecture, et la barre de lecture standard reste le seul
-  outil pour se déplacer dans le temps ;
+  outil pour se déplacer dans le temps.
+
+  **Les deux tiennent le grand nombre de parts depuis le 2026-08-27**, parce que rien
+  ne borne le nombre de lignes tracées ni de types cochés : à douze lignes, le dessin
+  devenait une roue de lamelles et sa légende, en colonne unique, montait à deux fois
+  la hauteur du camembert — ce qui décrochait le graphique voisin de la rangée.
+  Quatre règles, aucune ne touchant un chiffre (`model/pieSlices.ts`, testé) :
+  - **au-delà de cinq parts, le reste devient UNE part** « N autres », au gris de
+    `--color-line-muted` et jamais à une couleur de donnée — un agrégat coloré comme
+    une ligne se lirait comme une ligne. Un bouton déplie le détail : rien ne
+    disparaît, la lecture d'ensemble passe d'abord ;
+  - **les parts sont classées par valeur décroissante, à tri stable.** Dans l'ordre du
+    tracé, « quelle est la part dominante » se résolvait en comparant des angles à
+    l'œil — ce qu'un camembert existe pour éviter. Le tri retombe sur l'index
+    d'origine à égalité, sinon deux lignes à égalité permuteraient à chaque
+    republication de l'aperçu et le dessin clignoterait pendant l'analyse ;
+  - **les parts sans passage sont comptées, pas listées** (« 6 lignes sans passage »).
+    Six rangées à « 0 — 0 % » prenaient plus de place que les parts qui portent le
+    trafic ; le fait n'est pas perdu, il se lit dans la rangée de Statistique de la
+    ligne et dans ses quasi-franchissements, qui disent en plus pourquoi. Et une part
+    agrégée **nulle** n'est pas tracée du tout : un secteur d'angle nul est invisible
+    sur le dessin et occuperait une rangée de légende ;
+  - **la légende est en `auto-fill` et les deux cartes s'étirent**, donc le graphique
+    ne sait pas — et n'a pas à savoir — s'il occupe une demi-rangée ou toute la page.
+    Le passage côte à côte a reculé de `sm` à `lg` pour la même raison : à 640 px en
+    deux colonnes, la légende tombait sous le dessin.
+
+  **`unit` et `metric` sont des props, pas des devinettes** : un camembert de lignes
+  compte des **passages**, un camembert de types compte des **entrées**. Les
+  confondre dans une phrase de regroupement serait une erreur d'unité invisible, les
+  deux chiffres étant plausibles (invariant 3) ;
 - **le Registre n'est plus « inchangé »** (2026-08-17). Le titre `<h2>Registre</h2>`
   que `StudioPage` empilait au-dessus est retiré — `VehicleRegistry` porte déjà
   le sien, « Registre des véhicules », et les deux se lisaient comme deux
@@ -606,9 +659,10 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
     un test le verrouille. La colonne est décidée sur `vehicles` entier et non sur
     les lignes rendues : une colonne qui apparaîtrait au défilement d'un tableau
     virtualisé décalerait toutes les autres sous le curseur ;
-- **les Franchissements sont MASQUÉS depuis le 2026-08-27**, et remplacés à cette
-  place par la section **Alertes** ([ADR
-  0041](docs/adr/0041-les-alertes-se-calculent-cote-client.md)). Un seul mot à
+- **les Franchissements sont MASQUÉS depuis le 2026-08-27**, et le bas de page n'a
+  rien reçu à leur place : les **Alertes** y ont vécu quelques heures avant de
+  monter dans la troisième colonne, à côté de la scène ([ADR
+  0043](docs/adr/0043-les-alertes-quittent-la-video-pour-une-colonne.md)). Un seul mot à
   changer pour les rendre : `SHOW_CROSSING_TIMELINE` dans `StudioPage`, typé
   `boolean` exprès pour que TypeScript ne réduise pas la condition à `false` et que
   le lint ne la signale pas comme inutile. `CrossingTimeline.tsx`,
@@ -1367,7 +1421,10 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       cours, et écrire un numéro de plaque dans le `localStorage` du poste franchirait
       le cran de confidentialité que le projet impose déjà en laissant l'OCR décoché.
 
-    [ADR 0041](docs/adr/0041-les-alertes-se-calculent-cote-client.md).
+    [ADR 0041](docs/adr/0041-les-alertes-se-calculent-cote-client.md), que
+    [ADR 0043](docs/adr/0043-les-alertes-quittent-la-video-pour-une-colonne.md)
+    complète en les déplaçant dans une colonne : ni la pile flottante posée sur la
+    vidéo ni la section du bas de page n'existent plus, et aucun calcul ne change.
 33. **Un véhicule dont la plaque est lue reçoit une photo, et une seule.** Deux JPEG
     — le véhicule recadré, sa plaque — pris sur la **même** image, celle dont la
     lecture est la plus sûre. Cinq points :
@@ -1430,6 +1487,68 @@ Cinq points qui ne se devinent pas :
   Un « 0 infraction » sous une règle que personne n'a déclarée se lit « aucune
   infraction », l'inverse de la vérité — même honnêteté que le « — » de « Passages en
   entrée ».
+
+**Elles vivent dans une colonne, jamais sur la vidéo** (soir du 2026-08-27, [ADR
+0043](docs/adr/0043-les-alertes-quittent-la-video-pour-une-colonne.md)). La pile
+flottante posée sur la scène et la section du bas de page sont **supprimées** — pas
+masquées : les deux rendaient la même liste, et c'était le double emploi qui posait
+problème. Il reste `AlertsPanel`, dans la troisième piste de la grille du studio.
+Cinq points :
+
+- **la page ne change pas de forme, et deux tentatives l'ont prouvé.** Le cadre reste
+  à `max-w-[1600px]` et la gouttière à 1,5 rem (`--app-gutter`, un seul jeton pour
+  l'entête, le contenu et le fond débordé de la barre du studio). Les deux ont été
+  réduits — 2100 px, puis 0,75 / 1 rem — et annulés le jour même : la page y gagnait
+  une centaine de pixels et y perdait ses marges, donc sa respiration. **Une marge
+  n'est pas de la place perdue** ;
+- **la place vient des colonnes, puis de la scène.** Les résultats passent de 23 à
+  20 rem quand les alertes sont là, celles-ci prennent 18, et la scène absorbe le
+  reste — une vidéo garde ses proportions à toute largeur, une carte de KPI non.
+  Mesuré à 1856 px : cadre de 1600 centré, 1552 px de contenu, `912 | 320 | 288`
+  avec alertes contre `1168 | 368` sans ;
+- **les deux pistes de droite sont de poids voisin** (20 et 18 rem). À 23 / 19, la
+  seconde se lisait comme la retombée de la première — une bande de reste. Deux
+  colonnes de même poids annoncent deux lectures de même rang, ce que « ce qui est
+  compté » et « ce qui est signalé » sont exactement ;
+- **le chiffre de tête ne défile pas.** Dans les Résultats, l'entête et « Passages en
+  entrée » sont collés en haut du défilement, le reste passe dessous : c'est le total
+  auquel **toutes** les autres cartes se comparent — les cartes par type en sont la
+  somme exacte, les entrées des cartes par ligne aussi — et sorti de l'écran il
+  obligeait à remonter pour retrouver le total dont on venait de lire le détail. Fond
+  opaque obligatoire, et `-top-px` plutôt que `top-0` : un arrondi de sous-pixel
+  laisse sinon passer une ligne de carte au-dessus de la tête ;
+- **le défilement des deux colonnes est dessiné** (`.panel-scroll`, index.css) :
+  curseur de 8 px au jeton `--color-line`, piste transparente, et surtout
+  `scrollbar-gutter: stable` — sans elle, l'apparition de la barre au moment où une
+  carte de trop arrive décale tout le contenu de la colonne. La barre système fait
+  17 px opaques sur Windows, soit 5 % d'une colonne de 20 rem, et il y en aurait deux
+  côte à côte ;
+- **elles portent les mêmes classes de calage et la même entête**
+  (`shared/ui/PanelHeading`, dans `shared` parce qu'aucune des deux features n'a le
+  droit d'importer l'autre et qu'un demi-pixel d'écart entre deux titres côte à côte
+  se voit). Chacune a son **propre** défilement : sans cela, la plus longue des deux
+  imposerait sa hauteur à la rangée, donc à la scène, et la vidéo se retrouverait en
+  haut de trois écrans de vide ;
+- **le repère d'activité est sur les deux, et c'est un point sans un mot** : les
+  cartes de résultats sont **identiques** pendant l'analyse et après — un seul jeu de
+  composants pour deux sources de même forme — donc rien ne disait laquelle on
+  regardait. Il a porté le texte « en direct » quelques heures : deux mots par
+  colonne, sur deux colonnes de 20 rem, pour ce qu'un point suffit à dire. Le mot
+  survit en `sr-only` et en `title`, un point ne disant rien à un lecteur d'écran ;
+- **la piste n'existe que si `alertsArmed`**, et sa classe de grille est donc
+  calculée. Trois pistes avec deux enfants laisseraient une colonne vide — 18 rem
+  pris à la vidéo pour rien, sur tous les tracés sans règle ;
+- **elle n'apparaît qu'à `2xl`.** En dessous, le panneau passe **sous** les deux
+  colonnes (`xl:col-span-2`), et sa grille en `auto-fill` y rend quatre cartes par
+  rangée au lieu d'une — aucun point de rupture ne lui dit où il se trouve ;
+- **`sticky` exige `self-start`** : un enfant de grille s'étire sur toute la hauteur
+  de sa rangée, et `sticky` n'a alors plus rien à faire. Le défilement est borné à la
+  hauteur de la fenêtre : le journal plafonne à 200 entrées, et une colonne sans fin
+  repousserait le bas de page à chaque événement ;
+- **une seule région vivante, et elle ne porte qu'un nombre.** La pile flottante
+  annonçait chaque carte en `aria-live` ; sur un carrefour chargé cela faisait d'un
+  lecteur d'écran un métronome. Le compteur (« 7 alertes »), affiché pendant
+  l'analyse seulement, dit qu'il se passe quelque chose en une phrase courte.
 
 Une alerte est **cliquable** et amène la tête de lecture à son instant — la seule
 chose de cet écran qui le soit. L'ancienne chronologie cliquable avait été retirée
@@ -1788,7 +1907,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1586 (1 skip) | 803 |
+| Nombre | 1586 (1 skip) | 817 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 
