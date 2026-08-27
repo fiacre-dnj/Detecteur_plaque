@@ -24,6 +24,14 @@
  * - la **colonne de droite** ne porte plus que des chiffres : le bilan du carrefour,
  *   la Répartition par type qui le découpe, et les messages qui expliquent une
  *   absence de chiffre ;
+ * - **une troisième colonne apparaît quand l'analyse a quelque chose à signaler**
+ *   (une règle posée sur le tracé, ou une plaque recherchée) : les alertes y vivent,
+ *   à hauteur d'œil et à côté de la scène. Elles étaient à deux endroits, tous deux
+ *   mauvais — une pile flottante **posée sur la vidéo**, illisible sur du bitume et
+ *   qui masquait l'image qu'elle faisait regarder, et une section en bas de page où
+ *   personne n'était pendant l'analyse. Les gouttières de la page se sont resserrées
+ *   dans le même mouvement (`--app-gutter`) : la colonne est prise sur la marge,
+ *   pas sur la scène ;
  * - la **chronologie** reste en bas, et reste affichée **après** l'analyse — c'est
  *   la seule vue qui dise *quand* et *dans quel sens*.
  *
@@ -63,8 +71,7 @@ import {
   type AnalysisRange,
 } from "@/entities/analysis-range";
 import {
-  AlertToasts,
-  AlertsSection,
+  AlertsPanel,
   alertsFromResult,
   matchPlate,
   useAlertLog,
@@ -1167,9 +1174,41 @@ export function StudioPage() {
 
       {/* La colonne de droite porte désormais les **résultats**, pas les réglages :
           les chiffres se lisent à côté de la scène qui les produit, au lieu d'être
-          repoussés sous elle. 24 rem plutôt que 20 : neuf cartes en deux colonnes y
-          tiennent sans que les libellés se coupent. */}
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_24rem]">
+          repoussés sous elle. 23 rem plutôt que 20 : neuf cartes en deux colonnes y
+          tiennent sans que les libellés se coupent, et les cartes par ligne — nom
+          tronqué, entrées, sorties, solde, barre — y gardent exactement leur
+          rendu.
+
+          **Et une troisième piste quand il y a quelque chose à signaler** : les
+          alertes à droite des résultats, à hauteur de la scène. Trois précisions :
+
+          - **la piste n'existe que si `alertsArmed`.** Une grille à trois pistes avec
+            deux enfants laisserait une colonne vide, donc une scène amputée de 19 rem
+            pour rien — c'est pourquoi la liste des classes est calculée et non écrite
+            en dur ;
+          - **elle n'apparaît qu'à `2xl`.** En dessous, la place manque : les alertes
+            passent alors **sous** les deux colonnes (`xl:col-span-2`), sur toute la
+            largeur, où leur grille en `auto-fill` rend quatre cartes par rangée au
+            lieu d'une ;
+          - **les deux pistes de droite sont presque égales** (20 et 18 rem), et ce
+            n'est pas de la symétrie pour la symétrie : à 23 / 19, la seconde se
+            lisait comme la retombée de la première — une bande de reste. Deux
+            colonnes de même poids annoncent deux lectures de même rang, ce que « ce
+            qui est compté » et « ce qui est signalé » sont exactement ;
+          - **elles se resserrent quand elles sont deux** (23 → 20 rem pour les
+            résultats), et c'est là que la place de la colonne d'alertes est prise.
+            **Pas sur les marges de la page** : la gouttière et le cadre ont été
+            réduits une fois, et la page en est devenue suffocante — les marges sont
+            ce qui la rend lisible. La scène prend le reste sur elle : une vidéo garde
+            ses proportions à toute largeur, une carte de KPI non. */}
+      <div
+        className={[
+          "grid gap-4",
+          alertsArmed
+            ? "xl:grid-cols-[minmax(0,1fr)_20rem] 2xl:grid-cols-[minmax(0,1fr)_20rem_18rem]"
+            : "xl:grid-cols-[minmax(0,1fr)_23rem]",
+        ].join(" ")}
+      >
         <div className="space-y-3">
           <DropZone disabled={busy} onFile={handleFile}>
           <VideoScene
@@ -1286,23 +1325,12 @@ export function StudioPage() {
                 )}
               </div>
             )}
-            {/* La pile d'alertes, sur la scène et **pendant** que ça tourne : au
-                moment où un véhicule remonte une ligne à sens unique, l'écran montre
-                la vidéo, pas le bas de page. Une alerte qui n'apparaît que dans une
-                section qu'il faut aller chercher n'alerte personne.
-
-                Le journal **vivant** et non `alerts` : une fois l'analyse terminée,
-                les alertes se relisent dans leur section, où l'on peut les filtrer
-                et cliquer — les empiler sur la vidéo qu'on est en train de vérifier
-                masquerait justement ce qu'on vérifie.
-
-                Marquée comme la surface de tracé : un clic pour renvoyer une alerte
-                ne doit pas refermer le tiroir de réglages ouvert à côté. */}
-            {alertsArmed && (analysing || live.active) && (
-              <div className="contents" {...{ [KEEP_PANELS_OPEN_ATTR]: "" }}>
-                <AlertToasts alerts={liveAlerts} lines={geometry.lines} />
-              </div>
-            )}
+            {/* **Rien d'autre sur la scène.** La pile d'alertes flottante vivait ici,
+                en bas à droite de l'image : trois cartes sur du bitume, illisibles
+                dès que le fond est clair, et qui couvraient la voie de droite —
+                c'est-à-dire souvent le véhicule même qu'elles signalaient. Les
+                alertes sont maintenant dans la troisième colonne, à côté de la
+                scène : visibles pendant l'analyse sans rien recouvrir. */}
           </VideoScene>
           </DropZone>
 
@@ -1399,7 +1427,27 @@ export function StudioPage() {
           )}
         </div>
 
-        <aside aria-label="Résultats" className="space-y-4">
+        {/* Les deux colonnes de droite portent **les mêmes** classes de calage, et
+            c'est ce qui fait qu'elles se lisent comme une paire : collées sous la
+            barre, alignées en haut de la rangée (`self-start`, sans quoi un enfant
+            de grille s'étire et `sticky` n'a plus rien à faire), et chacune avec son
+            propre défilement borné à la hauteur de la fenêtre.
+
+            Sans le défilement propre, la colonne la plus longue — dix lignes tracées
+            d'un côté, deux cents alertes de l'autre — imposerait sa hauteur à la
+            rangée, donc à la scène : la vidéo se retrouverait en haut d'un bloc de
+            trois écrans de vide. */}
+        <aside
+          aria-label="Résultats"
+          className={[
+            "min-w-0 space-y-4 panel-scroll",
+            "2xl:sticky 2xl:top-[calc(var(--app-header-h,0px)+3.75rem)] 2xl:self-start",
+            // `panel-scroll` : la barre du système fait 17 px opaques sur Windows,
+            // soit 5 % d'une colonne de 20 rem, et `scrollbar-gutter: stable` évite
+            // que les cartes sautent au moment où la barre apparaît.
+            "2xl:max-h-[calc(100dvh-var(--app-header-h,0px)-5rem)] 2xl:overflow-y-auto",
+          ].join(" ")}
+        >
           {/* Les chiffres **en tête de colonne**, à hauteur de la scène. C'est ce
               que l'utilisateur vient lire, et c'était en bas de page.
 
@@ -1418,6 +1466,11 @@ export function StudioPage() {
               stats={resultStats.stats}
               lines={geometry.lines}
               selectedClasses={selectedClasses}
+              // Le même repère « en direct » que la colonne des alertes, et pour la
+              // même raison : ces cartes sont **identiques** pendant l'analyse et
+              // après, un seul jeu de composants pour deux sources de même forme. Ce
+              // qu'aucun chiffre ne dit, c'est laquelle on regarde.
+              live={analysing || live.active}
             />
           )}
 
@@ -1476,6 +1529,61 @@ export function StudioPage() {
               retenue » disparaît avec eux : l'intervalle est écrit deux rangées
               au-dessus du bouton, dans l'entête du rail qui le dessine. */}
         </aside>
+
+        {/* ── Troisième colonne : ce que l'analyse SIGNALE ────────────────────
+            Elle n'existe que s'il y a quelque chose à signaler, et c'est le même
+            juge que partout ailleurs (`alertsArmed`) : sans règle posée ni plaque
+            recherchée, un panneau « Alertes » vide se lirait « rien à signaler »
+            alors que la vérité est « on n'a rien demandé de signaler ».
+
+            Quatre décisions dans ces classes, et aucune n'est cosmétique :
+
+            - **`2xl:col-span-1` contre `xl:col-span-2`** : la colonne n'apparaît
+              qu'au-delà de 1536 px. En dessous, le panneau passe sous la scène **et**
+              les résultats, sur toute la largeur — sa grille en `auto-fill` s'y étale
+              d'elle-même ;
+            - **`sticky` + `self-start`** : sans `self-start`, l'enfant d'une grille
+              s'étire sur toute la hauteur de la rangée et `sticky` n'a plus rien à
+              faire. Avec, les alertes restent en vue pendant que l'on descend lire la
+              Statistique et le Registre ;
+            - **son propre défilement**, borné à la hauteur de la fenêtre moins
+              l'entête : un carrefour chargé produit deux cents alertes, et une colonne
+              qui grandit sans fin repousserait le bas de page à chaque événement —
+              exactement le défaut qui gardait l'ancienne section en dernier ;
+            - **`live`** distingue l'analyse en cours de la relecture. C'est ce qui
+              remplace la pile flottante : un repère qui pulse et le seul compteur
+              vivant de l'écran, à l'endroit où les cartes arrivent. */}
+        {alertsArmed && (
+          <aside
+            aria-label="Alertes"
+            className={[
+              "min-w-0 panel-scroll xl:col-span-2 2xl:col-span-1",
+              "2xl:sticky 2xl:top-[calc(var(--app-header-h,0px)+3.75rem)] 2xl:self-start",
+              // Le même défilement discret que la colonne des résultats : deux
+              // barres système côte à côte sur deux colonnes voisines, c'étaient
+              // deux rails gris dans un thème qui n'en a pas.
+              "2xl:max-h-[calc(100dvh-var(--app-header-h,0px)-5rem)] 2xl:overflow-y-auto",
+            ].join(" ")}
+          >
+            <AlertsPanel
+              alerts={alerts}
+              lines={geometry.lines}
+              armed={alertsArmed}
+              live={analysing || live.active}
+              // Le job terminé seulement : les captures sont écrites à la fin, et une
+              // vignette demandée pendant l'analyse afficherait une image cassée sur
+              // chaque alerte — au moment précis où elles arrivent.
+              jobId={session.result?.jobId ?? null}
+              onOpenSnapshot={setAlertSnapshot}
+              // Aucun déplacement de la vidéo pendant qu'elle est pilotée par
+              // l'aperçu : le calage image par image reprendrait la main aussitôt, et
+              // le clic paraîtrait sans effet.
+              onSeek={
+                session.result !== null && !analysing && !live.active ? seekToAlert : undefined
+              }
+            />
+          </aside>
+        )}
       </div>
 
       {/* ── Sous la vidéo : Statistique, camemberts, Registre ───────────────
@@ -1508,17 +1616,23 @@ export function StudioPage() {
           />
 
           {/* Deux camemberts côte à côte : la même question, « quelle part »,
-              posée sur deux axes différents — par ligne, par type de
-              véhicule. */}
+              posée sur deux axes différents — par ligne, par type de véhicule.
+
+              **`lg` et non `sm` pour les mettre côte à côte** : chaque camembert est
+              un dessin de 7 rem plus une légende dont la largeur utile est de 11 rem,
+              et à 640 px de large en deux colonnes la légende passait sous le dessin
+              — deux blocs étroits et hauts au lieu de deux graphiques. Au-delà, les
+              deux légendes se mettent d'elles-mêmes en deux colonnes (`auto-fill`),
+              ce qui est exactement ce qu'il faut quand le tracé porte dix lignes. */}
           <Suspense
             fallback={
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3 lg:grid-cols-2">
                 <div className="h-48 rounded-card bg-surface" />
                 <div className="h-48 rounded-card bg-surface" />
               </div>
             }
           >
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid items-stretch gap-3 lg:grid-cols-2">
               <LineFlowChart stats={dashboardStats} lines={geometry.lines} />
               <ClassEntriesChart
                 entries={dashboardEntries}
@@ -1568,29 +1682,6 @@ export function StudioPage() {
       {SHOW_CROSSING_TIMELINE && timelineEvents !== null && !live.active && (
         <CrossingTimeline events={timelineEvents} lines={geometry.lines} live={analysing} />
       )}
-
-      {/* **Les alertes prennent la place de la chronologie**, en dernier et pour la
-          même raison : la section grandit au fil de l'analyse, et la placer plus haut
-          repousserait les sections stables hors de l'écran à chaque événement.
-
-          Elle vit dans les **trois** modes, contrairement à la chronologie : ses
-          infractions se dérivent des franchissements, que le direct publie aussi. Ce
-          qui manque en caméra est la recherche de plaque, faute d'ANPR — et cela se
-          voit dans le tiroir Détection, pas ici. */}
-      <AlertsSection
-        alerts={alerts}
-        lines={geometry.lines}
-        armed={alertsArmed}
-        // Le job terminé seulement : les captures sont écrites à la fin, et une
-        // vignette demandée pendant l'analyse afficherait une image cassée sur
-        // chaque alerte — au moment précis où elles arrivent.
-        jobId={session.result?.jobId ?? null}
-        onOpenSnapshot={setAlertSnapshot}
-        // Aucun déplacement de la vidéo pendant qu'elle est pilotée par l'aperçu :
-        // le calage image par image reprendrait la main aussitôt, et le clic
-        // paraîtrait sans effet.
-        onSeek={session.result !== null && !analysing && !live.active ? seekToAlert : undefined}
-      />
 
       {/* La capture ouverte depuis une alerte. Montée seulement une fois ouverte :
           un `<dialog>` fermé ne rend rien, et ses deux images ne doivent pas se

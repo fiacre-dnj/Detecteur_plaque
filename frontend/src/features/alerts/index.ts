@@ -13,5 +13,4 @@ export { matchPlate, plateHits, type PlateHit, type PlateMatch } from "./model/p
 export { alertsFromResult } from "./model/replayAlerts";
 export { useAlertLog } from "./model/useAlertLog";
 export { AlertCard } from "./ui/AlertCard";
-export { AlertToasts } from "./ui/AlertToasts";
-export { AlertsSection } from "./ui/AlertsSection";
+export { AlertsPanel } from "./ui/AlertsPanel";

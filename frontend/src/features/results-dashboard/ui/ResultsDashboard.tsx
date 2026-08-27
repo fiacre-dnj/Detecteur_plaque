@@ -16,7 +16,9 @@
  *
  * **Trois étages, un seul chiffre de tête.**
  *
- * 1. **« Passages en entrée »**, sur toute la largeur et en `size="lg"`. Il
+ * 1. **« Passages en entrée »**, sur toute la largeur, en `size="lg"` et **collé en
+ *    haut du défilement de la colonne** : c'est le chiffre auquel toutes les autres
+ *    cartes se comparent, et il perdait sa fonction dès qu'il sortait de l'écran. Il
  *    s'appelait « Entrées au carrefour » : le mot nommait un lieu que
  *    l'utilisateur n'a pas forcément — sur une route à sens unique avec une seule
  *    ligne, il ne veut rien dire alors que le chiffre, lui, reste juste. Le nom
@@ -52,6 +54,7 @@ import type { AnalysisStats, CountingLine } from "@/shared/api/contracts";
 import { classLabel } from "@/shared/lib/classes";
 import type { LineRule } from "@/shared/lib/lineRules";
 import { MetricCard } from "@/shared/ui/MetricCard";
+import { PanelHeading } from "@/shared/ui/PanelHeading";
 
 import { flowBalance } from "../model/directions";
 import { entriesByClass } from "../model/entriesByClass";
@@ -87,6 +90,16 @@ interface ResultsDashboardProps {
    * « Passages en entrée » quand aucun rôle n'est déclaré.
    */
   rules: ReadonlyMap<string, LineRule>;
+  /**
+   * L'analyse tourne-t-elle ?
+   *
+   * N'affecte **aucun chiffre** — seulement le repère « en direct » de l'entête,
+   * le même que celui de la colonne des alertes. Sans lui, rien ne distingue à
+   * l'écran des compteurs qui montent d'un résultat relu et figé : les deux
+   * rendent exactement les mêmes cartes, et c'est voulu (un seul jeu de
+   * composants, deux sources de même forme).
+   */
+  live?: boolean;
 }
 
 export function ResultsDashboard({
@@ -94,6 +107,7 @@ export function ResultsDashboard({
   lines,
   selectedClasses,
   rules,
+  live = false,
 }: ResultsDashboardProps) {
   const flow = flowBalance(stats, lines);
   const entries = entriesByClass(stats, lines);
@@ -102,33 +116,48 @@ export function ResultsDashboard({
 
   return (
     <section aria-labelledby="cards-title">
-      <h3 id="cards-title" className="label-micro mb-3">
-        Résultats
-      </h3>
+      {/* ── La tête de colonne, COLLÉE ────────────────────────────────────────
+          L'entête et le chiffre de tête restent en haut quand le reste défile
+          dessous. Ce n'est pas de la décoration : la colonne peut porter dix cartes
+          par ligne tracée, et « Passages en entrée » est le chiffre auquel toutes
+          les autres se comparent — il perdait sa fonction dès qu'il sortait de
+          l'écran, et il fallait remonter pour retrouver le total dont on venait de
+          lire le détail.
+
+          Trois détails qui la font tenir :
+
+          - **`bg-base` opaque et `backdrop-blur`** : les cartes passent dessous, et
+            une tête translucide sur des chiffres en mouvement est illisible ;
+          - **l'entête est au **même** composant que celle des alertes**
+            (`PanelHeading`) : les deux colonnes sont côte à côte à la même hauteur,
+            et deux titres qui ne s'alignent pas se lisent comme deux niveaux
+            d'information ;
+          - **`-top-px`** et non `top-0` : un pixel de recouvrement, sinon un
+            arrondi de sous-pixel laisse passer une ligne de carte au-dessus de la
+            tête pendant le défilement. */}
+      <div className="sticky -top-px z-10 space-y-2 bg-base/95 pb-3 pt-px backdrop-blur">
+        <PanelHeading id="cards-title" title="Résultats" live={live} />
+
+        {/* « — » et non « 0 » quand aucun rôle n'est déclaré : deux zéros se
+            liraient comme « personne n'entre », alors que la vérité est « personne
+            ne l'a encore dit » — le seul cas restant est l'absence de toute ligne,
+            le rôle étant obligatoire depuis ADR 0021. */}
+        <MetricCard
+          size="lg"
+          label="Passages en entrée"
+          value={flow.declared ? flow.entries.toString() : "—"}
+          // Somme des passages sur tous les sens marqués « entrée », toutes
+          // lignes confondues : le nombre de passages qui rentrent dans la zone
+          // comptée, pas seulement sur une ligne prise isolément.
+          hint={
+            flow.declared
+              ? "Total des passages sur les sens marqués « entrée », toutes lignes"
+              : "Ajoutez une ligne dans Géométrie pour obtenir ce chiffre"
+          }
+        />
+      </div>
+
       <div className="grid grid-cols-2 gap-2">
-        {/* La tête de lecture, sur les deux colonnes : c'est le chiffre qu'on
-            vient chercher, et il est seul de son poids.
-
-            « — » et non « 0 » quand aucun rôle n'est déclaré : deux zéros se
-            liraient comme « personne n'entre », alors que la vérité est
-            « personne ne l'a encore dit » — le seul cas restant est l'absence de
-            toute ligne, le rôle étant obligatoire depuis ADR 0021. */}
-        <div className="col-span-2">
-          <MetricCard
-            size="lg"
-            label="Passages en entrée"
-            value={flow.declared ? flow.entries.toString() : "—"}
-            // Somme des passages sur tous les sens marqués « entrée », toutes
-            // lignes confondues : le nombre de passages qui rentrent dans la zone
-            // comptée, pas seulement sur une ligne prise isolément.
-            hint={
-              flow.declared
-                ? "Total des passages sur les sens marqués « entrée », toutes lignes"
-                : "Ajoutez une ligne dans Géométrie pour obtenir ce chiffre"
-            }
-          />
-        </div>
-
         {/* **L'infraction, juste sous le bilan, et seulement si une règle existe.**
             Le rouge dit ici la gravité d'un fait de la scène et non un échec de
             l'application : c'est la seule extension consentie à l'usage du jeton

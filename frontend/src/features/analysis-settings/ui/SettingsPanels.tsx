@@ -32,7 +32,10 @@
  * `AppShell` mesure). Le bas de page s'est allongé — quatre sections de résultats
  * plus la chronologie — et les réglages, l'import et les compteurs techniques
  * partaient donc hors de l'écran dès qu'on lisait le registre. Elle porte son propre
- * fond opaque, débordé jusqu'aux gouttières de la page (`-mx-6 px-6`) : sans lui, la
+ * fond opaque, débordé jusqu'aux gouttières de la page (`--app-gutter`, le même
+ * jeton que l'entête et le contenu : une valeur écrite en dur ici finirait par
+ * diverger de celle de la page, et la barre peindrait son fond à côté de la
+ * gouttière qu'elle couvre) : sans lui, la
  * vidéo défilerait visiblement *sous* les pilules.
  *
  * **Les tiroirs ne sont pas tous d'ici.** `panels` en accepte d'autres, fournis par
@@ -617,7 +620,8 @@ export function SettingsPanels({
       ref={root}
       className={[
         "sticky top-[var(--app-header-h,0px)] z-30",
-        "-mx-6 border-b border-line/40 bg-base/95 px-6 py-2 backdrop-blur",
+        "mx-[calc(var(--app-gutter)*-1)] px-[var(--app-gutter)]",
+        "border-b border-line/40 bg-base/95 py-2 backdrop-blur",
       ].join(" ")}
     >
       <div className="flex flex-wrap items-center gap-2">

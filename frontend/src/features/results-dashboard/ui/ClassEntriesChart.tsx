@@ -34,6 +34,12 @@ export function ClassEntriesChart({ entries, classes }: ClassEntriesChartProps) 
       title="Répartition des entrées"
       slices={slices}
       emptyMessage="Aucune entrée sur la période analysée."
+      // « entrée » et non « passage » : ce camembert découpe « Passages en entrée »
+      // et rien d'autre. Deux unités dans la même section, c'est l'erreur que
+      // l'invariant 3 interdit — et elle serait invisible, les deux chiffres étant
+      // plausibles.
+      unit={{ one: "type", many: "types" }}
+      metric="entrée"
     />
   );
 }

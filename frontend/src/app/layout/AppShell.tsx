@@ -13,6 +13,17 @@
  * de décalage à chaque changement de hauteur de l'entête (ex. un message
  * d'erreur du badge serveur qui passe sur deux lignes).
  *
+ * **Ses gouttières viennent d'un jeton, pas d'une classe** : `--app-gutter`
+ * (index.css) est lu ici, par le contenu et par le fond débordé de la barre du
+ * studio. Écrite trois fois en dur, la valeur finissait par diverger — et le
+ * symptôme est une barre collante qui peint son fond à côté des gouttières
+ * qu'elle couvre.
+ *
+ * **Ni la gouttière ni `max-w` ne servent à gagner de la place**, et les deux ont
+ * été essayés : 0,75 rem de gouttière puis un cadre à 2100 px, tous deux annulés le
+ * jour même. Les marges de la page sont ce qui l'empêche d'étouffer ; la place d'une
+ * colonne se prend sur la **largeur des colonnes elles-mêmes**, dans `StudioPage`.
+ *
  * Sa hauteur **mesurée** est publiée dans `--app-header-h` (`useHeaderHeight`) :
  * la barre de réglages du studio s'y colle à son tour, et une entête qui s'enroule
  * ou qui grandit d'un message d'erreur déplacerait sinon la barre derrière elle.
@@ -40,7 +51,7 @@ export function AppShell() {
         ref={header}
         className="sticky top-0 z-40 border-b border-line/40 bg-base/95 backdrop-blur"
       >
-        <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-x-8 gap-y-3 px-6 py-4">
+        <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-x-8 gap-y-3 px-[var(--app-gutter)] py-4">
           <div className="min-w-0">
             <h1 className="text-heading font-bold leading-tight text-ink">
               Comptage de véhicules
@@ -82,7 +93,7 @@ export function AppShell() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1600px] px-6 py-6">
+      <main className="mx-auto max-w-[1600px] px-[var(--app-gutter)] py-6">
         {/* Les trois pages restent **montées**, seule la visible est affichée :
             changer d'onglet ne doit pas coûter la vidéo importée, le tracé et le
             résultat en cours. Chacune porte sa propre frontière de suspense, donc

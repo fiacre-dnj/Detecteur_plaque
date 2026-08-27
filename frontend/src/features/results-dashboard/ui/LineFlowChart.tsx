@@ -43,6 +43,12 @@ export function LineFlowChart({ stats, lines }: LineFlowChartProps) {
       title="Flux de passage par ligne"
       slices={slices}
       emptyMessage="Aucun franchissement sur la période analysée."
+      // Rien ne borne le nombre de lignes qu'on peut tracer : au-delà de cinq, le
+      // camembert replie le reste dans une part grise et la légende passe en deux
+      // colonnes (voir `groupSlices`). Les passages, eux, ne sont pas regroupés —
+      // ils restent lisibles rangée par rangée dans « Statistique » juste au-dessus.
+      unit={{ one: "ligne", many: "lignes" }}
+      metric="passage"
     />
   );
 }

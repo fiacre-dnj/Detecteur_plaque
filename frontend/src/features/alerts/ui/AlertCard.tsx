@@ -30,11 +30,9 @@ interface AlertCardProps {
   lines: readonly CountingLine[];
   /** Amène la tête de lecture à l'instant du fait. Absent = carte inerte. */
   onSeek?: ((timestampMs: number) => void) | undefined;
-  /** Compacte : la pile flottante, où la place est comptée. */
-  compact?: boolean;
 }
 
-export function AlertCard({ alert, lines, onSeek, compact = false }: AlertCardProps) {
+export function AlertCard({ alert, lines, onSeek }: AlertCardProps) {
   const look = ALERT_LOOK[alert.kind];
   const headingDeg =
     alert.line === null || alert.direction === null
@@ -89,11 +87,13 @@ export function AlertCard({ alert, lines, onSeek, compact = false }: AlertCardPr
         </p>
       )}
 
-      {!compact && (
-        <p className="mt-0.5 text-micro text-ink-dim">
-          {look.describe({ lineName: alert.line?.name ?? null, watched: alert.watched })}
-        </p>
-      )}
+      {/* Le motif, en clair. Il était masqué dans la pile flottante posée sur la
+          vidéo, faute de place ; celle-ci a disparu avec son manque de place, et
+          c'est cette phrase qui distingue « voie réservée » de « sens interdit »
+          sans avoir à relire le tracé. */}
+      <p className="mt-0.5 text-micro text-ink-dim">
+        {look.describe({ lineName: alert.line?.name ?? null, watched: alert.watched })}
+      </p>
     </>
   );
 

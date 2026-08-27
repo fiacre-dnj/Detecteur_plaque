@@ -8,7 +8,8 @@
  * 1. un chiffre de tête, le total de véhicules ayant emprunté le carrefour ;
  * 2. une rangée compacte par ligne : nom, entrées/sorties/solde/part et une
  *    barre bidirectionnelle **unique** (un segment entrée, un segment sortie,
- *    côte à côte plutôt qu'empilés sur deux lignes) ;
+ *    côte à côte plutôt qu'empilés sur deux lignes) — **paginée** au-delà de
+ *    `LINES_PER_PAGE`, voir plus bas ;
  * 3. des comparatifs entre lignes (`highlights.ts`), regroupés dans **une
  *    seule carte** plutôt qu'une par comparatif — six `MetricCard` à 1,75 rem
  *    de chiffre et `p-4` de marge pour une phrase chacune laissaient la moitié
@@ -17,6 +18,9 @@
  * L'occupation de zone (présente dans l'ancien onglet) **n'a pas d'équivalent
  * ici** — décision assumée : ce tableau de bord ne parle que de lignes.
  */
+
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import { useState, type ReactNode } from "react";
 
 import type { AnalysisStats, CountingLine, VehicleRecord } from "@/shared/api/contracts";
 
@@ -34,7 +38,19 @@ import {
 } from "../model/highlights";
 import { crossroadFlowSentence } from "../model/labels";
 import { lineFlows } from "../model/lineFlows";
+import { pageWindow } from "../model/paging";
 import { EntryExitBar } from "./EntryExitBar";
+
+/**
+ * Rangées de lignes par page.
+ *
+ * Six et non dix : la section est **sous** la vidéo, donc ce qu'on en voit sans
+ * défiler est une bande de quelques rangées, et la carte de comparatifs qui la suit
+ * doit rester atteignable. Au-delà, la liste devenait le plus long bloc de la page
+ * pour la partie la moins consultée — les comparatifs répondent déjà à « quelle
+ * ligne » sans lire les rangées une à une.
+ */
+const LINES_PER_PAGE = 6;
 
 interface LineFlowDashboardProps {
   stats: AnalysisStats;
@@ -75,6 +91,17 @@ interface HighlightItem {
 }
 
 export function LineFlowDashboard({ stats, lines, vehicles }: LineFlowDashboardProps) {
+  // **Avant le retour anticipé** : un hook ne peut pas vivre après un `return`
+  // conditionnel, et l'ordre des hooks est ce que React vérifie à chaque rendu.
+  const [requestedPage, setRequestedPage] = useState(0);
+
+  // La page est **bornée à la lecture** et non corrigée par un effet : retirer
+  // trois lignes du tracé pendant qu'on lit la dernière page laisserait sinon une
+  // liste vide sous une pagination qui annonce des rangées, le temps d'un rendu.
+  // `pageWindow` est testé pour ce cas précis.
+  const view = pageWindow(lines.length, LINES_PER_PAGE, requestedPage);
+  const pageLines = lines.slice(view.start, view.end);
+
   if (lines.length === 0) return null;
 
   const entered = enteringVehicleCount(vehicles, lines);
@@ -183,11 +210,68 @@ export function LineFlowDashboard({ stats, lines, vehicles }: LineFlowDashboardP
         <span className="text-[1.75rem] font-bold leading-tight text-ink tabular">{entered}</span>
       </div>
 
-      <ul className="overflow-hidden rounded-card bg-surface shadow-card">
-        {lines.map((line, index) => (
-          <LineFlowRow key={line.id} stats={stats} line={line} bordered={index > 0} />
-        ))}
-      </ul>
+      {/* La liste des lignes, **paginée** au-delà de six rangées. Trois points qui
+          ne se devinent pas :
+
+          - **la pagination n'existe que si elle sert** (`view.paginated`) : des
+            commandes sous une liste de deux rangées sont du bruit, et elles
+            annonceraient un découpage que personne n'a subi ;
+          - **l'ordre est celui du tracé**, jamais un tri par fréquentation. La
+            pastille de couleur relie chaque rangée à un trait sur la vidéo : un
+            ordre qui change quand les chiffres changent — et ils changent à chaque
+            image pendant l'analyse — ferait sauter les rangées sous le curseur. Le
+            classement par valeur existe, il est dans les camemberts et les
+            comparatifs, là où il ne coûte pas ce repère ;
+          - **le rang de chaque ligne est écrit** (`view.start + index`) : sans lui,
+            deux pages de rangées identiques en tout point sauf les chiffres ne
+            disent pas laquelle on regarde. */}
+      <div className="overflow-hidden rounded-card bg-surface shadow-card">
+        <ul>
+          {pageLines.map((line, index) => (
+            <LineFlowRow
+              key={line.id}
+              stats={stats}
+              line={line}
+              rank={view.start + index + 1}
+              bordered={index > 0}
+            />
+          ))}
+        </ul>
+
+        {view.paginated && (
+          <nav
+            aria-label="Pagination des lignes"
+            className="flex items-center justify-between gap-2 border-t border-line/40 px-3 py-2"
+          >
+            {/* Le décompte d'abord : c'est lui qui dit qu'il y a une suite, et le
+                seul élément utile quand les deux boutons sont grisés. */}
+            <p className="text-micro text-ink-dim tabular">
+              Lignes <span className="font-bold text-ink">{view.start + 1}</span>–
+              <span className="font-bold text-ink">{view.end}</span> sur {lines.length}
+            </p>
+
+            <div className="flex items-center gap-1">
+              <PageButton
+                label="Page précédente"
+                disabled={view.page === 0}
+                onClick={() => setRequestedPage(view.page - 1)}
+              >
+                <ChevronLeft aria-hidden="true" className="size-4" />
+              </PageButton>
+              <p className="px-1 text-micro text-ink-muted tabular">
+                {view.page + 1} / {view.pageCount}
+              </p>
+              <PageButton
+                label="Page suivante"
+                disabled={view.page >= view.pageCount - 1}
+                onClick={() => setRequestedPage(view.page + 1)}
+              >
+                <ChevronRight aria-hidden="true" className="size-4" />
+              </PageButton>
+            </div>
+          </nav>
+        )}
+      </div>
 
       {(shownColumns.length > 0 || gap !== null) && (
         <div className="grid grid-cols-1 gap-x-4 gap-y-3 rounded-card bg-surface p-3 shadow-card sm:grid-cols-2 lg:grid-cols-4">
@@ -230,6 +314,38 @@ export function LineFlowDashboard({ stats, lines, vehicles }: LineFlowDashboardP
 }
 
 /**
+ * Un bouton de page — une cible carrée, un état grisé, et rien d'autre.
+ *
+ * `aria-label` et non un texte : les deux chevrons se lisent d'un coup d'œil, et
+ * « Précédent » / « Suivant » écrits en clair doublaient la largeur de la barre pour
+ * une information que la position du chevron donne déjà.
+ */
+function PageButton({
+  label,
+  disabled,
+  onClick,
+  children,
+}: {
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      className="grid size-7 place-items-center rounded-input text-ink-muted transition-colors hover:enabled:bg-elevated hover:enabled:text-ink disabled:cursor-not-allowed disabled:opacity-35"
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
  * Une ligne, en une seule rangée compacte : nom, solde, part, puis une barre
  * bidirectionnelle sur toute la largeur. La phrase-bilan complète
  * (`crossroadFlowSentence`) reste disponible pour les lecteurs d'écran via
@@ -239,10 +355,13 @@ export function LineFlowDashboard({ stats, lines, vehicles }: LineFlowDashboardP
 function LineFlowRow({
   stats,
   line,
+  rank,
   bordered,
 }: {
   stats: AnalysisStats;
   line: CountingLine;
+  /** Rang dans le tracé, 1-indexé — sert de repère quand la liste est paginée. */
+  rank: number;
   bordered: boolean;
 }) {
   // `lineFlows` est la seule définition du bilan d'une ligne : les comparatifs
@@ -261,6 +380,9 @@ function LineFlowRow({
       className={`p-3 ${bordered ? "border-t border-line/40" : ""}`}
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        {/* Le rang, puis la pastille : le premier situe la rangée dans la liste
+            paginée, la seconde la relie au trait tracé sur la vidéo. */}
+        <span className="w-4 shrink-0 text-micro text-ink-dim tabular">{rank}</span>
         <span
           aria-hidden="true"
           className="size-3 shrink-0 rounded-badge"
