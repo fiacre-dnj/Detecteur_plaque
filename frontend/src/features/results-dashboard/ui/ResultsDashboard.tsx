@@ -2,36 +2,41 @@
  * Le tableau de résultats : les chiffres du comptage, en tête de colonne.
  *
  * Un principe traverse tous ces affichages : **chaque chiffre dit d'où il vient**.
- * « Passages en entrée » et non « Entrées », le nom de la ligne plutôt qu'une
- * flèche. Sans ces précisions, deux chiffres voisins qui ne mesurent pas la même
- * chose se confondent, et l'utilisateur tire une conclusion fausse sans jamais
- * s'en douter.
+ * Le nom de la ligne plutôt qu'une flèche, l'unité dans l'aide de chaque carte.
+ * Sans ces précisions, deux chiffres voisins qui ne mesurent pas la même chose se
+ * confondent, et l'utilisateur tire une conclusion fausse sans jamais s'en douter.
  *
  * Deux unités cohabitent, et il ne faut jamais les diviser l'une par l'autre :
  *
- * - **véhicules** — `trackedVehicles`, `crossedUnique`. Un objet suivi, un véhicule ;
- * - **passages** — `crossings`, tous les `byLine`. Un aller-retour en vaut deux.
+ * - **véhicules** — `trackedVehicles`, `crossedUnique`, et depuis ADR 0045 le
+ *   chiffre de tête. Un objet suivi, un véhicule ;
+ * - **passages** — `crossings`, tous les `byLine`, toutes les cartes par ligne. Un
+ *   aller-retour en vaut deux.
  *
  * C'est l'invariant 3, et il a déjà coûté un « taux de franchissement » à 200 %.
  *
  * **Trois étages, un seul chiffre de tête.**
  *
- * 1. **« Passages en entrée »**, sur toute la largeur, en `size="lg"` et **collé en
+ * 1. **« Passages globaux »**, sur toute la largeur, en `size="lg"` et **collé en
  *    haut du défilement de la colonne** : c'est le chiffre auquel toutes les autres
- *    cartes se comparent, et il perdait sa fonction dès qu'il sortait de l'écran. Il
- *    s'appelait « Entrées au carrefour » : le mot nommait un lieu que
- *    l'utilisateur n'a pas forcément — sur une route à sens unique avec une seule
- *    ligne, il ne veut rien dire alors que le chiffre, lui, reste juste. Le nom
- *    retenu garde l'unité explicite (des **passages**, jamais des véhicules) ;
+ *    cartes se comparent, et il perdait sa fonction dès qu'il sortait de l'écran.
+ *
+ *    Il a compté des **passages en entrée** jusqu'à ADR 0045 — la somme des sens
+ *    marqués « entrée », où un aller-retour valait deux. Il compte désormais les
+ *    **véhicules distincts ayant franchi au moins une ligne**, c'est-à-dire
+ *    exactement **une rangée du registre** : le même véhicule ne peut plus être
+ *    compté deux fois. Le mot « Passages » couvre donc ici un compte de véhicules,
+ *    ce que l'invariant 3 interdisait ; l'aide de la carte porte l'unité en toutes
+ *    lettres, et les passages bruts restent lisibles sur chaque carte de ligne ;
  * 2. **la Répartition par type de véhicule**, `size="sm"`, deux par rangée. Elle
  *    n'a plus de section en bas de page pour deux raisons, aucune décorative :
  *    elle répond à la **même** question que le chiffre de tête, découpée autrement
- *    — la somme de ses cartes lui est exactement égale (`entriesByClass` partage
- *    son prédicat avec `flowBalance`, verrouillé par un test) — et le titre
- *    « Répartition » ne disait rien de plus que « Voiture », « Bus » juste
- *    dessous. **Ses cartes suivent « Objets à compter »** : décocher « Moto »
- *    retire son KPI, parce qu'un zéro sous une classe jamais cherchée se lit
- *    comme « aucune moto n'est passée » (voir `visibleClasses`) ;
+ *    — la somme de ses cartes lui est exactement égale (`crossedByClass` compte la
+ *    même population, verrouillé par un test) — et le titre « Répartition » ne
+ *    disait rien de plus que « Voiture », « Bus » juste dessous. **Ses cartes
+ *    suivent « Objets à compter »** : décocher « Moto » retire son KPI, parce
+ *    qu'un zéro sous une classe jamais cherchée se lit comme « aucune moto n'est
+ *    passée » (voir `visibleClasses`) ;
  * 3. **une carte par ligne tracée**, sur toute la largeur, avec le nom que
  *    l'utilisateur a saisi et son bilan entrées / sorties. Le détail par ligne
  *    n'existait qu'en bas de page (`LineFlowDashboard`), sous la vidéo : la
@@ -50,15 +55,15 @@
 
 import { Ban } from "lucide-react";
 
-import type { AnalysisStats, CountingLine } from "@/shared/api/contracts";
+import type { AnalysisStats, CountingLine, VehicleRecord } from "@/shared/api/contracts";
 import { classLabel } from "@/shared/lib/classes";
 import type { LineRule } from "@/shared/lib/lineRules";
 import { violationCounts } from "@/shared/lib/violationTally";
 import { MetricCard } from "@/shared/ui/MetricCard";
 import { PanelHeading } from "@/shared/ui/PanelHeading";
 
-import { flowBalance } from "../model/directions";
-import { entriesByClass } from "../model/entriesByClass";
+import { crossedByClass } from "../model/crossedByClass";
+import { crossingVehicles } from "../model/crossedVehicles";
 import { crossroadFlowSentence, plural } from "../model/labels";
 import { lineFlows, type LineFlow } from "../model/lineFlows";
 import { visibleClasses } from "../model/visibleClasses";
@@ -67,6 +72,19 @@ import { EntryExitBar } from "./EntryExitBar";
 interface ResultsDashboardProps {
   stats: AnalysisStats;
   lines: readonly CountingLine[];
+  /**
+   * Les véhicules du registre — **la source du chiffre de tête** depuis ADR 0045.
+   *
+   * L'appelant passe la même liste qu'au registre (`crossingVehicles` de l'aperçu
+   * vivant ou du résultat à la tête de lecture) : c'est ce qui garantit qu'un
+   * « Passages globaux » à 12 se lit sous douze rangées de tableau, et pas onze.
+   * Le prédicat est réappliqué ici — `crossedVehicles.ts` reste le seul juge.
+   *
+   * Pas dérivable de `stats` : le serveur publie des passages par ligne et par
+   * sens, pas la liste des véhicules distincts qui les ont faits. C'est
+   * précisément la raison pour laquelle les deux chiffres divergeaient.
+   */
+  vehicles: readonly VehicleRecord[];
   /**
    * Les classes cochées dans « Objets à compter », par nom COCO (`car`,
    * `motorcycle`…), dans l'ordre du catalogue serveur.
@@ -86,8 +104,8 @@ interface ResultsDashboardProps {
    * Calculées par l'appelant, qui seul dispose du catalogue de classes du serveur.
    * Une `Map` vide veut dire « aucune règle », et **le KPI d'infraction n'apparaît
    * alors pas du tout** : un « 0 » sous une règle que personne n'a posée se lit
-   * « aucune infraction », l'inverse de la vérité. Même honnêteté que le « — » de
-   * « Passages en entrée » quand aucun rôle n'est déclaré.
+   * « aucune infraction », l'inverse de la vérité. Même honnêteté que le « — » du
+   * chiffre de tête quand aucune ligne n'est tracée.
    */
   rules: ReadonlyMap<string, LineRule>;
   /**
@@ -105,12 +123,17 @@ interface ResultsDashboardProps {
 export function ResultsDashboard({
   stats,
   lines,
+  vehicles,
   selectedClasses,
   rules,
   live = false,
 }: ResultsDashboardProps) {
-  const flow = flowBalance(stats, lines);
-  const entries = entriesByClass(stats, lines);
+  // **Des véhicules distincts, et le même prédicat que le registre.** Un
+  // aller-retour vaut 1 ici comme il vaut une rangée là-bas : les deux écrans se
+  // vérifient l'un l'autre, ce qui était impossible tant que le chiffre de tête
+  // comptait des passages.
+  const crossed = crossingVehicles(vehicles);
+  const entries = crossedByClass(crossed);
   const classes = visibleClasses(selectedClasses, entries);
   const violations = violationCounts(stats, lines, rules);
 
@@ -119,7 +142,7 @@ export function ResultsDashboard({
       {/* ── La tête de colonne, COLLÉE ────────────────────────────────────────
           L'entête et le chiffre de tête restent en haut quand le reste défile
           dessous. Ce n'est pas de la décoration : la colonne peut porter dix cartes
-          par ligne tracée, et « Passages en entrée » est le chiffre auquel toutes
+          par ligne tracée, et « Passages globaux » est le chiffre auquel toutes
           les autres se comparent — il perdait sa fonction dès qu'il sortait de
           l'écran, et il fallait remonter pour retrouver le total dont on venait de
           lire le détail.
@@ -138,21 +161,31 @@ export function ResultsDashboard({
       <div className="sticky -top-px z-10 space-y-2 bg-base/95 pb-3 pt-px backdrop-blur">
         <PanelHeading id="cards-title" title="Résultats" live={live} />
 
-        {/* « — » et non « 0 » quand aucun rôle n'est déclaré : deux zéros se
-            liraient comme « personne n'entre », alors que la vérité est « personne
-            ne l'a encore dit » — le seul cas restant est l'absence de toute ligne,
-            le rôle étant obligatoire depuis ADR 0021. */}
+        {/* « — » et non « 0 » quand **aucune ligne n'est tracée** : sans trait, il
+            n'existe aucun franchissement possible, et un zéro s'y lirait « personne
+            n'est passé » alors que la vérité est « on n'a rien posé à franchir ».
+            Dès qu'une ligne existe, `0` est la vérité et s'affiche.
+
+            Le juge a changé avec l'unité : c'était `flow.declared` — « un rôle
+            entrée ou sortie est-il déclaré ? » — parce que le chiffre sommait les
+            sens marqués « entrée ». Il ne lit plus aucun rôle, donc une géométrie
+            entièrement en « Comptage seul » rend maintenant un chiffre au lieu d'un
+            tiret. */}
         <MetricCard
           size="lg"
-          label="Passages en entrée"
-          value={flow.declared ? flow.entries.toString() : "—"}
-          // Somme des passages sur tous les sens marqués « entrée », toutes
-          // lignes confondues : le nombre de passages qui rentrent dans la zone
-          // comptée, pas seulement sur une ligne prise isolément.
+          label="Passages globaux"
+          value={lines.length === 0 ? "—" : crossed.length.toString()}
+          // **L'unité en toutes lettres, parce que le mot « Passages » ment ici.**
+          // Le chiffre compte des véhicules : c'est la demande à laquelle ADR 0045
+          // répond — plus jamais le même véhicule deux fois — et c'est une entorse
+          // assumée à l'invariant 3, qui interdit de nommer des véhicules par une
+          // unité de passages. L'aide est donc la seule chose qui empêche de lire
+          // ce chiffre comme la somme des cartes de ligne, qui, elles, comptent
+          // bien des passages.
           hint={
-            flow.declared
-              ? "Total des passages sur les sens marqués « entrée », toutes lignes"
-              : "Ajoutez une ligne dans Géométrie pour obtenir ce chiffre"
+            lines.length === 0
+              ? "Ajoutez une ligne dans Géométrie pour obtenir ce chiffre"
+              : "Véhicules distincts ayant franchi au moins une ligne — un aller-retour compte 1. Une rangée du registre."
           }
         />
       </div>
@@ -203,16 +236,17 @@ export function ResultsDashboard({
         )}
 
         {/* Le détail du chiffre de tête, dans la même grille et sous son poids :
-            un type de véhicule par carte, et **les entrées seulement** — jamais
-            les détections ni les passages totaux, sinon la somme cesserait
-            d'égaler « Passages en entrée ». */}
+            un type de véhicule par carte, **dans la même unité que lui** — des
+            véhicules distincts, jamais des détections ni des passages, sinon la
+            somme cesserait d'égaler « Passages globaux ». C'est la propriété qui
+            rend ces cartes lisibles à cet endroit, et un test la verrouille. */}
         {classes.map((klass) => (
           <MetricCard
             key={klass}
             size="sm"
             label={classLabel(klass)}
             value={(entries[klass] ?? 0).toString()}
-            hint="Entrées"
+            hint="Véhicules"
           />
         ))}
 

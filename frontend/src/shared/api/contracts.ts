@@ -237,7 +237,7 @@ export interface Point {
  *   même** : une infraction est un passage qualifié, pas un passage retiré, et
  *   l'invariant `crossings === Σ byLine[*].total` en dépend ;
  * - `transit` — compté, délibérément hors bilan : une route qui n'est pas un
- *   carrefour, où « Passages en entrée » n'a rien à dire ;
+ *   carrefour, où le bilan entrées / sorties n'a rien à dire ;
  * - `neutral` — **hérité uniquement** : « personne ne l'a dit ». L'éditeur ne le
  *   produit plus depuis ADR 0021, mais un preset ou un `configJson` archivé peut
  *   encore le porter. Le distinguer de `transit` est ce qui permet à

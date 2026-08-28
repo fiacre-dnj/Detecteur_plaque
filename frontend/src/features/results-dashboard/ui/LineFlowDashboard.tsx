@@ -197,7 +197,7 @@ export function LineFlowDashboard({ stats, lines, vehicles }: LineFlowDashboardP
       </h2>
 
       {/* **Des véhicules distincts entrés, pas des passages.** Un véhicule qui
-          entre deux fois compte 1 ici et 2 dans « Passages en entrée » : deux
+          entre deux fois compte 1 ici et 2 dans les passages de sa ligne : deux
           questions, deux unités, et on ne les divise jamais l'une par l'autre
           (invariant 3). */}
       <div className="flex flex-wrap items-baseline justify-between gap-2 rounded-card bg-surface p-3 shadow-card">

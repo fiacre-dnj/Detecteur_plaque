@@ -16,7 +16,7 @@
  *   de bug plus que toute autre : deux copies d'une règle finissent par diverger, et
  *   c'est un passage qui change de colonne selon l'écran qui le montre. C'est
  *   exactement pourquoi `isEntryRow` ci-dessous est **exportée** plutôt que
- *   réécrite dans `entriesByClass.ts` : deux fichiers qui décident chacun ce
+ *   réécrite chez chacun de ses lecteurs : deux fichiers qui décident chacun ce
  *   qu'est un sens d'entrée finiraient par diverger.
  *
  * Tout ici est **dérivé** de `stats.byLine` et de la géométrie courante, jamais
@@ -120,9 +120,13 @@ export interface FlowBalance {
 
 /**
  * Un sens marqué « entrée » — le seul prédicat qui décide ce qui compte comme une
- * entrée, réutilisé par `flowBalance` et par `entriesByClass.ts`. L'exporter
- * plutôt que le laisser inline est ce qui empêche les deux calculs de diverger
- * silencieusement si l'un des deux change un jour de condition.
+ * entrée, réutilisé par `flowBalance` et par le bilan par ligne. L'exporter plutôt
+ * que le laisser inline est ce qui empêche ces calculs de diverger silencieusement
+ * si l'un d'eux change un jour de condition.
+ *
+ * **Il ne décide plus du chiffre de tête** : depuis ADR 0045 « Passages globaux »
+ * compte des véhicules distincts et ne lit aucun rôle. Le bilan entrées / sorties
+ * qu'il sert reste entier — cartes de ligne, Statistique, colonnes du registre.
  */
 export function isEntryRow(row: DirectionRow): boolean {
   return row.role === "entry";

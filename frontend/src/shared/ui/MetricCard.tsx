@@ -12,7 +12,7 @@
  * pose en arrivant.
  *
  * `lg` est arrivée avec cette grille : la colonne n'a plus qu'**une** tête de
- * lecture — « Passages en entrée », désormais sur toute la largeur — et une carte
+ * lecture — « Passages globaux », désormais sur toute la largeur — et une carte
  * `md` au milieu de cartes `sm` ne se détachait plus assez pour l'être.
  */
 

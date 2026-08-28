@@ -111,8 +111,8 @@ import {
   LineFlowDashboard,
   ResultsDashboard,
   TechnicalMetrics,
+  crossedByClass,
   crossingVehicles,
-  entriesByClass,
   visibleClasses,
 } from "@/features/results-dashboard";
 import { crossingsUpTo, useReplay, vehiclesAt } from "@/features/timeline-replay";
@@ -875,15 +875,20 @@ export function StudioPage() {
     session.result !== null ? replay.stats : (session.preview?.stats ?? null);
 
   /**
-   * La ventilation par type des sections du bas, calculée **une fois**.
+   * La ventilation par type du camembert, calculée **une fois**.
    *
    * Le camembert la reçoit en prop, et `visibleClasses` la relit pour décider
-   * quelles parts tracer : deux appels à `entriesByClass` sur les mêmes chiffres
+   * quelles parts tracer : deux appels à `crossedByClass` sur les mêmes véhicules
    * seraient un parcours de plus à chaque image d'aperçu.
+   *
+   * **Elle vient des véhicules et non de `stats` depuis ADR 0045** : le camembert
+   * découpe « Passages globaux », donc il compte les mêmes véhicules distincts.
+   * `countedVehicles` est déjà la population du registre — la source unique de ce
+   * chiffre à l'écran comme dans le tableau.
    */
   const dashboardEntries = useMemo(
-    () => (dashboardStats === null ? {} : entriesByClass(dashboardStats, geometry.lines)),
-    [dashboardStats, geometry.lines],
+    () => crossedByClass(countedVehicles),
+    [countedVehicles],
   );
 
   /**
@@ -1465,6 +1470,12 @@ export function StudioPage() {
               rules={alertRules}
               stats={resultStats.stats}
               lines={geometry.lines}
+              // **La même liste qu'au registre, et c'est le point.** « Passages
+              // globaux » vaut le nombre de rangées du tableau ; les faire lire
+              // deux sources différentes les ferait diverger d'un véhicule sans
+              // que rien ne plante, et c'est exactement le contrôle que
+              // l'utilisateur fait en les comparant.
+              vehicles={countedVehicles}
               selectedClasses={selectedClasses}
               // Le même repère « en direct » que la colonne des alertes, et pour la
               // même raison : ces cartes sont **identiques** pendant l'analyse et
@@ -1602,7 +1613,7 @@ export function StudioPage() {
 
           **La Répartition n'est plus ici** : ses quatre cartes ont rejoint les
           Résultats, dans la colonne de droite. Elle découpe le chiffre de tête
-          « Passages en entrée » — leur somme lui est égale par construction — et
+          « Passages globaux » — leur somme lui est égale par construction — et
           un écran de défilement entre les deux obligeait à retenir un nombre pour
           vérifier l'autre. Le bilan par ligne y a suivi le même chemin, en
           cartes ; ce qui reste ici est ce qu'une colonne de 24 rem ne porte pas —

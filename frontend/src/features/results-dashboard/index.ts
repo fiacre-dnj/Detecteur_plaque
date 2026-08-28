@@ -15,7 +15,7 @@ export {
   hasEnteredCrossroad,
 } from "./model/crossedVehicles";
 
-export { entriesByClass } from "./model/entriesByClass";
+export { crossedByClass } from "./model/crossedByClass";
 
 export { visibleClasses } from "./model/visibleClasses";
 

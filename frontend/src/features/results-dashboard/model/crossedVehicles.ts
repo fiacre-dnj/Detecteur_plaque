@@ -75,10 +75,15 @@ export function crossingVehicles(
  *
  * Un nombre de *véhicules*, jamais de passages : un véhicule qui entre deux fois
  * — deux lignes d'entrée franchies, ou un aller-retour — compte **1** ici et
- * **2** dans « Passages en entrée ». Les deux chiffres répondent à deux
- * questions (« combien de véhicules », « combien de passages ») et ne doivent
- * jamais être divisés l'un par l'autre : c'est l'invariant 3, et il a déjà coûté
- * un taux à 200 %.
+ * **2** dans les passages en entrée de sa ligne. Les deux chiffres répondent à
+ * deux questions (« combien de véhicules », « combien de passages ») et ne
+ * doivent jamais être divisés l'un par l'autre : c'est l'invariant 3, et il a
+ * déjà coûté un taux à 200 %.
+ *
+ * **Ce n'est plus le chiffre de tête**, qui compte depuis ADR 0045 les véhicules
+ * ayant franchi **n'importe quelle** ligne (`crossingVehicles`) et non les seuls
+ * entrants. Cette fonction reste le compteur du bilan de carrefour, dans
+ * `LineFlowDashboard`.
  */
 export function enteringVehicleCount(
   vehicles: readonly VehicleRecord[],
