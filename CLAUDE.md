@@ -24,15 +24,32 @@ et depuis le 2026-08-16 chacun est **obligatoirement** déclaré ([ADR
 du carrefour et **est** le libellé affiché, il n'y a plus de nom libre à taper.
 
 **Une ligne porte aussi un type depuis le 2026-08-27** ([ADR
-0040](docs/adr/0040-une-ligne-porte-un-type.md)) : deux sens, sens unique en entrée,
-sens unique en sortie, infranchissable, ou comptage seul. Le type est **dérivé** de
-la paire de rôles (`lineKind` / `rolesForKind` dans `shared/lib/directions.ts`) et
-n'existe dans aucun champ du contrat — deux sources pour la même vérité finiraient
-par se contredire. Les rôles sont donc cinq : `entry`, `exit`, `forbidden`
-(« Interdit »), `transit` (« Passage », compté hors bilan) et `neutral`, hérité et
-jamais produit par l'éditeur. Une ligne peut en plus être **réservée** à certaines
-classes (`allowedClassIds`), indépendamment de son type — une voie de bus à sens
-unique porte les deux.
+0040](docs/adr/0040-une-ligne-porte-un-type.md)) : **quatre** types choisissables
+depuis le 2026-08-28 — deux sens, **autorisé · interdit**, infranchissable, ou
+comptage seul. Les deux « sens unique » ont fusionné : ils ne différaient que par le
+rôle du côté autorisé pour une seule et même règle, et le chiffre de tête ne s'appuie
+plus sur le bilan entrées / sorties (ADR 0045). Le côté autorisé reste `entry` — c'est
+ce qui garde ces lignes dans les colonnes « Entrée par » du registre — et une paire
+héritée `{exit, forbidden}` se relit sous le nouveau type plutôt que de tomber en
+« à préciser ».
+
+Le type est **dérivé** de la paire de rôles (`lineKind` / `rolesForKind` dans
+`shared/lib/directions.ts`) et n'existe dans aucun champ du contrat — deux sources
+pour la même vérité finiraient par se contredire. Les rôles sont donc cinq : `entry`,
+`exit`, `forbidden` (« Interdit »), `transit` (« Passage », compté hors bilan) et
+`neutral`, hérité et jamais produit par l'éditeur. **« Comptage seul » n'affiche pas
+ses deux sens** dans le panneau : ils diraient « Passage » deux fois sous un bouton
+d'inversion déjà grisé. Le canevas, lui, garde ses deux flèches — elles disent de quel
+côté est chaque sens, ce qui reste vrai.
+
+Une ligne peut en plus être **réservée** à certaines classes (`allowedClassIds`),
+indépendamment de son type — une voie de bus à sens unique porte les deux. Le panneau
+**nomme les types barrés** (« Interdits : Camion, Bus — leur passage sera signalé »)
+plutôt que de décrire la règle en général : c'était la seule façon de la vérifier sans
+avoir lancé d'analyse. Piège à connaître : tant que `GET /models/classes` n'a pas
+répondu, `lineRules` ne reconnaît aucun identifiant et **toutes** les voies réservées
+disparaissent le temps d'une requête — c'est le repli délibéré « mieux vaut ne rien
+signaler que tout signaler », pas une panne.
 
 **Un franchissement interdit reste compté** : une infraction est un passage
 *qualifié*, pas un passage retiré, et l'invariant 3 en dépend. C'est le client, et
@@ -93,6 +110,16 @@ véhicule. Ils vivent dans `data/jobs/<id>/snapshots/`, sont servis par
 `GET /jobs/{id}/vehicles/{n}/{snapshot,plate}.jpg`, et **partent avec la vidéo** et
 non avec le résultat — ce sont des plaques et des visages.
 
+**Ils sont écrits pendant l'analyse depuis le 2026-08-28** ([ADR
+0046](docs/adr/0046-les-captures-s-ecrivent-pendant-l-analyse.md)) : la colonne
+« Capture » du registre se remplit au fil des lectures, et une alerte de plaque
+arrive avec sa preuve. **Rien ne transite par le SSE** — l'objection d'ADR 0042 tient
+toujours : seule l'écriture disque avance, par un rappel `on_snapshot` posé là où
+l'encodeur vient de rendre les octets, dans le thread worker. L'écriture finale reste
+comme filet, le refus `job_not_finished` de la route disparaît, et l'adresse porte
+`?v=<snapshotMs>` — sans quoi `immutable` figerait pour un an la première capture d'un
+véhicule dont la lecture s'améliore ensuite.
+
 ## `prompt/` est la spécification, pas de la documentation
 
 Le dossier [`prompt/`](prompt/) (15 fichiers, à lire dans l'ordre depuis
@@ -117,7 +144,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1586 tests
+uv run pytest                                                            # 1592 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -131,7 +158,7 @@ uv run python scripts/audit_lignes.py                # « pourquoi cette ligne e
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 817 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 832 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -206,10 +233,12 @@ domaine.
 La quatorzième est **`alerts`** (2026-08-27) : ce que l'analyse *signale*, par
 opposition à ce qu'elle compte — infractions au tracé et plaques recherchées. Elle
 n'importe aucune autre feature ; les **règles** qu'elle applique vivent dans
-`shared/lib/lineRules.ts` et `shared/lib/lineViolations.ts`, parce que le tableau de
-bord les compte et que le registre les affiche. Trois lecteurs, un seul juge — la
-même raison qui a fait naître `shared/lib/directions.ts`
-([ADR 0041](docs/adr/0041-les-alertes-se-calculent-cote-client.md)).
+`shared/lib/lineRules.ts` et `shared/lib/lineViolations.ts`, et depuis le 2026-08-28
+leurs **totaux** dans `shared/lib/violationTally.ts` — le centre de notifications et
+le tableau de bord en ont tous deux besoin. Trois lecteurs, un seul juge — la même
+raison qui a fait naître `shared/lib/directions.ts`
+([ADR 0041](docs/adr/0041-les-alertes-se-calculent-cote-client.md),
+[ADR 0044](docs/adr/0044-les-alertes-deviennent-un-centre-de-notifications.md)).
 
 ```
 app → features → entities → shared
@@ -244,37 +273,46 @@ Quatre conséquences à connaître avant d'y toucher :
   recadre `scrollY`, et l'enregistrer au moment de la bascule sauvegarderait la
   valeur déjà tronquée.
 
-#### La disposition du studio, depuis le 2026-08-12 (barre collante, géométrie en tiroir et actions dans le lecteur le 2026-08-19 ; troisième colonne d'alertes le 2026-08-27)
+#### La disposition du studio, depuis le 2026-08-12 (barre collante, géométrie en tiroir et actions dans le lecteur le 2026-08-19 ; cloche d'alertes le 2026-08-28)
 
 ```
 ━━ barre COLLANTE sous l'entête (sticky, top: --app-header-h, z-30) ━━━━━━━━━━
-[⇧ Importer] [Détection ▾] [Comptage ▾] [Affichage ▾] [Géométrie ▾]  suivis · cadence · latence · flux →
+[⇧ Importer] [Détection ▾] [Comptage ▾] [Affichage ▾] [Géométrie ▾] [🔔3 ▾]  suivis · cadence · latence · flux →
              └─ tiroir flottant du panneau ouvert, 2 colonnes, PAR-DESSUS la page
-┌─────────────────────────┬────────────────┬──────────────┐
-│ nom du fichier ⟨ ⟩ WxH  │ RÉSULTATS ⌾    │ ALERTES ⌾    │  20 rem + 18 rem
-│ vidéo + canvas + HUD    │ KPI de tête    │ COLLANTE,    │
-│ RIEN d'autre par-dessus │  COLLÉ en haut │ défilement   │
-│ ┌ LECTURE ── mm:ss ────┐│ + KPI interdits│ propre       │
-│ │ rail de position     ││ + 4 (5) cartes │ ⌾ en direct  │
-│ │ INTERVALLE ── →──────││   par type     │ [Tout][Infr.]│
-│ │ rail d'intervalle    ││ + 1 carte PAR  │ [Plaques]    │
-│ │ ⏵ ⏮ ⏪ ±1i ⏩ ⏭ ↺ Vit. ││   LIGNE tracée │ ─ cartes ─   │
-│ │       [LANCER] [Fermer]│                │ vignette +   │
-│                          │ AVANT L'ANALYSE│ quoi/qui/où/ │
-│                          │ le KPI à « — » │ quand, clic  │
-│                          │ puis le récapi-│ = aller à    │
-│                          │ tulatif des    │ l'instant    │
-│                          │ réglages       │              │
-│                          │                │ ABSENTE si   │
-│                          │                │ aucune règle │
-│                          │                │ ni plaque    │
-├─────────────────────────┴────────────────┴──────────────┤
+                    la cloche ouvre le MÊME genre de tiroir : résumé + filtres + flux
+┌─────────────────────────────────────┬────────────────────┐
+│ nom du fichier ⟨ ⟩ WxH              │ RÉSULTATS ⌾        │  23 rem
+│ vidéo + canvas + HUD                │ KPI de tête        │
+│ RIEN d'autre par-dessus             │  COLLÉ en haut     │
+│ ┌ LECTURE ── mm:ss ────────────────┐│ + KPI interdits    │
+│ │ rail de position                 ││ + 4 (5) cartes     │
+│ │ INTERVALLE ── →──────────────────││   par type         │
+│ │ rail d'intervalle                ││ + 1 carte PAR      │
+│ │ ⏵ ⏮ ⏪ ±1i ⏩ ⏭ ↺ Vit.             ││   LIGNE tracée     │
+│ │             [LANCER] [Fermer]    ││                    │
+│                                      │ AVANT L'ANALYSE    │
+│                                      │ le KPI à « — »     │
+│                                      │ puis le récapi-    │
+│                                      │ tulatif des        │
+│                                      │ réglages           │
+├─────────────────────────────────────┴────────────────────┤
 │ STATISTIQUE — KPI de tête, une rangée par ligne (PAGINÉE   │  les trois sections
 │   au-delà de 6), comparatifs groupés en une carte          │  vivent PENDANT
-│ [camembert flux/ligne] [camembert entrées/type]           │  l'analyse et après
+│ [camembert flux/ligne] [camembert véhicules/type]         │  l'analyse et après
 │ REGISTRE — par véhicule, 2 filtres, export CSV            │  exports à la fin
 │ (FRANCHISSEMENTS — chronologie, MASQUÉE 08-27)            │
 └──────────────────────────────────────────────────────────┘
+
+  tiroir de la CLOCHE (36 rem, flottant, ABSENT si aucune règle ni plaque) :
+  ┌──────────────────────────────────────────────┐
+  │ Alertes ⌾                        « 7 alertes »│
+  │ RÉSUMÉ — total interdits (de `stats`, exact)  │
+  │   + une rangée PAR NATURE, zéros non rendus   │
+  │ FILTRER — Nature / Type de véhicule / Ligne   │
+  │   trois axes qui SE COMPOSENT, comptes inclus │
+  │ FLUX — vignette + quoi/qui/où/quand,          │
+  │   clic = aller à l'instant, borné à 200       │
+  └──────────────────────────────────────────────┘
 ```
 
 **Ce qui a bougé le 2026-08-19, et pourquoi.** Cinq déplacements, tous motivés par
@@ -318,7 +356,7 @@ milieu de la vidéo. Les deux chiffres sont désormais en **entête de leur rail
 d'où les deux libellés « LECTURE » et « INTERVALLE D'ANALYSE » qui se répondent.
 
 **La Répartition n'a plus de section** : ses cartes sont dans les Résultats, en
-`size="sm"` — elles découpent « Passages en entrée » dont elles sont la somme
+`size="sm"` — elles découpent « Passages globaux » dont elles sont la somme
 exacte, et un écran de défilement entre les deux obligeait à retenir un nombre
 pour vérifier l'autre. `ClassEntriesGrid` est **supprimé**, son contenu replié
 dans `ResultsDashboard`. Le titre « Répartition » ne disait rien de plus que
@@ -328,11 +366,22 @@ dans `ResultsDashboard`. Le titre « Répartition » ne disait rien de plus que
 ligne** (soir du 2026-08-19). Quatre changements liés, et aucun ne touche un
 calcul :
 
-- **« Entrées au carrefour » s'appelle « Passages en entrée »**, en `size="lg"` et
-  sur toute la largeur de la colonne. Le mot nommait un lieu que l'utilisateur n'a
-  pas forcément : sur une route à sens unique portant une seule ligne, « carrefour »
-  ne veut rien dire alors que le chiffre reste juste. Le nom retenu garde l'unité
-  explicite — des **passages**, jamais des véhicules (invariant 3) ;
+- **le chiffre de tête s'appelle « Passages globaux »**, en `size="lg"` et sur toute
+  la largeur de la colonne. Il a été « Entrées au carrefour » — un lieu que
+  l'utilisateur n'a pas forcément — puis « Passages en entrée », la somme des sens
+  marqués « entrée ».
+
+  **Il compte désormais des véhicules distincts** ([ADR
+  0045](docs/adr/0045-un-passage-global-est-un-vehicule.md)) :
+  `crossingVehicles(vehicles).length`, c'est-à-dire **exactement le nombre de rangées
+  du registre**. Un aller-retour y vaut 1, plus jamais 2. C'est une entorse assumée à
+  l'invariant 3 — le mot « Passages » couvre ici un compte de véhicules — tenable
+  parce que l'aide de la carte porte l'unité en toutes lettres, que rien ne divise ce
+  chiffre par un autre, et que les passages bruts restent sur chaque carte de ligne.
+  Le « — » ne dépend plus des rôles mais de `lines.length === 0` : une géométrie
+  entièrement en « Comptage seul » rend donc un chiffre. `entriesByClass` est
+  **supprimé** et remplacé par `crossedByClass`, pour que la somme des cartes par type
+  reste exactement égale au chiffre de tête ;
 - **une carte par ligne tracée**, pleine largeur elle aussi : pastille de couleur,
   **le nom saisi par l'utilisateur**, fréquentation, entrées, sorties, solde signé
   et la barre à deux segments. Le détail par ligne n'existait qu'en bas de page,
@@ -363,7 +412,7 @@ calcul :
 
 **La colonne n'est plus vide avant la première analyse** (soir du 2026-08-19). Entre
 l'import d'une vidéo et le premier chiffre, elle était une bande de 24 rem inoccupée
-sur toute la hauteur de la scène — et le squelette « Passages en entrée — » vivait,
+sur toute la hauteur de la scène — et le squelette du chiffre de tête vivait,
 lui, **tout en bas de la page**, sous la vidéo et la chronologie, là où personne ne
 le voyait avant d'avoir défilé. Deux changements :
 
@@ -536,9 +585,9 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
   (`LineFlowDashboard`) et **Registre** (`VehicleRegistry`). La Répartition y a
   vécu jusqu'au 2026-08-19 sous la forme d'un `ClassEntriesGrid` **aujourd'hui
   supprimé** : ses cartes sont dans `ResultsDashboard`, où l'invariant qui les
-  justifie reste vrai — valeur = entrées seulement, cohérente par construction
-  avec le KPI « Passages en entrée », `entriesByClass` partageant son prédicat
-  `role === "entry"` avec `flowBalance`, verrouillé par un test. La matrice
+  justifie reste vrai — leur somme égale le chiffre de tête, `crossedByClass`
+  comptant depuis ADR 0045 la **même population** que `crossingVehicles`, verrouillé
+  par un test. La matrice
   origine-destination
   (« Mouvements ») et l'occupation de zone disparaissent **sans
   reconstruction**, décision assumée : ce tableau de bord ne parle que de
@@ -660,9 +709,10 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
     les lignes rendues : une colonne qui apparaîtrait au défilement d'un tableau
     virtualisé décalerait toutes les autres sous le curseur ;
 - **les Franchissements sont MASQUÉS depuis le 2026-08-27**, et le bas de page n'a
-  rien reçu à leur place : les **Alertes** y ont vécu quelques heures avant de
-  monter dans la troisième colonne, à côté de la scène ([ADR
-  0043](docs/adr/0043-les-alertes-quittent-la-video-pour-une-colonne.md)). Un seul mot à
+  rien reçu à leur place : les **Alertes** y ont vécu quelques heures, puis dans une
+  troisième colonne, et sont aujourd'hui derrière la cloche de la barre ([ADR
+  0043](docs/adr/0043-les-alertes-quittent-la-video-pour-une-colonne.md), puis [ADR
+  0044](docs/adr/0044-les-alertes-deviennent-un-centre-de-notifications.md)). Un seul mot à
   changer pour les rendre : `SHOW_CROSSING_TIMELINE` dans `StudioPage`, typé
   `boolean` exprès pour que TypeScript ne réduise pas la condition à `false` et que
   le lint ne la signale pas comme inutile. `CrossingTimeline.tsx`,
@@ -725,9 +775,15 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
   grand — le véhicule, sa plaque en dessous, l'instant et la confiance. La modale est
   `shared/ui/SnapshotDialog.tsx`, partagée avec les alertes, sur le patron `<dialog>`
   + `showModal()` de `PresetDialog`. Quatre points qui ne se devinent pas :
-  - **la colonne n'existe qu'à la fin** (`result !== null`) : les fichiers sont écrits
-    après l'analyse, et une vignette demandée plus tôt afficherait une image cassée
-    par rangée. Même règle que les trois boutons d'export ;
+  - **la colonne apparaît dès la première capture** (`jobId !== null &&
+    hasSnapshots(vehicles)`), pendant l'analyse comprise depuis ADR 0046. Elle se
+    décide sur `vehicles` **entier** et jamais sur les rangées rendues : une colonne
+    qui apparaîtrait au défilement décalerait toutes les autres sous le curseur. Sans
+    ANPR ni OCR, aucun véhicule ne porte de `snapshotScore`, donc aucune colonne — la
+    condition « seulement si les plaques sont lues » est obtenue sans réglage.
+    **Ce n'est plus la règle des trois boutons d'export**, qui restent liés à
+    `result` : un CSV à mi-parcours ment sur son contenu, une vignette manquante ne
+    ment sur rien ;
   - **la rangée passe à 48 px, et seulement alors.** `visibleWindow` accepte déjà une
     hauteur en paramètre. **Le `height` d'une rangée n'est qu'un minimum en CSS** : la
     cellule de capture supprime son rembourrage vertical (`py-0`, son propre `<td>` et
@@ -738,7 +794,11 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
     débit parce que ce sont des `GET /jobs/…` (ADR 0027), ce qui est indispensable
     ici ;
   - **une capture absente n'est pas une panne** : `onError` bascule sur un repère muet
-    titré « capture purgée », le cas normal après le TTL de la vidéo ;
+    — pas encore écrite, jamais produite, ou purgée après le TTL de la vidéo. Pendant
+    l'analyse **et seulement alors**, la vignette réessaie **une fois** (avec un
+    paramètre `retry` qui casse le cache d'échec) : le fichier peut arriver quelques
+    centaines de millisecondes après l'aperçu qui l'annonce. Après, réessayer
+    doublerait des requêtes vouées à échouer sur chaque rangée visible ;
 - **le Registre porte deux filtres qui se composent** (2026-08-27) : la recherche
   par plaque et un **filtre par ligne**, dont les options portent les noms saisis par
   l'utilisateur et se renomment sans réanalyser. `filterByLine` est le jumeau de
@@ -1386,8 +1446,10 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
 
     [ADR 0039](docs/adr/0039-ne-pas-payer-pour-une-plaque-prouvee-illisible.md).
 31. **Une ligne porte un type, et le type est dérivé de ses deux rôles.** Cinq rôles
-    (`entry`, `exit`, `forbidden`, `transit`, `neutral`), cinq types choisissables,
-    aucun champ `lineKind` dans le contrat. Une ligne peut en plus être **réservée** à
+    (`entry`, `exit`, `forbidden`, `transit`, `neutral`), **quatre** types
+    choisissables depuis le 2026-08-28 — les deux « sens unique » ont fusionné en
+    « Autorisé · interdit », de paire `{entry, forbidden}` —, aucun champ `lineKind`
+    dans le contrat. Une ligne peut en plus être **réservée** à
     certaines classes, indépendamment de son type. Trois points à ne pas rediscuter :
     - **le serveur ne lit rien de tout cela**, exactement comme les rôles depuis
       ADR 0016. `test_regles_de_ligne.py` verrouille la propriété : quatre
@@ -1400,7 +1462,9 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       repli fabrique un écran d'alertes entièrement faux. Le repli est écrit trois
       fois (reducer, schéma de requête, relecture de preset) et testé aux trois.
 
-    [ADR 0040](docs/adr/0040-une-ligne-porte-un-type.md).
+    [ADR 0040](docs/adr/0040-une-ligne-porte-un-type.md), amendée le 2026-08-28 :
+    types fusionnés, `{exit, forbidden}` hérité relu sous le nouveau type, et
+    « Comptage seul » n'affiche plus ses deux sens.
 32. **Les alertes se calculent côté client, et leurs compteurs viennent de `stats`.**
     Infractions au tracé et plaques recherchées partagent une seule feature,
     `features/alerts`. Quatre points :
@@ -1414,17 +1478,21 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       `alerts.length` comme un total est le défaut que l'ancienne chronologie a déjà
       payé (invariant 3) ;
     - **une seule infraction par franchissement**, sens interdit prioritaire sur voie
-      réservée. `violationOf` et `violationCounts` appliquent la **même** priorité, et
-      un test le verrouille : sans elle, la liste et le KPI diraient deux chiffres
-      différents sur le même écran ;
+      réservée. `violationOf` et `violationCounts` appliquent la **même** priorité —
+      y compris dans les ventilations `byKind` / `byClass` du résumé — et un test le
+      verrouille : sans elle, la liste et le KPI diraient deux chiffres différents sur
+      le même écran ;
     - **la liste de plaques n'est pas persistée** — elle décrit une recherche en
       cours, et écrire un numéro de plaque dans le `localStorage` du poste franchirait
       le cran de confidentialité que le projet impose déjà en laissant l'OCR décoché.
 
     [ADR 0041](docs/adr/0041-les-alertes-se-calculent-cote-client.md), que
-    [ADR 0043](docs/adr/0043-les-alertes-quittent-la-video-pour-une-colonne.md)
-    complète en les déplaçant dans une colonne : ni la pile flottante posée sur la
-    vidéo ni la section du bas de page n'existent plus, et aucun calcul ne change.
+    [ADR 0043](docs/adr/0043-les-alertes-quittent-la-video-pour-une-colonne.md) puis
+    [ADR 0044](docs/adr/0044-les-alertes-deviennent-un-centre-de-notifications.md)
+    déplacent — pile flottante, puis section du bas de page, puis colonne de 18 rem,
+    et aujourd'hui **une cloche et un tiroir** dans la barre du studio. Aucune de ces
+    trois ADR ne change un calcul ; `violationCounts` a seulement déménagé dans
+    `shared/lib/violationTally.ts` et gagné ses ventilations.
 33. **Un véhicule dont la plaque est lue reçoit une photo, et une seule.** Deux JPEG
     — le véhicule recadré, sa plaque — pris sur la **même** image, celle dont la
     lecture est la plus sûre. Cinq points :
@@ -1438,14 +1506,21 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     - **jamais depuis une boîte reprojetée** (ADR 0010) : le point d'accroche est la
       branche *mesure fraîche* de `_detect_plates`, la seule où les deux boîtes, le
       texte et les pixels coexistent ;
-    - **encodage à l'amélioration, écriture à la fin.** Mesuré sur 1 800 images :
-      **41 encodages, 98 ms, 0,056 %** du temps d'analyse. Le chiffre qui compte est
-      41 — c'est la règle monotone qui protège le chemin critique, pas la vitesse de
-      l'encodeur, et un test **compte les appels** pour cette raison ;
+    - **encodage à l'amélioration.** Mesuré sur 1 800 images : **41 encodages,
+      98 ms, 0,056 %** du temps d'analyse. Le chiffre qui compte est 41 — c'est la
+      règle monotone qui protège le chemin critique, pas la vitesse de l'encodeur, et
+      un test **compte les appels** pour cette raison ;
+    - **écriture au fil de l'eau depuis le 2026-08-28**, et non plus à la fin : un
+      rappel `on_snapshot`, appelé depuis le thread worker exactement là où les octets
+      viennent d'être produits, et **après** `record_snapshot` — le fichier existe donc
+      quand l'aperçu suivant l'annonce. L'écriture finale reste comme filet, et le
+      rappel suit la règle monotone : une écriture par amélioration retenue, jamais par
+      lecture ;
     - **les captures sont purgées avec la vidéo**, pas avec le résultat : ce sont des
       plaques et des visages, la donnée même que le TTL court efface.
 
-    [ADR 0042](docs/adr/0042-une-capture-par-vehicule.md).
+    [ADR 0042](docs/adr/0042-une-capture-par-vehicule.md), amendée par
+    [ADR 0046](docs/adr/0046-les-captures-s-ecrivent-pendant-l-analyse.md).
 
 ## Ce que l'analyse signale — les alertes
 
@@ -1488,67 +1563,77 @@ Cinq points qui ne se devinent pas :
   infraction », l'inverse de la vérité — même honnêteté que le « — » de « Passages en
   entrée ».
 
-**Elles vivent dans une colonne, jamais sur la vidéo** (soir du 2026-08-27, [ADR
-0043](docs/adr/0043-les-alertes-quittent-la-video-pour-une-colonne.md)). La pile
-flottante posée sur la scène et la section du bas de page sont **supprimées** — pas
-masquées : les deux rendaient la même liste, et c'était le double emploi qui posait
-problème. Il reste `AlertsPanel`, dans la troisième piste de la grille du studio.
-Cinq points :
+**Elles vivent derrière une cloche, jamais sur la vidéo ni dans une colonne**
+(2026-08-28, [ADR
+0044](docs/adr/0044-les-alertes-deviennent-un-centre-de-notifications.md), qui amende
+[ADR 0043](docs/adr/0043-les-alertes-quittent-la-video-pour-une-colonne.md)). Trois
+surfaces sont mortes de la **même** cause — la place qu'elles occupaient n'était pas
+proportionnelle à ce qu'on venait y chercher : la pile flottante posée sur la scène,
+la section du bas de page, puis la colonne de 18 rem qui les remplaçait toutes deux.
+Cette dernière réglait ce qu'on lui demandait et prenait ses 18 rem à la vidéo **en
+permanence**, plus 3 rem aux résultats (23 → 20), pour une liste qu'on consulte par
+à-coups. La grille du studio redevient donc inconditionnelle
+(`xl:grid-cols-[minmax(0,1fr)_23rem]`), sans classe calculée ni point de rupture
+`2xl`.
 
-- **la page ne change pas de forme, et deux tentatives l'ont prouvé.** Le cadre reste
-  à `max-w-[1600px]` et la gouttière à 1,5 rem (`--app-gutter`, un seul jeton pour
-  l'entête, le contenu et le fond débordé de la barre du studio). Les deux ont été
-  réduits — 2100 px, puis 0,75 / 1 rem — et annulés le jour même : la page y gagnait
-  une centaine de pixels et y perdait ses marges, donc sa respiration. **Une marge
-  n'est pas de la place perdue** ;
-- **la place vient des colonnes, puis de la scène.** Les résultats passent de 23 à
-  20 rem quand les alertes sont là, celles-ci prennent 18, et la scène absorbe le
-  reste — une vidéo garde ses proportions à toute largeur, une carte de KPI non.
-  Mesuré à 1856 px : cadre de 1600 centré, 1552 px de contenu, `912 | 320 | 288`
-  avec alertes contre `1168 | 368` sans ;
-- **les deux pistes de droite sont de poids voisin** (20 et 18 rem). À 23 / 19, la
-  seconde se lisait comme la retombée de la première — une bande de reste. Deux
-  colonnes de même poids annoncent deux lectures de même rang, ce que « ce qui est
-  compté » et « ce qui est signalé » sont exactement ;
-- **le chiffre de tête ne défile pas.** Dans les Résultats, l'entête et « Passages en
-  entrée » sont collés en haut du défilement, le reste passe dessous : c'est le total
-  auquel **toutes** les autres cartes se comparent — les cartes par type en sont la
-  somme exacte, les entrées des cartes par ligne aussi — et sorti de l'écran il
-  obligeait à remonter pour retrouver le total dont on venait de lire le détail. Fond
-  opaque obligatoire, et `-top-px` plutôt que `top-0` : un arrondi de sous-pixel
-  laisse sinon passer une ligne de carte au-dessus de la tête ;
-- **le défilement des deux colonnes est dessiné** (`.panel-scroll`, index.css) :
-  curseur de 8 px au jeton `--color-line`, piste transparente, et surtout
-  `scrollbar-gutter: stable` — sans elle, l'apparition de la barre au moment où une
-  carte de trop arrive décale tout le contenu de la colonne. La barre système fait
-  17 px opaques sur Windows, soit 5 % d'une colonne de 20 rem, et il y en aurait deux
-  côte à côte ;
-- **elles portent les mêmes classes de calage et la même entête**
-  (`shared/ui/PanelHeading`, dans `shared` parce qu'aucune des deux features n'a le
-  droit d'importer l'autre et qu'un demi-pixel d'écart entre deux titres côte à côte
-  se voit). Chacune a son **propre** défilement : sans cela, la plus longue des deux
-  imposerait sa hauteur à la rangée, donc à la scène, et la vidéo se retrouverait en
-  haut de trois écrans de vide ;
-- **le repère d'activité est sur les deux, et c'est un point sans un mot** : les
-  cartes de résultats sont **identiques** pendant l'analyse et après — un seul jeu de
-  composants pour deux sources de même forme — donc rien ne disait laquelle on
-  regardait. Il a porté le texte « en direct » quelques heures : deux mots par
-  colonne, sur deux colonnes de 20 rem, pour ce qu'un point suffit à dire. Le mot
-  survit en `sr-only` et en `title`, un point ne disant rien à un lecteur d'écran ;
-- **la piste n'existe que si `alertsArmed`**, et sa classe de grille est donc
-  calculée. Trois pistes avec deux enfants laisseraient une colonne vide — 18 rem
-  pris à la vidéo pour rien, sur tous les tracés sans règle ;
-- **elle n'apparaît qu'à `2xl`.** En dessous, le panneau passe **sous** les deux
-  colonnes (`xl:col-span-2`), et sa grille en `auto-fill` y rend quatre cartes par
-  rangée au lieu d'une — aucun point de rupture ne lui dit où il se trouve ;
-- **`sticky` exige `self-start`** : un enfant de grille s'étire sur toute la hauteur
-  de sa rangée, et `sticky` n'a alors plus rien à faire. Le défilement est borné à la
-  hauteur de la fenêtre : le journal plafonne à 200 entrées, et une colonne sans fin
-  repousserait le bas de page à chaque événement ;
+`AlertsPanel` est aujourd'hui le **cinquième tiroir** de la barre, fourni par le
+studio comme « Géométrie » (`panels`). Neuf points :
+
+- **la pilule ne porte aucun mot** : l'icône bascule entre `Bell` et `BellRing` — une
+  cloche muette et une cloche qui sonne se distinguent d'un coup d'œil là où « 0 » et
+  « 3 » demandent de lire un chiffre — et la pastille porte le **compte** et la
+  **gravité**, rouge dès qu'une alerte `critical` existe, orange sinon. `ExtraPanel`
+  gagne pour cela deux champs optionnels, `icon` et `badge` ; le libellé passe en
+  `aria-label` et en infobulle, jamais nulle part ;
+- **`alertsArmed` décide de la pilule autant que du panneau.** Un `AlertsPanel` qui
+  rend `null` laisserait un bouton qui n'ouvre rien : le tiroir n'est donc pas monté
+  du tout sans règle posée ni plaque recherchée ;
+- **la pilule n'est jamais grisée pendant une analyse**, contrairement à ce que
+  `disabled` fait aux quatre tiroirs de réglages : lire ses alertes pendant que ça
+  tourne est tout l'objet du changement. Elle suit `hasSource`, comme les autres ;
+- **le résumé passe devant la liste.** C'est le changement de fond : une liste dit ce
+  qui s'est passé un par un, elle ne dit jamais ce qu'il faut en penser. Sur cinquante
+  infractions, la question est « lesquelles, et faites par quels véhicules », pas
+  « quelle est la trente-septième » ;
+- **trois axes de filtre qui se composent** — nature, **type de véhicule** (la classe
+  votée, invariant 4), ligne — chacun avec son compte, et les comptes portent sur le
+  journal **entier** et non sur la liste déjà filtrée : des comptes qui rétrécissent à
+  mesure qu'on filtre empêchent de savoir ce qu'on trouverait en changeant d'axe.
+  `alertFilters.ts` en est le seul juge, et `filterAlerts` rend la liste **par
+  référence** quand rien n'est filtré — le panneau se rerend à chaque aperçu SSE ;
+- **deux sources de chiffres, jamais mélangées.** Le résumé vient de
+  `violationCounts` (dérivé de `stats`, sans plafond), le flux du journal (borné à
+  200, borne **annoncée**). Afficher `alerts.length` comme un total ferait plafonner
+  un compteur en silence — invariant 3, le défaut que l'ancienne chronologie a déjà
+  payé ;
+- **`violationCounts` a déménagé dans `shared/lib/violationTally.ts`**, aux côtés de
+  `lineRules.ts` et `lineViolations.ts` : deux features en ont besoin, et une feature
+  n'importe jamais une autre. Il y gagne `byKind` et `byClass`, qui appliquent la
+  **même** priorité que `violationOf` — sens interdit avant voie réservée — ce qu'un
+  test verrouille : sans elle le résumé compterait 6 là où le KPI affiche 3.
+  `StudioPage` le calcule une fois et le passe en prop, pour que les deux surfaces
+  affichent le **même** nombre ;
 - **une seule région vivante, et elle ne porte qu'un nombre.** La pile flottante
   annonçait chaque carte en `aria-live` ; sur un carrefour chargé cela faisait d'un
-  lecteur d'écran un métronome. Le compteur (« 7 alertes »), affiché pendant
-  l'analyse seulement, dit qu'il se passe quelque chose en une phrase courte.
+  lecteur d'écran un métronome. Le compteur (« 7 alertes »), en `polite` pendant
+  l'analyse seulement, dit qu'il se passe quelque chose en une phrase courte ;
+- **la carte porte un filet de gravité à gauche** (`SEVERITY_RAIL`, opaque) en plus de
+  son écrin teinté à 10 % : c'est lui qui rend une pile parcourable sans lecture, l'œil
+  suivant une colonne de traits. La teinte reste celle de la **gravité**, jamais celle
+  de la ligne — qui encode déjà une identité sur le canvas.
+
+Dans les Résultats, **le chiffre de tête ne défile pas** : l'entête et « Passages
+globaux » sont collés en haut du défilement, le reste passe dessous. C'est le total
+auquel toutes les autres cartes se comparent — les cartes par type en sont la somme
+exacte — et sorti de l'écran il obligeait à remonter pour retrouver le total dont on
+venait de lire le détail. Fond opaque obligatoire, et `-top-px` plutôt que `top-0` :
+un arrondi de sous-pixel laisse sinon passer une ligne de carte au-dessus de la tête.
+Son défilement est dessiné (`.panel-scroll`, index.css) avec `scrollbar-gutter:
+stable` — sans elle, l'apparition de la barre système au moment où une carte de trop
+arrive décale tout le contenu de la colonne, et cette barre fait 17 px opaques sur
+Windows. La page, elle, ne change pas de forme : le cadre reste à `max-w-[1600px]` et
+la gouttière à 1,5 rem (`--app-gutter`), tous deux réduits une fois puis rétablis le
+jour même — **une marge n'est pas de la place perdue**.
 
 Une alerte est **cliquable** et amène la tête de lecture à son instant — la seule
 chose de cet écran qui le soit. L'ancienne chronologie cliquable avait été retirée
@@ -1907,7 +1992,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1586 (1 skip) | 817 |
+| Nombre | 1592 (1 skip) | 832 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 
