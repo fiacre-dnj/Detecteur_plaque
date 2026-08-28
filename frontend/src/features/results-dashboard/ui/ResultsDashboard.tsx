@@ -53,6 +53,7 @@ import { Ban } from "lucide-react";
 import type { AnalysisStats, CountingLine } from "@/shared/api/contracts";
 import { classLabel } from "@/shared/lib/classes";
 import type { LineRule } from "@/shared/lib/lineRules";
+import { violationCounts } from "@/shared/lib/violationTally";
 import { MetricCard } from "@/shared/ui/MetricCard";
 import { PanelHeading } from "@/shared/ui/PanelHeading";
 
@@ -60,7 +61,6 @@ import { flowBalance } from "../model/directions";
 import { entriesByClass } from "../model/entriesByClass";
 import { crossroadFlowSentence, plural } from "../model/labels";
 import { lineFlows, type LineFlow } from "../model/lineFlows";
-import { violationCounts } from "../model/violationCounts";
 import { visibleClasses } from "../model/visibleClasses";
 import { EntryExitBar } from "./EntryExitBar";
 

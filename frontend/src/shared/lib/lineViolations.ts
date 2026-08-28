@@ -14,7 +14,7 @@
  * **Une seule infraction par franchissement, et l'ordre de priorité compte.** Un
  * bus qui remonte une voie réservée à contresens enfreint deux règles ; le compter
  * deux fois ferait diverger la liste des alertes du KPI, qui somme des passages
- * (`violationCounts.ts` applique la **même** priorité). Le sens interdit passe
+ * (`violationTally.ts` applique la **même** priorité). Le sens interdit passe
  * devant : il porte sur le trajet, la voie réservée sur le véhicule, et c'est le
  * trajet qui est le fait le plus grave.
  */

@@ -13,7 +13,7 @@
  * convention de plus, alors que le titre et l'icône le disent déjà.
  *
  * **Le journal est borné et sa borne est annoncée.** Les compteurs, eux, ne le sont
- * pas : ils sont dérivés de `stats` (`results-dashboard/model/violationCounts.ts`),
+ * pas : ils sont dérivés de `stats` (`shared/lib/violationTally.ts`),
  * exacts et sans plafond. Confondre les deux ferait plafonner un total en silence —
  * exactement le défaut qu'avait l'ancienne chronologie avant qu'on l'annonce.
  */
