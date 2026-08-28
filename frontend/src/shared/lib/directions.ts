@@ -205,13 +205,26 @@ export function isForbiddenRole(role: DirectionRole): boolean {
  */
 export type LineKind =
   | "bidirectional"
-  | "oneway-entry"
-  | "oneway-exit"
+  | "oneway"
   | "closed"
   | "transit"
   | "undeclared";
 
-/** Le type de cette ligne, lu sur ses deux rôles. */
+/**
+ * Le type de cette ligne, lu sur ses deux rôles.
+ *
+ * **`oneway` recouvre les deux anciens « sens unique ».** Ils ne différaient que
+ * par le rôle du côté autorisé — `entry` ou `exit` — pour une seule et même
+ * règle : un sens passe, l'autre est signalé. Deux types pour une règle
+ * obligeaient à choisir un bilan de carrefour au moment où l'on décrivait une
+ * interdiction, et le chiffre de tête ne s'appuie plus sur ce bilan.
+ *
+ * Une paire héritée `{exit, forbidden}` — preset ou `configJson` enregistré avant
+ * la fusion — se relit donc sous « Autorisé · interdit » plutôt que de tomber en
+ * « à préciser » : un type retiré du vocabulaire ne doit pas transformer une ligne
+ * réglée en ligne à régler. `rolesForKind` la normalise en `{entry, forbidden}` au
+ * premier re-choix, et jamais avant — relire un preset ne réécrit rien.
+ */
 export function lineKind(line: CountingLine): LineKind {
   const positive = directionRole(line, "positive");
   const negative = directionRole(line, "negative");
@@ -219,8 +232,7 @@ export function lineKind(line: CountingLine): LineKind {
   if (isForbiddenRole(positive) && isForbiddenRole(negative)) return "closed";
   if (isForbiddenRole(positive) || isForbiddenRole(negative)) {
     const allowed = isForbiddenRole(positive) ? negative : positive;
-    if (allowed === "entry") return "oneway-entry";
-    if (allowed === "exit") return "oneway-exit";
+    if (allowed === "entry" || allowed === "exit") return "oneway";
     return "undeclared";
   }
   if (positive === "transit" && negative === "transit") return "transit";
@@ -247,10 +259,11 @@ export function rolesForKind(kind: LineKind): {
   negative: DirectionRole;
 } {
   switch (kind) {
-    case "oneway-entry":
+    // `entry` et non `transit` pour le côté autorisé : c'est ce qui garde ces
+    // lignes dans les colonnes « Entrée par » du registre et dans les comparatifs
+    // de Statistique. Un rôle neutre les en aurait sorties sans que rien ne le dise.
+    case "oneway":
       return { positive: "entry", negative: "forbidden" };
-    case "oneway-exit":
-      return { positive: "exit", negative: "forbidden" };
     case "closed":
       return { positive: "forbidden", negative: "forbidden" };
     case "transit":
@@ -270,7 +283,7 @@ export interface LineKindOption {
 }
 
 /**
- * Les cinq types proposés à l'utilisateur, dans l'ordre d'affichage.
+ * Les quatre types proposés à l'utilisateur, dans l'ordre d'affichage.
  *
  * `undeclared` n'y est pas : on ne le choisit pas, on en sort. L'ordre va du plus
  * courant au plus rare — un carrefour ordinaire d'abord, une ligne infranchissable
@@ -283,14 +296,9 @@ export const LINE_KINDS: readonly LineKindOption[] = [
     hint: "Un sens entre dans le carrefour, l'autre en sort. Le cas ordinaire.",
   },
   {
-    kind: "oneway-entry",
-    label: "Sens unique · entrée",
-    hint: "Un seul sens autorisé, qui entre. Tout passage en face est signalé comme contresens.",
-  },
-  {
-    kind: "oneway-exit",
-    label: "Sens unique · sortie",
-    hint: "Un seul sens autorisé, qui sort. Une bretelle de sortie, une voie de dégagement.",
+    kind: "oneway",
+    label: "Autorisé · interdit",
+    hint: "Un sens passe, l'autre est interdit. Tout passage à contresens est signalé.",
   },
   {
     kind: "closed",

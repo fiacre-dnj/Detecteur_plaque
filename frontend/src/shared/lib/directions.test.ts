@@ -344,16 +344,21 @@ describe("le type d'une ligne — dérivé, jamais stocké", () => {
     expect(lineKind(line({ positiveRole: "entry", negativeRole: "entry" }))).toBe("undeclared");
   });
 
-  it("distingue le côté interdit d'une ligne à sens unique", () => {
-    expect(lineKind(line({ positiveRole: "entry", negativeRole: "forbidden" }))).toBe(
-      "oneway-entry",
-    );
-    expect(lineKind(line({ positiveRole: "forbidden", negativeRole: "entry" }))).toBe(
-      "oneway-entry",
-    );
-    expect(lineKind(line({ positiveRole: "exit", negativeRole: "forbidden" }))).toBe(
-      "oneway-exit",
-    );
+  it("reconnaît « Autorisé · interdit » quel que soit le côté interdit", () => {
+    // Le type ne dit pas *de quel côté* l'interdiction tombe — la flèche du tracé
+    // le dit, et le bouton d'inversion la déplace. Un type par côté aurait fait
+    // deux pilules pour une même règle.
+    expect(lineKind(line({ positiveRole: "entry", negativeRole: "forbidden" }))).toBe("oneway");
+    expect(lineKind(line({ positiveRole: "forbidden", negativeRole: "entry" }))).toBe("oneway");
+  });
+
+  it("relit une paire héritée « sens unique · sortie » sous le type fusionné", () => {
+    // `{exit, forbidden}` n'est plus produit par l'éditeur, mais un preset
+    // enregistré avant la fusion le porte encore. Le ranger en « à préciser »
+    // transformerait une ligne réglée en ligne à régler, sans que rien ne l'ait
+    // déréglée. Il reste lisible, et le premier re-choix le normalise.
+    expect(lineKind(line({ positiveRole: "exit", negativeRole: "forbidden" }))).toBe("oneway");
+    expect(rolesForKind("oneway")).toEqual({ positive: "entry", negative: "forbidden" });
   });
 
   it("ne propose jamais « à préciser » comme choix", () => {

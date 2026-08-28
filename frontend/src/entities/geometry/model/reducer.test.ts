@@ -578,7 +578,7 @@ describe("le type d'une ligne", () => {
     const state = withLine();
     const id = state.lines[0]?.id ?? "";
 
-    const oneway = geometryReducer(state, { type: "setLineKind", id, kind: "oneway-entry" });
+    const oneway = geometryReducer(state, { type: "setLineKind", id, kind: "oneway" });
     expect(oneway.lines[0]?.positiveRole).toBe("entry");
     expect(oneway.lines[0]?.negativeRole).toBe("forbidden");
 
@@ -594,7 +594,7 @@ describe("le type d'une ligne", () => {
     const state = withLine();
     const id = state.lines[0]?.id ?? "";
 
-    const oneway = geometryReducer(state, { type: "setLineKind", id, kind: "oneway-entry" });
+    const oneway = geometryReducer(state, { type: "setLineKind", id, kind: "oneway" });
     const swapped = geometryReducer(oneway, { type: "swapLineDirections", id });
 
     expect(swapped.lines[0]?.positiveRole).toBe("forbidden");

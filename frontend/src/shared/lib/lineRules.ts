@@ -64,6 +64,14 @@ export interface LineRule {
  * l'analyse : ses franchissements ne produisent alors aucune infraction, jamais une
  * infraction supposée. Inventer une règle disparue serait pire que de n'en signaler
  * aucune.
+ *
+ * **Le piège à connaître avant de chercher un bug de voie réservée** : tant que
+ * `GET /api/v1/models/classes` n'a pas répondu, l'appelant passe un catalogue vide,
+ * `resolveAllowedClasses` ne reconnaît aucun identifiant, et **toutes les voies
+ * réservées disparaissent** — le KPI d'infraction avec elles. C'est le repli
+ * délibéré décrit plus bas (« mieux vaut ne rien signaler que tout signaler »), pas
+ * une panne : il dure le temps d'une requête et se répare tout seul. Le confondre
+ * avec « ma règle ne marche pas » coûterait une demi-journée.
  */
 export function lineRules(
   lines: readonly CountingLine[],

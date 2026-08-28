@@ -26,7 +26,7 @@ const RULE: LineRule = {
   lineId: "l1",
   lineName: "Voie nord",
   color: "#539df5",
-  kind: "oneway-entry",
+  kind: "oneway",
   forbiddenSigns: ["negative"],
   allowedClasses: null,
   restricted: true,

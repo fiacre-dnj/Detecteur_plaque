@@ -1,10 +1,40 @@
 # ADR 0040 — Une ligne porte un type, et un sens peut être interdit
 
-- **Statut** : accepté
+- **Statut** : accepté, **amendé le 2026-08-28**
 - **Date** : 2026-08-27
 - **Amende** : [ADR 0021](0021-le-role-de-sens-devient-obligatoire.md) et
   [ADR 0016](0016-compter-les-objets-suivis.md) — sans toucher au comptage,
   seulement au vocabulaire des sens et à l'édition d'une ligne.
+
+## Amendement du 2026-08-28 — quatre types choisissables, pas cinq
+
+« Sens unique · entrée » et « Sens unique · sortie » **fusionnent** en un seul type,
+**« Autorisé · interdit »**, de paire `{entry, forbidden}`.
+
+Ils ne différaient que par le rôle du côté autorisé, pour une seule et même règle :
+un sens passe, l'autre est signalé. Deux pilules obligeaient donc à choisir un bilan
+de carrefour au moment où l'on décrivait une interdiction — et depuis
+[ADR 0045](0045-un-passage-global-est-un-vehicule.md) le chiffre de tête ne s'appuie
+plus sur ce bilan.
+
+Trois points :
+
+- **le côté autorisé reste `entry`**, et non `transit`. C'est ce qui garde ces
+  lignes dans les colonnes « Entrée par » du registre et dans les comparatifs de
+  Statistique ; un rôle neutre les en aurait sorties sans que rien ne le dise ;
+- **une paire héritée `{exit, forbidden}` se relit sous le nouveau type.**
+  `lineKind` la range en `oneway` plutôt qu'en `undeclared` : retirer un type du
+  vocabulaire ne doit pas transformer une ligne réglée en ligne à régler.
+  `rolesForKind` la normalise au premier re-choix, et jamais avant — relire un
+  preset ne réécrit rien ;
+- **aucun champ du contrat ne bouge.** Le type reste dérivé, les rôles restent
+  `entry` / `forbidden` des deux côtés du réseau, et aucune migration n'est due.
+
+**Et « Comptage seul » n'affiche plus ses deux sens.** Les deux rangées y disaient
+« Passage » deux fois sous un bouton d'inversion déjà grisé : trois éléments
+d'interface pour zéro information. Une phrase les remplace. Le canevas, lui, garde
+ses deux flèches — elles disent de quel côté est chaque sens, ce qui reste vrai et
+sert à relier une rangée à un trait.
 
 ## Contexte
 

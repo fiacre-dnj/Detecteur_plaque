@@ -48,7 +48,7 @@ describe("lineRules", () => {
 
     expect(rule?.restricted).toBe(true);
     expect(rule?.forbiddenSigns).toEqual(["negative"]);
-    expect(rule?.kind).toBe("oneway-entry");
+    expect(rule?.kind).toBe("oneway");
   });
 
   it("relève les deux sens d'une ligne infranchissable", () => {

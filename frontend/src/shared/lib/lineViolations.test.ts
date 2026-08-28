@@ -104,6 +104,41 @@ describe("violationOf", () => {
     expect(violationOf(crossing({ lineId: "l1", direction: -1 }), rules)).toBeNull();
   });
 
+  it("met en infraction exactement les types barrés dans le panneau", () => {
+    // Le geste de l'utilisateur est « je barre un type », et le panneau écrit le
+    // **complément** de `allowedClassIds`. Ce test relie les deux bouts : ce qu'il
+    // barre à l'écran est ce que `violationOf` signale, et rien d'autre.
+    //
+    // Sur ce catalogue à deux entrées, barrer « Bus » revient à n'autoriser que
+    // « Voiture » — la seule écriture que le contrat connaisse (ADR 0040).
+    const rules = rulesFor(line({ allowedClassIds: [2] }));
+
+    expect(violationOf(crossing({ label: "bus" }), rules)?.kind).toBe("reserved-lane");
+    expect(violationOf(crossing({ label: "car" }), rules)).toBeNull();
+  });
+
+  it("compte le passage même quand il est en infraction", () => {
+    // L'invariant 3 en dépend : une infraction est un passage **qualifié**, pas un
+    // passage retiré. Ce module ne fait que le qualifier — il ne retire jamais rien
+    // d'un total, et c'est ce qui rend l'infraction dérivable côté client.
+    const event = crossing({ label: "bus" });
+    const found = violations([event], rulesFor(line({ allowedClassIds: [2] })));
+
+    expect(found).toHaveLength(1);
+    expect(found[0]?.crossing).toBe(event);
+  });
+
+  it("désarme toute voie réservée tant que le catalogue n'a pas répondu", () => {
+    // **Ce n'est pas une panne, et il ne faut pas la « corriger ».** Sans
+    // catalogue, aucun identifiant ne se traduit en nom COCO : on ne peut donc
+    // décider de rien. Le repli est de ne rien signaler — l'inverse mettrait
+    // *tout* le trafic en infraction pendant le temps d'une requête.
+    const pending = lineRules([line({ allowedClassIds: [2] })], []);
+
+    expect(hasAnyRule(pending)).toBe(false);
+    expect(violationOf(crossing({ label: "bus" }), pending)).toBeNull();
+  });
+
   it("laisse passer une classe inconnue du catalogue plutôt que de la punir", () => {
     // Le catalogue ne connaît pas `motorcycle` ici : la restriction ne s'y applique
     // donc pas, faute de savoir ce qu'elle autorise vraiment.

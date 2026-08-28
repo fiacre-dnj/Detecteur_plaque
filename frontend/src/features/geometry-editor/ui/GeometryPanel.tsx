@@ -341,27 +341,44 @@ function LineRules({
         </p>
       </fieldset>
 
-      <div className="flex items-stretch gap-1.5">
-        <ul className="min-w-0 flex-1 space-y-1">
-          {(["positive", "negative"] as const).map((sign) => (
-            <DirectionRoleRow key={sign} line={line} sign={sign} />
-          ))}
-        </ul>
-        <button
-          type="button"
-          onClick={() => onSwapDirections(line.id)}
-          disabled={!swappable}
-          title={
-            swappable
-              ? "Échanger les deux sens de la ligne"
-              : "Les deux sens portent le même rôle : il n'y a rien à échanger"
-          }
-          aria-label={`Échanger les deux sens de ${line.name}`}
-          className="grid shrink-0 place-items-center rounded-input bg-surface-2 px-2 text-ink-muted transition-colors hover:bg-elevated hover:text-ink active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          <ArrowUpDown aria-hidden="true" className="size-4" />
-        </button>
-      </div>
+      {/* **« Comptage seul » n'a pas de sens à régler.** Les deux rangées y
+          disaient « Passage » deux fois, sous un bouton d'inversion déjà grisé :
+          trois éléments d'interface pour zéro information, dans une colonne où
+          chaque rangée coûte de la place à la ligne suivante. Le type dit déjà
+          tout ce qu'il y a à savoir — ce qui franchit compte, quel que soit le
+          côté d'où il vient.
+
+          Le canevas, lui, garde ses deux flèches : elles disent de quel côté est
+          chaque sens, ce qui reste vrai et sert à relier une rangée à un trait.
+          C'est le *réglage* des sens qui disparaît, pas leur géométrie. */}
+      {kind === "transit" ? (
+        <p className="rounded-input bg-base p-2 text-micro text-ink-dim">
+          Les deux sens sont comptés ensemble : tout véhicule qui franchit la ligne
+          compte, quel que soit le côté d'où il vient.
+        </p>
+      ) : (
+        <div className="flex items-stretch gap-1.5">
+          <ul className="min-w-0 flex-1 space-y-1">
+            {(["positive", "negative"] as const).map((sign) => (
+              <DirectionRoleRow key={sign} line={line} sign={sign} />
+            ))}
+          </ul>
+          <button
+            type="button"
+            onClick={() => onSwapDirections(line.id)}
+            disabled={!swappable}
+            title={
+              swappable
+                ? "Échanger les deux sens de la ligne"
+                : "Les deux sens portent le même rôle : il n'y a rien à échanger"
+            }
+            aria-label={`Échanger les deux sens de ${line.name}`}
+            className="grid shrink-0 place-items-center rounded-input bg-surface-2 px-2 text-ink-muted transition-colors hover:bg-elevated hover:text-ink active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <ArrowUpDown aria-hidden="true" className="size-4" />
+          </button>
+        </div>
+      )}
 
       {classes.length > 0 && (
         <ReservedLane
@@ -400,6 +417,14 @@ function ReservedLane({
   onSetLineClasses: (id: string, classIds: number[] | null) => void;
 }) {
   const active = reserved !== null;
+  // Le **complément** de la liste autorisée, et non une seconde liste stockée : la
+  // règle est écrite une fois (`allowedClassIds`), et ce qui est interdit s'en
+  // déduit. Deux listes finiraient par se contredire — un type absent des deux, ou
+  // présent dans les deux — et l'écran dirait alors autre chose que le juge
+  // (`shared/lib/lineRules.ts`).
+  const barred = active
+    ? classes.filter((entry) => !(reserved ?? []).includes(entry.id))
+    : [];
 
   const toggle = (id: number): void => {
     const current = reserved ?? [];
@@ -456,10 +481,30 @@ function ReservedLane({
               );
             })}
           </div>
+          {/* **La phrase nomme les types barrés, elle ne décrit plus la règle en
+              général.** « Les types barrés sont signalés » demandait de relire les
+              pastilles pour savoir *lesquels*, et une pastille barrée se distingue
+              d'une pastille autorisée par un trait et deux crans de gris — sur des
+              libellés de six lettres. Écrire « Interdits : Camion, Bus » rend la
+              règle vérifiable sans avoir lancé d'analyse, ce qui était la seule
+              façon de la vérifier jusqu'ici.
+
+              Le cas « rien de barré » est dit lui aussi : l'interrupteur est
+              allumé, toutes les pastilles sont actives, et rien à l'écran ne
+              distinguait cet état d'une restriction qui ne se déclencherait
+              jamais. */}
           <p className="mt-1 text-micro text-ink-dim">
-            Les types barrés sont signalés s'ils franchissent la ligne. Le passage
-            reste compté : une infraction est un passage qualifié, pas un passage
-            retiré.
+            {barred.length === 0 ? (
+              "Tous les types sont autorisés : aucune infraction ne sera signalée. Barrez ceux qui n'ont pas le droit de passer."
+            ) : (
+              <>
+                <strong className="text-negative">
+                  Interdits : {barred.map((entry) => entry.label).join(", ")}
+                </strong>{" "}
+                — leur passage sur cette ligne sera signalé. Il reste compté : une
+                infraction est un passage qualifié, pas un passage retiré.
+              </>
+            )}
           </p>
         </>
       )}
