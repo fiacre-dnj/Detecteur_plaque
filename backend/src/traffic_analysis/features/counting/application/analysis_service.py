@@ -114,6 +114,21 @@ PREVIEW_VEHICLES_INTERVAL_S = 1.0
 
 type ProgressCallback = Callable[[Progress], None]
 type PreviewCallback = Callable[[PreviewSample], None]
+#: Une capture vient d'être retenue pour ce véhicule, et ses octets sont prêts.
+#:
+#: Appelée **depuis le thread worker**, comme `on_preview`, et exactement au moment
+#: où l'encodeur vient de rendre les deux JPEG : c'est le seul instant où ils sont
+#: frais et où le coût de l'écriture est déjà amorti par l'encodage qui la précède.
+#:
+#: Elle existe pour qu'une capture soit **lisible pendant l'analyse** (ADR 0046) :
+#: les octets étaient tenus en mémoire jusqu'à la fin, donc la colonne « Capture »
+#: du registre restait vide pendant tout le temps où on la regarde. Le contrat de
+#: dépendance est préservé — la feature `counting` ne sait rien du stockage des
+#: jobs, elle rend des octets et appelle qui veut bien les prendre.
+#:
+#: Elle est appelée **à chaque amélioration**, donc plusieurs fois pour le même
+#: véhicule : l'appelant écrase, il n'ajoute pas.
+type SnapshotCallback = Callable[[int, VehicleSnapshot], None]
 type CancellationCheck = Callable[[], bool]
 #: Barrière de pause : **bloquante**, appelée entre deux images. Elle rend la main
 #: quand l'analyse reprend, ou quand l'annulation est demandée — jamais avant, et
@@ -189,6 +204,7 @@ class AnalysisService:
         *,
         on_progress: ProgressCallback | None = None,
         on_preview: PreviewCallback | None = None,
+        on_snapshot: SnapshotCallback | None = None,
         preview_interval_s: float = PREVIEW_MIN_INTERVAL_S,
         paced_preview_interval_s: float = PACED_PREVIEW_INTERVAL_S,
         preview_vehicles_interval_s: float | None = PREVIEW_VEHICLES_INTERVAL_S,
@@ -225,6 +241,15 @@ class AnalysisService:
         l'intervalle : sans lui, la dernière liste affichée serait celle d'un
         échantillon quelconque, et son écart avec le résultat se lirait comme un
         bug de comptage — même raison que la progression finale obligatoire.
+
+        `on_snapshot` est appelé à chaque fois qu'une capture de véhicule est
+        **retenue**, avec ses octets déjà encodés. Il n'a rien à voir avec la
+        cadence d'aperçu : une capture est un fait rare — 41 sur 1 800 images
+        mesurées — et l'échantillonner n'aurait rien économisé tout en retardant la
+        seule chose qu'on attend d'elle, être visible tout de suite. Les octets
+        restent **aussi** dans `AnalysisResultData.snapshots` : le rappel est un
+        canal supplémentaire, jamais un remplacement, et une analyse sans rappel se
+        comporte exactement comme avant.
 
         `config.analysis_speed` et `config.max_analysis_fps` **brident** la
         boucle : elle attend entre deux images pour que le temps de scène
@@ -422,6 +447,7 @@ class AnalysisService:
                     ocr_policy=policy,
                     session=session,
                     snapshots=result.snapshots,
+                    on_snapshot=on_snapshot,
                     image=frame.image,
                     timestamp_ms=frame.timestamp_ms,
                     ordinal=processed,
@@ -585,6 +611,7 @@ class AnalysisService:
         ocr_policy: PlateOcrPolicy | None,
         session: AnalysisSession,
         snapshots: dict[int, VehicleSnapshot],
+        on_snapshot: SnapshotCallback | None,
         image: npt.NDArray[np.uint8],
         timestamp_ms: float,
         ordinal: int,
@@ -685,12 +712,15 @@ class AnalysisService:
             # n'est pas une mesure de cette image (ADR 0010) : la recadrer produirait
             # une vignette de plaque décalée, et la donner pour la meilleure capture
             # d'un véhicule serait un faux témoignage.
-            self._capture_vehicle(session, snapshots, image, timestamp_ms, track, fresh)
+            self._capture_vehicle(
+                session, snapshots, on_snapshot, image, timestamp_ms, track, fresh
+            )
 
     def _capture_vehicle(
         self,
         session: AnalysisSession,
         snapshots: dict[int, VehicleSnapshot],
+        on_snapshot: SnapshotCallback | None,
         image: npt.NDArray[np.uint8],
         timestamp_ms: float,
         track: SessionTrack,
@@ -737,6 +767,17 @@ class AnalysisService:
             return
         snapshots[track.global_id] = snapshot
         session.record_snapshot(track.global_id, best.text_score, timestamp_ms)
+        # **Écrite avant d'être annoncée.** Le rappel écrit le fichier ; le score
+        # qu'on vient de poser sur la session est ce que le prochain aperçu SSE
+        # publiera, et c'est lui qui fait apparaître la vignette côté client. Dans
+        # cet ordre, le fichier existe déjà quand le client apprend qu'il existe —
+        # l'inverse afficherait une image cassée le temps d'un aperçu.
+        #
+        # Il vient **après** `record_snapshot` et non à sa place : la mémoire reste
+        # la source de l'écriture finale, qui réécrit les mêmes octets et sert de
+        # filet si un rappel a échoué.
+        if on_snapshot is not None:
+            on_snapshot(track.global_id, snapshot)
 
     @staticmethod
     def _remember_anchor(

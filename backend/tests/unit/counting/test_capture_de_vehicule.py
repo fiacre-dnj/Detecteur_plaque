@@ -52,6 +52,7 @@ EVERY_FRAME_DETECT = PlateDetectOptions(
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from traffic_analysis.features.counting.application.analysis_service import SnapshotCallback
     from traffic_analysis.features.counting.application.dto import AnalysisResultData
     from traffic_analysis.features.counting.domain.models import TrackObservation
 
@@ -79,6 +80,7 @@ def _run(
     read: bool = True,
     fails: bool = False,
     steps: int | None = None,
+    on_snapshot: SnapshotCallback | None = None,
 ) -> tuple[AnalysisResultData, FakeSnapshotEncoder]:
     """Analyse un clip où l'OCR rend une confiance **différente à chaque image**.
 
@@ -108,7 +110,7 @@ def _run(
         detect_plates=True,
         read_plate_text=read,
     )
-    return service.run_video("job-1", video, config), encoder
+    return service.run_video("job-1", video, config, on_snapshot=on_snapshot), encoder
 
 
 def _captured(result: AnalysisResultData) -> tuple[float | None, float | None]:
@@ -232,3 +234,68 @@ class TestCeQuiNeCapturePas:
         assert plate.width < vehicle.width
         assert vehicle.x <= plate.x
         assert plate.x + plate.width <= vehicle.x + vehicle.width
+
+
+class TestLaCaptureEstPubliableAvantLaFin:
+    """Le rappel qui rend la vignette lisible **pendant** l'analyse (ADR 0046).
+
+    Les octets étaient tenus en mémoire jusqu'à la fin du job : la colonne
+    « Capture » du registre restait donc vide pendant tout le temps où on la
+    regarde se remplir, et une alerte de plaque arrivait sans la photo qui permet
+    de la valider.
+    """
+
+    def test_chaque_capture_retenue_est_publiee_tout_de_suite(self, video: Path) -> None:
+        published: list[tuple[int, bytes]] = []
+        result, encoder = _run(
+            video,
+            [0.80, 0.90],
+            on_snapshot=lambda gid, snap: published.append((gid, snap.vehicle_jpeg)),
+        )
+
+        # Une publication par **amélioration**, exactement comme un encodage : le
+        # rappel est posé juste après, sur les octets qui viennent d'être produits.
+        assert encoder.calls == 2
+        assert len(published) == 2
+        assert {gid for gid, _ in published} == {result.vehicles[0].global_id}
+
+    def test_une_lecture_moins_bonne_ne_republie_rien(self, video: Path) -> None:
+        """Le rappel suit la règle monotone, il ne la double pas.
+
+        S'il était appelé à chaque lecture plutôt qu'à chaque capture retenue, il
+        réécrirait le fichier avec les octets d'une image moins bonne — et le
+        registre annoncerait un score que la photo ne porte pas.
+        """
+        published: list[int] = []
+        _run(video, [0.80, 0.90, 0.85, 0.70], on_snapshot=lambda gid, _: published.append(gid))
+
+        assert len(published) == 2
+
+    def test_les_octets_restent_aussi_en_memoire(self, video: Path) -> None:
+        """Le rappel est un canal **de plus**, jamais un remplacement.
+
+        L'écriture finale reste et réécrit les mêmes octets : c'est elle qui
+        rattrape un rappel qu'une erreur disque passagère aurait fait échouer.
+        """
+        result, _ = _run(video, [0.80], on_snapshot=lambda _gid, _snap: None)
+
+        assert len(result.snapshots) == 1
+
+    def test_sans_rappel_rien_ne_change(self, video: Path) -> None:
+        """La propriété qui rend le changement livrable.
+
+        Le banc, les tests et tout appelant qui ignore le rappel obtiennent
+        exactement le résultat d'avant.
+        """
+        with_callback, _ = _run(video, [0.80, 0.90], on_snapshot=lambda _gid, _snap: None)
+        without, _ = _run(video, [0.80, 0.90])
+
+        assert with_callback.snapshots.keys() == without.snapshots.keys()
+        assert _captured(with_callback) == _captured(without)
+
+    def test_un_encodage_rate_ne_publie_rien(self, video: Path) -> None:
+        """Sinon le rappel écrirait un fichier vide sous un véhicule sans score."""
+        published: list[int] = []
+        _run(video, [0.80, 0.90], fails=True, on_snapshot=lambda gid, _: published.append(gid))
+
+        assert published == []

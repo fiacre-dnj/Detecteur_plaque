@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from tests.support.builders import CAR, TRUCK, compose, straight_line, track_path
+from traffic_analysis.features.jobs.infrastructure.result_store import SNAPSHOT_DIRNAME
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
@@ -844,6 +845,51 @@ class TestCapturesDeVehicules:
 
         assert response.status_code == 404
 
+    async def test_une_capture_est_servie_pendant_l_analyse(
+        self, client: AsyncClient, settings: Settings
+    ) -> None:
+        """**Le refus « job non terminé » n'existe plus** (ADR 0046).
+
+        Il énonçait une vérité d'implémentation — « les captures sont écrites à la
+        fin » — qui n'en est plus une : elles le sont au fil de l'eau, et le garder
+        aurait refusé par un 409 des fichiers réellement présents sur le disque, au
+        moment précis où le registre les demande.
+
+        Le fichier est posé à la main, comme dans le test voisin : ce test porte sur
+        la **route**, pas sur la chaîne ANPR.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+
+        directory = settings.data_dir / "jobs" / job_id / SNAPSHOT_DIRNAME
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "1-vehicle.jpg").write_bytes(b"jpeg-en-cours")
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/vehicles/1/snapshot.jpg")
+
+        # Le statut du job n'entre plus dans la décision : soit le fichier est là,
+        # soit il ne l'est pas.
+        assert response.status_code == 200
+        assert response.content == b"jpeg-en-cours"
+
+    async def test_une_capture_pas_encore_ecrite_reste_un_409_missing(
+        self, client: AsyncClient
+    ) -> None:
+        """Et **jamais** `job_not_finished` : le code doit dire ce qui manque.
+
+        Pendant une analyse, une capture absente est le cas normal — le véhicule
+        n'a pas encore de plaque lue. C'est exactement ce que `snapshot_missing`
+        décrit, et c'est ce qui autorise le client à réessayer une fois plutôt qu'à
+        conclure que la route est fermée.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/vehicles/999/snapshot.jpg")
+
+        assert response.status_code == 409
+        assert response.json()["code"] == "snapshot_missing"
+
     async def test_une_capture_est_servie_en_jpeg_et_immuable(
         self, client: AsyncClient, settings: Settings
     ) -> None:
@@ -861,7 +907,7 @@ class TestCapturesDeVehicules:
         job_id = created["body"]["jobId"]
         await _wait_until_done(client, job_id)
 
-        directory = settings.data_dir / "jobs" / job_id / "snapshots"
+        directory = settings.data_dir / "jobs" / job_id / SNAPSHOT_DIRNAME
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "1-vehicle.jpg").write_bytes(b"\xff\xd8\xff-voiture")
 

@@ -1,6 +1,8 @@
 # ADR 0042 — Une capture par véhicule, et la meilleure lecture gagne
 
-- **Statut** : accepté
+- **Statut** : accepté, **amendé le 2026-08-28** par
+  [ADR 0046](0046-les-captures-s-ecrivent-pendant-l-analyse.md), qui avance
+  l'écriture sur disque sans toucher à l'encodage ni au point d'accroche
 - **Date** : 2026-08-27
 - **Complète** : [ADR 0010](0010-etranglement-du-detecteur-de-plaques.md) et
   [ADR 0036](0036-la-confiance-de-lecture-devient-un-reglage-de-l-utilisateur.md).
@@ -143,11 +145,14 @@ après le TTL.
   `no_consensus`, c'est-à-dire que l'OCR a refusé de publier. Sa photo permet de
   lire la plaque que le serveur n'a pas voulu affirmer — un refus honnête devient un
   fait vérifiable.
-- **Pas de vignette pendant l'analyse.** Les fichiers sont écrits à la fin ; la
-  colonne n'existe qu'ensuite. Transporter les images dans l'aperçu SSE
-  multiplierait sa charge par ~30 alors qu'ADR 0026 se bat pour 350 octets par
-  véhicule. Même règle, et même raison, que les exports masqués tant que le résultat
-  n'existe pas.
+- ~~**Pas de vignette pendant l'analyse.**~~ **Levé par ADR 0046** : les fichiers
+  sont désormais écrits dès qu'une capture est retenue, et la colonne se remplit
+  pendant l'analyse. L'argument reste entier sur ce qu'il visait — **rien ne
+  transite par le SSE**, dont la charge serait multipliée par ~30 alors qu'ADR 0026
+  se bat pour 350 octets par véhicule ; c'est l'écriture disque qui avance, pas le
+  flux. Les exports, eux, restent masqués tant que le résultat n'existe pas, et ce
+  n'est pas la même règle : un CSV à mi-parcours ment sur son contenu, une vignette
+  manquante ne ment sur rien.
 - **Le registre passe à 48 px de rangée, mais seulement quand des captures
   existent.** `visibleWindow` acceptait déjà une hauteur en paramètre. Attention :
   le `height` d'une rangée n'est qu'un **minimum** en CSS — la cellule de capture

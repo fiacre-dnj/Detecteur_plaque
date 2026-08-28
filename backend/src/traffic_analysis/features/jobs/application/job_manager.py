@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         AnalysisJobConfig,
         PreviewSample,
     )
+    from traffic_analysis.features.counting.application.ports import VehicleSnapshot
     from traffic_analysis.features.jobs.application.ports import (
         JobFilters,
         JobRepository,
@@ -273,23 +274,28 @@ class JobManager:
     async def snapshot_path(self, job_id: str, global_id: int, kind: SnapshotKind) -> Path:
         """Chemin d'une capture, ou une erreur qui dit **pourquoi** elle manque.
 
-        Trois refus distincts, parce qu'ils appellent trois gestes différents — la
+        Deux refus distincts, parce qu'ils appellent deux gestes différents — la
         même discipline que `input_video_path` juste au-dessus :
 
         - job inconnu : 404, par `self.get` ;
-        - job non terminé : les captures sont écrites à la fin, il n'y a encore rien
-          à servir. `job_not_finished`, le même code que la vidéo ;
         - capture absente : soit ce véhicule n'en a jamais eu — aucune plaque lue —
-          soit elle a été purgée avec la vidéo. `snapshot_missing`, distinct de
-          `input_missing` : l'utilisateur n'a pas à redéposer un fichier, il n'y a
-          simplement pas de photo pour ce véhicule-là.
+          soit elle n'est pas *encore* écrite, soit elle a été purgée avec la vidéo.
+          `snapshot_missing`, distinct de `input_missing` : l'utilisateur n'a pas à
+          redéposer un fichier, il n'y a simplement pas de photo pour ce
+          véhicule-là.
+
+        **Le refus « job non terminé » a disparu** (ADR 0046). Il énonçait une
+        vérité d'implémentation — « les captures sont écrites à la fin » — qui n'en
+        est plus une : elles le sont au fil de l'eau, ce qui est tout l'objet du
+        changement. Le garder aurait refusé, avec un 409, des fichiers présents sur
+        le disque.
+
+        Une capture demandée trop tôt tombe donc dans `snapshot_missing`, et c'est
+        exact : elle n'existe pas encore. Ce cas n'est plus une anomalie mais le cas
+        **normal** pendant une analyse, ce qui est aussi la raison pour laquelle le
+        client réessaie une fois avant d'abandonner.
         """
-        record = await self.get(job_id)
-        if record.status != "done":
-            raise ConflictError(
-                f"La capture n'est pas disponible : le job est « {record.status} ».",
-                code="job_not_finished",
-            )
+        await self.get(job_id)
         path = self._result_store.snapshot_path_for(job_id, global_id, kind)
         if path is None:
             raise ConflictError(
@@ -527,6 +533,26 @@ class JobManager:
                 ProgressEvent(job_id, self._preview_payload(job_id, sample), kind="preview")
             )
 
+        def on_snapshot(global_id: int, snapshot: VehicleSnapshot) -> None:
+            """Appelé **depuis le thread worker**, comme les deux précédents.
+
+            Écrit les deux JPEG dès qu'ils sont encodés, au lieu d'attendre la fin
+            de l'analyse (ADR 0046) : sans cela, la colonne « Capture » du registre
+            reste vide pendant tout le temps où on la regarde, et une alerte de
+            plaque arrive sans la photo qui permet de la valider.
+
+            **Pas de bascule vers la boucle**, contrairement à `on_progress` : on
+            est déjà hors du thread de l'événement, donc écrire ici ne bloque rien
+            (invariant 11). C'est aussi l'instant le plus économe — les octets
+            viennent d'être produits par l'encodeur, et l'écriture ne s'ajoute qu'à
+            une amélioration réelle : 41 fois sur 1 800 images mesurées.
+
+            `write_snapshots` ne lève jamais et journalise fichier par fichier : une
+            capture non écrite ne doit pas faire échouer l'analyse qui la produit, et
+            l'écriture finale la rattrapera de toute façon.
+            """
+            self._result_store.write_snapshots(job_id, {global_id: snapshot})
+
         interval = self._preview_interval_s
         result = await anyio.to_thread.run_sync(
             lambda: self._analysis.run_video(
@@ -535,6 +561,7 @@ class JobManager:
                 config,
                 on_progress=on_progress,
                 on_preview=None if interval is None else on_preview,
+                on_snapshot=on_snapshot,
                 preview_interval_s=interval or 0.0,
                 paced_preview_interval_s=self._preview_interval_paced_s,
                 preview_vehicles_interval_s=self._preview_vehicles_interval_s,
@@ -558,11 +585,17 @@ class JobManager:
         await anyio.to_thread.run_sync(
             lambda: self._result_store.write(job_id, serialise_result(result))
         )
-        # Les captures de véhicules, en une passe et **au même endroit** que le
-        # résultat : ce sont des fichiers, donc du disque en volume, donc un thread
-        # (invariant 11). Les écrire image par image dans la boucle d'analyse aurait
-        # posé une pause sur le chemin critique pour une donnée que personne ne lit
-        # avant la fin.
+        # Les captures de véhicules, une seconde fois et **délibérément** : elles
+        # ont déjà été écrites une par une par `on_snapshot`, au moment où elles
+        # étaient retenues (ADR 0046). Cette passe réécrit exactement les mêmes
+        # octets, et elle reste pour deux raisons — elle rattrape un rappel qui
+        # aurait échoué sur une erreur disque passagère, et elle garantit la
+        # complétude d'un job dont le stockage n'aurait pas accepté un fichier en
+        # cours de route. Elle coûte le prix d'une poignée d'écritures à un moment
+        # où plus rien n'attend.
+        #
+        # Comme la première, elle part en thread : ce sont des fichiers, donc du
+        # disque en volume (invariant 11).
         if result.snapshots:
             written = await anyio.to_thread.run_sync(
                 lambda: self._result_store.write_snapshots(job_id, result.snapshots)
