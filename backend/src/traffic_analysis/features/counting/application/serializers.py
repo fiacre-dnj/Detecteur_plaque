@@ -198,6 +198,12 @@ def serialise_vehicle(record: VehicleRecord) -> dict[str, Any]:
         # une capture ».
         "snapshotScore": None if record.snapshot_score is None else _score(record.snapshot_score),
         "snapshotMs": record.snapshot_ms,
+        # La ressemblance à l'image de requête. **Le score brut et non un verdict** :
+        # le seuil d'affichage vit côté client, ce qui permet de le déplacer sans
+        # réanalyser — indispensable ici, la mesure ayant montré que les distributions
+        # se recouvrent (ADR 0048). `null` couvre deux cas distincts : aucune requête,
+        # ou véhicule jamais assez grand pour être encodé.
+        "matchScore": None if record.match_score is None else _score(record.match_score),
     }
 
 

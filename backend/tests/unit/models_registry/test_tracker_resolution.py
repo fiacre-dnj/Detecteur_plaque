@@ -19,6 +19,7 @@ tourne sans GPU, sans poids et sans ultralytics.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import yaml
@@ -30,6 +31,7 @@ from traffic_analysis.features.models_registry.infrastructure.ultralytics_engine
     REQUEST_TRACKER_KEYS,
     TRACKER_CONFIG,
     detector_floor,
+    head_is_end2end,
     resolved_tracker_config,
 )
 
@@ -226,3 +228,82 @@ def test_les_cles_de_requete_sont_relues_a_chaque_image() -> None:
     `new_track_thresh` dans `update()` / `init_track()`.
     """
     assert REQUEST_TRACKER_KEYS <= LIVE_TRACKER_KEYS
+
+
+def _model_with_head(**attributes: object) -> object:
+    """Reproduit l'emboîtement `model.model.model[-1]` d'Ultralytics.
+
+    Le reproduire plutôt que le contourner est le seul moyen que ces tests échouent
+    si `head_is_end2end` cesse de regarder au bon endroit.
+    """
+    return SimpleNamespace(model=SimpleNamespace(model=[SimpleNamespace(**attributes)]))
+
+
+class TestFormeDeLaTete:
+    """`head_is_end2end` — interroger le graphe, jamais le nom du fichier."""
+
+    def test_une_tete_classique_n_est_pas_end2end(self) -> None:
+        assert head_is_end2end(_model_with_head(end2end=False)) is False
+
+    def test_une_tete_sans_nms_est_end2end(self) -> None:
+        assert head_is_end2end(_model_with_head(end2end=True)) is True
+
+    def test_une_tete_qui_ne_dit_rien_est_traitee_comme_classique(self) -> None:
+        """Repli **conservateur** : le comportement d'avant ADR 0047.
+
+        `False` laisse la ré-identification d'apparence active. Se tromper dans ce
+        sens ne coûte que de la cadence sur un modèle exotique ; se tromper dans
+        l'autre changerait des comptages sur toute la famille v8/11/12.
+        """
+        assert head_is_end2end(_model_with_head()) is False
+
+    def test_un_objet_sans_graphe_ne_leve_pas(self) -> None:
+        """Une doublure de test, ou une version d'Ultralytics qui change de forme.
+
+        Le moteur résout son fichier de suivi à chaque course : lever ici ferait
+        échouer l'analyse au lieu de la faire tourner comme avant.
+        """
+        assert head_is_end2end(object()) is False
+        assert head_is_end2end(None) is False
+
+
+class TestApparenceCoupeeSurTeteEnd2End:
+    """ADR 0047 — l'apparence n'est gratuite que si le détecteur fournit ses features."""
+
+    def test_l_apparence_coupee_pose_with_reid_false_et_rien_d_autre(self) -> None:
+        """**La propriété centrale.** Une seule clé change, et c'est la bonne.
+
+        `model` n'est délibérément **pas** touché : `build_encoder` sort sur son
+        premier argument, donc à `with_reid: False` la valeur de `model` n'est jamais
+        lue. La changer serait un réglage annoncé et sans effet — le pire état d'un
+        réglage (ADR 0016).
+        """
+        base = _load(TRACKER_CONFIG)
+        derived = _load(
+            resolved_tracker_config(_gmc_of(TRACKER_CONFIG), BASE_HIGH, appearance_reid=False)
+        )
+
+        assert derived == {**base, "with_reid": False}
+
+    def test_le_defaut_ne_change_pour_personne(self) -> None:
+        """`appearance_reid` vaut `True` par défaut : v8, 11 et 12 sont intouchés.
+
+        C'est ce qui rend le correctif non régressif — et c'est aussi pourquoi tous
+        les appelants antérieurs continuent de fonctionner sans être modifiés.
+        """
+        assert resolved_tracker_config(_gmc_of(TRACKER_CONFIG), BASE_HIGH) == TRACKER_CONFIG
+
+    def test_les_deux_apparences_n_ecrivent_pas_dans_le_meme_fichier(self) -> None:
+        """Sinon un job `yolo26n` emporterait le fichier d'un job `yolov8n` en cours.
+
+        Les deux modes partagent le processus et le dossier temporaire : deux courses
+        qui ne diffèrent que par l'apparence doivent obtenir deux chemins distincts,
+        sans quoi la seconde réécrirait sous les pieds de la première — et le
+        comptage de la première changerait en cours de route, sans rien lever.
+        """
+        with_reid = resolved_tracker_config("orb", 0.5, appearance_reid=True)
+        without = resolved_tracker_config("orb", 0.5, appearance_reid=False)
+
+        assert with_reid != without
+        assert _load(with_reid)["with_reid"] is True
+        assert _load(without)["with_reid"] is False

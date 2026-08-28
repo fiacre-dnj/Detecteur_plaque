@@ -27,6 +27,9 @@ from traffic_analysis.features.counting.application.dto import (
     PlateGeometry,
     PlateOcrOptions,
 )
+from traffic_analysis.features.counting.infrastructure.onnx_vehicle_embedder import (
+    OnnxVehicleEmbedder,
+)
 from traffic_analysis.features.counting.infrastructure.opencv_snapshot_encoder import (
     OpenCvSnapshotEncoder,
 )
@@ -63,6 +66,7 @@ if TYPE_CHECKING:
         DetectionTrackingEngine,
         PlateDetector,
         PlateReader,
+        VehicleEmbedder,
         VehicleSnapshotEncoder,
     )
     from traffic_analysis.features.jobs.application.ports import JobRepository
@@ -85,6 +89,9 @@ class CountingStack:
     engine: DetectionTrackingEngine
     plate_detector: PlateDetector
     plate_reader: PlateReader
+    #: L'encodeur d'apparence. Présent même sans poids installé : c'est lui qui répond
+    #: `available: False`, et `scripts/reid_bench.py` a besoin de l'objet pour mesurer.
+    vehicle_embedder: VehicleEmbedder
     analysis: AnalysisService
 
 
@@ -177,6 +184,7 @@ def build_container(
         default_model_id=settings.default_model_id,
         plate_detector=resolved_plates,
         plate_reader=resolved_plate_reader,
+        vehicle_embedder=stack.vehicle_embedder,
     )
     realtime_service = RealtimeSessionService(
         resolved_engine, max_sessions=settings.max_realtime_sessions
@@ -254,6 +262,7 @@ def build_counting_stack(
     plate_detector: PlateDetector | None = None,
     plate_reader: PlateReader | None = None,
     snapshot_encoder: VehicleSnapshotEncoder | None = None,
+    vehicle_embedder: VehicleEmbedder | None = None,
 ) -> CountingStack:
     """Assemble le moteur, les deux étages de plaques et l'`AnalysisService`.
 
@@ -295,6 +304,11 @@ def build_counting_stack(
         # tout couper, sinon « désactivé pour comparer » ne compare pas ce qu'on croit.
         left_insets=settings.plate_ocr_left_insets if settings.plate_ocr_variants else (),
     )
+    resolved_embedder = vehicle_embedder or OnnxVehicleEmbedder(
+        settings.resolved_reid_model_path,
+        min_vehicle_width_px=settings.reid_min_vehicle_width_px,
+        min_sharpness=settings.reid_min_sharpness,
+    )
     analysis_service = AnalysisService(
         resolved_engine,
         resolved_plates,
@@ -335,10 +349,18 @@ def build_counting_stack(
         # troisième seuil serait un réglage de plus, capable de contredire les deux
         # autres.
         snapshot_encoder or OpenCvSnapshotEncoder(),
+        # La recherche par image. Ses deux planchers sont des réglages de
+        # **déploiement** et non de requête : ils arbitrent du coût d'inférence contre
+        # une chance de ressemblance sur un véhicule lointain, c'est-à-dire un choix de
+        # machine et de cadrage de caméra. Le seuil qui décide de ce qui s'affiche, lui,
+        # vit côté client — voir ADR 0048 pour pourquoi il ne peut pas vivre ici.
+        resolved_embedder,
+        settings.reid_min_similarity,
     )
     return CountingStack(
         engine=resolved_engine,
         plate_detector=resolved_plates,
         plate_reader=resolved_plate_reader,
+        vehicle_embedder=resolved_embedder,
         analysis=analysis_service,
     )

@@ -31,6 +31,7 @@ from traffic_analysis.features.counting.application.dto import (
     TimelineRow,
     select_within_budget,
 )
+from traffic_analysis.features.counting.domain.appearance import cosine_similarity
 from traffic_analysis.features.counting.domain.models import PlateDetection, VideoInfo
 from traffic_analysis.features.counting.domain.pacing import ScenePacer
 from traffic_analysis.features.counting.domain.plate_anchor import PlateAnchor, anchor_from
@@ -48,6 +49,8 @@ if TYPE_CHECKING:
         DetectionTrackingEngine,
         PlateDetector,
         PlateReader,
+        VehicleAppearance,
+        VehicleEmbedder,
         VehicleSnapshot,
         VehicleSnapshotEncoder,
     )
@@ -168,7 +171,9 @@ class AnalysisService:
         "_plate_detector",
         "_plate_ocr",
         "_plate_reader",
+        "_reid_min_similarity",
         "_snapshot_encoder",
+        "_vehicle_embedder",
     )
 
     def __init__(
@@ -179,10 +184,18 @@ class AnalysisService:
         plate_ocr: PlateOcrOptions | None = None,
         plate_detect: PlateDetectOptions | None = None,
         snapshot_encoder: VehicleSnapshotEncoder | None = None,
+        vehicle_embedder: VehicleEmbedder | None = None,
+        reid_min_similarity: float = 0.0,
     ) -> None:
         self._engine = engine
         self._plate_detector = plate_detector
         self._plate_reader = plate_reader
+        # `None` désactive proprement la recherche par image : le comptage, les
+        # plaques, les captures et le registre sont **identiques**, les véhicules
+        # n'ont simplement pas de score de ressemblance. Même doctrine que
+        # `snapshot_encoder` juste en dessous.
+        self._vehicle_embedder = vehicle_embedder
+        self._reid_min_similarity = reid_min_similarity
         # `None` désactive proprement la capture : le comptage, les plaques et le
         # registre sont identiques, les véhicules n'ont simplement pas de photo.
         self._snapshot_encoder = snapshot_encoder
@@ -205,6 +218,7 @@ class AnalysisService:
         on_progress: ProgressCallback | None = None,
         on_preview: PreviewCallback | None = None,
         on_snapshot: SnapshotCallback | None = None,
+        query_image: bytes | None = None,
         preview_interval_s: float = PREVIEW_MIN_INTERVAL_S,
         paced_preview_interval_s: float = PACED_PREVIEW_INTERVAL_S,
         preview_vehicles_interval_s: float | None = PREVIEW_VEHICLES_INTERVAL_S,
@@ -335,6 +349,13 @@ class AnalysisService:
             )
         )
 
+        # L'image de requête est encodée **une fois**, avant la boucle. Trois refus
+        # distincts, tous journalisés et aucun fatal : la recherche par image est une
+        # option, et son indisponibilité ne doit pas faire échouer une analyse dont
+        # tous les comptages sont justes — même doctrine que les deux étages de
+        # plaques.
+        query = self._resolve_query(query_image)
+
         # La session est construite **après** la résolution de l'OCR, et pas avant :
         # elle a besoin de savoir si la lecture tourne *réellement* — modèle présent
         # compris — pour distinguer « rien n'a été tenté » des quatre autres raisons
@@ -454,6 +475,18 @@ class AnalysisService:
                     tracks=outcome.tracks,
                     confidence=config.plate_confidence,
                     text_confidence=config.plate_text_confidence,
+                )
+
+            # **Hors de la garde `detector is not None` ci-dessus, et c'est délibéré** :
+            # la recherche par image ne doit pas hériter de la dépendance à l'ANPR.
+            # Un utilisateur qui cherche une voiture n'a aucune raison d'activer la
+            # lecture de plaques, et l'inverse est vrai aussi.
+            if query is not None and outcome.tracks:
+                self._match_appearances(
+                    session=session,
+                    query=query,
+                    image=frame.image,
+                    tracks=outcome.tracks,
                 )
 
             # Le snapshot est pris **après** la passe ANPR ET la passe OCR, sinon les
@@ -714,6 +747,87 @@ class AnalysisService:
             # d'un véhicule serait un faux témoignage.
             self._capture_vehicle(
                 session, snapshots, on_snapshot, image, timestamp_ms, track, fresh
+            )
+
+    def _resolve_query(self, payload: bytes | None) -> VehicleAppearance | None:
+        """L'apparence de l'image de requête, ou `None` avec la raison journalisée.
+
+        Trois refus distincts, et les nommer séparément est ce qui rend le silence
+        diagnosticable : pas de requête (le cas courant), pas d'encodeur installé,
+        image illisible. Aucun n'est fatal.
+        """
+        if payload is None:
+            return None
+        embedder = self._vehicle_embedder
+        if embedder is None:
+            logger.warning(
+                "image de requête fournie mais aucun encodeur de ressemblance "
+                "installé — recherche par image ignorée"
+            )
+            return None
+        appearance = embedder.embed_query(payload)
+        if appearance is None:
+            logger.warning("image de requête non exploitable — recherche par image ignorée")
+            return None
+        logger.info("image de requête encodée", octets=len(payload))
+        return appearance
+
+    def _match_appearances(
+        self,
+        *,
+        session: AnalysisSession,
+        query: VehicleAppearance,
+        image: npt.NDArray[np.uint8],
+        tracks: Sequence[SessionTrack],
+    ) -> None:
+        """Encode les vues qui valent mieux que la précédente, et note la ressemblance.
+
+        **La règle monotone est ce qui rend cet étage abordable**, et elle est demandée
+        au domaine avant toute dépense : `should_embed` répond sur la seule qualité de
+        la vue, sans qu'un pixel ait été touché. Sans elle on encoderait chaque
+        véhicule à chaque image, c'est-à-dire le profil de coût qu'ADR 0032 a démonté
+        sur le détecteur de plaques.
+
+        L'ordre des deux gardes compte : on filtre d'abord sur ce que le domaine sait
+        déjà (la qualité de la vue retenue), puis l'adaptateur applique ses propres
+        planchers de largeur et de netteté. L'inverse paierait un recadrage et une
+        mesure de netteté pour des véhicules dont on sait déjà qu'on ne les gardera
+        pas.
+        """
+        embedder = self._vehicle_embedder
+        if embedder is None:
+            return
+
+        # **Le pré-filtre est exact, et c'est tout l'enjeu.** Il compare la largeur de
+        # la boîte — le seul nombre disponible avant d'avoir payé un recadrage — à celle
+        # de la vue déjà retenue. Une version antérieure interrogeait la règle avec
+        # `0.0` faute de connaître la qualité à ce stade : tout véhicule déjà encodé
+        # était alors exclu définitivement, et une vue meilleure ne pouvait jamais
+        # remplacer la première. Le test `test_une_meilleure_vue_remplace_la_precedente`
+        # verrouille le cas.
+        candidates = [
+            track for track in tracks if session.should_embed(track.global_id, track.box.width)
+        ]
+        if not candidates:
+            return
+
+        # Une seule passe pour tout le lot : le graphe est dynamique et toutes les
+        # vignettes sont ramenées au même carré, donc grouper est gratuit — l'inverse
+        # exact de l'OCR, où `batch_width` aligne le lot sur la vignette la plus large
+        # et rend le groupement 1,6× plus lent (ADR 0030).
+        appearances = embedder.embed(image, [track.box for track in candidates])
+        for track, appearance in zip(candidates, appearances, strict=True):
+            if appearance is None:
+                # Refusé par l'adaptateur — trop étroit, trop flou, recadrage vide.
+                # Rien n'est enregistré, donc la piste **reste candidate** : elle sera
+                # réessayée quand elle s'élargira. C'est une suspension, pas un
+                # abandon, exactement comme la porte d'ADR 0039.
+                continue
+            score = cosine_similarity(query.vector, appearance.vector)
+            session.record_embedding(
+                track.global_id,
+                track.box.width,
+                score if score >= self._reid_min_similarity else None,
             )
 
     def _capture_vehicle(

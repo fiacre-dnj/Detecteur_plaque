@@ -365,6 +365,12 @@ describe("contrat du registre des véhicules", () => {
       "globalId",
       "label",
       "lastSeenMs",
+      // La ressemblance à l'image de requête : **le score brut, jamais un verdict**.
+      // Le seuil vit côté client, ce qui permet de le déplacer sans réanalyser — et
+      // la mesure montre que les distributions se recouvrent, donc aucun seuil global
+      // n'est à la fois sûr et utile. `null` = pas de requête, ou véhicule jamais
+      // assez grand pour être encodé.
+      "matchScore",
       // Le candidat rapporté sans y souscrire, sous `no_consensus` seulement — un
       // indice, jamais un vote : afficher ce candidat à la place de `plateText`
       // republierait la lecture la plus favorable.

@@ -1029,7 +1029,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # supposés : c'est lui qui décide, et un rapport qui annoncerait
                 # autre chose que ce qui a tourné serait pire qu'un rapport sans
                 # cette ligne.
-                **_tracker_settings(gmc, args.confidence),
+                **_tracker_settings(gmc, args.confidence, registry, model_id),
             },
         },
         "sources": [],
@@ -1121,7 +1121,9 @@ def _sources(
     return produced
 
 
-def _tracker_settings(gmc_method: str, high_thresh: float) -> dict[str, Any]:
+def _tracker_settings(
+    gmc_method: str, high_thresh: float, registry: ModelRegistry, model_id: str
+) -> dict[str, Any]:
     """Ce que dit le fichier de tracker **effectivement chargé** par cette course.
 
     Le fichier de base et le fichier dérivé ne disent pas la même chose : lire le
@@ -1137,10 +1139,19 @@ def _tracker_settings(gmc_method: str, high_thresh: float) -> dict[str, Any]:
     import yaml
 
     from traffic_analysis.features.models_registry.infrastructure.ultralytics_engine import (
+        head_is_end2end,
         resolved_tracker_config,
     )
 
-    path = resolved_tracker_config(gmc_method, high_thresh)
+    # **Le modèle décide, donc il faut le charger pour savoir.** Le fichier de suivi
+    # d'une tête `end2end` n'est pas celui d'une tête classique (ADR 0047) : demander
+    # sans le modèle rendrait un `withReid: true` que la course ne respecte pas, et
+    # c'est exactement le genre de rapport qui envoie chercher une régression de
+    # cadence du mauvais côté. Le bail est court et l'instance est de toute façon
+    # celle que la course va utiliser.
+    with registry.lease(model_id) as model:
+        appearance_reid = not head_is_end2end(model)
+    path = resolved_tracker_config(gmc_method, high_thresh, appearance_reid)
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     return {
         "gmc": loaded.get("gmc_method"),

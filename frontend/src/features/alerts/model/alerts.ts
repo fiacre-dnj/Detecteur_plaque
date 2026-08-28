@@ -28,7 +28,12 @@ import type { PlateHit } from "./plateWatch";
 export const ALERT_LIMIT = 200;
 
 /** Ce que l'alerte signale. */
-export type AlertKind = ViolationKind | "plate-exact" | "plate-partial";
+export type AlertKind =
+  | ViolationKind
+  | "plate-exact"
+  | "plate-partial"
+  | "vehicle-exact"
+  | "vehicle-partial";
 
 /**
  * Ce que l'alerte vaut.
@@ -75,6 +80,42 @@ export interface Alert {
   direction: number | null;
   /** L'entrée surveillée qui correspond, `null` sur une infraction. */
   watched: string | null;
+}
+
+/**
+ * L'alerte d'un véhicule qui ressemble à l'image de requête.
+ *
+ * **La clé n'a pas de composante temporelle**, contrairement à celle d'une infraction :
+ * un véhicule ressemblant est un *état* du véhicule, pas un événement daté. Sans cela
+ * le même véhicule produirait une alerte par aperçu SSE, soit une par seconde.
+ *
+ * Elle ne porte pas non plus le score : celui-ci s'améliore quand une meilleure vue est
+ * encodée, et l'inclure ferait réapparaître le même véhicule à chaque amélioration.
+ */
+export function alertFromVehicleMatch(vehicle: {
+  globalId: number;
+  label: string;
+  plateText?: string | null;
+  plateTextScore?: number | null;
+  firstSeenMs: number;
+  matchScore?: number | null;
+}, strength: "exact" | "partial"): Alert {
+  return {
+    key: `m:${vehicle.globalId}`,
+    kind: strength === "exact" ? "vehicle-exact" : "vehicle-partial",
+    severity: strength === "exact" ? "critical" : "warning",
+    // L'instant de **première apparition** et non celui de la meilleure vue : c'est
+    // là qu'il faut amener la tête de lecture pour vérifier, et c'est stable — la
+    // meilleure vue se déplace quand l'encodeur en retient une autre.
+    timestampMs: vehicle.firstSeenMs,
+    globalId: vehicle.globalId,
+    label: vehicle.label,
+    plateText: vehicle.plateText ?? null,
+    plateTextScore: vehicle.plateTextScore ?? null,
+    line: null,
+    direction: null,
+    watched: null,
+  };
 }
 
 /** L'alerte que porte une infraction. */

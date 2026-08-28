@@ -17,6 +17,7 @@ import numpy as np
 from traffic_analysis.features.counting.application.ports import (
     EngineFrame,
     PlateText,
+    VehicleAppearance,
     VehicleSnapshot,
 )
 from traffic_analysis.features.counting.domain.models import (
@@ -395,3 +396,84 @@ class FakeSnapshotEncoder:
         if self._fails:
             return None
         return VehicleSnapshot(vehicle_jpeg=b"vehicle-jpeg", plate_jpeg=b"plate-jpeg")
+
+
+class FakeVehicleEmbedder:
+    """Encodeur d'apparence factice — des vecteurs choisis, jamais des pixels.
+
+    La CI n'a ni poids ni images utiles, et ce qu'on teste ici ne les demande pas : la
+    règle monotone est une comparaison de nombres, et l'alignement positionnel une
+    propriété de liste.
+
+    `calls` compte les appels à `embed`, et `vectors_produced` les vecteurs réellement
+    rendus. C'est ce second chiffre qui **prouve** que la règle monotone protège le
+    chemin critique : un code qui encoderait chaque véhicule à chaque image rendrait
+    exactement le même `matchScore`, deux ordres de grandeur plus cher, et aucun test
+    portant seulement sur le résultat ne le verrait. Même raison d'être que
+    `FakeSnapshotEncoder.calls`.
+
+    `similarity_for` permet de faire ressembler un véhicule et pas un autre : la
+    doublure fabrique deux vecteurs unitaires dont le produit scalaire vaut exactement
+    la similarité demandée, de sorte que `cosine_similarity` — la vraie, celle du
+    domaine — rende ce nombre. On teste ainsi la chaîne complète sans modèle.
+    """
+
+    def __init__(
+        self,
+        *,
+        similarity_for: Callable[[int], float] | None = None,
+        min_width_px: float = 0.0,
+        available: bool = True,
+        query_fails: bool = False,
+    ) -> None:
+        self._similarity_for = similarity_for or (lambda _global_id: 0.9)
+        self._min_width_px = min_width_px
+        self._available = available
+        self._query_fails = query_fails
+        self.calls = 0
+        self.vectors_produced = 0
+        self.query_calls = 0
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def probe(self) -> bool:
+        return self._available
+
+    def embed_query(self, payload: bytes) -> VehicleAppearance | None:
+        del payload
+        self.query_calls += 1
+        if self._query_fails:
+            return None
+        # Le vecteur de requête est l'axe 0 : la similarité d'un véhicule se règle
+        # alors par sa seule première composante.
+        vector = np.zeros(4, dtype=np.float32)
+        vector[0] = 1.0
+        return VehicleAppearance(vector=vector)
+
+    def embed(
+        self,
+        image: npt.NDArray[np.uint8],
+        boxes: Sequence[BoundingBox],
+    ) -> tuple[VehicleAppearance | None, ...]:
+        del image
+        self.calls += 1
+        out: list[VehicleAppearance | None] = []
+        for index, box in enumerate(boxes):
+            if box.width < self._min_width_px:
+                # Le trou reste **à sa place** : c'est le contrat d'alignement
+                # positionnel, et un décalage d'un cran attribuerait l'apparence d'un
+                # véhicule à son voisin.
+                out.append(None)
+                continue
+            self.vectors_produced += 1
+            similarity = self._similarity_for(index)
+            vector = np.zeros(4, dtype=np.float32)
+            vector[0] = similarity
+            # Norme 1 par construction, comme le fait le vrai adaptateur : la
+            # similarité cosinus n'est un produit scalaire que sur des vecteurs
+            # normalisés.
+            vector[1] = float(np.sqrt(max(0.0, 1.0 - similarity * similarity)))
+            out.append(VehicleAppearance(vector=vector))
+        return tuple(out)

@@ -72,6 +72,21 @@ export interface Health {
    * que de proposer une case qui ne fait rien.
    */
   plateOcrAvailable: boolean;
+  /**
+   * L'encodeur d'apparence de véhicule est présent. Faux ⇒ la recherche par image
+   * est désactivée, et le service fonctionne normalement — pas un compteur ne change.
+   * Un artefact de plus, récupéré par son propre script, donc l'état d'un déploiement
+   * neuf.
+   */
+  reidAvailable: boolean;
+  /**
+   * L'encodeur a-t-il passé son auto-test au démarrage ? `null` = pas encore testé.
+   *
+   * **`false` avec `reidAvailable: true` est l'état à surveiller** : les poids sont là
+   * et ne se chargent pas, donc la recherche est muette alors que tout paraît vert.
+   * Même trio d'états que `plateLoadable`, et pour le même mode de panne.
+   */
+  reidLoadable: boolean | null;
   defaultModelId: string;
   /**
    * Répertoire **résolu** où le serveur cherche ses poids, en absolu.
@@ -666,6 +681,20 @@ export interface VehicleRecord {
    * plutôt que seulement consultable.
    */
   snapshotMs?: number | null;
+  /**
+   * Ressemblance à l'image de requête, dans [-1, 1], ou `null`.
+   *
+   * **Le score brut et non un verdict.** Le seuil d'affichage vit ici, côté client :
+   * c'est ce qui permet de déplacer le curseur de ressemblance sans réanalyser, et
+   * c'est indispensable — mesuré, les distributions se recouvrent (deux vues du même
+   * véhicule descendent à 0,387, deux véhicules différents montent à 0,891), donc
+   * aucun seuil global n'est à la fois sûr et utile. On classe, on ne tranche pas.
+   *
+   * `null` couvre **deux** causes que l'écran n'a pas à distinguer : aucune image de
+   * requête fournie, ou véhicule jamais assez grand ni assez net pour être encodé —
+   * ce second cas est le plus courant sur une vue large.
+   */
+  matchScore?: number | null;
 }
 
 /**

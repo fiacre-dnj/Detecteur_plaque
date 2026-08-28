@@ -15,6 +15,7 @@ import type { Violation } from "@/shared/lib/lineViolations";
 
 import {
   alertFromPlateHit,
+  alertFromVehicleMatch,
   alertFromViolation,
   crossingsBefore,
   mergeAlerts,
@@ -141,5 +142,55 @@ describe("crossingsBefore", () => {
 
     expect(crossingsBefore(all, 1_000)).toHaveLength(1);
     expect(crossingsBefore(all, 3_000)).toHaveLength(2);
+  });
+});
+
+describe("alertFromVehicleMatch", () => {
+  const vehicle = {
+    globalId: 12,
+    label: "car",
+    firstSeenMs: 4200,
+    matchScore: 0.83,
+    plateText: null,
+    plateTextScore: null,
+  };
+
+  it("ne met ni instant ni score dans sa clé", () => {
+    // **Le test qui empêche le tiroir de se remplir du même véhicule.** Un véhicule
+    // ressemblant est un *état*, republié à chaque aperçu SSE — soit une fois par
+    // seconde — et son score s'améliore quand une meilleure vue est encodée. Une clé
+    // qui porterait l'un ou l'autre produirait une carte par republication.
+    const first = alertFromVehicleMatch(vehicle, "exact");
+    const later = alertFromVehicleMatch(
+      { ...vehicle, firstSeenMs: 9000, matchScore: 0.91 },
+      "exact",
+    );
+    expect(first.key).toBe(later.key);
+  });
+
+  it("distingue deux véhicules", () => {
+    expect(alertFromVehicleMatch(vehicle, "exact").key).not.toBe(
+      alertFromVehicleMatch({ ...vehicle, globalId: 13 }, "exact").key,
+    );
+  });
+
+  it("date de la première apparition et non de la meilleure vue", () => {
+    // C'est là qu'il faut amener la tête de lecture pour vérifier, et c'est stable :
+    // l'instant de la meilleure vue se déplace quand l'encodeur en retient une autre.
+    expect(alertFromVehicleMatch(vehicle, "exact").timestampMs).toBe(4200);
+  });
+
+  it("porte la gravité de sa force, pas de son score", () => {
+    expect(alertFromVehicleMatch(vehicle, "exact").severity).toBe("critical");
+    expect(alertFromVehicleMatch(vehicle, "partial").severity).toBe("warning");
+  });
+
+  it("ne met aucune ligne en cause", () => {
+    // Une ressemblance n'a rien à voir avec la géométrie : lui attribuer une ligne
+    // ferait apparaître le véhicule dans le filtre « Ligne » du tiroir d'alertes.
+    const alert = alertFromVehicleMatch(vehicle, "exact");
+    expect(alert.line).toBeNull();
+    expect(alert.direction).toBeNull();
+    expect(alert.watched).toBeNull();
   });
 });

@@ -62,7 +62,13 @@ export interface AnalysisSession {
   starting: boolean;
   /** Signature de la géométrie au moment du lancement. */
   launchSignature: string | null;
-  start: (file: File, request: AnalysisRequest, lines: readonly CountingLine[], zones: readonly Zone[]) => Promise<void>;
+  start: (
+    file: File,
+    request: AnalysisRequest,
+    lines: readonly CountingLine[],
+    zones: readonly Zone[],
+    queryImage?: Blob | null,
+  ) => Promise<void>;
   /**
    * Adopte une analyse **déjà terminée** et charge son résultat.
    *
@@ -160,6 +166,7 @@ export function useAnalysisSession(): AnalysisSession {
       request: AnalysisRequest,
       lines: readonly CountingLine[],
       zones: readonly Zone[],
+      queryImage: Blob | null = null,
     ) => {
       setError(null);
       setErrorCode(null);
@@ -169,7 +176,7 @@ export function useAnalysisSession(): AnalysisSession {
       // Relevée **ici**, au moment exact du lancement.
       setLaunchSignature(geometrySignature(lines, zones));
 
-      const pending = uploadJob(file, request, setUpload);
+      const pending = uploadJob(file, request, setUpload, queryImage);
       handle.current = pending;
 
       try {

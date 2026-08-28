@@ -20,7 +20,15 @@
  * carte sans titre.
  */
 
-import { Ban, ScanSearch, ShieldAlert, TriangleAlert, type LucideIcon } from "lucide-react";
+import {
+  Ban,
+  Car,
+  CarFront,
+  ScanSearch,
+  ShieldAlert,
+  TriangleAlert,
+  type LucideIcon,
+} from "lucide-react";
 
 import type { AlertKind, AlertSeverity } from "../model/alerts";
 
@@ -60,6 +68,20 @@ export const ALERT_LOOK: Readonly<Record<AlertKind, AlertLook>> = {
     // que cette fonctionnalité puisse produire, et il doit se voir sans être cherché.
     describe: ({ watched }) =>
       `Ressemble à ${watched ?? "la plaque recherchée"} — l'OCR perd souvent un caractère.`,
+  },
+  "vehicle-exact": {
+    title: "Véhicule recherché",
+    Icon: CarFront,
+    describe: () => "Ressemble fortement à l'image recherchée — à vérifier sur la capture.",
+  },
+  "vehicle-partial": {
+    title: "Véhicule possible",
+    Icon: Car,
+    // « possible » et non « probable » : le mot « probable » est déjà pris par les
+    // plaques, et les deux ne valent pas la même chose. Une plaque partielle a une
+    // cause connue (l'OCR perd le premier caractère, ADR 0029) ; une ressemblance
+    // faible n'a que le recouvrement des distributions, qui est bien plus large.
+    describe: () => "Ressemble à l'image recherchée — vérification nécessaire.",
   },
 };
 

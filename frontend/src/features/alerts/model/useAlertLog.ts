@@ -18,11 +18,20 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import type { CrossingEvent, TrackSnapshot } from "@/shared/api/contracts";
+import type { CrossingEvent, TrackSnapshot, VehicleRecord } from "@/shared/api/contracts";
 import type { LineRule } from "@/shared/lib/lineRules";
 import { violations } from "@/shared/lib/lineViolations";
+// La règle de ressemblance vit dans `shared/lib` parce que trois features la lisent —
+// ce tiroir, le panneau de recherche et la colonne du registre. Une seule définition.
+import { matches, matchStrength } from "@/shared/lib/vehicleMatch";
 
-import { alertFromPlateHit, alertFromViolation, mergeAlerts, type Alert } from "./alerts";
+import {
+  alertFromPlateHit,
+  alertFromVehicleMatch,
+  alertFromViolation,
+  mergeAlerts,
+  type Alert,
+} from "./alerts";
 import { plateHits, type PlateBearer } from "./plateWatch";
 
 /** Ce dont le journal a besoin à chaque trame d'aperçu. */
@@ -45,6 +54,22 @@ export interface AlertLogInput {
   timestampMs: number;
   rules: ReadonlyMap<string, LineRule>;
   watchlist: readonly string[];
+  /**
+   * Les véhicules de l'aperçu **vivant**, ou `null` — l'aperçu n'en porte pas encore.
+   *
+   * C'est là que vit `matchScore` : les pistes d'une image ne le portent pas, la
+   * ressemblance étant votée sur la meilleure vue de la vie du véhicule et non
+   * mesurée à chaque image. `null` signifie « inchangé » côté serveur (ADR 0026), donc
+   * l'appelant doit passer la dernière liste connue — ce que `carryVehicles` fait déjà.
+   */
+  vehicles: readonly VehicleRecord[] | null;
+  /**
+   * Seuil de ressemblance, ou `null` — aucune recherche par image en cours.
+   *
+   * `null` et non `0` : le second signalerait **tout** véhicule encodé, y compris ceux
+   * dont le score est négatif, donc la totalité du trafic.
+   */
+  matchThreshold: number | null;
   /**
    * Ce qui identifie l'analyse en cours. Un changement **vide** le journal.
    *
@@ -99,6 +124,27 @@ export function useAlertLog(input: AlertLogInput): readonly Alert[] {
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tracks, watchlist]);
+
+  const { vehicles, matchThreshold } = input;
+  useEffect(() => {
+    if (matchThreshold === null || vehicles === null || vehicles.length === 0) return;
+    const found: Alert[] = [];
+    for (const vehicle of vehicles) {
+      if (!matches(vehicle.matchScore, matchThreshold)) continue;
+      found.push(
+        alertFromVehicleMatch(
+          vehicle,
+          matchStrength(vehicle.matchScore as number, matchThreshold),
+        ),
+      );
+    }
+    if (found.length === 0) return;
+    // `mergeAlerts` dédoublonne sur `key`, qui ne porte ni instant ni score : le même
+    // véhicule republié à chaque aperçu, ou dont la ressemblance s'améliore, ne
+    // produit donc qu'une seule carte. Sans cela le tiroir se remplirait du même
+    // véhicule une fois par seconde.
+    setLog((previous) => mergeAlerts(previous, found));
+  }, [vehicles, matchThreshold]);
 
   return log;
 }

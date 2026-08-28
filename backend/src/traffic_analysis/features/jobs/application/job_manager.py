@@ -179,6 +179,7 @@ class JobManager:
         file_name: str,
         file_size_bytes: int,
         config_json: dict[str, Any],
+        query_image: bytes | None = None,
     ) -> JobRecord:
         """Enregistre un job et lance son exécution en tâche de fond.
 
@@ -197,7 +198,14 @@ class JobManager:
         await self._repository.add(record)
         self._publish(record)
 
-        task = asyncio.create_task(self._run(job_id, video_path, config), name=f"job-{job_id}")
+        # L'image de requête voyage par argument et **n'entre pas dans `config_json`** :
+        # elle n'est donc ni persistée ni relue à la réouverture du job, exactement
+        # comme la liste de plaques recherchées côté client. Une photo de véhicule
+        # tombe sous le même cran de confidentialité qu'un numéro de plaque.
+        task = asyncio.create_task(
+            self._run(job_id, video_path, config, query_image=query_image),
+            name=f"job-{job_id}",
+        )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return record
@@ -426,7 +434,14 @@ class JobManager:
 
     # ── Exécution ────────────────────────────────────────────────────────────
 
-    async def _run(self, job_id: str, video_path: Path, config: AnalysisJobConfig) -> None:
+    async def _run(
+        self,
+        job_id: str,
+        video_path: Path,
+        config: AnalysisJobConfig,
+        *,
+        query_image: bytes | None = None,
+    ) -> None:
         """Exécute une analyse, du sémaphore au statut terminal."""
         semaphore = self._semaphore
         if semaphore is None:  # pragma: no cover — bind_loop est appelé au démarrage
@@ -443,7 +458,9 @@ class JobManager:
                 if cancellation.is_set():
                     await self._finish(job_id, "cancelled")
                     return
-                await self._execute(job_id, video_path, config, cancellation, pause)
+                await self._execute(
+                    job_id, video_path, config, cancellation, pause, query_image=query_image
+                )
         except AnalysisCancelled:
             # Une annulation n'est **pas** une erreur : l'utilisateur sait ce
             # qu'il a fait, lui afficher « échec » serait faux.
@@ -481,6 +498,8 @@ class JobManager:
         config: AnalysisJobConfig,
         cancellation: threading.Event,
         pause: threading.Event,
+        *,
+        query_image: bytes | None = None,
     ) -> None:
         await self._prepare_model(job_id, config.model_id)
         await self._transition(job_id, "running", started=True)
@@ -562,6 +581,7 @@ class JobManager:
                 on_progress=on_progress,
                 on_preview=None if interval is None else on_preview,
                 on_snapshot=on_snapshot,
+                query_image=query_image,
                 preview_interval_s=interval or 0.0,
                 paced_preview_interval_s=self._preview_interval_paced_s,
                 preview_vehicles_interval_s=self._preview_vehicles_interval_s,

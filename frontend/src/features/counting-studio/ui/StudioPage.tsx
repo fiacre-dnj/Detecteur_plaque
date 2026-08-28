@@ -119,6 +119,13 @@ import {
 } from "@/features/results-dashboard";
 import { crossingsUpTo, useReplay, vehiclesAt } from "@/features/timeline-replay";
 import { VehicleRegistry } from "@/features/vehicle-registry";
+import {
+  cropToJpeg,
+  isArmed as queryIsArmed,
+  NO_QUERY,
+  VehicleSearchPanel,
+  type VehicleQuery,
+} from "@/features/vehicle-search";
 import { PlaybackFpsBadge, TransportBar } from "@/features/video-transport";
 import type { CrossingEvent, Point, Preset, TrackSnapshot } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
@@ -213,9 +220,25 @@ const GEOMETRY_PANEL_ID = "geometrie";
  */
 const ALERTS_PANEL_ID = "alertes";
 
+/**
+ * L'identifiant du tiroir de recherche par image.
+ *
+ * Nommé une fois, comme les deux autres : deux littéraux `"recherche"` finiraient par
+ * diverger, et la panne serait muette — une pilule qui n'ouvre plus rien.
+ */
+const SEARCH_PANEL_ID = "recherche";
+
 export function StudioPage() {
   const { data: health } = useHealth();
   const serverReady = health != null;
+  /**
+   * L'encodeur d'apparence est-il installé côté serveur ?
+   *
+   * De `/health` et non d'un réglage : sans ce fichier le tiroir « Recherche » n'est
+   * pas monté du tout, exactement comme la cloche d'alertes sans règle posée. Une
+   * pilule qui ouvre un panneau annonçant sa propre indisponibilité est du bruit.
+   */
+  const reidAvailable = health?.reidAvailable ?? false;
 
   const { data: catalogue } = useModels();
   const { data: detectableClasses } = useDetectableClasses();
@@ -473,6 +496,21 @@ export function StudioPage() {
    * l'atteindre. C'est aussi ce qui rend la place de session côté serveur, sans quoi
    * la suivante serait refusée en 1013 sans explication.
    */
+  /**
+   * La recherche par véhicule en cours.
+   *
+   * Ici et non dans `settings`, pour la même raison que l'intervalle d'analyse vit
+   * dans `entities/analysis-range` : elle décrit *cette vidéo-ci* et *cette
+   * recherche-ci*, pas une préférence. Et surtout `AnalysisSettings` est persisté —
+   * une photo de véhicule y tomberait sous le cran de confidentialité que
+   * `plateWatchlist` se fait déjà retirer avant l'écriture.
+   */
+  const [query, setQuery] = useState<VehicleQuery>(NO_QUERY);
+  const patchQuery = useCallback(
+    (patch: Partial<VehicleQuery>) => setQuery((previous) => ({ ...previous, ...patch })),
+    [],
+  );
+
   const resetForNewSource = useCallback(() => {
     live.stop();
     dispatch({ type: "clear" });
@@ -489,6 +527,13 @@ export function StudioPage() {
     // personne ne cherchait rien — et l'utilisateur n'aurait aucune raison d'aller
     // voir dans le tiroir Détection pourquoi.
     updateSettings({ plateWatchlist: [] });
+    // La recherche par image part avec la vidéo, même raison que la liste de plaques :
+    // elle décrit une recherche en cours. `revokeObjectURL` est obligatoire — une
+    // adresse non révoquée retient l'image entière pour la vie de l'onglet.
+    setQuery((previous) => {
+      if (previous.previewUrl !== null) URL.revokeObjectURL(previous.previewUrl);
+      return { ...NO_QUERY, threshold: previous.threshold };
+    });
     session.reset();
   }, [session, live, updateSettings]);
 
@@ -532,16 +577,24 @@ export function StudioPage() {
 
     setLaunchOpen(false);
     setEnded(false);
-    void session.start(
-      file,
-      // `toRequest` est le seul endroit qui traduit les réglages en requête : il
-      // résout `confidenceThreshold: null` en défaut, met l'échelle nulle à `null`,
-      // et désactive le masque quand aucune zone n'existe.
-      toRequest(settings, geometry.lines, geometry.zones, range),
-      geometry.lines,
-      geometry.zones,
-    );
-  }, [media.source, serverReady, settings, geometry, session, range]);
+    // La vignette est découpée **au lancement** et non au cadrage : c'est le seul
+    // moment où elle sert, et l'obtenir demande un `toBlob` asynchrone qu'il serait
+    // absurde de rejouer à chaque déplacement de la souris. Un échec de découpage
+    // n'empêche pas l'analyse — elle part alors sans recherche, ce que le tiroir dit.
+    void (async () => {
+      const thumb = await queryThumbnail(query);
+      void session.start(
+        file,
+        // `toRequest` est le seul endroit qui traduit les réglages en requête : il
+        // résout `confidenceThreshold: null` en défaut, met l'échelle nulle à `null`,
+        // et désactive le masque quand aucune zone n'existe.
+        toRequest(settings, geometry.lines, geometry.zones, range),
+        geometry.lines,
+        geometry.zones,
+        thumb,
+      );
+    })();
+  }, [media.source, serverReady, settings, geometry, session, range, query]);
 
   /**
    * Ouvre la modale, en y **figeant la position de lecture** du moment.
@@ -962,6 +1015,10 @@ export function StudioPage() {
     timestampMs: preview?.timestampMs ?? 0,
     rules: alertRules,
     watchlist: settings.plateWatchlist,
+    // Les véhicules de l'aperçu **vivant** : c'est là que vit `matchScore`, les
+    // pistes d'une image ne le portant pas. `null` quand rien n'est cherché.
+    vehicles: session.preview?.vehicles ?? null,
+    matchThreshold: queryIsArmed(query) ? query.threshold : null,
     // Le job identifie la course ; `"live"` couvre la caméra, qui n'a pas de job.
     // Un changement vide le journal, sinon les alertes de l'analyse précédente
     // s'afficheraient au-dessus des nouvelles avec des horodatages qui ne désignent
@@ -987,8 +1044,14 @@ export function StudioPage() {
       timeMs: replay.timeMs,
       rules: alertRules,
       watchlist: settings.plateWatchlist,
+      // `null` quand aucune recherche n'est armée, et **pas** `0` : le second
+      // signalerait tout véhicule encodé, donc la totalité du trafic.
+      matchThreshold: queryIsArmed(query) ? query.threshold : null,
     });
-  }, [session.result, replay.timeMs, alertRules, settings.plateWatchlist]);
+    // `query` entier et non ses deux champs : `queryIsArmed` lit `file` et le seuil
+    // vient de `threshold`, mais l'objet est remplacé à chaque `patchQuery`, donc le
+    // décomposer ne gagnerait aucun rendu et ferait mentir la liste de dépendances.
+  }, [session.result, replay.timeMs, alertRules, settings.plateWatchlist, query]);
 
   const alerts = replayAlerts ?? liveAlerts;
 
@@ -1000,7 +1063,8 @@ export function StudioPage() {
    * vide se lit « rien à signaler » alors que la vérité est « on n'a rien demandé de
    * signaler ».
    */
-  const alertsArmed = hasAnyRule(alertRules) || settings.plateWatchlist.length > 0;
+  const alertsArmed =
+    hasAnyRule(alertRules) || settings.plateWatchlist.length > 0 || queryIsArmed(query);
 
   /**
    * Les totaux d'infraction du résumé, **du même juge que le KPI des Résultats**.
@@ -1215,6 +1279,23 @@ export function StudioPage() {
           // `AlertsPanel` connaît déjà ce garde (`armed`), et le refaire ici est ce
           // qui retire aussi la **pilule** — un panneau qui rend `null` laisserait
           // sinon un bouton qui n'ouvre rien.
+          ...(reidAvailable
+            ? [
+                {
+                  id: SEARCH_PANEL_ID,
+                  label: "Recherche",
+                  content: (
+                    <VehicleSearchPanel
+                      query={query}
+                      onChange={patchQuery}
+                      disabled={busy}
+                      available={reidAvailable}
+                      loadable={health?.reidLoadable ?? null}
+                    />
+                  ),
+                },
+              ]
+            : []),
           ...(alertsArmed
             ? [
                 {
@@ -1697,6 +1778,11 @@ export function StudioPage() {
             // ANPR ni OCR aucun véhicule ne porte de `snapshotScore`, donc
             // `hasSnapshots` reste faux et la colonne n'existe pas.
             jobId={snapshotJobId}
+            // Le **même** seuil que celui du tiroir d'alertes, passé plutôt que
+            // recalculé : `vehicle-registry` n'importe pas `vehicle-search`, et un
+            // véhicule signalé dans les alertes doit être teinté ici. `null` retire
+            // la colonne — pas de recherche, rien à classer.
+            matchThreshold={queryIsArmed(query) ? query.threshold : null}
             // Autorise le seul réessai de vignette. Aucun chiffre, aucune colonne.
             live={analysing}
           />
@@ -1872,6 +1958,28 @@ function PreloadRetry({
  * laisser polluerait l'objet persisté en `localStorage` avec une géométrie qui
  * n'appartient pas à la vidéo courante.
  */
+/**
+ * La vignette à envoyer, ou `null` — pas de recherche, ou image inexploitable.
+ *
+ * Hors du composant : elle ne lit aucun état React et n'a pas à être recréée à chaque
+ * rendu. Elle charge l'image **une fois de plus** depuis son `previewUrl`, parce qu'un
+ * `HTMLImageElement` déjà décodé par le navigateur pour l'aperçu n'est pas accessible
+ * d'ici — et que le coût est un décodage local sur une photo de quelques centaines de
+ * kilooctets, au moment d'un clic.
+ */
+async function queryThumbnail(query: VehicleQuery): Promise<Blob | null> {
+  if (query.file === null || query.previewUrl === null) return null;
+  const image = new Image();
+  const url = query.previewUrl;
+  const loaded = await new Promise<boolean>((resolve) => {
+    image.addEventListener("load", () => resolve(true), { once: true });
+    image.addEventListener("error", () => resolve(false), { once: true });
+    image.src = url;
+  });
+  if (!loaded) return null;
+  return cropToJpeg(image, query.crop);
+}
+
 function stripGeometry(
   config: Record<string, unknown>,
 ): Partial<AnalysisSettings> {

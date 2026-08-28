@@ -493,6 +493,50 @@ class Settings(BaseSettings):
     plate_ocr_charset_url: str | None = None
     plate_ocr_charset_sha256: str | None = None
 
+    # ── Ressemblance de véhicule (recherche par image) ───────────────────────
+    #: Encodeur d'apparence de véhicule. Vide = <weights_dir>/vehicle-reid.onnx.
+    #:
+    #: **Optionnel, et son absence ne dégrade rien** : sans lui, la recherche par
+    #: image est indisponible (`reidAvailable: false`) et pas un compteur ne change.
+    #: Même doctrine que les deux étages de plaques.
+    #:
+    #: `.onnx` et non `.pt` : le modèle retenu (OSNet-AIN entraîné sur VeRi-776) n'a
+    #: pas d'équivalent Ultralytics, et `onnxruntime` n'ayant pas de provider CUDA
+    #: ici, il tourne sur CPU — acceptable parce qu'on encode **une fois par
+    #: véhicule** et non par image. Voir ADR 0048.
+    reid_model_path: Path | None = None
+    #: Similarité cosinus en dessous de laquelle un véhicule n'est pas publié.
+    #:
+    #: **Un plancher de déploiement, pas le seuil de l'utilisateur** : celui-ci vit
+    #: côté client, sur le score brut, et peut donc bouger sans réanalyser (ADR 0048).
+    #: Celui-ci ne sert qu'à ne pas transporter des scores dont on sait qu'ils ne
+    #: veulent rien dire.
+    reid_min_similarity: float = Field(0.0, ge=0.0, le=1.0)
+    #: Largeur de véhicule, en pixels, sous laquelle on n'encode pas.
+    #:
+    #: **Mesuré, pas supposé** (`scripts/reid_bench.py --truth-ladder`) : l'entrée du
+    #: réseau fait 208 px, et sous ce plancher un recadrage agrandi n'apporte aucune
+    #: information — l'embedding ressemble surtout au flou. Même famille de réglage
+    #: que `plate_ocr_min_width_px`, et même raison d'exister : ne pas payer une
+    #: inférence pour un résultat qu'on sait sans valeur (ADR 0039).
+    reid_min_vehicle_width_px: float = Field(96.0, ge=16.0, le=1024.0)
+    #: Netteté minimale (variance du laplacien) d'un recadrage encodé.
+    #:
+    #: Un véhicule assez large mais flou de mouvement rend un embedding instable.
+    #: Même métrique et même doctrine que `plate_ocr_min_sharpness`.
+    reid_min_sharpness: float = Field(8.0, ge=0.0, le=1000.0)
+    # Utilisés par scripts/fetch_reid_model.py uniquement, même règle que les autres
+    # poids : le service ne télécharge jamais de lui-même.
+    reid_model_url: str | None = None
+    reid_model_sha256: str | None = None
+    #: Taille maximale de l'image de requête, en kibioctets.
+    #:
+    #: Petite exprès : le client cadre avant d'envoyer, donc ce qui arrive est une
+    #: vignette de véhicule. 2 Mio laissent passer un recadrage 4K non compressé et
+    #: refusent une photo de téléphone entière — laquelle serait de toute façon
+    #: étirée à 208 px par le réseau, donc n'apporterait rien.
+    max_query_image_kb: int = Field(2048, ge=16, le=32768)
+
     # ── Bornes d'exécution ───────────────────────────────────────────────────
     # Un GPU = une analyse à la fois. Les suivantes attendent en file et sont
     # acceptées en 202 « queued », jamais refusées en 503.
@@ -645,6 +689,21 @@ class Settings(BaseSettings):
         """
         return self.plate_ocr_charset_path or self.weights_dir / "license-plate-ocr.charset.txt"
 
+    @property
+    def max_query_image_bytes(self) -> int:
+        """La borne de l'image de requête en octets. Même patron que `max_upload_bytes`."""
+        return self.max_query_image_kb * 1024
+
+    @property
+    def resolved_reid_model_path(self) -> Path:
+        """Chemin effectif de l'encodeur de ressemblance. Même règle « vide ⇒ défaut ».
+
+        Le suffixe `.onnx` fait partie du contrat : l'adaptateur charge par
+        `onnxruntime`, qui ne lit que cela. Un `.pt` déposé sous ce nom rendrait
+        `reidAvailable: true` puis échouerait à l'auto-test — d'où `probe()`.
+        """
+        return self.reid_model_path or self.weights_dir / "vehicle-reid.onnx"
+
     # ── Validation ───────────────────────────────────────────────────────────
 
     # Seuls les champs `Path | None` et `str | None` sont candidats à ce validateur :
@@ -663,6 +722,9 @@ class Settings(BaseSettings):
         "plate_ocr_model_sha256",
         "plate_ocr_charset_url",
         "plate_ocr_charset_sha256",
+        "reid_model_path",
+        "reid_model_url",
+        "reid_model_sha256",
         mode="before",
     )
     @classmethod

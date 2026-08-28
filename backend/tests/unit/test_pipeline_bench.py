@@ -25,7 +25,10 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
@@ -42,6 +45,9 @@ from traffic_analysis.features.models_registry.infrastructure.ultralytics_engine
     TRACKER_CONFIG,
     UltralyticsEngine,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _SPEC = importlib.util.spec_from_file_location(
     "pipeline_bench",
@@ -90,17 +96,41 @@ def _write_video(path: Path, *, width: int, height: int, frames: int, fps: float
         writer.release()
 
 
+class _RegistryStub:
+    """Registre minimal : `lease` est tout ce que `_tracker_settings` demande.
+
+    Pas de poids, pas de GPU — c'est la condition pour que ce test tourne en CI, et
+    c'est aussi pourquoi il ne peut pas vérifier la *mesure*, seulement le contrat.
+    """
+
+    def __init__(self, *, end2end: bool) -> None:
+        head = SimpleNamespace(end2end=end2end)
+        # `model.model.model[-1]` : l'emboîtement d'Ultralytics, reproduit tel quel.
+        # Le reproduire plutôt que le contourner est le seul moyen que ce test
+        # échoue si `head_is_end2end` cesse de regarder au bon endroit.
+        self._model = SimpleNamespace(model=SimpleNamespace(model=[head]))
+
+    @contextmanager
+    def lease(self, model_id: str) -> Iterator[object]:  # noqa: ARG002
+        yield self._model
+
+
 class TestLeBancDemarre:
     def test_le_fichier_de_tracker_est_lu_avec_le_seuil_de_la_course(self) -> None:
         """**La régression qui tenait le banc hors service.**
 
-        Deux arguments et non un : le seuil de la requête descend jusqu'au tracker
-        depuis ADR 0024. Le test vérifie aussi que le rapport porte ce que le fichier
-        dit, parce qu'un rapport qui annoncerait autre chose que ce qui a tourné
-        serait pire qu'un rapport sans cette ligne.
+        Quatre arguments et non un : le seuil de la requête descend jusqu'au tracker
+        depuis ADR 0024, et le registre plus l'identifiant de modèle s'y ajoutent
+        depuis ADR 0047 — le fichier de suivi dépend de la forme de la tête du modèle
+        chargé. Le test vérifie aussi que le rapport porte ce que le fichier dit,
+        parce qu'un rapport qui annoncerait autre chose que ce qui a tourné serait
+        pire qu'un rapport sans cette ligne.
         """
         reported = pipeline_bench._tracker_settings(
-            str(_BASE["gmc_method"]), float(_BASE["track_high_thresh"])
+            str(_BASE["gmc_method"]),
+            float(_BASE["track_high_thresh"]),
+            cast("ModelRegistry", _RegistryStub(end2end=False)),
+            "yolov8n",
         )
 
         assert reported["gmc"] == _BASE["gmc_method"]
@@ -108,6 +138,28 @@ class TestLeBancDemarre:
         assert reported["withReid"] == _BASE["with_reid"]
         # Le couple du fichier versionné ne dérive rien : c'est bien lui qui tourne.
         assert reported["trackerFile"] == TRACKER_CONFIG.name
+
+    def test_une_tete_end2end_fait_annoncer_une_apparence_coupee(self) -> None:
+        """**Le rapport doit dire ce qui a tourné, y compris pour l'apparence.**
+
+        Sur une tête `end2end`, Ultralytics remplace `model: auto` par un
+        `yolo26n-cls.pt` téléchargé et l'exécute par recadrage : mesuré, `yolo26n`
+        passe de 61,81 à 15,09 img/s. Le banc annonçait pourtant `withReid: true`
+        dans les deux cas, parce qu'il lisait le fichier versionné sans savoir quel
+        modèle tournait — donc un écart de cadence de 4× ne se rattachait à rien de
+        visible dans le rapport. ADR 0047.
+        """
+        reported = pipeline_bench._tracker_settings(
+            str(_BASE["gmc_method"]),
+            float(_BASE["track_high_thresh"]),
+            cast("ModelRegistry", _RegistryStub(end2end=True)),
+            "yolo26n",
+        )
+
+        assert reported["withReid"] is False
+        # Un fichier dérivé, donc pas celui du dépôt : c'est ce qui distingue
+        # « annoncé » de « appliqué ».
+        assert reported["trackerFile"] != TRACKER_CONFIG.name
 
     def test_le_seuil_par_defaut_vient_du_contrat_et_non_du_banc(self) -> None:
         """Recopier « 0,35 » ici se serait désynchronisé au premier changement."""

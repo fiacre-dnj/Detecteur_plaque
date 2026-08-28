@@ -670,6 +670,19 @@ class VehicleRecord:
     #: Il dit *quand* regarder dans la vidéo, et c'est ce qui rend la capture
     #: vérifiable plutôt que seulement consultable.
     snapshot_ms: float | None = None
+    #: Ressemblance à l'image de requête, dans [-1, 1], ou `None`.
+    #:
+    #: `None` a **deux** causes qu'il ne faut pas confondre à l'écran : aucune image
+    #: de requête n'a été fournie, ou ce véhicule n'a jamais été assez grand ni assez
+    #: net pour être encodé. La seconde est un état normal — la majorité des
+    #: véhicules d'une vue large n'atteignent pas l'entrée du réseau.
+    #:
+    #: **Le score brut, jamais un booléen.** Le seuil d'affichage vit côté client :
+    #: c'est ce qui permet de baisser le curseur de ressemblance sans réanalyser, et
+    #: c'est indispensable ici parce que la mesure a montré que les distributions
+    #: same/diff se recouvrent — aucun seuil global n'est à la fois sûr et utile
+    #: (ADR 0048).
+    match_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

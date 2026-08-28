@@ -1271,7 +1271,8 @@
       "plateBestGuess": null,
       "plateBestGuessScore": null,
       "snapshotScore": null,
-      "snapshotMs": null
+      "snapshotMs": null,
+      "matchScore": null
     },
     {
       "globalId": 2,
@@ -1294,7 +1295,8 @@
       "plateBestGuess": null,
       "plateBestGuessScore": null,
       "snapshotScore": null,
-      "snapshotMs": null
+      "snapshotMs": null,
+      "matchScore": null
     },
     {
       "globalId": 3,
@@ -1311,7 +1313,8 @@
       "plateBestGuess": "AB-123-CD",
       "plateBestGuessScore": 0.93,
       "snapshotScore": null,
-      "snapshotMs": null
+      "snapshotMs": null,
+      "matchScore": null
     }
   ],
   "stats": {

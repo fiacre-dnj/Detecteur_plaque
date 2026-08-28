@@ -29,7 +29,7 @@ from traffic_analysis.features.counting.application.dto import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     import numpy as np
     import numpy.typing as npt
@@ -192,8 +192,35 @@ LIVE_TRACKER_KEYS = frozenset(
 )
 
 
+def head_is_end2end(model: Any) -> bool:  # noqa: ANN401
+    """La tête de détection de ce modèle se passe-t-elle de NMS (`end2end`) ?
+
+    **Demandé au graphe, jamais déduit du nom du fichier** — c'est l'invariant 10, et
+    ici il n'est pas décoratif : `end2end` est une clé du *yaml de modèle*
+    (`cfg/models/26/yolo26.yaml`), donc un poids réentraîné ou réexporté peut la
+    porter sans s'appeler « yolo26 », et un fichier renommé peut s'appeler yolo26
+    sans la porter. `Detect.end2end` est une propriété qui répond
+    `hasattr(self, "one2one")` : elle est vraie si et seulement si le graphe a
+    réellement la branche un-pour-un.
+
+    Rend `False` quand la question n'a pas de réponse — une doublure de test, une
+    version d'Ultralytics qui changerait de forme. C'est le repli **conservateur** :
+    `False` laisse la ré-identification d'apparence active, c'est-à-dire le
+    comportement d'avant ce correctif. Se tromper dans ce sens ne coûte que de la
+    cadence sur un modèle exotique ; se tromper dans l'autre changerait des
+    comptages sur toute la famille v8/11/12.
+    """
+    try:
+        head = model.model.model[-1]
+    except (AttributeError, IndexError, TypeError):
+        return False
+    return bool(getattr(head, "end2end", False))
+
+
 @lru_cache(maxsize=32)
-def resolved_tracker_config(gmc_method: str, high_thresh: float) -> Path:
+def resolved_tracker_config(
+    gmc_method: str, high_thresh: float, appearance_reid: bool = True
+) -> Path:
     """Chemin du tracker à utiliser, mouvement et seuil de piste imposés.
 
     Ultralytics ne prend sa configuration de suivi **que** sous forme de chemin de
@@ -220,9 +247,23 @@ def resolved_tracker_config(gmc_method: str, high_thresh: float) -> Path:
     développement suffit — et qu'un fichier YAML lu à moitié écrit ferait échouer
     une analyse avec un message parlant de syntaxe, très loin de la cause.
 
-    `lru_cache` : un fichier par couple (mouvement, seuil) et par processus. Le
-    seuil vient de la requête, donc quelques valeurs distinctes au plus — d'où les
-    32 entrées, contre 8 quand seul le mouvement variait.
+    `appearance_reid=False` pose `with_reid: False`, et **c'est un réglage de
+    matériel logiciel, pas de requête** : il ne dépend que de la forme de la tête du
+    modèle choisi (voir `head_is_end2end` et ADR 0047). Sur une tête `end2end`,
+    Ultralytics remplace `model: auto` par un `yolo26n-cls.pt` qu'il **télécharge**,
+    puis exécute ce réseau de classification sur chaque recadrage de chaque image.
+    Mesuré sur 1080p, `yolo26n` : le poste `tracker` passe de 1,33 à **45,19 ms** et
+    l'analyse de 61,81 à **15,09 img/s**, soit 4,10× — pour des franchissements
+    **identiques**. Le même réglage sur `yolov8n`, où l'encodeur reste la passe-plat
+    du détecteur, coûte 0,91× (1,26 → 2,37 ms) : c'est le régime « quasi gratuit »
+    qu'ADR 0013 avait mesuré et sur lequel il s'appuyait pour garder l'option.
+
+    Le fichier de base reste à `with_reid: true` : la valeur par défaut ne change
+    pour personne, seule la famille `end2end` est dérivée.
+
+    `lru_cache` : un fichier par triplet (mouvement, seuil, apparence) et par
+    processus. Le seuil vient de la requête, donc quelques valeurs distinctes au
+    plus — d'où les 32 entrées, contre 8 quand seul le mouvement variait.
     """
     import yaml
 
@@ -235,10 +276,19 @@ def resolved_tracker_config(gmc_method: str, high_thresh: float) -> Path:
     # supérieur à son `track_high_thresh` et la bande basse serait vide. Voir
     # `detector_floor`, qui est le seul juge de cette valeur.
     overrides["track_low_thresh"] = detector_floor(high_thresh)
+    if not appearance_reid:
+        # **Seul `with_reid` est posé, et pas `model`.** `build_encoder` sort sur le
+        # premier argument : à `False`, la valeur de `model` n'est jamais lue, donc
+        # la remettre à autre chose qu'`auto` serait un réglage sans effet — le pire
+        # état d'un réglage (ADR 0016).
+        overrides["with_reid"] = False
     if all(base.get(key) == value for key, value in overrides.items()):
         return TRACKER_CONFIG
 
-    slug = f"botsort-gmc-{gmc_method}-hi-{high_thresh:.2f}.yaml"
+    # L'apparence entre dans le nom : deux courses du même processus qui ne diffèrent
+    # que par elle — un job `yolov8n` puis un job `yolo26n` — écriraient sinon dans le
+    # même fichier, et la seconde emporterait la première pendant qu'elle tourne.
+    slug = f"botsort-gmc-{gmc_method}-hi-{high_thresh:.2f}-reid-{int(appearance_reid)}.yaml"
     target = Path(tempfile.gettempdir()) / "traffic-analysis" / slug
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.with_name(f"{target.name}.{os.getpid()}.tmp")
@@ -317,16 +367,25 @@ class UltralyticsEngine:
             batch=self._batch,
         )
 
-    def _tracker_for(self, spec: EngineSpec) -> Path:
-        """Le fichier de suivi de cette course : mouvement de déploiement, seuil de requête."""
-        tracker_config = resolved_tracker_config(self._gmc, spec.confidence)
-        # Journalisé **par course** parce que ces trois valeurs sont exactement ce
-        # qu'on vient regarder quand un seuil semble sans effet : le curseur, ce que
-        # le détecteur laisse passer, et le fichier qui les porte.
+    def _tracker_for(self, spec: EngineSpec, model: Any) -> Path:  # noqa: ANN401
+        """Le fichier de suivi de cette course : mouvement, seuil de requête, apparence.
+
+        **Le modèle est un argument parce que la réponse en dépend**, et il ne peut
+        donc plus être résolu avant d'avoir pris le bail : c'est la tête du réseau
+        chargé qui dit si la ré-identification d'apparence est gratuite ou si elle
+        coûte une inférence par véhicule (`head_is_end2end`, ADR 0047).
+        """
+        appearance_reid = not head_is_end2end(model)
+        tracker_config = resolved_tracker_config(self._gmc, spec.confidence, appearance_reid)
+        # Journalisé **par course** parce que ces valeurs sont exactement ce qu'on
+        # vient regarder quand un seuil semble sans effet ou qu'une cadence s'écroule :
+        # le curseur, ce que le détecteur laisse passer, l'apparence, et le fichier
+        # qui les porte.
         logger.info(
             "suivi résolu",
             confidence=spec.confidence,
             detector_floor=detector_floor(spec.confidence),
+            appearance_reid=appearance_reid,
             tracker=str(tracker_config),
         )
         return tracker_config
@@ -407,8 +466,10 @@ class UltralyticsEngine:
                 frame_stride=stride,
             )
 
-        tracker_config = self._tracker_for(spec)
         with self._registry.lease(spec.model_id) as model:
+            # **Résolu à l'intérieur du bail**, et pas avant : le fichier de suivi
+            # dépend de la forme de la tête du modèle chargé (`head_is_end2end`).
+            tracker_config = self._tracker_for(spec, model)
             # Le fichier **et** le nettoyage : Ultralytics ne relit pas le premier
             # une fois ses trackers en place, donc le seuil de cette requête-ci
             # n'arriverait jamais jusqu'au tracker. Voir `reset_trackers`.
@@ -469,7 +530,9 @@ class UltralyticsEngine:
         # Pas de lot ici, et il n'y en aura jamais : en direct les images arrivent
         # une par une, et attendre d'en avoir plusieurs échangerait exactement ce
         # que ce mode vend — la latence — contre du débit dont il n'a que faire.
-        return UltralyticsStream(self._registry, spec, self._tracker_for(spec), self._imgsz)
+        # Le *résolveur* et non le fichier : le flux doit prendre son bail avant de
+        # pouvoir demander au modèle la forme de sa tête. Voir `_tracker_for`.
+        return UltralyticsStream(self._registry, spec, self._tracker_for, self._imgsz)
 
 
 class UltralyticsStream:
@@ -481,26 +544,28 @@ class UltralyticsStream:
         self,
         registry: ModelRegistry,
         spec: EngineSpec,
-        tracker_config: Path,
+        resolve_tracker: Callable[[EngineSpec, Any], Path],
         imgsz: int = DEFAULT_IMGSZ,
     ) -> None:
         self._registry = registry
         self._spec = spec
         self._imgsz = imgsz
-        # Le même fichier qu'en différé, et c'est le point : les deux modes doivent
-        # suivre avec la même configuration, sinon un même tracé ne donne pas les
-        # mêmes chiffres selon qu'on rejoue un fichier ou qu'on filme.
-        self._tracker_config = tracker_config
         # Le gestionnaire de contexte est conservé et fermé à la main : le bail
         # doit survivre à l'appel qui l'ouvre, contrairement à `iter_video`.
         self._lease = registry.lease(spec.model_id)
         self._model = self._lease.__enter__()
+        # **Après le bail**, parce que résoudre le fichier demande d'interroger la
+        # tête du modèle chargé. Le résolveur est celui du moteur différé, donc les
+        # deux modes suivent avec la même configuration — c'est le point : sinon un
+        # même tracé ne donne pas les mêmes chiffres selon qu'on rejoue un fichier
+        # ou qu'on filme.
+        self._tracker_config = resolve_tracker(spec, self._model)
         # Une nouvelle session temps réel est une nouvelle scène : sans cette
         # remise à zéro, elle hériterait des pistes du job ou de la session
         # précédente sur la même instance de modèle. Et sans le fichier en second
         # argument, elle hériterait aussi de son **seuil** — le direct partage
         # l'instance résidente avec le différé. Voir `reset_trackers`.
-        reset_trackers(self._model, tracker_config)
+        reset_trackers(self._model, self._tracker_config)
 
     def track(
         self,

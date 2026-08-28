@@ -118,11 +118,19 @@ class FileResultStore:
         return directory
 
     def write_snapshots(self, job_id: str, snapshots: Mapping[int, VehicleSnapshot]) -> int:
-        """Écrit les captures d'une analyse, en une passe. Rend le nombre de fichiers.
+        """Écrit les captures d'une analyse. Rend le nombre de fichiers écrits.
 
-        **En une passe et à la fin**, jamais image par image : l'écriture disque n'a
-        rien à faire dans la boucle d'analyse, où elle coûterait une pause sur le
-        chemin critique pour une donnée que personne ne lit avant la fin.
+        **Appelée au fil de l'analyse depuis [ADR
+        0046](../../../../../docs/adr/0046-les-captures-s-ecrivent-pendant-l-analyse.md)**,
+        le plus souvent avec **une seule** capture : le rappel `on_snapshot` l'invoque
+        depuis le thread worker, là où l'encodeur vient de rendre les octets. Cette
+        docstring a affirmé le contraire — « en une passe et à la fin, jamais image par
+        image » — jusqu'au 2026-08-28.
+
+        Ce qui protège le chemin critique n'est donc pas le regroupement mais la règle
+        monotone d'ADR 0042 : on n'encode, et donc on n'écrit, que sur une amélioration
+        retenue. Mesuré, 1 800 images : **41 écritures, 98 ms, 0,056 %** du temps
+        d'analyse. L'appel final subsiste comme filet, et écrase les mêmes chemins.
 
         Ne lève pas sur une capture isolée : un disque plein ou un nom refusé ne doit
         pas faire échouer une analyse dont tous les chiffres sont justes. Ce qui n'a

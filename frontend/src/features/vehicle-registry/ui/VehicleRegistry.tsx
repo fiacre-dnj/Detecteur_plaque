@@ -37,6 +37,9 @@ import type {
 } from "@/shared/api/contracts";
 import { classColor } from "@/shared/config/palettes";
 import { classLabel } from "@/shared/lib/classes";
+// Le juge unique de la ressemblance : le tiroir d'alertes lit le même, donc un
+// véhicule signalé là-bas est teinté ici, et réciproquement.
+import { matches, matchStrength } from "@/shared/lib/vehicleMatch";
 import {
   crossingDirectionName,
   crossingHeadingDeg,
@@ -86,6 +89,15 @@ interface VehicleRegistryProps {
   result: AnalysisResult | null;
   /** Véhicules à afficher — filtrés par la tête de lecture en relecture. */
   vehicles: readonly VehicleRecord[];
+  /**
+   * Seuil de ressemblance de la recherche par image, ou `null` — aucune recherche.
+   *
+   * Reçu en prop et non recalculé : `vehicle-registry` n'a pas le droit d'importer
+   * `vehicle-search`, et surtout le registre doit teinter **exactement** ce que le
+   * tiroir d'alertes signale. Deux seuils divergeraient sur un véhicule signalé
+   * ailleurs et non teinté ici.
+   */
+  matchThreshold?: number | null;
   /**
    * La géométrie courante, pour nommer les lignes **et les sens**.
    *
@@ -139,6 +151,7 @@ export function VehicleRegistry({
   rules,
   jobId,
   live = false,
+  matchThreshold = null,
 }: VehicleRegistryProps) {
   const [expanded, setExpanded] = useState(false);
   //: Le véhicule dont la capture est ouverte en grand, ou `null`.
@@ -174,6 +187,23 @@ export function VehicleRegistry({
   const hasViolation = useMemo(
     () => vehicles.some((entry) => vehicleViolations(entry, rules).length > 0),
     [vehicles, rules],
+  );
+
+  /**
+   * Une ressemblance est-elle mesurée **quelque part** dans ce registre ?
+   *
+   * Décidée sur `vehicles` entier et jamais sur les rangées rendues ni sur le jeu
+   * filtré, même règle que « Capture » : une colonne qui apparaîtrait au défilement
+   * décalerait toutes les autres sous le curseur.
+   *
+   * Sans recherche armée, aucun véhicule ne porte de `matchScore` — la colonne est
+   * donc absente sans qu'aucun réglage n'ait à le dire.
+   */
+  const hasMatch = useMemo(
+    () =>
+      matchThreshold !== null &&
+      vehicles.some((entry) => entry.matchScore !== null && entry.matchScore !== undefined),
+    [vehicles, matchThreshold],
   );
 
   /**
@@ -323,6 +353,10 @@ export function VehicleRegistry({
               rangées rendues ni sur le jeu filtré, sinon la colonne apparaîtrait au
               défilement et décalerait toutes les autres sous le curseur. */}
           {withSnapshots && <Th className="w-16">Capture</Th>}
+          {/* « Ressemblance » juste après la capture, et pour la même raison qui met
+              la capture avant la plaque : le score se vérifie **sur la photo**, et
+              les séparer obligerait à recoller deux colonnes du regard. */}
+          {hasMatch && <Th className="w-24">Ressemblance</Th>}
           {/* « Passages » remplace « Ré-id » : la ré-identification n'existe plus
               (ADR 0016), et le nombre de franchissements d'un véhicule est
               l'information qui rend une ligne du registre vérifiable — un 0 dit
@@ -379,6 +413,7 @@ export function VehicleRegistry({
                 onOpen={() => setOpenSnapshot(vehicle.globalId)}
               />
             )}
+            {hasMatch && <MatchCell vehicle={vehicle} threshold={matchThreshold} />}
             <Td className="tabular">
               {vehicle.crossedLines.length === 0 ? "—" : vehicle.crossedLines.length}
             </Td>
@@ -887,6 +922,53 @@ function violationWord(kind: VehicleViolation["kind"]): string {
  * Dimensions posées en attributs **et** en classes : l'attribut réserve la place
  * avant que l'image arrive, ce qui évite que la rangée saute à son chargement.
  */
+/**
+ * La ressemblance à l'image de requête — un pourcentage, teinté par sa gravité.
+ *
+ * **Le score est affiché, pas seulement la couleur.** Contrairement à une carte
+ * d'alerte, où « 0,63 » ne se lit pas d'un coup d'œil dans une pile, le registre est
+ * un tableau qu'on parcourt colonne par colonne : c'est exactement le lieu où
+ * comparer deux scores entre eux a du sens, et où le classement se lit.
+ *
+ * Le seuil vient en prop pour que le mot « ressemble » veuille dire la même chose ici
+ * et dans le tiroir d'alertes. `matchStrength` en est le seul juge.
+ */
+function MatchCell({
+  vehicle,
+  threshold,
+}: {
+  vehicle: VehicleRecord;
+  threshold: number | null;
+}) {
+  const score = vehicle.matchScore;
+  if (score === null || score === undefined) {
+    // Deux causes, un seul rendu : jamais encodé — trop petit ou trop flou, le cas le
+    // plus courant sur une vue large — ou pas de requête. L'écran n'a pas à les
+    // distinguer, il n'y a rien à classer dans les deux cas.
+    return <Td className="w-24 text-ink-muted">—</Td>;
+  }
+  const strength = threshold === null ? null : matchStrength(score, threshold);
+  const under = !matches(score, threshold);
+  return (
+    <Td
+      className={`w-24 tabular ${
+        under
+          ? "text-ink-muted"
+          : strength === "exact"
+            ? "font-medium text-negative"
+            : "text-warning"
+      }`}
+    >
+      {/* Le score brut en infobulle sur le texte, `Td` n'acceptant pas de `title` : le
+          pourcentage arrondi suffit à comparer deux rangées, mais pas à comprendre
+          pourquoi un véhicule tombe juste sous le curseur. */}
+      <span title={`Similarité ${score.toFixed(3)}${under ? " — sous le seuil retenu" : ""}`}>
+        {`${Math.round(score * 100)} %`}
+      </span>
+    </Td>
+  );
+}
+
 function SnapshotCell({
   vehicle,
   jobId,

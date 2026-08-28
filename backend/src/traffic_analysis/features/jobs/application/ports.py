@@ -159,9 +159,14 @@ class ResultStore(Protocol):
     def write_snapshots(self, job_id: str, snapshots: Mapping[int, VehicleSnapshot]) -> int:
         """Écrit les captures de véhicules et rend le nombre de fichiers écrits.
 
-        En une passe, à la fin de l'analyse : l'écriture disque n'a rien à faire dans
-        la boucle d'images. Ne lève pas sur une capture isolée — un disque plein ne
-        doit pas faire échouer une analyse dont tous les chiffres sont justes.
+        **Appelée au fil de l'analyse depuis ADR 0046**, une capture à la fois, par le
+        rappel `on_snapshot` et depuis le thread worker — et non plus en une seule
+        passe finale, ce que cette docstring a affirmé jusqu'au 2026-08-28. La règle
+        monotone d'ADR 0042 borne le débit : une écriture par *amélioration retenue*,
+        jamais par lecture. L'écriture finale subsiste comme filet.
+
+        Ne lève pas sur une capture isolée — un disque plein ne doit pas faire échouer
+        une analyse dont tous les chiffres sont justes.
         """
         ...
 

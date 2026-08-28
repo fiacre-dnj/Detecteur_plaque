@@ -126,7 +126,7 @@ Le dossier [`prompt/`](prompt/) (15 fichiers, à lire dans l'ordre depuis
 [`prompt/README.md`](prompt/README.md)) **est** le cahier des charges. Quand il
 écrit « obligatoire », « jamais » ou « exactement », c'est une contrainte qui a
 coûté un bug dans une version antérieure.
-[`prompt/13-PIEGES-CONNUS.md`](prompt/13-PIEGES-CONNUS.md) en tient la liste (67
+[`prompt/13-PIEGES-CONNUS.md`](prompt/13-PIEGES-CONNUS.md) en tient la liste (68
 entrées) — **le relire avant de déboguer quoi que ce soit**.
 
 Si une contrainte semble fausse : le dire avec la preuve, proposer l'alternative,
@@ -144,7 +144,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1592 tests
+uv run pytest                                                            # 1621 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -153,12 +153,13 @@ uv run alembic revision --autogenerate -m "ajoute la table X"
 uv run python scripts/fetch_weights.py --tiers nano,medium,large,xlarge
 uv run python scripts/fetch_plate_model.py
 uv run python scripts/fetch_plate_ocr_model.py       # modèle OCR + son dictionnaire
+uv run python scripts/fetch_reid_model.py            # encodeur de ressemblance (optionnel)
 uv run python scripts/audit_lignes.py                # « pourquoi cette ligne est à 0 ? »
 
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 832 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 851 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -227,7 +228,7 @@ domaine.
 
 ### Frontend — Feature-Sliced Design
 
-`frontend/src/` : `app/` (câblage), `features/<capacité>/` (14), `entities/`,
+`frontend/src/` : `app/` (câblage), `features/<capacité>/` (15), `entities/`,
 `shared/`. Aucun dossier `components/`, `hooks/` ou `utils/` global.
 
 La quatorzième est **`alerts`** (2026-08-27) : ce que l'analyse *signale*, par
@@ -1521,6 +1522,77 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
 
     [ADR 0042](docs/adr/0042-une-capture-par-vehicule.md), amendée par
     [ADR 0046](docs/adr/0046-les-captures-s-ecrivent-pendant-l-analyse.md).
+34. **La ReID d'apparence du tracker n'est gratuite que sur une tête avec NMS.**
+    `botsort_reid.yaml` porte `with_reid: true` et `model: auto` depuis le début, et
+    ADR 0013 l'a gardée sur une mesure — 0,3 à 3,5 ms par image — restée vraie pour v8,
+    11 et 12 et **fausse d'un facteur 19** pour la famille 26, arrivée après elle. Sur
+    une tête `end2end`, `trackers/track.py` ne pose pas son crochet et remplace `auto`
+    par un `yolo26n-cls.pt` **téléchargé au runtime**, exécuté par recadrage et par
+    image. Mesuré sur 1080p : `yolo26n` 61,81 → **15,09 img/s**, poste `tracker` 1,33 →
+    **45,19 ms**, **franchissements identiques**. Quatre points :
+    - **la question est posée au graphe, jamais au nom du fichier** (invariant 10, et
+      ici il n'est pas décoratif) : `end2end` est une clé du *yaml de modèle*, donc un
+      poids réexporté peut la porter sans s'appeler « yolo26 », et l'inverse.
+      `head_is_end2end` lit `model.model.model[-1].end2end` ;
+    - **le repli est conservateur** : sans réponse, l'apparence reste active, c'est-à-dire
+      le comportement d'avant. Se tromper dans ce sens coûte de la cadence sur un modèle
+      exotique ; dans l'autre, cela changerait des comptages sur v8/11/12 ;
+    - **le fichier de base reste à `with_reid: true`** et seule la famille `end2end` est
+      dérivée — d'où un `appearance_reid=True` par défaut sur `resolved_tracker_config`,
+      qui laisse tous les appelants antérieurs inchangés. Seul `with_reid` est posé, pas
+      `model` : `build_encoder` sort sur son premier argument, donc changer `model`
+      serait un réglage sans effet (ADR 0016) ;
+    - **le fichier de suivi ne peut plus être résolu avant le bail**, puisque la réponse
+      dépend du modèle chargé : `_tracker_for` prend le modèle, `iter_video` résout dans
+      son `with`, et `UltralyticsStream` reçoit le *résolveur* au lieu du chemin. Le nom
+      du dérivé porte l'apparence, sinon deux jobs du même processus qui ne diffèrent que
+      par elle écriraient dans le même fichier.
+
+    Vérifié contre le vrai moteur : `yolo26n` 15,09 → **60,16 img/s** (3,99×),
+    `yolov8n` **« comptage identique »**.
+    [ADR 0047](docs/adr/0047-la-reid-d-apparence-n-est-gratuite-que-sur-une-tete-avec-nms.md).
+35. **On peut rechercher un véhicule par image, et cela ne change aucun comptage.**
+    Importer une photo, la cadrer, lancer : les véhicules ressemblants portent un
+    `matchScore`. Ce n'est **pas** une réintroduction d'ADR 0016, qui a fermé la porte à
+    *l'apparence branchée sur le compteur* — une recherche est un index de consultation,
+    et `TestAucuneRegression` compare comptages, ventilations **et horodatages** avec et
+    sans encodeur. Sept points :
+    - **le tracker ne peut pas servir à cela**, et c'est mesurable :
+      `emb_dists[dists_mask] = 1.0` annule la distance d'apparence dès que l'IoU tombe
+      sous 0,5, et le descripteur d'`auto` fait ~64 dimensions de caractéristiques de
+      *détection*. Un encodeur dédié est nécessaire ;
+    - **le modèle est `vehicle-reid-0001`** (OSNet-AIN, 8,8 Mo, 512-d, MIT, rank-1
+      96,31 % / mAP 85,15 % sur VeRi-776), récupéré par `scripts/fetch_reid_model.py`
+      avec SHA-256 obligatoire. ONNX donc **CPU**, ce qui n'est tenable que parce qu'on
+      encode une fois par véhicule ;
+    - **le prétraitement n'a aucun effet, sauf l'ordre des canaux.** Mesuré :
+      `cos(x/255, (x/255−mean)/std) = 1,0` et même `cos(x/255, x) = 1,0` — le « AIN »
+      est de l'*instance normalization*, donc le réseau est invariant aux
+      transformations affines par canal. Mais `cos(rgb, bgr)` descend à **0,508** : le
+      graphe veut du RGB, et nos images sont en BGR. Aucune normalisation d'intensité
+      n'est appliquée — une arithmétique prouvée sans effet est du code mort ;
+    - **les distributions se recouvrent, donc on classe et on ne tranche pas.**
+      `sameMin` 0,387 < `diffMax` 0,891 : aucun seuil global n'est à la fois sûr et
+      utile. L'écran promet des candidats à vérifier, jamais un verdict ;
+    - **la clé monotone est la largeur de boîte**, pas « largeur × netteté ». La netteté
+      demande un recadrage, donc des pixels que le domaine n'a pas — et la première
+      version, qui interrogeait le pré-filtre avec `0.0`, excluait définitivement tout
+      véhicule déjà encodé : une meilleure vue ne pouvait jamais remplacer la première.
+      La netteté reste un **plancher** dans l'adaptateur ;
+    - **le score au serveur, le seuil au client** — dérogation bornée à ADR 0041. Ce que
+      cette ADR protégeait (corriger sans réanalyser) est préservé : `matchScore` est
+      publié brut et le curseur vit dans `shared/lib/vehicleMatch.ts`, seul juge lu par
+      trois features. Transporter les 512 flottants aurait multiplié par six le poids du
+      registre dans l'aperçu ;
+    - **l'image de requête ne touche jamais le disque** : troisième partie multipart, lue
+      en mémoire, bornée à 2 Mio, absente de `config_json` — donc ni persistée ni relue.
+      Le **cadrage est côté client**, ce qui borne ce qui part et fait converger les deux
+      côtés de la comparaison sur `vehicle_crop`.
+
+    `reid_min_vehicle_width_px = 96` est un garde de **coût** et non une falaise : la
+    séparation décroît régulièrement (+0,462 à 208 px → +0,310 à 48 px) sans effondrement,
+    contrairement au plancher d'OCR. Mesuré en pipeline : 8 véhicules suivis, **2 encodés**.
+    [ADR 0048](docs/adr/0048-rechercher-un-vehicule-par-image.md).
 
 ## Ce que l'analyse signale — les alertes
 
@@ -1992,7 +2064,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1592 (1 skip) | 832 |
+| Nombre | 1621 (1 skip) | 851 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

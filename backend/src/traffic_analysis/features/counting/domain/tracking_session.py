@@ -165,6 +165,30 @@ class _VehicleAggregate:
     snapshot_score: float | None = None
     #: Instant de scène de cette capture. `None` ssi `snapshot_score` l'est.
     snapshot_ms: float | None = None
+    #: Largeur, en pixels, de la vue dont l'apparence a été encodée. `None` = jamais.
+    #:
+    #: Même rôle que `snapshot_score` pour la capture, et même règle : strictement
+    #: croissante. Ce n'est **pas** une ressemblance — c'est la valeur de la *vue*, et
+    #: les confondre ferait réencoder chaque fois que la ressemblance change, donc sans
+    #: rapport avec la qualité de l'image courante (le piège qu'ADR 0042 documente sur
+    #: le score du vote de plaque).
+    #:
+    #: **La largeur de boîte et non « largeur × netteté »**, contrairement à ce que le
+    #: choix de l'OCR aurait suggéré, et pour une raison structurelle : la netteté
+    #: demande les pixels, donc un recadrage. Le service doit pouvoir demander « est-ce
+    #: que ça vaut une inférence » **avant** de payer quoi que ce soit, et il ne connaît
+    #: à ce moment que la boîte. Une clé que le domaine ne peut pas évaluer force un
+    #: pré-filtre approximatif — et la première version de ce code en est morte : elle
+    #: interrogeait la règle avec `0.0`, ce qui excluait définitivement tout véhicule
+    #: déjà encodé et rendait impossible le remplacement d'une vue par une meilleure.
+    #: La netteté reste un **plancher** dans l'adaptateur, jamais un critère de rang.
+    appearance_width_px: float | None = None
+    #: Ressemblance à l'image de requête, dans [-1, 1], ou `None`.
+    #:
+    #: **Aucun compteur ne la lit.** Elle ne sert qu'à la recherche par image, et
+    #: c'est ce qui met cette fonctionnalité hors du champ d'ADR 0016 : un véhicule
+    #: ressemblant n'est pas un véhicule compté deux fois.
+    match_score: float | None = None
 
 
 class AnalysisSession:
@@ -634,6 +658,47 @@ class AnalysisSession:
         aggregate.snapshot_score = score
         aggregate.snapshot_ms = timestamp_ms
 
+    def should_embed(self, global_id: int, width_px: float) -> bool:
+        """Cette vue bat-elle celle dont l'apparence a déjà été encodée ?
+
+        **Le jumeau exact de `should_capture`**, et pour la même raison d'être : sans
+        règle monotone, on encoderait à chaque image de chaque véhicule, ce qui est
+        précisément le profil de coût qu'ADR 0032 a démonté sur le détecteur de
+        plaques. Avec elle, on encode quelques fois dans la vie d'un véhicule.
+
+        `width_px` est la largeur de la **boîte du véhicule**, et le choix de cette
+        unité est ce qui rend la question posable avant toute dépense : la netteté
+        demanderait un recadrage, donc des pixels que le domaine n'a pas. Ce n'est
+        **pas** la ressemblance : classer les vues sur la ressemblance ferait réencoder
+        quand une *autre* image change le score, sans rapport avec la qualité de
+        celle-ci.
+
+        Une **question pure**, séparée de `record_embedding` : l'appelant demande
+        « est-ce que ça vaut une inférence » avant de la payer.
+
+        Rend `False` sur une identité inconnue — `0` en est une.
+        """
+        aggregate = self._aggregates.get(global_id)
+        if aggregate is None:
+            return False
+        return aggregate.appearance_width_px is None or width_px > aggregate.appearance_width_px
+
+    def record_embedding(self, global_id: int, width_px: float, match_score: float | None) -> None:
+        """Retient la vue encodée et la ressemblance mesurée dessus.
+
+        Ne revérifie pas `should_embed` : le service a déjà posé la question, et la
+        reposer ici ferait exister deux endroits qui décident de la même chose.
+
+        `match_score` à `None` est un état **normal** : il n'y a pas d'image de
+        requête. L'apparence est alors encodée pour rien — c'est pourquoi le service
+        n'appelle cet étage qu'en présence d'une requête.
+        """
+        aggregate = self._aggregates.get(global_id)
+        if aggregate is None:
+            return
+        aggregate.appearance_width_px = width_px
+        aggregate.match_score = match_score
+
     # ── Sorties ──────────────────────────────────────────────────────────────
 
     def stats(self) -> AnalysisStats:
@@ -799,6 +864,7 @@ class AnalysisSession:
                     plate_best_guess_score=best_guess[1] if best_guess else None,
                     snapshot_score=aggregate.snapshot_score,
                     snapshot_ms=aggregate.snapshot_ms,
+                    match_score=aggregate.match_score,
                 )
             )
         return tuple(records)

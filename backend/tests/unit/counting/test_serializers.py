@@ -174,6 +174,7 @@ class TestSerialiseVehicle:
             "globalId",
             "label",
             "lastSeenMs",
+            "matchScore",
             "plateBestGuess",
             "plateBestGuessScore",
             "plateBestWidthPx",
@@ -184,6 +185,26 @@ class TestSerialiseVehicle:
             "snapshotScore",
             "zonesVisited",
         ]
+
+    def test_un_vehicule_sans_recherche_par_image_rend_un_score_nul(self) -> None:
+        """`matchScore` à `null` couvre **deux** causes, et c'est assumé.
+
+        Aucune image de requête fournie, ou véhicule jamais assez grand ni assez net
+        pour être encodé. Les distinguer côté serveur demanderait un second champ pour
+        une différence que l'écran n'a pas à faire : dans les deux cas il n'y a rien à
+        classer. Le tiroir d'alertes, lui, sait s'il a une requête — c'est lui qui
+        décide s'il faut afficher une colonne.
+        """
+        assert serialise_vehicle(_vehicle())["matchScore"] is None
+
+    def test_une_ressemblance_est_arrondie_comme_les_autres_scores(self) -> None:
+        """Même arrondi que toutes les confiances : quatre décimales (ADR 0026).
+
+        Un score de ressemblance non arrondi porterait dix-sept chiffres dans chaque
+        aperçu SSE, pour une précision que rien n'affiche.
+        """
+        payload = serialise_vehicle(_vehicle(match_score=0.8812345))
+        assert payload["matchScore"] == pytest.approx(0.8812)
 
     def test_un_vehicule_sans_capture_rend_deux_null(self) -> None:
         """La non-nullité de `snapshotScore` **est** le drapeau « il y a une photo ».

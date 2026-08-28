@@ -470,6 +470,10 @@ async def _warmup(container: Container) -> None:
     # (un modèle nano contre le détecteur de véhicules) et c'est celui dont le verdict
     # est attendu par `/health`. Il ne lève jamais — `probe()` avale tout.
     await _probe_plates(container)
+    # Puis l'encodeur de ressemblance, pour la même raison et au même coût : une
+    # inférence sur une image noire. Après les plaques parce que son absence est le cas
+    # courant — la recherche par image est une option installée à part.
+    await _probe_reid(container)
 
     registry = container.model_registry
     if registry is None:
@@ -507,6 +511,27 @@ async def _probe_plates(container: Container) -> None:
         # `error` et non `warning` : les poids sont là, l'utilisateur croit donc que
         # l'ANPR marche. C'est le seul état de ce démarrage qui mérite d'être criard.
         logger.error("auto-test du détecteur de plaques en échec — ANPR muette")
+
+
+async def _probe_reid(container: Container) -> None:
+    """Vérifie que l'encodeur de ressemblance se charge **vraiment**, une fois.
+
+    Même raison d'être que `_probe_plates`, et même mode de panne visé : `reidAvailable`
+    ne teste qu'une présence de fichier, et le suffixe `.onnx` fait partie du contrat —
+    `onnxruntime` ne lit que cela. Un `.pt` renommé, un fichier tronqué, un graphe dont
+    la sortie n'a pas 512 dimensions : tout cela passe `available` et ne rend jamais un
+    vecteur.
+    """
+    service = container.model_service
+    if service is None:
+        return
+    verdict = await service.probe_reid()
+    if verdict is False:
+        # `error` et non `warning`, même arbitrage que pour les plaques : les poids sont
+        # là, donc l'utilisateur croit que la recherche par image marche.
+        logger.error(
+            "auto-test de l'encodeur de ressemblance en échec — recherche par image muette"
+        )
 
 
 async def _cleanup_loop(app: FastAPI) -> None:

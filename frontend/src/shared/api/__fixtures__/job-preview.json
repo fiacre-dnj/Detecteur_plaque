@@ -197,7 +197,8 @@
       "plateBestGuess": null,
       "plateBestGuessScore": null,
       "snapshotScore": null,
-      "snapshotMs": null
+      "snapshotMs": null,
+      "matchScore": null
     },
     {
       "globalId": 2,
@@ -220,7 +221,8 @@
       "plateBestGuess": null,
       "plateBestGuessScore": null,
       "snapshotScore": null,
-      "snapshotMs": null
+      "snapshotMs": null,
+      "matchScore": null
     }
   ]
 }

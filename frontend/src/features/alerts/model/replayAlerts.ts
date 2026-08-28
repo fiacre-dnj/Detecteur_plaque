@@ -22,12 +22,18 @@ import { violations } from "@/shared/lib/lineViolations";
 
 import {
   alertFromPlateHit,
+  alertFromVehicleMatch,
   alertFromViolation,
   crossingsBefore,
   sortAlerts,
   type Alert,
 } from "./alerts";
 import { plateHits, type PlateBearer } from "./plateWatch";
+// La règle de seuil vit dans `vehicle-search` et **n'est pas recopiée ici** : le
+// tiroir de réglage, ce module et la colonne du registre la lisent tous les trois,
+// et trois copies d'un seuil finiraient par diverger. Une feature n'importe jamais
+// une autre feature — c'est donc `shared` qui la porte.
+import { matches, matchStrength } from "@/shared/lib/vehicleMatch";
 
 /** Ce qu'un résultat rejoué fournit aux alertes. */
 export interface ReplayAlertInput {
@@ -44,6 +50,14 @@ export interface ReplayAlertInput {
   timeMs: number;
   rules: ReadonlyMap<string, LineRule>;
   watchlist: readonly string[];
+  /**
+   * Seuil de ressemblance, ou `null` — aucune recherche par image en cours.
+   *
+   * `null` et non `0` : le second signalerait **tout** véhicule encodé, y compris
+   * ceux dont le score est négatif. Confondre les deux remplirait le tiroir d'alertes
+   * de la totalité du trafic.
+   */
+  matchThreshold: number | null;
 }
 
 /** Les alertes du résultat, la plus récente en tête. */
@@ -59,6 +73,20 @@ export function alertsFromResult(input: ReplayAlertInput): Alert[] {
     // toute sa vie et n'a donc pas d'instant propre (invariant 4). C'est aussi
     // l'endroit où amener la vidéo — celui où on le voit arriver.
     found.push(alertFromPlateHit(hit, vehicle?.firstSeenMs ?? 0));
+  }
+
+  const threshold = input.matchThreshold;
+  if (threshold !== null) {
+    for (const vehicle of input.vehicles) {
+      // Bornée à la tête de lecture comme les infractions : signaler un véhicule que
+      // la vidéo n'a pas encore atteint donnerait une alerte invérifiable, et cliquer
+      // dessus reculerait la lecture.
+      if (vehicle.firstSeenMs > input.timeMs) continue;
+      if (!matches(vehicle.matchScore, threshold)) continue;
+      found.push(
+        alertFromVehicleMatch(vehicle, matchStrength(vehicle.matchScore as number, threshold)),
+      );
+    }
   }
 
   return sortAlerts(found);

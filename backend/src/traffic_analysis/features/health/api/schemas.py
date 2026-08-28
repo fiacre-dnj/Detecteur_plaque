@@ -90,6 +90,26 @@ class HealthSchema(CamelModel):
             "leur texte n'est pas lu."
         )
     )
+    reid_available: bool = Field(
+        default=False,
+        description=(
+            "L'encodeur d'apparence de véhicule est présent. Faux ⇒ la recherche par "
+            "image est désactivée dans l'interface, et le service fonctionne "
+            "normalement — pas un compteur ne change. Un artefact de plus, récupéré "
+            "par `scripts/fetch_reid_model.py`, donc l'état de tout déploiement neuf."
+        ),
+    )
+    reid_loadable: bool | None = Field(
+        default=None,
+        description=(
+            "L'encodeur a-t-il passé son auto-test au démarrage — chargement réel puis "
+            "une inférence à vide ? `null` = pas encore testé. **`false` avec un "
+            "`reidAvailable: true` est l'état à surveiller** : les poids sont là et ne "
+            "se chargent pas, donc la recherche est muette alors que tout paraît vert. "
+            "Le suffixe `.onnx` fait partie du contrat — `onnxruntime` ne lit que "
+            "cela — et un graphe dont la sortie n'a pas 512 dimensions est refusé."
+        ),
+    )
     default_model_id: str = Field(description="Modèle proposé par défaut.")
     weights_dir: str = Field(
         description=(
