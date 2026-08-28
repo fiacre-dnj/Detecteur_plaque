@@ -1,6 +1,10 @@
 # ADR 0043 — Les alertes quittent la vidéo pour une troisième colonne
 
-- **Statut** : accepté
+- **Statut** : accepté, **amendé le 2026-08-28** par
+  [ADR 0044](0044-les-alertes-deviennent-un-centre-de-notifications.md) : la colonne
+  cède la place à une cloche et un tiroir dans la barre du studio. Le raisonnement
+  qui a fait quitter la vidéo aux alertes est conservé — rien sur la scène, une
+  seule surface, rien d'éphémère
 - **Date** : 2026-08-27
 - **Complète** : [ADR 0041](0041-les-alertes-se-calculent-cote-client.md), dont elle
   ne change ni le calcul, ni les compteurs, ni les règles.

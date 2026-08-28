@@ -71,6 +71,8 @@ import {
   type AnalysisRange,
 } from "@/entities/analysis-range";
 import {
+  AlertBellBadge,
+  AlertBellIcon,
   AlertsPanel,
   alertsFromResult,
   matchPlate,
@@ -124,6 +126,7 @@ import { platePhotoUrl, vehicleSnapshotUrl } from "@/shared/api/jobUrls";
 import { VEHICLE_CLASSES, classLabel } from "@/shared/lib/classes";
 import { lineRules } from "@/shared/lib/lineRules";
 import { hasAnyRule } from "@/shared/lib/lineViolations";
+import { violationCounts } from "@/shared/lib/violationTally";
 import { formatSceneTimePrecise } from "@/shared/lib/sceneTime";
 import { Button } from "@/shared/ui/Button";
 import { SnapshotDialog } from "@/shared/ui/SnapshotDialog";
@@ -199,6 +202,16 @@ const NO_TRACKS: readonly TrackSnapshot[] = [];
  * muette — un clic sur une ligne qui n'ouvre rien.
  */
 const GEOMETRY_PANEL_ID = "geometrie";
+
+/**
+ * L'identifiant du tiroir « Alertes ».
+ *
+ * Nommé pour la même raison que celui de la géométrie, même si un seul endroit
+ * l'ouvre aujourd'hui : c'est la clé d'exclusivité de `SettingsPanels`, et une
+ * chaîne littérale posée dans un `panels` est exactement ce qu'on recopie ailleurs
+ * six mois plus tard.
+ */
+const ALERTS_PANEL_ID = "alertes";
 
 export function StudioPage() {
   const { data: health } = useHealth();
@@ -982,11 +995,32 @@ export function StudioPage() {
   /**
    * Y a-t-il quelque chose à signaler ?
    *
-   * Sans règle posée ni plaque recherchée, la section « Alertes » et la pile
-   * flottante n'existent pas du tout : une section vide de ce nom se lirait « rien à
-   * signaler », alors que la vérité est « on n'a rien demandé de signaler ».
+   * Sans règle posée ni plaque recherchée, ni la cloche ni son tiroir n'existent :
+   * une cloche muette inviterait à ouvrir un panneau vide, et un panneau « Alertes »
+   * vide se lit « rien à signaler » alors que la vérité est « on n'a rien demandé de
+   * signaler ».
    */
   const alertsArmed = hasAnyRule(alertRules) || settings.plateWatchlist.length > 0;
+
+  /**
+   * Les totaux d'infraction du résumé, **du même juge que le KPI des Résultats**.
+   *
+   * Calculés ici et passés au tiroir plutôt que recalculés dedans : `features/alerts`
+   * n'a pas le droit d'importer `features/results-dashboard`, et surtout le résumé
+   * doit afficher **exactement** le chiffre que « Franchissements interdits » montre
+   * à côté. Deux définitions du même total, sur deux surfaces lues à quelques
+   * secondes d'intervalle, finiraient par en donner deux.
+   *
+   * `null` avant toute statistique : le résumé se tait plutôt que d'annoncer zéro
+   * infraction sur une analyse qui n'a pas commencé.
+   */
+  const alertViolations = useMemo(
+    () =>
+      dashboardStats === null
+        ? null
+        : violationCounts(dashboardStats, geometry.lines, alertRules),
+    [dashboardStats, geometry.lines, alertRules],
+  );
 
   /**
    * La capture ouverte en grand depuis une **alerte**.
@@ -1150,6 +1184,48 @@ export function StudioPage() {
               />
             ),
           },
+          // **Le tiroir n'est monté que s'il y a de quoi le remplir**, exactement
+          // comme la colonne qu'il remplace : sans règle posée ni plaque
+          // recherchée, une cloche muette inviterait à ouvrir un panneau vide.
+          // `AlertsPanel` connaît déjà ce garde (`armed`), et le refaire ici est ce
+          // qui retire aussi la **pilule** — un panneau qui rend `null` laisserait
+          // sinon un bouton qui n'ouvre rien.
+          ...(alertsArmed
+            ? [
+                {
+                  id: ALERTS_PANEL_ID,
+                  label: "Alertes",
+                  icon: <AlertBellIcon alerts={alerts} />,
+                  badge: <AlertBellBadge alerts={alerts} live={analysing || live.active} />,
+                  content: (
+                    <AlertsPanel
+                      alerts={alerts}
+                      lines={geometry.lines}
+                      armed={alertsArmed}
+                      // Le **même** juge que le KPI « Franchissements interdits »
+                      // des Résultats, calculé une fois ici : deux appels sur les
+                      // mêmes chiffres passeraient encore, deux *définitions* du
+                      // total non.
+                      violations={alertViolations}
+                      live={analysing || live.active}
+                      // Le job terminé seulement : les captures sont écrites à la
+                      // fin, et une vignette demandée pendant l'analyse afficherait
+                      // une image cassée sur chaque alerte.
+                      jobId={session.result?.jobId ?? null}
+                      onOpenSnapshot={setAlertSnapshot}
+                      // Aucun déplacement de la vidéo pendant qu'elle est pilotée
+                      // par l'aperçu : le calage image par image reprendrait la main
+                      // aussitôt, et le clic paraîtrait sans effet.
+                      onSeek={
+                        session.result !== null && !analysing && !live.active
+                          ? seekToAlert
+                          : undefined
+                      }
+                    />
+                  ),
+                },
+              ]
+            : []),
         ]}
       />
 
@@ -1184,36 +1260,17 @@ export function StudioPage() {
           tronqué, entrées, sorties, solde, barre — y gardent exactement leur
           rendu.
 
-          **Et une troisième piste quand il y a quelque chose à signaler** : les
-          alertes à droite des résultats, à hauteur de la scène. Trois précisions :
-
-          - **la piste n'existe que si `alertsArmed`.** Une grille à trois pistes avec
-            deux enfants laisserait une colonne vide, donc une scène amputée de 19 rem
-            pour rien — c'est pourquoi la liste des classes est calculée et non écrite
-            en dur ;
-          - **elle n'apparaît qu'à `2xl`.** En dessous, la place manque : les alertes
-            passent alors **sous** les deux colonnes (`xl:col-span-2`), sur toute la
-            largeur, où leur grille en `auto-fill` rend quatre cartes par rangée au
-            lieu d'une ;
-          - **les deux pistes de droite sont presque égales** (20 et 18 rem), et ce
-            n'est pas de la symétrie pour la symétrie : à 23 / 19, la seconde se
-            lisait comme la retombée de la première — une bande de reste. Deux
-            colonnes de même poids annoncent deux lectures de même rang, ce que « ce
-            qui est compté » et « ce qui est signalé » sont exactement ;
-          - **elles se resserrent quand elles sont deux** (23 → 20 rem pour les
-            résultats), et c'est là que la place de la colonne d'alertes est prise.
-            **Pas sur les marges de la page** : la gouttière et le cadre ont été
-            réduits une fois, et la page en est devenue suffocante — les marges sont
-            ce qui la rend lisible. La scène prend le reste sur elle : une vidéo garde
-            ses proportions à toute largeur, une carte de KPI non. */}
-      <div
-        className={[
-          "grid gap-4",
-          alertsArmed
-            ? "xl:grid-cols-[minmax(0,1fr)_20rem] 2xl:grid-cols-[minmax(0,1fr)_20rem_18rem]"
-            : "xl:grid-cols-[minmax(0,1fr)_23rem]",
-        ].join(" ")}
-      >
+          **Deux pistes, et plus trois.** Les alertes ont occupé une troisième
+          colonne de 18 rem, prise sur la scène et sur les résultats (23 → 20 rem).
+          Elle réglait tout ce qu'on lui demandait et coûtait sa largeur **en
+          permanence** à la vidéo, pour une liste qu'on consulte par à-coups : la
+          vidéo est ce qu'on regarde, les alertes sont ce qu'on va chercher. Elles
+          sont désormais derrière une cloche dans la barre du studio, où elles ne
+          coûtent rien tant qu'on ne les ouvre pas — voir `panels` plus haut et
+          ADR 0044. La grille redevient donc inconditionnelle, ce qui supprime du
+          même coup la classe calculée et le point de rupture `2xl` qu'elle
+          imposait. */}
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_23rem]">
         <div className="space-y-3">
           <DropZone disabled={busy} onFile={handleFile}>
           <VideoScene
@@ -1541,60 +1598,6 @@ export function StudioPage() {
               au-dessus du bouton, dans l'entête du rail qui le dessine. */}
         </aside>
 
-        {/* ── Troisième colonne : ce que l'analyse SIGNALE ────────────────────
-            Elle n'existe que s'il y a quelque chose à signaler, et c'est le même
-            juge que partout ailleurs (`alertsArmed`) : sans règle posée ni plaque
-            recherchée, un panneau « Alertes » vide se lirait « rien à signaler »
-            alors que la vérité est « on n'a rien demandé de signaler ».
-
-            Quatre décisions dans ces classes, et aucune n'est cosmétique :
-
-            - **`2xl:col-span-1` contre `xl:col-span-2`** : la colonne n'apparaît
-              qu'au-delà de 1536 px. En dessous, le panneau passe sous la scène **et**
-              les résultats, sur toute la largeur — sa grille en `auto-fill` s'y étale
-              d'elle-même ;
-            - **`sticky` + `self-start`** : sans `self-start`, l'enfant d'une grille
-              s'étire sur toute la hauteur de la rangée et `sticky` n'a plus rien à
-              faire. Avec, les alertes restent en vue pendant que l'on descend lire la
-              Statistique et le Registre ;
-            - **son propre défilement**, borné à la hauteur de la fenêtre moins
-              l'entête : un carrefour chargé produit deux cents alertes, et une colonne
-              qui grandit sans fin repousserait le bas de page à chaque événement —
-              exactement le défaut qui gardait l'ancienne section en dernier ;
-            - **`live`** distingue l'analyse en cours de la relecture. C'est ce qui
-              remplace la pile flottante : un repère qui pulse et le seul compteur
-              vivant de l'écran, à l'endroit où les cartes arrivent. */}
-        {alertsArmed && (
-          <aside
-            aria-label="Alertes"
-            className={[
-              "min-w-0 panel-scroll xl:col-span-2 2xl:col-span-1",
-              "2xl:sticky 2xl:top-[calc(var(--app-header-h,0px)+3.75rem)] 2xl:self-start",
-              // Le même défilement discret que la colonne des résultats : deux
-              // barres système côte à côte sur deux colonnes voisines, c'étaient
-              // deux rails gris dans un thème qui n'en a pas.
-              "2xl:max-h-[calc(100dvh-var(--app-header-h,0px)-5rem)] 2xl:overflow-y-auto",
-            ].join(" ")}
-          >
-            <AlertsPanel
-              alerts={alerts}
-              lines={geometry.lines}
-              armed={alertsArmed}
-              live={analysing || live.active}
-              // Le job terminé seulement : les captures sont écrites à la fin, et une
-              // vignette demandée pendant l'analyse afficherait une image cassée sur
-              // chaque alerte — au moment précis où elles arrivent.
-              jobId={session.result?.jobId ?? null}
-              onOpenSnapshot={setAlertSnapshot}
-              // Aucun déplacement de la vidéo pendant qu'elle est pilotée par
-              // l'aperçu : le calage image par image reprendrait la main aussitôt, et
-              // le clic paraîtrait sans effet.
-              onSeek={
-                session.result !== null && !analysing && !live.active ? seekToAlert : undefined
-              }
-            />
-          </aside>
-        )}
       </div>
 
       {/* ── Sous la vidéo : Statistique, camemberts, Registre ───────────────

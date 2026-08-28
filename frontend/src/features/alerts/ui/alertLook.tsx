@@ -74,3 +74,16 @@ export const SEVERITY_INK: Readonly<Record<AlertSeverity, string>> = {
   critical: "text-negative",
   warning: "text-warning",
 };
+
+/**
+ * Le filet vertical du bord gauche de la carte.
+ *
+ * Séparé de `SEVERITY_SURFACE`, qui teinte le fond à 10 % : le filet est **opaque**,
+ * et c'est lui qui rend une pile de cartes parcourable sans lecture — l'œil suit
+ * une colonne de traits et repère les rouges parmi les orange. Un fond à 10 %
+ * distingue mal deux teintes voisines sur un thème sombre.
+ */
+export const SEVERITY_RAIL: Readonly<Record<AlertSeverity, string>> = {
+  critical: "border-negative",
+  warning: "border-warning",
+};

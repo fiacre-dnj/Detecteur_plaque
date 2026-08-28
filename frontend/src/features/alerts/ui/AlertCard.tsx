@@ -22,7 +22,7 @@ import { crossingHeadingDeg, directionArrow } from "@/shared/lib/directions";
 import { formatSceneTimePrecise } from "@/shared/lib/sceneTime";
 
 import type { Alert } from "../model/alerts";
-import { ALERT_LOOK, SEVERITY_INK, SEVERITY_SURFACE } from "./alertLook";
+import { ALERT_LOOK, SEVERITY_INK, SEVERITY_RAIL, SEVERITY_SURFACE } from "./alertLook";
 
 interface AlertCardProps {
   alert: Alert;
@@ -97,7 +97,16 @@ export function AlertCard({ alert, lines, onSeek }: AlertCardProps) {
     </>
   );
 
-  const surface = `w-full rounded-card p-2.5 text-start ring-1 ${SEVERITY_SURFACE[alert.severity]}`;
+  // **Un filet de gravité à gauche**, en plus de l'écrin teinté. C'est ce qui fait
+  // lire une pile de cartes comme une pile de notifications plutôt que comme une
+  // liste de paragraphes : l'œil suit une colonne de traits colorés et repère les
+  // rouges parmi les orange sans lire un mot. La teinte reste celle de la gravité —
+  // jamais celle de la ligne, qui encode déjà une identité sur le canvas.
+  const surface = [
+    "w-full rounded-card border-s-2 p-2.5 text-start ring-1",
+    SEVERITY_SURFACE[alert.severity],
+    SEVERITY_RAIL[alert.severity],
+  ].join(" ");
 
   if (onSeek === undefined) return <div className={surface}>{body}</div>;
 

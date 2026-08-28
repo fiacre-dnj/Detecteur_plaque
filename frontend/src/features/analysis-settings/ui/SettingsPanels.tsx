@@ -89,6 +89,22 @@ export interface ExtraPanel {
   id: string;
   label: string;
   content: ReactNode;
+  /**
+   * Une icône **à la place** du libellé, qui devient alors le nom accessible.
+   *
+   * Pour le centre de notifications : une cloche se reconnaît de loin, et le mot
+   * « Alertes » écrit en toutes lettres à côté de quatre autres pilules ferait de
+   * cette barre une cinquième colonne de texte. Le libellé ne disparaît pas — il
+   * passe en `aria-label` et en infobulle.
+   */
+  icon?: ReactNode | undefined;
+  /**
+   * Une pastille rendue **après** le libellé ou l'icône — un compte, un état.
+   *
+   * Fournie par l'appelant plutôt que calculée ici : cette feature ne sait pas ce
+   * qu'un tiroir venu du studio compte, et n'a pas à l'apprendre.
+   */
+  badge?: ReactNode | undefined;
 }
 
 /** L'identifiant du tiroir ouvert : l'un des trois d'ici, ou celui d'un `ExtraPanel`. */
@@ -628,6 +644,7 @@ export function SettingsPanels({
         {leading}
         {tabs.map((panel) => {
           const active = open === panel.id;
+          const iconOnly = panel.icon !== undefined;
           return (
             <button
               key={panel.id}
@@ -638,18 +655,23 @@ export function SettingsPanels({
               // dire qu'il ouvre quelque chose, ni quoi.
               aria-expanded={active}
               aria-controls={`${base}-${panel.id}`}
+              // Une pilule en icône seule perdrait son nom : il repasse en
+              // `aria-label` et en infobulle, jamais nulle part.
+              {...(iconOnly ? { "aria-label": panel.label, title: panel.label } : {})}
               // Re-cliquer referme : c'est le geste attendu d'un tiroir, et cela
               // évite d'avoir à chercher une croix de fermeture.
               onClick={() => setOpen(active ? null : panel.id)}
               className={[
-                "label-caps inline-flex h-10 items-center gap-2 rounded-pill px-4",
+                "label-caps inline-flex h-10 items-center gap-2 rounded-pill",
+                iconOnly ? "px-3" : "px-4",
                 "transition-colors disabled:cursor-not-allowed disabled:opacity-45",
                 active
                   ? "bg-elevated text-ink shadow-card"
                   : "bg-surface text-ink-muted hover:enabled:bg-surface-2 hover:enabled:text-ink",
               ].join(" ")}
             >
-              {panel.label}
+              {panel.icon ?? panel.label}
+              {panel.badge}
               <ChevronDown
                 aria-hidden="true"
                 className={`size-4 text-ink-dim transition-transform ${active ? "rotate-180" : ""}`}

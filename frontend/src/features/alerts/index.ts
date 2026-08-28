@@ -12,5 +12,14 @@ export { ALERT_LIMIT, isViolation, type Alert, type AlertKind, type AlertSeverit
 export { matchPlate, plateHits, type PlateHit, type PlateMatch } from "./model/plateWatch";
 export { alertsFromResult } from "./model/replayAlerts";
 export { useAlertLog } from "./model/useAlertLog";
+export {
+  NO_FILTER,
+  alertFacets,
+  filterAlerts,
+  isFiltering,
+  type AlertFacets,
+  type AlertFilter,
+} from "./model/alertFilters";
+export { AlertBellBadge, AlertBellIcon } from "./ui/AlertBell";
 export { AlertCard } from "./ui/AlertCard";
 export { AlertsPanel } from "./ui/AlertsPanel";
