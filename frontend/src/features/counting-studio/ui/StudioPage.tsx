@@ -1030,10 +1030,28 @@ export function StudioPage() {
    * deux sont indépendantes — ce sont deux surfaces, pas un état partagé.
    */
   const [alertSnapshot, setAlertSnapshot] = useState<number | null>(null);
+  /**
+   * Le job dont on peut demander une capture — **en cours ou terminé**.
+   *
+   * Nommé une fois : le registre, le tiroir d'alertes et la modale doivent viser le
+   * même job, et trois expressions identiques recopiées finiraient par diverger le
+   * jour où l'une des trois change.
+   */
+  const snapshotJobId = session.result?.jobId ?? session.job?.jobId ?? null;
+  /**
+   * Le véhicule de la capture ouverte, cherché **dans la source courante**.
+   *
+   * Le résultat complet après l'analyse ; le registre de l'aperçu pendant, sans
+   * quoi une alerte cliquée en cours d'analyse n'ouvrirait rien — c'est pourtant
+   * là que la preuve est le plus attendue, une plaque recherchée se validant à
+   * l'œil au moment où elle tombe.
+   */
   const alertSnapshotVehicle =
-    alertSnapshot === null || session.result === null
+    alertSnapshot === null
       ? null
-      : (session.result.vehicles.find((entry) => entry.globalId === alertSnapshot) ?? null);
+      : ((session.result?.vehicles ?? countedVehicles).find(
+          (entry) => entry.globalId === alertSnapshot,
+        ) ?? null);
 
   /**
    * Amène la vidéo à l'instant d'une alerte.
@@ -1147,6 +1165,13 @@ export function StudioPage() {
         // et il repoussait les chiffres qu'on vient lire sous la ligne de flottaison.
         // Passé par `panels` et non importé là-bas : `analysis-settings` ne connaît
         // pas `geometry-editor`, c'est le studio qui câble les deux.
+        //
+        // **Et les alertes en cinquième**, pour la même raison de câblage et une
+        // raison d'écran : elles tenaient une colonne de 18 rem prise sur la vidéo,
+        // en permanence, pour une liste qu'on consulte par à-coups. Repliées derrière
+        // une cloche elles ne coûtent rien tant qu'on ne les ouvre pas, et la
+        // pastille dit l'essentiel sans qu'on ouvre — combien, et est-ce grave
+        // (ADR 0044).
         panels={[
           {
             id: GEOMETRY_PANEL_ID,
@@ -1208,10 +1233,11 @@ export function StudioPage() {
                       // total non.
                       violations={alertViolations}
                       live={analysing || live.active}
-                      // Le job terminé seulement : les captures sont écrites à la
-                      // fin, et une vignette demandée pendant l'analyse afficherait
-                      // une image cassée sur chaque alerte.
-                      jobId={session.result?.jobId ?? null}
+                      // Le job **en cours ou terminé** : les captures sont écrites
+                      // au fil de l'eau depuis ADR 0046, donc une vignette demandée
+                      // pendant l'analyse arrive. C'est le moment où une alerte a le
+                      // plus besoin de sa preuve.
+                      jobId={snapshotJobId}
                       onOpenSnapshot={setAlertSnapshot}
                       // Aucun déplacement de la vidéo pendant qu'elle est pilotée
                       // par l'aperçu : le calage image par image reprendrait la main
@@ -1597,7 +1623,6 @@ export function StudioPage() {
               retenue » disparaît avec eux : l'intervalle est écrit deux rangées
               au-dessus du bouton, dans l'entête du rail qui le dessine. */}
         </aside>
-
       </div>
 
       {/* ── Sous la vidéo : Statistique, camemberts, Registre ───────────────
@@ -1666,11 +1691,14 @@ export function StudioPage() {
             vehicles={countedVehicles}
             lines={geometry.lines}
             rules={alertRules}
-            // Le job **terminé**, et lui seul : les captures sont écrites à la fin,
-            // donc pendant l'analyse il n'y a aucun fichier à demander. Passer
-            // l'identifiant du job en cours ferait clignoter des images cassées sur
-            // tout le tableau, exactement pendant qu'il se remplit.
-            jobId={session.result?.jobId ?? null}
+            // Le job **en cours ou terminé** depuis ADR 0046 : les captures sont
+            // écrites au moment où elles sont retenues, donc la colonne se remplit
+            // pendant que le tableau se remplit. Elle apparaît d'elle-même — sans
+            // ANPR ni OCR aucun véhicule ne porte de `snapshotScore`, donc
+            // `hasSnapshots` reste faux et la colonne n'existe pas.
+            jobId={snapshotJobId}
+            // Autorise le seul réessai de vignette. Aucun chiffre, aucune colonne.
+            live={analysing}
           />
         </>
       )}
@@ -1699,8 +1727,14 @@ export function StudioPage() {
 
       {/* La capture ouverte depuis une alerte. Montée seulement une fois ouverte :
           un `<dialog>` fermé ne rend rien, et ses deux images ne doivent pas se
-          charger tant que personne ne les regarde. */}
-      {session.result !== null && alertSnapshotVehicle !== null && (
+          charger tant que personne ne les regarde.
+
+          **Elle s'ouvre aussi pendant l'analyse** depuis ADR 0046 : la condition
+          était `session.result !== null`, ce qui rendait la vignette d'une alerte
+          cliquable et sans effet au moment précis où l'on veut vérifier une plaque
+          recherchée. Le garde est maintenant l'existence d'un job, quel que soit son
+          état. */}
+      {snapshotJobId !== null && alertSnapshotVehicle !== null && (
         <SnapshotDialog
           open
           onClose={() => setAlertSnapshot(null)}
@@ -1710,8 +1744,16 @@ export function StudioPage() {
               ? undefined
               : `capturée à ${formatSceneTimePrecise(alertSnapshotVehicle.snapshotMs)}`
           }
-          vehicleSrc={vehicleSnapshotUrl(session.result.jobId, alertSnapshotVehicle.globalId)}
-          plateSrc={platePhotoUrl(session.result.jobId, alertSnapshotVehicle.globalId)}
+          vehicleSrc={vehicleSnapshotUrl(
+            snapshotJobId,
+            alertSnapshotVehicle.globalId,
+            alertSnapshotVehicle.snapshotMs,
+          )}
+          plateSrc={platePhotoUrl(
+            snapshotJobId,
+            alertSnapshotVehicle.globalId,
+            alertSnapshotVehicle.snapshotMs,
+          )}
           plateText={alertSnapshotVehicle.plateText}
           // La plaque **recherchée** sous la plaque **lue** : c'est là que
           // l'opérateur tranche, en regardant la vignette. Une correspondance

@@ -105,12 +105,28 @@ interface VehicleRegistryProps {
   /**
    * L'identifiant du job, pour construire les adresses des captures.
    *
-   * `null` pendant une analyse — les captures sont écrites à la fin — et la colonne
-   * n'existe alors pas du tout. Même règle, et même raison, que les trois boutons
-   * d'export : afficher une vignette dont le fichier n'existe pas encore ferait
-   * clignoter des images cassées sur tout le tableau.
+   * **En cours ou terminé depuis ADR 0046.** Il ne valait que pour un job terminé
+   * tant que les JPEG n'étaient écrits qu'à la fin : demander une vignette avant
+   * aurait fait clignoter des images cassées sur tout le tableau. Ils sont
+   * maintenant écrits au moment où la capture est retenue, donc la colonne peut se
+   * remplir pendant l'analyse — au moment précis où l'on regarde le registre se
+   * remplir.
+   *
+   * `null` avant toute analyse. Ce n'est **pas** la même chose que la règle des
+   * trois boutons d'export, qui, eux, restent liés à `result` : un CSV incomplet
+   * ment sur son contenu, une vignette manquante ne ment sur rien.
    */
   jobId: string | null;
+  /**
+   * L'analyse tourne-t-elle ?
+   *
+   * Ne change **aucun chiffre** et aucune colonne : sert uniquement à décider
+   * qu'une capture absente mérite un second essai. Pendant l'analyse, le fichier
+   * peut arriver quelques centaines de millisecondes après l'aperçu qui l'annonce ;
+   * après, une image absente l'est pour de bon — c'est le cas normal une fois la
+   * vidéo purgée — et réessayer doublerait des requêtes vouées à échouer.
+   */
+  live?: boolean;
 }
 
 /** Hauteur du conteneur virtualisé. */
@@ -122,6 +138,7 @@ export function VehicleRegistry({
   lines,
   rules,
   jobId,
+  live = false,
 }: VehicleRegistryProps) {
   const [expanded, setExpanded] = useState(false);
   //: Le véhicule dont la capture est ouverte en grand, ou `null`.
@@ -356,6 +373,7 @@ export function VehicleRegistry({
             {hasViolation && <ViolationCell vehicle={vehicle} rules={rules} />}
             {withSnapshots && (
               <SnapshotCell
+                live={live}
                 vehicle={vehicle}
                 jobId={jobId}
                 onOpen={() => setOpenSnapshot(vehicle.globalId)}
@@ -579,8 +597,8 @@ export function VehicleRegistry({
           onClose={() => setOpenSnapshot(null)}
           title={`${classLabel(shownSnapshot.label)} #${shownSnapshot.globalId}`}
           subtitle={snapshotCaption(shownSnapshot)}
-          vehicleSrc={vehicleSnapshotUrl(jobId, shownSnapshot.globalId)}
-          plateSrc={platePhotoUrl(jobId, shownSnapshot.globalId)}
+          vehicleSrc={vehicleSnapshotUrl(jobId, shownSnapshot.globalId, shownSnapshot.snapshotMs)}
+          plateSrc={platePhotoUrl(jobId, shownSnapshot.globalId, shownSnapshot.snapshotMs)}
           plateText={shownSnapshot.plateText}
           // La navigation porte sur les véhicules **affichés**, filtres compris :
           // après avoir filtré sur une ligne, « suivant » doit rester dans ce qu'on
@@ -872,22 +890,29 @@ function violationWord(kind: VehicleViolation["kind"]): string {
 function SnapshotCell({
   vehicle,
   jobId,
+  live,
   onOpen,
 }: {
   vehicle: VehicleRecord;
   jobId: string;
+  /** L'analyse tourne : une capture absente peut n'être qu'en retard. */
+  live: boolean;
   onOpen: () => void;
 }) {
+  const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
 
   if (!hasSnapshot(vehicle)) return <Td className="text-ink-dim">—</Td>;
 
   if (failed) {
-    // Purgée avec la vidéo : le cas **normal** après le TTL, pas une panne. Un repère
-    // muet le dit mieux que l'image cassée du navigateur.
+    // Deux causes, un seul repère, et c'est délibéré : purgée avec la vidéo après le
+    // TTL, ou — pendant l'analyse et après un réessai — pas encore écrite. Les deux
+    // sont le cas **normal** et aucune n'est une panne ; un repère muet le dit mieux
+    // que l'image cassée du navigateur, et distinguer les deux demanderait à
+    // l'utilisateur de comprendre un détail d'implémentation pour lire un tableau.
     return (
       <Td>
-        <span title="Capture purgée — elle est effacée en même temps que la vidéo.">
+        <span title="Capture indisponible — pas encore écrite, ou effacée en même temps que la vidéo.">
           <ImageOff aria-hidden="true" className="size-4 text-ink-dim" />
         </span>
       </Td>
@@ -912,7 +937,16 @@ function SnapshotCell({
         className="block overflow-hidden rounded-input ring-1 ring-line/40 transition-transform hover:scale-105"
       >
         <img
-          src={vehicleSnapshotUrl(jobId, vehicle.globalId)}
+          // **Deux paramètres, deux rôles.** `snapshotMs` versionne la capture : le
+          // serveur sert ces images en `immutable`, et une meilleure lecture
+          // remplace le fichier en cours d'analyse — sans version, le navigateur
+          // garderait la première pour un an. `retry` casse en plus le cache
+          // d'échec, sans quoi un second chargement de la même adresse
+          // ressusciterait la réponse en erreur au lieu de redemander.
+          src={
+            vehicleSnapshotUrl(jobId, vehicle.globalId, vehicle.snapshotMs) +
+            (attempt === 0 ? "" : `&retry=${attempt}`)
+          }
           alt={`Capture du véhicule #${vehicle.globalId}`}
           width={40}
           height={40}
@@ -922,7 +956,15 @@ function SnapshotCell({
           // accepte qu'elle rogne ; la grande image est une preuve, on ne la rogne
           // jamais.
           className="block size-10 bg-base object-cover"
-          onError={() => setFailed(true)}
+          // **Un seul réessai, et seulement pendant l'analyse.** Le fichier est
+          // écrit au moment de la capture mais l'aperçu qui l'annonce arrive par un
+          // autre chemin : quelques centaines de millisecondes peuvent les séparer.
+          // Après l'analyse, une image absente l'est pour de bon, et réessayer
+          // doublerait des requêtes vouées à échouer sur chaque rangée visible.
+          onError={() => {
+            if (live && attempt === 0) setAttempt(1);
+            else setFailed(true);
+          }}
         />
       </button>
     </td>
