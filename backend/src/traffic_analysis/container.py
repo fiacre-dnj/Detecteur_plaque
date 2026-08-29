@@ -356,6 +356,7 @@ def build_counting_stack(
         # vit côté client — voir ADR 0048 pour pourquoi il ne peut pas vivre ici.
         resolved_embedder,
         settings.reid_min_similarity,
+        settings.reid_appearance_improvement,
     )
     return CountingStack(
         engine=resolved_engine,

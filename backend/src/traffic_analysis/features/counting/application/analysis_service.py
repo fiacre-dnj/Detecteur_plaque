@@ -171,6 +171,7 @@ class AnalysisService:
         "_plate_detector",
         "_plate_ocr",
         "_plate_reader",
+        "_reid_appearance_improvement",
         "_reid_min_similarity",
         "_snapshot_encoder",
         "_vehicle_embedder",
@@ -186,6 +187,7 @@ class AnalysisService:
         snapshot_encoder: VehicleSnapshotEncoder | None = None,
         vehicle_embedder: VehicleEmbedder | None = None,
         reid_min_similarity: float = 0.0,
+        reid_appearance_improvement: float = 1.0,
     ) -> None:
         self._engine = engine
         self._plate_detector = plate_detector
@@ -196,6 +198,12 @@ class AnalysisService:
         # `snapshot_encoder` juste en dessous.
         self._vehicle_embedder = vehicle_embedder
         self._reid_min_similarity = reid_min_similarity
+        # Marge de largeur exigée pour **réencoder** une piste déjà encodée. Un
+        # plancher de déploiement, comme `reid_min_similarity` juste au-dessus : il
+        # décrit ce que la machine accepte de payer, pas ce que l'utilisateur
+        # demande, donc il ne passe pas par `SessionConfig` (dont la docstring dit
+        # que tous ses champs viennent de la requête).
+        self._reid_appearance_improvement = reid_appearance_improvement
         # `None` désactive proprement la capture : le comptage, les plaques et le
         # registre sont identiques, les véhicules n'ont simplement pas de photo.
         self._snapshot_encoder = snapshot_encoder
@@ -806,7 +814,13 @@ class AnalysisService:
         # remplacer la première. Le test `test_une_meilleure_vue_remplace_la_precedente`
         # verrouille le cas.
         candidates = [
-            track for track in tracks if session.should_embed(track.global_id, track.box.width)
+            track
+            for track in tracks
+            if session.should_embed(
+                track.global_id,
+                track.box.width,
+                self._reid_appearance_improvement,
+            )
         ]
         if not candidates:
             return

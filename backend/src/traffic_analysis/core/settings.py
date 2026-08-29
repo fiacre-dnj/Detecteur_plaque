@@ -502,8 +502,10 @@ class Settings(BaseSettings):
     #:
     #: `.onnx` et non `.pt` : le modèle retenu (OSNet-AIN entraîné sur VeRi-776) n'a
     #: pas d'équivalent Ultralytics, et `onnxruntime` n'ayant pas de provider CUDA
-    #: ici, il tourne sur CPU — acceptable parce qu'on encode **une fois par
-    #: véhicule** et non par image. Voir ADR 0048.
+    #: ici, il tourne sur CPU — 21,8 ms mesurés par vignette, acceptable parce qu'on
+    #: encode **quelques fois dans la vie d'un véhicule** et non par image. C'est la
+    #: marge `reid_appearance_improvement` qui le garantit ; la règle monotone seule
+    #: ne le faisait pas. Voir ADR 0048, amendée par ADR 0050.
     reid_model_path: Path | None = None
     #: Similarité cosinus en dessous de laquelle un véhicule n'est pas publié.
     #:
@@ -520,6 +522,26 @@ class Settings(BaseSettings):
     #: que `plate_ocr_min_width_px`, et même raison d'exister : ne pas payer une
     #: inférence pour un résultat qu'on sait sans valeur (ADR 0039).
     reid_min_vehicle_width_px: float = Field(96.0, ge=16.0, le=1024.0)
+    #: Marge de largeur exigée pour **réencoder** une piste déjà encodée.
+    #:
+    #: La règle monotone d'ADR 0048 (« plus large que la meilleure vue ») ne bornait
+    #: rien : sur un véhicule qui approche, la largeur croît de façon quasi monotone,
+    #: donc elle est vraie à *presque chaque image analysée*. On payait jusqu'à un
+    #: encodage par image — **21,8 ms de CPU mesurés par vignette** sur cette machine
+    #: — pour un étage dont la docstring annonçait « une fois par véhicule ».
+    #:
+    #: `1.15` autorise au plus `log_1,15(400 / 96) ≈ 11` encodages sur la vie d'une
+    #: piste, contre une centaine sans marge. Le bornage est **logarithmique**, d'où
+    #: une valeur modeste : pousser à `1,5` ne diviserait le compte que par deux de
+    #: plus tout en coûtant plus de séparation.
+    #:
+    #: Ce que ça coûte, chiffré : la séparation same/diff d'ADR 0048 décroît
+    #: régulièrement (+0,462 à 208 px, +0,310 à 48 px, sans falaise), donc 15 % de
+    #: largeur en moins valent ~0,015 de séparation — pour un seuil client à 0,55 et
+    #: des moyennes mesurées à 0,816 et 0,249. Personne ne bascule.
+    #:
+    #: `1.0` désactive la marge et reproduit ADR 0048 au bit près.
+    reid_appearance_improvement: float = Field(1.15, ge=1.0, le=4.0)
     #: Netteté minimale (variance du laplacien) d'un recadrage encodé.
     #:
     #: Un véhicule assez large mais flou de mouvement rend un embedding instable.

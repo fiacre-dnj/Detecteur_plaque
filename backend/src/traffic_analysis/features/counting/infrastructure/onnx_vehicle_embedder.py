@@ -16,10 +16,16 @@ Ici toutes les vignettes sont redimensionnées au même carré : le lot est grat
 
 **CPU, et c'est assumé.** `onnxruntime` n'a pas de provider CUDA sur cette machine
 (vérifié : `['AzureExecutionProvider', 'CPUExecutionProvider']`), donc cet étage est
-cloué au processeur comme l'OCR. C'est acceptable **parce qu'on encode une fois par
-véhicule** et non par image : la règle monotone d'ADR 0042, transposée. Ce serait
-inacceptable par image, et c'est exactement l'erreur qu'ADR 0032 a documentée sur le
-détecteur de plaques.
+cloué au processeur comme l'OCR — **21,8 ms mesurés par vignette**. C'est acceptable
+parce qu'on encode **quelques fois dans la vie d'un véhicule** : la règle monotone
+d'ADR 0042, transposée, plus la marge de largeur d'ADR 0050.
+
+Cette docstring a longtemps annoncé « une fois par véhicule », et c'était faux : la
+règle monotone seule (« plus large que la meilleure vue ») est vraie à presque chaque
+image d'un véhicule qui approche, donc on encodait par image. Ce que la mesure
+d'ADR 0048 comptait — « 8 véhicules suivis, 2 encodés » — était un nombre de
+*véhicules*, pas d'*encodages*. C'est exactement l'erreur qu'ADR 0032 a documentée sur
+le détecteur de plaques, refaite ici et corrigée par la marge.
 
 **Le prétraitement a été mesuré, et le résultat est contre-intuitif.** Le README de
 l'OMZ ne documente ni moyenne ni écart-type, ce qui ressemblait au piège du

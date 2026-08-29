@@ -75,6 +75,51 @@ def _run(
     return service.run_video("job-1", video, CONFIG, query_image=query)
 
 
+def _growing(steps: int = 8) -> list[list[TrackObservation]]:
+    """Un véhicule qui **s'approche** : 60, 80, 100 … px de large.
+
+    Construit à la main parce que `track_path` n'accepte qu'une taille de boîte
+    **fixe**, et c'est justement l'élargissement qui est en jeu. C'est le profil qui
+    rend la règle monotone seule inopérante : chaque image bat la précédente, donc
+    « plus large que la meilleure vue » est vrai à chaque image.
+    """
+    return [
+        [
+            TrackObservation(
+                track_id=1,
+                class_id=CAR,
+                label="car",
+                score=0.9,
+                box=BoundingBox(
+                    x=700.0 - (60.0 + index * 20.0) / 2,
+                    y=250.0 + index * 80.0,
+                    width=60.0 + index * 20.0,
+                    height=60.0,
+                ),
+            )
+        ]
+        for index in range(steps)
+    ]
+
+
+def _run_growing(
+    video: Path,
+    *,
+    improvement: float,
+    steps: int = 8,
+) -> FakeVehicleEmbedder:
+    """Fait passer le véhicule qui s'approche, et rend la doublure pour la compter."""
+    embedder = FakeVehicleEmbedder()
+    service = AnalysisService(
+        FakeEngine(_growing(steps)),
+        vehicle_embedder=embedder,
+        reid_min_similarity=0.0,
+        reid_appearance_improvement=improvement,
+    )
+    service.run_video("job-1", video, CONFIG, query_image=QUERY)
+    return embedder
+
+
 class TestAucuneRegression:
     """**La propriété qui rend la fonctionnalité livrable.** ADR 0048.
 
@@ -147,34 +192,86 @@ class TestRegleMonotone:
         cela, un véhicule vu de loin garderait à jamais l'embedding le plus flou de sa
         vie, ce qui est exactement le contraire du but.
         """
-        # Construit à la main : `track_path` n'accepte qu'une taille de boîte **fixe**,
-        # et c'est justement l'élargissement qu'on veut ici.
-        growing = [
-            [
-                TrackObservation(
-                    track_id=1,
-                    class_id=CAR,
-                    label="car",
-                    score=0.9,
-                    box=BoundingBox(
-                        x=700.0 - (60.0 + index * 20.0) / 2,
-                        y=250.0 + index * 80.0,
-                        width=60.0 + index * 20.0,
-                        height=60.0,
-                    ),
-                )
-            ]
-            for index in range(8)
-        ]
-        embedder = FakeVehicleEmbedder()
-        service = AnalysisService(
-            FakeEngine(growing), vehicle_embedder=embedder, reid_min_similarity=0.0
-        )
-        service.run_video("job-1", video, CONFIG, query_image=QUERY)
+        # Marge neutralisée : c'est la règle monotone seule qu'on éprouve ici.
+        embedder = _run_growing(video, improvement=1.0)
 
         # Une vue de plus à chaque élargissement : la règle est strictement croissante,
         # donc chaque image bat la précédente sur ce trajet-là.
         assert embedder.vectors_produced > 1
+
+
+class TestMargeDeLargeur:
+    """La règle monotone **seule** ne bornait rien. ADR 0050.
+
+    « Strictement plus large que la meilleure vue » est vrai à presque chaque image
+    d'un véhicule qui approche : on payait donc jusqu'à un encodage par image
+    analysée — 21,8 ms de CPU mesurés par vignette — pour un étage que la docstring
+    de l'adaptateur annonçait comme « une fois par véhicule ». Ce que la mesure
+    d'ADR 0048 comptait (« 8 suivis, 2 encodés ») était un nombre de *véhicules*,
+    pas d'*encodages*.
+    """
+
+    def test_la_marge_borne_les_encodages_sur_la_vie_d_une_piste(self, video: Path) -> None:
+        """**Le test qui prouve l'optimisation**, et il porte sur un compteur d'appels.
+
+        Le clip va de 60 à 200 px par pas de 20. Sans marge, chaque image bat la
+        précédente : huit encodages. À 1,15, la marge écarte 160 (qui ne bat pas
+        140 × 1,15 = 161) et 200 (qui ne bat pas 180 × 1,15 = 207) : six.
+
+        Le bornage est **logarithmique** en largeur, ce qui est la propriété qui
+        distingue la marge d'une cadence : elle borne le *total* sur la vie d'une
+        piste, indépendamment de la cadence de la vidéo.
+        """
+        assert _run_growing(video, improvement=1.0).vectors_produced == 8
+        assert _run_growing(video, improvement=1.15).vectors_produced == 6
+
+    def test_la_marge_par_defaut_du_service_ne_change_rien(self, video: Path) -> None:
+        """`1.0` reproduit ADR 0048 au bit près : `w > best * 1.0` ≡ `w > best`.
+
+        C'est ce qui rend le réglage strictement additif — un appelant qui ne le
+        passe pas obtient exactement l'ancien comportement.
+        """
+        embedder = FakeVehicleEmbedder()
+        service = AnalysisService(
+            FakeEngine(_growing()), vehicle_embedder=embedder, reid_min_similarity=0.0
+        )
+        service.run_video("job-1", video, CONFIG, query_image=QUERY)
+
+        assert embedder.vectors_produced == _run_growing(video, improvement=1.0).vectors_produced
+
+    def test_la_premiere_vue_est_toujours_encodee(self, video: Path) -> None:
+        """**Aucun véhicule candidat ne perd son score.**
+
+        C'est ce qui sépare cette marge du mode de panne d'ADR 0029 : là-bas le
+        consommateur était un *vote* qu'on affamait jusqu'à ce qu'aucun texte
+        n'existe ; ici c'est un *remplacement*, et la première vue reste
+        inconditionnelle. Une marge absurde ne peut refuser qu'une amélioration.
+        """
+        embedder = _run_growing(video, improvement=4.0)
+
+        assert embedder.vectors_produced == 1
+
+    def test_une_marge_absurde_ne_prive_personne_de_ressemblance(self, video: Path) -> None:
+        """Le corollaire publié : le registre porte toujours un `matchScore`."""
+        embedder = FakeVehicleEmbedder(similarity_for=lambda _index: 0.83)
+        service = AnalysisService(
+            FakeEngine(_growing()),
+            vehicle_embedder=embedder,
+            reid_min_similarity=0.0,
+            reid_appearance_improvement=4.0,
+        )
+
+        result = service.run_video("job-1", video, CONFIG, query_image=QUERY)
+
+        assert result.vehicles[0].match_score == pytest.approx(0.83, abs=1e-4)
+
+    def test_une_marge_sous_un_est_ramenee_a_un(self, video: Path) -> None:
+        """`max(1.0, improvement)` : une marge < 1 ferait réencoder sur une vue *pire*.
+
+        Le champ `Settings` borne déjà à `ge=1.0`, mais le domaine ne dépend pas de
+        la validation d'une couche au-dessus de lui.
+        """
+        assert _run_growing(video, improvement=0.5).vectors_produced == 8
 
 
 class TestScorePublie:
