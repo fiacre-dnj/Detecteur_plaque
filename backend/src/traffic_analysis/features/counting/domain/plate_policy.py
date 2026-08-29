@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING
 from traffic_analysis.features.counting.domain.models import BoundingBox
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,53 +355,6 @@ class PlateDetectOptions:
     #: images sautées (`_project_anchor` rend `()` sans ancre), donc rien ne se met
     #: à clignoter : il n'y avait rien à faire clignoter.
     max_consecutive_misses: int = 3
-
-
-@dataclass(frozen=True, slots=True)
-class DetectionCandidate:
-    """Une piste qui a passé les gardes de `should_detect`, prête à être classée.
-
-    Trois champs et pas la piste entière : le classement est une règle de dépense, il
-    n'a aucune raison de connaître une `SessionTrack` — et cette séparation est ce qui
-    le rend testable sur des tuples.
-    """
-
-    global_id: int
-    width: float
-    #: Aucune détection n'a **jamais** été soumise pour cette piste.
-    never_detected: bool
-
-
-def select_within_budget(candidates: Sequence[DetectionCandidate], budget: int) -> frozenset[int]:
-    """Les `budget` pistes qui méritent l'inférence de cette image.
-
-    Rend un ensemble d'identités et non une liste : l'appelant garde **son** ordre,
-    qui est celui du suivi. Un budget nul ou supérieur au nombre de candidates ne
-    retire rien — c'est le comportement historique, et le plafond reste donc
-    strictement additif tant que personne ne le pose.
-
-    Le classement, dans cet ordre :
-
-    1. **jamais mesurée d'abord.** Sans cette priorité, un véhicule qui apparaît au
-       milieu d'un embouteillage pourrait traverser tout le champ sans jamais recevoir
-       une seule mesure, donc sans jamais afficher de rectangle — un silence qui se
-       lit comme une panne de détection, pas comme une économie ;
-    2. **la plus large ensuite.** La largeur du véhicule est le meilleur prédicteur
-       disponible de la largeur de la plaque, donc de sa lisibilité : le plancher de
-       lecture est mesuré à 64 px (invariant 12), et dépenser sur une piste dont la
-       plaque fera 20 px achète une boîte que l'OCR refusera de lire ;
-    3. **l'identité, à égalité stricte**, pour que deux courses du même clip
-       dépensent au même endroit. Un `set` d'itération non déterministe rendrait deux
-       analyses du même fichier légèrement différentes, ce qui est exactement le
-       genre d'écart qu'on passe des jours à ne pas comprendre.
-    """
-    if budget <= 0 or len(candidates) <= budget:
-        return frozenset(candidate.global_id for candidate in candidates)
-    ranked = sorted(
-        candidates,
-        key=lambda candidate: (not candidate.never_detected, -candidate.width, candidate.global_id),
-    )
-    return frozenset(candidate.global_id for candidate in ranked[:budget])
 
 
 @dataclass(slots=True)

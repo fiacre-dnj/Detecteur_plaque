@@ -710,6 +710,22 @@ class AnalysisSession:
         best = aggregate.appearance_width_px
         return best is None or width_px > best * max(1.0, improvement)
 
+    def has_appearance(self, global_id: int) -> bool:
+        """Cette piste a-t-elle **déjà** été encodée, une fois au moins ?
+
+        Sert le classement du plafond par image : une piste jamais encodée passe
+        devant, sans quoi un véhicule apparu au milieu d'un embouteillage pourrait
+        traverser tout le champ sans jamais recevoir de score de ressemblance.
+
+        **Ce n'est pas `match_score is not None`**, et la nuance décide du
+        comportement : le score reste `None` après un encodage réussi quand il tombe
+        sous `reid_min_similarity`, ou quand il n'y a pas d'image de requête. Le
+        prendre pour prédicat ferait réencoder indéfiniment tous les véhicules qui ne
+        ressemblent pas à la requête — c'est-à-dire l'immense majorité.
+        """
+        aggregate = self._aggregates.get(global_id)
+        return aggregate is not None and aggregate.appearance_width_px is not None
+
     def record_embedding(self, global_id: int, width_px: float, match_score: float | None) -> None:
         """Retient la vue encodée et la ressemblance mesurée dessus.
 

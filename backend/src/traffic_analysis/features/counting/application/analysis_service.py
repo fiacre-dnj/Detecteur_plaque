@@ -21,7 +21,7 @@ from traffic_analysis.features.counting.application.dto import (
     TIMELINE_WARNING_THRESHOLD,
     AnalysisCancelled,
     AnalysisResultData,
-    DetectionCandidate,
+    InferenceCandidate,
     PlateDetectOptions,
     PlateDetectPolicy,
     PlateOcrOptions,
@@ -172,6 +172,7 @@ class AnalysisService:
         "_plate_ocr",
         "_plate_reader",
         "_reid_appearance_improvement",
+        "_reid_max_per_frame",
         "_reid_min_similarity",
         "_snapshot_encoder",
         "_vehicle_embedder",
@@ -188,6 +189,7 @@ class AnalysisService:
         vehicle_embedder: VehicleEmbedder | None = None,
         reid_min_similarity: float = 0.0,
         reid_appearance_improvement: float = 1.0,
+        reid_max_per_frame: int = 0,
     ) -> None:
         self._engine = engine
         self._plate_detector = plate_detector
@@ -204,6 +206,10 @@ class AnalysisService:
         # demande, donc il ne passe pas par `SessionConfig` (dont la docstring dit
         # que tous ses champs viennent de la requête).
         self._reid_appearance_improvement = reid_appearance_improvement
+        # Plafond d'encodages par image. `0` = illimité, donc strictement additif
+        # tant que personne ne le pose — même convention que
+        # `PlateDetectOptions.max_per_frame`, dont c'est le jumeau.
+        self._reid_max_per_frame = reid_max_per_frame
         # `None` désactive proprement la capture : le comptage, les plaques et le
         # registre sont identiques, les véhicules n'ont simplement pas de photo.
         self._snapshot_encoder = snapshot_encoder
@@ -701,10 +707,10 @@ class AnalysisService:
         if budget > 0 and len(wanted) > budget:
             keep = select_within_budget(
                 [
-                    DetectionCandidate(
+                    InferenceCandidate(
                         global_id=track.global_id,
                         width=track.box.width,
-                        never_detected=track.global_id not in detect_policy.last_ordinal,
+                        never_served=track.global_id not in detect_policy.last_ordinal,
                     )
                     for track in wanted
                 ],
@@ -824,6 +830,31 @@ class AnalysisService:
         ]
         if not candidates:
             return
+
+        # **Le plafond par image**, quand il est posé. Le jumeau exact de celui des
+        # plaques, et il borne autre chose que la marge d'ADR 0050 : celle-ci borne le
+        # total sur la vie d'une piste, celui-ci la **rafale sur une image**. Sans lui,
+        # une image chargée peut soumettre jusqu'à `MAX_BATCH` vignettes à 21,8 ms
+        # pièce — ~350 ms de blocage CPU en un seul appel, pendant lequel le GPU dort
+        # et l'aperçu ne sort pas. Ce n'est pas un gain de moyenne, c'est un plafond de
+        # pire cas : ce que l'utilisateur voit est un aperçu qui cesse de hoqueter.
+        #
+        # Ce qui n'est pas servi n'est pas perdu : rien n'étant enregistré, la piste
+        # garde son `appearance_width_px` et repasse candidate à l'image suivante.
+        budget = self._reid_max_per_frame
+        if budget > 0 and len(candidates) > budget:
+            keep = select_within_budget(
+                [
+                    InferenceCandidate(
+                        global_id=track.global_id,
+                        width=track.box.width,
+                        never_served=not session.has_appearance(track.global_id),
+                    )
+                    for track in candidates
+                ],
+                budget,
+            )
+            candidates = [track for track in candidates if track.global_id in keep]
 
         # Une seule passe pour tout le lot : le graphe est dynamique et toutes les
         # vignettes sont ramenées au même carré, donc grouper est gratuit — l'inverse

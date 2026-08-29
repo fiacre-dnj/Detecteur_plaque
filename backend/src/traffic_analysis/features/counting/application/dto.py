@@ -23,6 +23,10 @@ from traffic_analysis.features.counting.application.ports import (
     VehicleSnapshot,
 )
 from traffic_analysis.features.counting.domain.geometry import Point
+from traffic_analysis.features.counting.domain.inference_budget import (
+    InferenceCandidate,
+    select_within_budget,
+)
 from traffic_analysis.features.counting.domain.models import (
     DETECTABLE_CLASS_IDS,
     DETECTABLE_CLASSES,
@@ -42,12 +46,10 @@ from traffic_analysis.features.counting.domain.plate_geometry import (
     select_best,
 )
 from traffic_analysis.features.counting.domain.plate_policy import (
-    DetectionCandidate,
     PlateDetectOptions,
     PlateDetectPolicy,
     PlateOcrOptions,
     PlateOcrPolicy,
-    select_within_budget,
 )
 from traffic_analysis.features.counting.domain.tracking_session import (
     AnalysisSession,
@@ -89,15 +91,15 @@ __all__ = [
     "BoundingBox",
     "CountingLineDef",
     "DetectableClass",
-    # Une candidate au budget de détection de plaques, réexportée pour le service :
-    # le classement est une règle pure du domaine, la décision de plafonner appartient
-    # à qui sait ce qu'une inférence coûte.
-    "DetectionCandidate",
     # Le vocabulaire des sens de ligne, publié pour le schéma de requête : c'est lui
     # qui valide « entry | exit | neutral », et il ne doit pas recopier la liste.
     "DirectionRole",
     "EngineFrame",
     "EngineSpec",
+    # Une candidate au plafond de dépense par image, réexportée pour le service. Elle
+    # sert **deux** étages sans rapport — détection de plaques et encodage
+    # d'apparence — d'où son domicile neutre dans `domain/inference_budget`.
+    "InferenceCandidate",
     # Réexportés pour le conteneur et le banc de mesure. `PlateGeometry` en
     # particulier : le filtre géométrique vit dans le domaine et non dans
     # l'adaptateur, parce que derrière `ultralytics` il n'était jamais traversé par

@@ -9,13 +9,19 @@ livrable :
    recherche par image est un index de consultation, donc `crossings`,
    `tracked_vehicles` et tous les `by_line` doivent être **identiques** avec et sans
    encodeur. C'est ce que `TestAucuneRegression` vérifie sur le même clip ;
-2. **elle encode une fois par véhicule, pas une fois par image.**
+2. **elle encode quelques fois dans la vie d'un véhicule, pas une fois par image.**
    `FakeVehicleEmbedder.vectors_produced` compte les vecteurs réellement produits.
-   C'est ce chiffre, et non le contenu du registre, qui prouve que la règle monotone
-   protège le chemin critique — un code qui encoderait à chaque image rendrait
+   C'est ce chiffre, et non le contenu du registre, qui prouve que les gardes
+   protègent le chemin critique — un code qui encoderait à chaque image rendrait
    exactement les mêmes scores, deux ordres de grandeur plus cher, et aucun test
    portant seulement sur le résultat ne le verrait. Même raison d'être que le
-   comptage d'appels d'ADR 0042 ;
+   comptage d'appels d'ADR 0042.
+
+   **La règle monotone seule n'y suffisait pas**, et cette docstring a longtemps
+   annoncé « une fois par véhicule » sans que rien ne le vérifie : sur un véhicule
+   qui approche, « plus large que la meilleure vue » est vrai à presque chaque
+   image. Il faut la marge d'ADR 0050 pour borner le total, et le plafond par image
+   pour borner la rafale ;
 3. **elle ne dépend pas de l'ANPR.** Un utilisateur qui cherche une voiture n'a
    aucune raison d'activer la lecture de plaques.
 """
@@ -371,3 +377,83 @@ class TestSimilariteCosinus:
         left = np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         right = np.asarray([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
         assert cosine_similarity(left, right) == pytest.approx(0.0)
+
+
+class TestPlafondParImage:
+    """La rafale sur **une** image, que la marge d'ADR 0050 ne borne pas.
+
+    La marge borne le total sur la vie d'une piste ; elle ne dit rien du nombre de
+    vignettes soumises d'un coup. Sans plafond, une image chargée peut en soumettre
+    jusqu'à `MAX_BATCH` à 21,8 ms pièce — ~350 ms de blocage CPU en un seul appel,
+    pendant lequel le GPU dort et l'aperçu ne sort pas.
+
+    Le jumeau exact de `plate_detect_max_per_frame`, et il partage sa règle de
+    classement (`select_within_budget`) : jamais servie d'abord, la plus large
+    ensuite, l'identité à égalité stricte.
+    """
+
+    @staticmethod
+    def _crowd(vehicles: int, steps: int) -> list[list[TrackObservation]]:
+        """`vehicles` véhicules côte à côte, tous assez larges pour être encodés."""
+        return [
+            [
+                TrackObservation(
+                    track_id=index + 1,
+                    class_id=CAR,
+                    label="car",
+                    score=0.9,
+                    box=BoundingBox(
+                        x=60.0 + index * 220.0,
+                        y=250.0 + step * 40.0,
+                        # Des largeurs distinctes : c'est sur elles que le classement
+                        # départage, et des ex aequo ne prouveraient pas l'ordre.
+                        width=120.0 + index * 10.0,
+                        height=90.0,
+                    ),
+                )
+                for index in range(vehicles)
+            ]
+            for step in range(steps)
+        ]
+
+    def _run(self, video: Path, *, budget: int, vehicles: int = 4, steps: int = 1) -> int:
+        embedder = FakeVehicleEmbedder()
+        service = AnalysisService(
+            FakeEngine(self._crowd(vehicles, steps)),
+            vehicle_embedder=embedder,
+            reid_min_similarity=0.0,
+            reid_max_per_frame=budget,
+        )
+        service.run_video("job-1", video, CONFIG, query_image=QUERY)
+        return embedder.vectors_produced
+
+    def test_sans_plafond_toute_l_image_est_encodee(self, video: Path) -> None:
+        assert self._run(video, budget=0, vehicles=4, steps=1) == 4
+
+    def test_le_plafond_borne_la_rafale_d_une_image(self, video: Path) -> None:
+        assert self._run(video, budget=2, vehicles=4, steps=1) == 2
+
+    def test_un_plafond_plus_large_que_le_lot_ne_retire_rien(self, video: Path) -> None:
+        """Strictement additif : poser un plafond généreux ne doit rien changer."""
+        assert self._run(video, budget=8, vehicles=4, steps=1) == 4
+
+    def test_ce_qui_est_ecarte_est_reporte_et_jamais_perdu(self, video: Path) -> None:
+        """**La propriété qui rend le plafond acceptable.**
+
+        Rien n'étant enregistré pour une piste écartée, elle garde son
+        `appearance_width_px` et repasse candidate à l'image suivante. Sur quatre
+        véhicules et un budget de deux, deux images suffisent donc à servir tout le
+        monde — un abandon en laisserait deux sans ressemblance pour toujours.
+        """
+        embedder = FakeVehicleEmbedder()
+        service = AnalysisService(
+            FakeEngine(self._crowd(4, 2)),
+            vehicle_embedder=embedder,
+            reid_min_similarity=0.0,
+            reid_max_per_frame=2,
+        )
+
+        result = service.run_video("job-1", video, CONFIG, query_image=QUERY)
+
+        assert embedder.vectors_produced == 4
+        assert all(vehicle.match_score is not None for vehicle in result.vehicles)

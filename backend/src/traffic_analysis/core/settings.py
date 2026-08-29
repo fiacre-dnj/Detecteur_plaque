@@ -542,6 +542,18 @@ class Settings(BaseSettings):
     #:
     #: `1.0` désactive la marge et reproduit ADR 0048 au bit près.
     reid_appearance_improvement: float = Field(1.15, ge=1.0, le=4.0)
+    #: Plafond d'encodages d'apparence **par image**. `0` = illimité.
+    #:
+    #: Le jumeau de `plate_detect_max_per_frame`, et il borne autre chose que la marge
+    #: ci-dessus : celle-ci borne le total sur la vie d'une piste, celui-ci la
+    #: **rafale sur une image**. Sans lui, une image chargée peut soumettre jusqu'à
+    #: `MAX_BATCH` (16) vignettes à 21,8 ms pièce — ~350 ms de blocage CPU en un seul
+    #: appel, pendant lequel le GPU dort et l'aperçu ne sort pas.
+    #:
+    #: Ce n'est **pas** un gain de moyenne : c'est un plafond de pire cas, et ce que
+    #: l'utilisateur en voit est un aperçu qui cesse de hoqueter. Ce qui n'est pas
+    #: servi n'est pas perdu — la piste repasse candidate à l'image suivante.
+    reid_max_per_frame: int = Field(0, ge=0, le=32)
     #: Netteté minimale (variance du laplacien) d'un recadrage encodé.
     #:
     #: Un véhicule assez large mais flou de mouvement rend un embedding instable.

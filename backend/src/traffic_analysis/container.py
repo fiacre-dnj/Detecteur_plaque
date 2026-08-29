@@ -357,6 +357,7 @@ def build_counting_stack(
         resolved_embedder,
         settings.reid_min_similarity,
         settings.reid_appearance_improvement,
+        settings.reid_max_per_frame,
     )
     return CountingStack(
         engine=resolved_engine,
