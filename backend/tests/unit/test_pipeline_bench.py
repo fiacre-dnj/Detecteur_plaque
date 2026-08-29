@@ -448,3 +448,113 @@ class TestQueueDeDistribution:
         assert per_call["plateDetect"]["p50"] == pytest.approx(465.0)
         assert per_call["plateDetect"]["max"] == pytest.approx(900.0)
         assert per_call["ocr"]["max"] == 0.0
+
+
+class TestSondeGpu:
+    """L'agrégation du relevé, **sans jamais parler à un pilote**.
+
+    C'est pourquoi `summarise_samples` est une fonction pure séparée du fil : ce
+    qu'on veut vérifier est l'agrégation, pas la capacité de la CI à trouver une
+    carte NVIDIA.
+    """
+
+    def test_une_serie_vide_rend_des_zeros_plutot_que_de_lever(self) -> None:
+        """Sonde démarrée mais aucune lecture réussie : le rapport doit sortir."""
+        assert pipeline_bench.summarise_samples([]) == {
+            "p50": 0.0,
+            "p90": 0.0,
+            "max": 0.0,
+            "samples": 0,
+        }
+
+    def test_les_quantiles_sont_ceux_qu_on_attend(self) -> None:
+        summary = pipeline_bench.summarise_samples([10.0, 20.0, 30.0, 40.0, 100.0])
+
+        assert summary["p50"] == pytest.approx(30.0)
+        assert summary["max"] == pytest.approx(100.0)
+        assert summary["samples"] == 5
+
+    def test_l_ordre_d_arrivee_ne_change_rien(self) -> None:
+        """Les échantillons arrivent dans le temps, pas triés."""
+        assert pipeline_bench.summarise_samples(
+            [100.0, 10.0, 30.0, 20.0, 40.0]
+        ) == pipeline_bench.summarise_samples([10.0, 20.0, 30.0, 40.0, 100.0])
+
+    def test_la_sonde_eteinte_ne_pose_rien_dans_le_rapport(self) -> None:
+        """`--gpu-probe` est opt-in : sans lui, aucun champ ne doit apparaître rempli."""
+        timings = pipeline_bench.Timings()
+        with pipeline_bench._gpu_probe(timings, enabled=False):
+            pass
+
+        assert timings.gpu is None
+        assert timings.vram_peak_mib is None
+
+
+class TestPosteContenuDansUnAutre:
+    """`plateInference` est **dans** `plateDetect` : il ne s'y ajoute pas."""
+
+    def test_l_inference_de_plaques_n_entre_pas_dans_la_somme_des_postes(self) -> None:
+        """L'invariant que `TestUnitesDuPartage` protège déjà : la somme des postes
+        chronométrés ne peut pas excéder le total mesuré au poignet. Un poste contenu
+        dans un autre qui s'y ajouterait ferait dépasser ce total, et un partage dont
+        la somme excède le tout se lit comme une erreur de mesure — c'en serait une.
+        """
+        timings = pipeline_bench.Timings()
+        timings.plate_detect.add(20.0)
+        timings.plate_inference.add(15.0)
+
+        assert timings.measured_ms() == pytest.approx(20.0)
+
+    def test_il_est_publie_quand_meme_et_annonce_comme_contenu(self) -> None:
+        """Exclu de la somme, mais **pas** du rapport : c'est lui qui sépare, dans
+        les 45 à 73 % de l'étage de plaques, le calcul CUDA du recadrage numpy."""
+        timings = pipeline_bench.Timings()
+        timings.frames = 10
+        timings.plate_inference.add(15.0)
+
+        assert timings.as_json()["stages"]["plateInference"] == pytest.approx(1.5)
+        assert "plateInference" in pipeline_bench._CONTAINED_IN
+        assert "gmc" in pipeline_bench._CONTAINED_IN
+
+
+class TestComparaisonRefusee:
+    """Comparer deux courses qui n'ont pas mesuré la même chose n'apprend rien.
+
+    Et une alerte qui n'apprend rien est une alerte qu'on apprend à ignorer — le
+    pire sort possible pour un garde-fou de justesse.
+    """
+
+    @staticmethod
+    def _report(**settings: object) -> dict[str, object]:
+        base = {"modelId": "yolov8n", "frames": 600, "start": 11.0, "anpr": True}
+        return {"context": {"settings": {**base, **settings}}, "sources": []}
+
+    def test_deux_courses_identiques_sont_comparables(self) -> None:
+        assert pipeline_bench.incomparable_settings(self._report(), self._report()) == []
+
+    def test_une_fenetre_differente_interdit_la_comparaison(self) -> None:
+        """Le cas réel : `--frames 400` contre `--frames 600` sur la même vidéo porte
+        le même nom de source, donc l'appariement se faisait en silence."""
+        differing = pipeline_bench.incomparable_settings(
+            self._report(frames=400), self._report(frames=600)
+        )
+
+        assert differing == ["frames"]
+
+    def test_un_depart_different_interdit_la_comparaison(self) -> None:
+        """`--start` était absent du contexte : deux scènes différentes du même
+        fichier se comparaient sans que rien ne le dise."""
+        assert pipeline_bench.incomparable_settings(
+            self._report(start=30.0), self._report(start=11.0)
+        ) == ["start"]
+
+    def test_le_lot_et_l_autotune_restent_comparables(self) -> None:
+        """Ils changent le débit, **jamais les boîtes** — et ce sont précisément les
+        deux réglages qu'on veut pouvoir comparer."""
+        assert (
+            pipeline_bench.incomparable_settings(
+                self._report(batch=8, cudnnAutotune=True),
+                self._report(batch=4, cudnnAutotune=False),
+            )
+            == []
+        )
