@@ -144,7 +144,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1621 tests
+uv run pytest                                                            # 1665 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -159,7 +159,7 @@ uv run python scripts/audit_lignes.py                # « pourquoi cette ligne e
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 851 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 864 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -1605,6 +1605,52 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     séparation décroît régulièrement (+0,462 à 208 px → +0,310 à 48 px) sans effondrement,
     contrairement au plancher d'OCR. Mesuré en pipeline : 8 véhicules suivis, **2 encodés**.
     [ADR 0048](docs/adr/0048-rechercher-un-vehicule-par-image.md).
+36. **Le plafond absolu de cadence ne contredit plus la lecture à vitesse normale.**
+    `ScenePacer` retient la période la **plus longue** des deux bridages. Sur une source
+    60 fps, `analysisSpeed: 1` demande 16,7 ms et `maxAnalysisFps: 30` en impose 33,3 :
+    le plafond gagnait, et l'aperçu défilait à **0,5×** — l'inverse exact de ce
+    qu'ADR 0019 garantit. Mesuré, carte chaude, comptage seul : la machine tient
+    **58,8 img/s** pour une cible de 60, et le défaut la coupait à 30. Trois points :
+    - **le défaut de `maxAnalysisFps` repasse à `null`**, `analysisSpeed` reste à `1` :
+      le partage de la machine n'est pas relâché, c'est la cadence de scène — le
+      bridage qui décrit ce que l'utilisateur veut voir — qui redevient seul juge ;
+    - **une migration de schéma ciblée** (`SETTINGS_SCHEMA_VERSION` 1 → 2) était
+      nécessaire, sans quoi le correctif n'atteignait personne : `mergeSettings` ne
+      réécrit jamais un choix persisté et `isSupportedFpsCap(30)` est vrai. `migrateV1`
+      **retire** le champ, et seulement s'il vaut exactement `30` — un `60` ou un `null`
+      est un choix explicite, et le défaire serait pire que le bug ;
+    - **le profil ANPR n'y gagne rien** : à 17 à 21 img/s il est très loin sous les 30,
+      qui ne mordaient jamais. Ce qui rend la vitesse normale atteignable avec l'ANPR
+      est **le pas d'analyse** — à pas 3 sur du 60 fps, 20 img/s analysées font avancer
+      la scène à vitesse normale.
+
+    [ADR 0049](docs/adr/0049-le-plafond-absolu-contredisait-la-lecture-a-vitesse-normale.md).
+37. **La règle monotone de la ReID ne bornait rien, et le GPU n'est pas le goulot.**
+    Deux résultats d'un même lot d'optimisation, et le second contredit l'intuition qui
+    l'a motivé :
+    - **`should_embed` était vraie à presque chaque image.** « Plus large que la
+      meilleure vue » l'est sur tout véhicule qui approche : on payait jusqu'à un
+      encodage ONNX/CPU par image, **21,8 ms mesurés par vignette**, pour un étage que
+      trois docstrings annonçaient comme « une fois par véhicule ». Corrigé par une
+      **marge** (`TRAFFIC_REID_APPEARANCE_IMPROVEMENT`, 1,15) qui borne le *total* sur
+      la vie d'une piste — 11 encodages au lieu d'une centaine — et un **plafond par
+      image** (`TRAFFIC_REID_MAX_PER_FRAME`) qui borne la *rafale*. Le mode de panne
+      d'ADR 0029 ne s'y rejoue pas : le consommateur de l'OCR est un **vote** qu'on
+      affamait, celui de la ReID un **remplacement** ([ADR 0050](docs/adr/0050-la-regle-monotone-de-la-reid-ne-bornait-rien.md)) ;
+    - **la carte n'est pas saturée, et c'est mesuré.** `pipeline_bench --gpu-probe`
+      relève une utilisation **p50 50 % / max 71 %** sur 1080p ANPR+OCR, pour une crête
+      VRAM de 332 Mio sur 4096. Le nouveau poste `plateInference` montre que **16,74 des
+      22,20 ms** de l'étage de plaques sont du calcul CUDA : le levier y est « moins de
+      recadrages », pas « moins de Python ». Les deux instruments concordent —
+      `inference + plateInference` = 52 % du budget, NVML en relève 50.
+
+    **Deux pièges de mesure sur cette machine**, tous deux payés ici : l'horloge du GPU
+    monte de **885 à 1518 MHz** au fil des premières courses, soit 1,72× — une
+    comparaison de lots lue sur des courses successives conclut exactement l'inverse de
+    la vérité, et il faut des **courses alternées sur carte chaude**. Et le bruit entre
+    deux courses identiques est de **11 %** : tout gain inférieur n'existe pas. C'est
+    pourquoi le budget de threads OpenCV (`TRAFFIC_OPENCV_THREADS`) reste à `0` — mesuré
+    sans effet en pipeline réel, contrairement à ce qu'un micro-banc laissait espérer.
 
 ## Ce que l'analyse signale — les alertes
 
@@ -1778,9 +1824,31 @@ uv run python scripts/pipeline_bench.py --videos data/jobs/<id> \
 # Avec l'ANPR et l'OCR, c'est-à-dire les deux tiers du budget réel.
 uv run python scripts/pipeline_bench.py --videos data/jobs/<id> --anpr --ocr \
     --frames 400 --warmup 20 --start 12 --json out/anpr.json --compare out/avant.json
+# « Le GPU est-il saturé ? » — utilisation NVML à 5 Hz et crête VRAM torch.
+uv run python scripts/pipeline_bench.py --videos data/jobs/<id> --anpr --ocr \
+    --frames 600 --warmup 40 --start 11 --gpu-probe --json out/gpu.json
 ```
 
-Quatre choses à savoir avant de lire un rapport :
+**Deux pièges de mesure propres à cette machine, et ils dominent tout le reste.**
+L'horloge du GPU monte de **885 à 1518 MHz** au fil des premières courses d'une
+session, soit **1,72×** : quatre courses successives font croire à un gain de 1,8×
+qui n'est que la montée en régime, et une comparaison de lots lue ainsi conclut
+l'inverse de la vérité. Les mesures se font donc en **courses alternées, carte déjà
+chaude**, et `--warmup` chauffe le *modèle*, pas la *carte*. Second piège : le bruit
+entre deux courses strictement identiques est de **11 %** — tout gain inférieur
+n'existe pas, et le prétendre serait malhonnête.
+
+Six choses à savoir avant de lire un rapport :
+
+- **`--gpu-probe` répond directement à « la carte est-elle saturée »**, ce qu'aucun
+  poste ne disait : `inference` est un *plancher* de temps GPU et `plateDetect`
+  mélange GPU et CPU, donc la fourchette allait de 16 à 95 %. Le poste
+  `plateInference` tranche l'étage dominant — mesuré, 16,74 des 22,20 ms sont du
+  calcul CUDA — et les deux instruments doivent concorder : `inference +
+  plateInference` valait 52 % du budget quand NVML en relevait 50 ;
+- **`plateInference` et `gmc` sont CONTENUS** dans `plateDetect` et `tracker`, et le
+  rapport le dit désormais (« inclus dans … ») : les additionner donnerait 82 % pour
+  un seul étage ;
 
 - **`--anpr` fait tourner la vraie `AnalysisService`**, assemblée par le même
   `build_counting_stack` que le service. Sans le drapeau, le banc ne mesure que le
@@ -2076,7 +2144,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1621 (1 skip) | 851 |
+| Nombre | 1665 (1 skip) | 864 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 
