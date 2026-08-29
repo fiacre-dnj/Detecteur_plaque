@@ -28,7 +28,17 @@ import type { AnalysisRequest, CountingLine, Zone } from "@/shared/api/contracts
  * relue sous un sens différent est bien pire qu'une valeur perdue : elle produit une
  * analyse dont les réglages ne sont pas ceux que l'écran affiche.
  */
-export const SETTINGS_SCHEMA_VERSION = 1;
+export const SETTINGS_SCHEMA_VERSION = 2;
+
+/**
+ * Le seul plafond absolu que la version 1 posait sans que personne le choisisse.
+ *
+ * ADR 0049 le retire du défaut ; une valeur **déjà persistée** y survivrait pourtant,
+ * `mergeSettings` ne réécrivant jamais un choix — donc le correctif n'atteindrait
+ * aucun poste existant. La migration ne relâche que **cette** valeur-là : un `60`
+ * ou un `null` en base est un choix explicite, et le défaire serait pire que le bug.
+ */
+const V1_DEFAULT_FPS_CAP = 30;
 
 const STORAGE_KEY = "traffic-analysis.settings.v1";
 
@@ -158,12 +168,19 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   // surprend plutôt qu'un choix. `1` fait durer l'analyse la durée de la vidéo ;
   // « Illimitée » reste un choix explicite pour qui veut ses chiffres au plus vite.
   analysisSpeed: 1,
-  // 30 img/s par défaut, depuis ADR 0022 : la cadence vidéo la plus courante,
-  // qui borne le débit du serveur sans jamais le limiter en pratique sur une
-  // source à cette cadence ou en dessous. « Illimité » et « 60 img/s » restent
-  // des choix explicites pour qui filme plus vite ou veut ses chiffres au plus
-  // vite sans égard pour le partage de la machine.
-  maxAnalysisFps: 30,
+  // **Illimité par défaut depuis ADR 0049**, qui abroge le `30` d'ADR 0022. Ce
+  // `30` était justifié par « la cadence vidéo la plus courante, qui ne borne
+  // rien en pratique » — et c'est faux dès qu'on filme à 60. `ScenePacer` retient
+  // la période la **plus longue** des deux bridages : sur une source 60 fps,
+  // `analysisSpeed: 1` demande 16,7 ms et ce plafond en impose 33,3, donc le
+  // plafond gagne et l'aperçu défile à **0,5×** — exactement l'inverse de ce
+  // qu'`analysisSpeed: 1` existe pour garantir (ADR 0019).
+  //
+  // La cadence de scène reste le bridage pertinent et elle est toujours à `1` :
+  // le partage de la machine n'est donc pas relâché, c'est le second plafond qui
+  // redevient ce qu'ADR 0020 décrivait — un choix explicite pour brider une
+  // machine partagée, pas un défaut qui contredit l'autre réglage.
+  maxAnalysisFps: null,
   showTrails: true,
 };
 
@@ -437,13 +454,34 @@ export function loadSettings(storage: Pick<Storage, "getItem"> | null = safeStor
 
   // Version différente = forme inconnue. On ne devine pas : une valeur relue sous
   // un sens différent produirait une analyse dont les réglages ne sont pas ceux
-  // que l'écran affiche.
-  if (record.version !== SETTINGS_SCHEMA_VERSION) return { ...DEFAULT_SETTINGS };
+  // que l'écran affiche. La version 1 est la **seule** exception, parce qu'on sait
+  // exactement ce qui a changé entre elle et la 2 — voir `migrateV1`.
+  if (record.version !== SETTINGS_SCHEMA_VERSION && record.version !== 1) {
+    return { ...DEFAULT_SETTINGS };
+  }
 
   const settings = record.settings;
   if (typeof settings !== "object" || settings === null) return { ...DEFAULT_SETTINGS };
 
-  return mergeSettings(settings as Record<string, unknown>);
+  const source = record.settings as Record<string, unknown>;
+  return mergeSettings(record.version === 1 ? migrateV1(source) : source);
+}
+
+/**
+ * Version 1 → 2 : relâche le plafond de cadence que personne n'avait choisi.
+ *
+ * **Une migration ciblée plutôt qu'une remise à zéro.** Faire tomber la version 1
+ * sur les défauts marcherait, et coûterait à l'utilisateur son modèle, ses classes,
+ * ses seuils de plaques et sa liste de recherche — pour un seul champ à corriger.
+ *
+ * Le champ est **retiré** et non réécrit à `null` : `mergeSettings` traite un champ
+ * absent comme « prend son défaut », donc le jour où le défaut rebougera, un poste
+ * migré suivra au lieu de rester figé sur la valeur d'aujourd'hui.
+ */
+function migrateV1(source: Record<string, unknown>): Record<string, unknown> {
+  if (source.maxAnalysisFps !== V1_DEFAULT_FPS_CAP) return source;
+  const { maxAnalysisFps: _relache, ...reste } = source;
+  return reste;
 }
 
 /** Fusion typée, champ par champ. */

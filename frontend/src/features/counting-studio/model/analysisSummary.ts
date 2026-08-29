@@ -61,7 +61,7 @@ export function analysisSummaryRows(input: AnalysisSummaryInput): AnalysisSummar
     ...surveillance(input.ruledLineCount, input.watchedPlateCount, input.readPlateText),
     { label: "Portion analysée", value: rangeSummary(input.range) },
     { label: "Plaques", value: plateSummary(input.detectPlates, input.readPlateText) },
-    { label: "Cadence", value: paceSummary(input.analysisSpeed, input.maxAnalysisFps) },
+    paceRow(input.analysisSpeed, input.maxAnalysisFps),
   ];
 }
 
@@ -188,4 +188,32 @@ function paceSummary(analysisSpeed: number | null, maxAnalysisFps: number | null
         ? "Temps réel"
         : `${analysisSpeed}× le temps réel`;
   return maxAnalysisFps === null ? relative : `${relative} · max ${maxAnalysisFps} img/s`;
+}
+
+/**
+ * La cadence, plus l'avertissement qui manquait — les deux bridages peuvent se
+ * contredire, et c'est **silencieux**.
+ *
+ * `ScenePacer` retient la période la **plus longue** des deux, donc le plafond
+ * absolu bat la cadence de scène dès que la source dépasse ce plafond. Un « Temps
+ * réel · max 30 img/s » sur une source 60 fps ne rend pas le temps réel : il rend
+ * la moitié, et rien ne le disait. C'est le défaut qu'ADR 0049 a retiré ; il reste
+ * atteignable à la main, d'où l'avertissement plutôt qu'un interdit.
+ *
+ * Pas de nombre d'images par seconde ici, et c'est délibéré : la cadence de la
+ * source n'est lisible que sur la balise `<video>` et ne vit dans aucun état
+ * réactif — même raison qui prive `describeRange` de la durée. La phrase est donc
+ * conditionnelle, ce qui la garde vraie sans connaître la source.
+ */
+function paceRow(analysisSpeed: number | null, maxAnalysisFps: number | null): AnalysisSummaryRow {
+  const value = paceSummary(analysisSpeed, maxAnalysisFps);
+  if (maxAnalysisFps === null || analysisSpeed === null) return { label: "Cadence", value };
+
+  return {
+    label: "Cadence",
+    value,
+    warning:
+      `Au-dessus de ${maxAnalysisFps} images par seconde, la source est analysée plus ` +
+      "lentement que le temps réel et l'aperçu défile au ralenti.",
+  };
 }

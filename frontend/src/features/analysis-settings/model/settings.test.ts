@@ -488,11 +488,15 @@ describe("maxAnalysisFps — le plafond absolu de cadence", () => {
     { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
   ];
 
-  it("part à 30 img/s par défaut", () => {
-    // Depuis ADR 0022 : la cadence vidéo la plus courante, qui ne borne rien en
-    // pratique sur une source à cette cadence ou en dessous.
-    expect(DEFAULT_SETTINGS.maxAnalysisFps).toBe(30);
-    expect(toRequest(DEFAULT_SETTINGS, LINES, []).maxAnalysisFps).toBe(30);
+  it("part à « Illimité » par défaut, pour ne pas contredire la cadence de scène", () => {
+    // Depuis ADR 0049, qui abroge le `30` d'ADR 0022. `ScenePacer` retient la
+    // période la **plus longue** des deux bridages : un plafond à 30 img/s bat
+    // `analysisSpeed: 1` sur toute source au-dessus de 30 fps, et l'aperçu
+    // défile alors à la moitié de la vitesse réelle — l'inverse exact de ce
+    // qu'ADR 0019 garantit. Mesuré sur une source 60 fps : 30 img/s au lieu de
+    // 58,8 que la machine tient.
+    expect(DEFAULT_SETTINGS.maxAnalysisFps).toBeNull();
+    expect(toRequest(DEFAULT_SETTINGS, LINES, []).maxAnalysisFps).toBeNull();
   });
 
   it("transmet un plafond choisi", () => {
@@ -534,8 +538,8 @@ describe("maxAnalysisFps — le plafond absolu de cadence", () => {
       settings: { maxAnalysisFps: 999 },
     });
 
-    // Repli sur le défaut du module (30 img/s depuis ADR 0022), pas sur `null`.
-    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBe(30);
+    // Repli sur le défaut du module, qui vaut « Illimité » depuis ADR 0049.
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBeNull();
   });
 
   it("ignore un plafond d'un type faux", () => {
@@ -544,7 +548,56 @@ describe("maxAnalysisFps — le plafond absolu de cadence", () => {
       settings: { maxAnalysisFps: "30 img/s" },
     });
 
-    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBe(30);
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBeNull();
+  });
+
+  it("**relâche le plafond de 30 hérité de la version 1**", () => {
+    // Le cœur d'ADR 0049 : `mergeSettings` ne réécrit jamais un choix persisté,
+    // donc sans cette migration le correctif n'atteindrait aucun poste existant.
+    const stored = JSON.stringify({
+      version: 1,
+      settings: { maxAnalysisFps: 30, modelId: "yolo11s" },
+    });
+
+    const loaded = loadSettings(fakeStorage(stored));
+
+    expect(loaded.maxAnalysisFps).toBeNull();
+    // Et rien d'autre n'est perdu : c'est ce qui distingue la migration ciblée
+    // d'une remise à zéro sur les défauts.
+    expect(loaded.modelId).toBe("yolo11s");
+  });
+
+  it("garde un plafond de 60 hérité de la version 1 : c'est un choix, pas un défaut", () => {
+    const stored = JSON.stringify({
+      version: 1,
+      settings: { maxAnalysisFps: 60 },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBe(60);
+  });
+
+  it("garde un « Illimité » hérité de la version 1", () => {
+    const stored = JSON.stringify({
+      version: 1,
+      settings: { maxAnalysisFps: null, modelId: "yolo11m" },
+    });
+
+    const loaded = loadSettings(fakeStorage(stored));
+
+    expect(loaded.maxAnalysisFps).toBeNull();
+    expect(loaded.modelId).toBe("yolo11m");
+  });
+
+  it("retombe sur les défauts pour une version ni 1 ni courante", () => {
+    const stored = JSON.stringify({
+      version: 99,
+      settings: { maxAnalysisFps: 60, modelId: "yolo11s" },
+    });
+
+    const loaded = loadSettings(fakeStorage(stored));
+
+    expect(loaded.maxAnalysisFps).toBeNull();
+    expect(loaded.modelId).toBe(DEFAULT_SETTINGS.modelId);
   });
 });
 
