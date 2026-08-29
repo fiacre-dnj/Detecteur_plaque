@@ -291,9 +291,16 @@ class Settings(BaseSettings):
     plate_net_size: int = Field(640, ge=64, le=1280)
 
     # ── Étranglement du détecteur de plaques (ADR 0010) ──────────────────────
-    # **Le vrai goulot, et de loin.** Mesuré sur cette machine (i5-8350U, sans GPU) :
-    # 702 ms par inférence de détection contre 66 ms par vignette d'OCR, soit un
-    # rapport de 10,7 à 1. Optimiser l'OCR ne rendrait donc rien de perceptible.
+    # **Le vrai goulot, et de loin.** Sur une vue de circulation réelle, l'étage de
+    # plaques pèse 73 % du budget par image (ADR 0032), à 17,5 ms par recadrage sur
+    # GPU — chaque véhicule payant une inférence entière.
+    #
+    # Le rapport « 702 ms contre 66 ms, soit 10,7 à 1 » qui vivait ici est **périmé**
+    # et ADR 0030 l'a explicitement déclaré faux : il datait d'une mesure CPU
+    # (i5-8350U) d'avant le passage du détecteur en `.pt` sur GPU (ADR 0015, 45,2 ms
+    # par inférence) et d'avant le lot d'ADR 0030. Sa conclusion — « optimiser l'OCR
+    # ne rend rien » — reste vraie sur une vue large où aucune plaque n'est lisible,
+    # et fausse dès que des plaques sont lues : mesuré ici, OCR 18,9 % du budget.
     #
     # Ces trois réglages existaient dans `PlateDetectOptions` sans que personne
     # puisse les atteindre : le conteneur ne passait que `every_n_frames`, repris de
@@ -303,7 +310,8 @@ class Settings(BaseSettings):
     #: était le comportement câblé en dur.
     plate_detect_every_n_frames: int | None = Field(None, ge=1, le=30)
     #: Sous cette largeur de **véhicule**, la plaque fera au mieux quelques pixels :
-    #: l'inférence coûterait 702 ms sans rien pouvoir trouver d'exploitable.
+    #: l'inférence coûterait une passe entière sans rien pouvoir trouver
+    #: d'exploitable — 17,5 ms par recadrage sur cette carte (ADR 0032).
     #:
     #: Distinct de `plate_ocr_min_width_px`, qui porte sur la plaque. Le rapport
     #: entre les deux dépend de la scène et **ne se déduit pas** : mesuré ici, une

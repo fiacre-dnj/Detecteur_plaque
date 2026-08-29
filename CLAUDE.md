@@ -1206,13 +1206,17 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       `EngineSpec.start_ms` n'est qu'un **indice de performance** : le `FakeEngine`
       l'ignore et produit les mêmes chiffres. C'est ce qui évite un troisième
       exemplaire du bug « vert en CI, faux en production » ;
-    - **le déplacement, lui, doit vivre dans l'adaptateur.** `LoadImagesAndVideos`
-      d'Ultralytics ne sait pas se déplacer, donc `iter_video` a un **second
-      chemin** — OpenCV décode après `CAP_PROP_POS_FRAMES`, puis rattrape par
-      `grab()` et **vérifie où il est tombé** (le déplacement est approximatif sur
-      plusieurs conteneurs, et l'accepter sans vérifier donnerait des horodatages
-      faux sans lever). Il y a donc **trois** `model.track()` dans ce module, ce que
-      `test_engine_arguments.py` compte exprès ;
+    - **le déplacement, lui, doit vivre dans l'adaptateur.** OpenCV décode après
+      `CAP_PROP_POS_FRAMES`, puis rattrape par `grab()` et **vérifie où il est
+      tombé** (le déplacement est approximatif sur plusieurs conteneurs, et
+      l'accepter sans vérifier donnerait des horodatages faux sans lever).
+      Ce déplacement a longtemps justifié un **second chemin** de lecture dans
+      `iter_video`, et ce fichier a longtemps annoncé « trois `model.track()` dans ce
+      module ». **Les deux sont périmés depuis ADR 0031** : le différé décode
+      lui-même dans un fil séparé, donc le déplacement n'est plus un cas particulier
+      — il vit dans `_iter_decoded` et gagne le lot d'images qu'il n'avait pas. Il y
+      a **deux** `model.track()` dans ce module (différé et direct), et
+      `test_engine_arguments.py` pose `EXPECTED_TRACK_CALLS = 2` ;
     - **une fenêtre vide est refusée, pas rendue en compteurs à zéro** : le schéma
       refuse une fin qui ne suit pas le début, et `run_video` refuse — après avoir
       sondé la vidéo — une fenêtre hors du fichier (`empty_analysis_range`) ;
@@ -1563,8 +1567,16 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       *détection*. Un encodeur dédié est nécessaire ;
     - **le modèle est `vehicle-reid-0001`** (OSNet-AIN, 8,8 Mo, 512-d, MIT, rank-1
       96,31 % / mAP 85,15 % sur VeRi-776), récupéré par `scripts/fetch_reid_model.py`
-      avec SHA-256 obligatoire. ONNX donc **CPU**, ce qui n'est tenable que parce qu'on
-      encode une fois par véhicule ;
+      avec SHA-256 obligatoire. ONNX donc **CPU** — 21,8 ms mesurés par vignette — ce
+      qui n'est tenable que parce qu'on encode **quelques fois dans la vie d'un
+      véhicule**. Ce fichier a longtemps écrit « une fois par véhicule », et c'était
+      faux : la règle monotone seule (« plus large que la meilleure vue ») est vraie à
+      presque chaque image d'un véhicule qui approche, donc on encodait par image. Ce
+      que la mesure comptait — « 8 suivis, 2 encodés » — était un nombre de
+      *véhicules*, pas d'*encodages*. Il faut la **marge de largeur**
+      (`TRAFFIC_REID_APPEARANCE_IMPROVEMENT`, 1,15) pour borner le total, et le
+      **plafond par image** (`TRAFFIC_REID_MAX_PER_FRAME`) pour borner la rafale —
+      [ADR 0050](docs/adr/0050-la-regle-monotone-de-la-reid-ne-bornait-rien.md) ;
     - **le prétraitement n'a aucun effet, sauf l'ordre des canaux.** Mesuré :
       `cos(x/255, (x/255−mean)/std) = 1,0` et même `cos(x/255, x) = 1,0` — le « AIN »
       est de l'*instance normalization*, donc le réseau est invariant aux
