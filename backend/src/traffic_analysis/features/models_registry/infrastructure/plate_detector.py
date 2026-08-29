@@ -145,6 +145,49 @@ DEFAULT_MOSAIC_SIDE = 1
 #: erreur de mémoire GPU ferait échouer *toute* la passe ANPR d'une image.
 MAX_BATCH = 16
 
+#: Colonnes admises de `boxes.data`, sur un chemin **sans suivi**.
+#:
+#: Ultralytics rend `[x1, y1, x2, y2, conf, cls]` en prédiction et insère un
+#: `track_id` en cinquième position quand le suivi tourne (`Boxes.__init__` :
+#: `assert n in {6, 7}`, `is_track = n == 7`). Le détecteur de plaques passe
+#: toujours par `predict`, donc **six** — mais accepter les deux coûte un
+#: `frozenset` et évite qu'un futur chemin suivi tombe sur une erreur au lieu de
+#: fonctionner. La confiance se lit à `-2` dans les deux cas, exactement comme le
+#: fait `Boxes.conf` : c'est ce qui rend l'indice juste sans compter les colonnes.
+DETECTION_BOX_COLUMNS = frozenset({6, 7})
+
+
+def _boxes_data(result: Any) -> npt.NDArray[np.float32] | None:  # noqa: ANN401
+    """Les boîtes d'un `Results`, en **un seul** rapatriement depuis le GPU.
+
+    La version précédente lisait `boxes.xyxy` puis `boxes.conf` : deux `.cpu()`,
+    donc deux synchronisations CUDA par recadrage — et sur des **tranches non
+    contiguës** de `data`, ce qui impose en plus un noyau de compaction à chacune.
+    Le chemin des véhicules avait déjà supprimé exactement ce patron
+    (`ultralytics_engine._to_observations`) ; celui-ci était le dernier endroit du
+    dépôt à le contredire.
+
+    Rend `None` — et non un tableau vide — quand il n'y a rien : les deux appelants
+    ont un `continue` à faire, pas une boucle vide à parcourir.
+
+    Lève si le nombre de colonnes est inattendu, pour la même raison que le chemin
+    des véhicules : une colonne ajoutée en amont décalerait la confiance sans rien
+    casser de visible, et on publierait des scores faux.
+    """
+    boxes = getattr(result, "boxes", None)
+    if boxes is None or len(boxes) == 0:
+        return None
+
+    data: npt.NDArray[np.float32] = boxes.data.cpu().numpy()
+    if data.shape[-1] not in DETECTION_BOX_COLUMNS:
+        msg = (
+            f"`boxes.data` porte {data.shape[-1]} colonnes, hors de "
+            f"{sorted(DETECTION_BOX_COLUMNS)} : la disposition "
+            "[x1, y1, x2, y2, (track_id,) conf, cls] d'Ultralytics a changé."
+        )
+        raise RuntimeError(msg)
+    return data
+
 
 @dataclass(frozen=True, slots=True)
 class _Placement:
@@ -482,11 +525,12 @@ class UltralyticsPlateDetector:
 
         found: dict[int, list[tuple[_Placement, BoundingBox, float]]] = {}
         for placement, result in zip(placements, results, strict=True):
-            boxes = getattr(result, "boxes", None)
-            if boxes is None or len(boxes) == 0:
+            data = _boxes_data(result)
+            if data is None:
                 continue
-            for raw, score in zip(boxes.xyxy.cpu().numpy(), boxes.conf.cpu().numpy(), strict=True):
-                x1, y1, x2, y2 = (float(value) for value in raw)
+            for row in data:
+                x1, y1, x2, y2 = (float(value) for value in row[:4])
+                score = float(row[-2])
                 in_crop = BoundingBox(x=x1, y=y1, width=x2 - x1, height=y2 - y1)
                 if in_crop.width <= 0.0 or in_crop.height <= 0.0:
                     continue
@@ -527,13 +571,14 @@ class UltralyticsPlateDetector:
         )
         if not results:
             return {}
-        boxes = getattr(results[0], "boxes", None)
-        if boxes is None or len(boxes) == 0:
+        data = _boxes_data(results[0])
+        if data is None:
             return {}
 
         found: dict[int, list[tuple[_Placement, BoundingBox, float]]] = {}
-        for raw, score in zip(boxes.xyxy.cpu().numpy(), boxes.conf.cpu().numpy(), strict=True):
-            x1, y1, x2, y2 = (float(value) for value in raw)
+        for row in data:
+            x1, y1, x2, y2 = (float(value) for value in row[:4])
+            score = float(row[-2])
             placement = self._locate(placements, (x1 + x2) / 2.0, (y1 + y2) / 2.0)
             if placement is None:
                 # Une boîte tombée dans une gouttière n'appartient à personne.
