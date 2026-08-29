@@ -32,7 +32,7 @@ from traffic_analysis.features.models_registry.domain.catalogue import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
 logger = get_logger("traffic_analysis.models")
 
@@ -466,16 +466,25 @@ class ModelRegistry:
 
             fresh = _Resident(model=model, busy=True, leases=1)
             self._residents[model_id] = fresh
-            self._evict_if_needed()
-            return fresh
+            freed = self._evict_if_needed()
 
-    def _evict_if_needed(self) -> None:
-        """Évince les plus anciennes instances **non occupées**.
+        # **Hors du verrou du registre, délibérément.** `cudaFree` synchronise
+        # l'appareil : le faire sous verrou bloquerait toute demande de bail pendant
+        # ce temps, y compris celles qui n'ont rien à voir avec l'éviction.
+        self._release_vram(freed)
+        return fresh
+
+    def _evict_if_needed(self) -> list[str]:
+        """Évince les plus anciennes instances **non occupées**, et dit lesquelles.
 
         Appelée sous verrou. Si toutes les instances résidentes sont occupées, on
         dépasse temporairement le plafond plutôt que d'arracher un modèle à une
         analyse en cours — dépasser est récupérable, pas l'autre.
+
+        Rend la liste des évincées pour que l'appelant rende leur VRAM **après**
+        avoir relâché le verrou : voir `_release_vram`.
         """
+        freed: list[str] = []
         while len(self._residents) > self._max_loaded:
             victim = next(
                 (name for name, resident in self._residents.items() if not resident.busy), None
@@ -486,9 +495,61 @@ class ModelRegistry:
                     loaded=len(self._residents),
                     limit=self._max_loaded,
                 )
-                return
+                return freed
             del self._residents[victim]
+            freed.append(victim)
             logger.info("modèle évincé", model_id=victim, limit=self._max_loaded)
+        return freed
+
+    def _release_vram(self, freed: Sequence[str]) -> None:
+        """Rend au pilote la VRAM d'instances qu'on vient de laisser tomber.
+
+        **`del` ne suffit pas, et la raison ne se devine pas.** Ultralytics crée un
+        cycle de références en enregistrant le crochet du tracker :
+        `predictor._hook = predictor.model.model.model[-1].register_forward_pre_hook(...)`
+        où la fermeture capture `predictor`. Le module retient le crochet, le crochet
+        retient le prédicteur, le prédicteur retient le modèle : le compteur de
+        références ne tombe **jamais** à zéro, et les poids restent en VRAM jusqu'à un
+        passage générationnel du ramasse-miettes, c'est-à-dire à un moment que
+        personne ne contrôle.
+
+        D'où `gc.collect()` **avant** `empty_cache()`, et pas à la place :
+        `empty_cache` ne rend que des blocs **déjà libres** dans l'allocateur mis en
+        cache de torch. Tant que le cycle tient l'objet, les blocs ne sont pas libres
+        et l'appel ne rend rien — on aurait un correctif qui journalise un succès sans
+        effet, exactement la famille de panne que ce dépôt collectionne.
+
+        **Quand c'est utile, et quand c'est du folklore coûteux.** Utile ici, parce
+        qu'une éviction change le profil de tailles d'allocation (on passe d'un palier
+        à un autre) et que la carte de cette machine n'a que 4 Go, partagés avec le
+        compositeur du bureau. Folklore coûteux **par image ou par lot** — l'allocateur
+        réutiliserait ses blocs gratuitement, et les rendre force un `cudaMalloc` neuf
+        qui sérialise avec l'appareil — et **en fin de bail**, où rien n'a été libéré
+        puisque le modèle reste résident.
+
+        Ne rend pas les poids à l'hôte par `.to("cpu")` : l'objet est jeté juste après,
+        donc ce serait copier 137 Mo pour les détruire.
+
+        Ne lève jamais : rendre de la mémoire est un confort, pas une garantie.
+        """
+        if not freed or self.device() == "cpu":
+            return
+        try:
+            import gc
+
+            import torch
+
+            before = torch.cuda.memory_reserved()
+            gc.collect()
+            torch.cuda.empty_cache()
+            logger.info(
+                "VRAM rendue après éviction",
+                modeles=list(freed),
+                reserve_avant_mio=before // 2**20,
+                reserve_apres_mio=torch.cuda.memory_reserved() // 2**20,
+            )
+        except Exception as exc:
+            logger.warning("libération VRAM impossible", error=str(exc))
 
     def _load(self, model_id: str) -> Any:  # noqa: ANN401
         descriptor = self.describe(model_id)
@@ -601,4 +662,6 @@ class ModelRegistry:
                 return False
             del self._residents[model_id]
         logger.info("modèle déchargé", model_id=model_id)
+        # Même raison qu'à l'éviction, et même position : hors du verrou.
+        self._release_vram([model_id])
         return True

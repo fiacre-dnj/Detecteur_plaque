@@ -24,7 +24,10 @@ from traffic_analysis.features.models_registry.domain.catalogue import (
     find,
     known_ids,
 )
-from traffic_analysis.features.models_registry.infrastructure.registry import ModelRegistry
+from traffic_analysis.features.models_registry.infrastructure.registry import (
+    ModelRegistry,
+    _Resident,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -612,3 +615,64 @@ class TestBudgetDeThreads:
         monkeypatch.setattr(cv2, "setNumThreads", boom)
 
         self._registry(tmp_path).apply_thread_budget(0, 3)  # ne lève pas
+
+
+class TestLiberationDeVram:
+    """Ce qu'une éviction rend au pilote, et où elle le rend.
+
+    `del self._residents[victim]` ne suffit pas, et la raison ne se devine pas :
+    Ultralytics enregistre le crochet du tracker dans une fermeture qui capture le
+    prédicteur, donc le compteur de références ne tombe jamais à zéro et les poids
+    restent en VRAM jusqu'à un passage générationnel du ramasse-miettes. D'où
+    `gc.collect()` **avant** `empty_cache()` — sans lui, l'appel journaliserait un
+    succès sans effet, puisqu'`empty_cache` ne rend que des blocs déjà libres.
+    """
+
+    @staticmethod
+    def _registry(tmp_path: Path, **kwargs: object) -> ModelRegistry:
+        base: dict[str, object] = {"device": "cpu", "half": False, "max_loaded": 1}
+        return ModelRegistry(weights_dir=tmp_path, **{**base, **kwargs})  # type: ignore[arg-type]
+
+    def test_l_eviction_rend_la_liste_des_modeles_liberes(self, tmp_path: Path) -> None:
+        registry = self._registry(tmp_path, max_loaded=1)
+        registry._residents["a"] = _Resident(model=object(), busy=False)
+        registry._residents["b"] = _Resident(model=object(), busy=False)
+
+        freed = registry._evict_if_needed()
+
+        assert freed == ["a"]
+        assert list(registry._residents) == ["b"]
+
+    def test_une_instance_occupee_n_est_jamais_liberee(self, tmp_path: Path) -> None:
+        """Dépasser le plafond est récupérable ; arracher un modèle en vol ne l'est pas."""
+        registry = self._registry(tmp_path, max_loaded=1)
+        registry._residents["a"] = _Resident(model=object(), busy=True)
+        registry._residents["b"] = _Resident(model=object(), busy=True)
+
+        assert registry._evict_if_needed() == []
+        assert list(registry._residents) == ["a", "b"]
+
+    def test_la_liberation_ne_fait_rien_sur_cpu(self, tmp_path: Path) -> None:
+        """Pas de VRAM à rendre, donc pas d'import de torch : c'est ce qui garde la
+        CI et le moteur factice à l'écart de cette branche."""
+        registry = self._registry(tmp_path)
+
+        registry._release_vram(["a"])  # ne lève pas, n'importe rien
+
+    def test_la_liberation_ne_leve_jamais(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rendre de la mémoire est un confort ; échouer ne doit pas casser une éviction."""
+        # `device="0"` explicite : `device()` rend « 0 » sans jamais sonder torch,
+        # donc la branche GPU est atteinte en CI, sur une machine qui n'en a pas.
+        registry = self._registry(tmp_path, device="0")
+
+        # `torch` absent du chemin d'import : l'`except` doit avaler proprement.
+        monkeypatch.setitem(__import__("sys").modules, "torch", None)
+
+        registry._release_vram(["a"])  # ne lève pas
+
+    def test_rien_a_liberer_ne_declenche_rien(self, tmp_path: Path) -> None:
+        registry = self._registry(tmp_path, device="0")
+
+        registry._release_vram([])  # ne lève pas, ne touche pas au GPU
