@@ -25,6 +25,8 @@ from traffic_analysis.features.models_registry.domain.catalogue import (
     known_ids,
 )
 from traffic_analysis.features.models_registry.infrastructure.registry import (
+    WARMUP_HEIGHT,
+    WARMUP_WIDTH,
     ModelRegistry,
     _Resident,
 )
@@ -676,3 +678,76 @@ class TestLiberationDeVram:
         registry = self._registry(tmp_path, device="0")
 
         registry._release_vram([])  # ne lève pas, ne touche pas au GPU
+
+
+class TestPrechauffage:
+    """Ce que le préchauffage soumet — et ce qu'il ne doit **jamais** appeler.
+
+    Il chauffait un carré `640×640` par `predict` sans `imgsz`, quand la production
+    soumet un letterbox rectangulaire et par lot. Or `stream_inference` pose
+    `done_warmup = True` après cette passe et le prédicteur est réutilisé : la forme
+    réellement analysée ne bénéficiait d'aucune chauffe. Mesuré, ~63 ms par job.
+    """
+
+    class _RecordingModel:
+        """Note la forme de la source et les arguments de chaque `predict`."""
+
+        def __init__(self) -> None:
+            self.predict_calls: list[dict[str, object]] = []
+            self.track_calls = 0
+
+        def predict(self, source: object, **kwargs: object) -> list[object]:
+            shapes = [getattr(item, "shape", None) for item in source]  # type: ignore[union-attr]
+            self.predict_calls.append({"count": len(shapes), "shape": shapes[0], **kwargs})
+            return []
+
+        def track(self, *_args: object, **_kwargs: object) -> list[object]:
+            self.track_calls += 1
+            return []
+
+    def _warm(self, tmp_path: Path, **kwargs: object) -> _RecordingModel:
+        """Sous-classe plutôt que `monkeypatch` : `__slots__` rend les méthodes
+        d'instance immuables, et c'est déjà le patron de `FakeLoadingRegistry`."""
+        model = self._RecordingModel()
+        recording = model
+
+        class _Registry(ModelRegistry):
+            def _load(self, model_id: str) -> Any:  # noqa: ANN401
+                self.describe(model_id)
+                return recording
+
+        registry = _Registry(weights_dir=tmp_path, device="cpu", half=False, max_loaded=1)
+        registry.warmup("yolov8n", **kwargs)  # type: ignore[arg-type]
+        return model
+
+    def test_le_prechauffage_soumet_le_lot_et_le_cote_de_production(self, tmp_path: Path) -> None:
+        model = self._warm(tmp_path, batch=4, imgsz=640)
+
+        assert len(model.predict_calls) == 1
+        call = model.predict_calls[0]
+        assert call["count"] == 4
+        # Une image de vidéo, pas un carré : c'est le letterbox d'Ultralytics qui en
+        # tire la forme réelle du tenseur, et un carré en produirait une autre.
+        assert call["shape"] == (WARMUP_HEIGHT, WARMUP_WIDTH, 3)
+        assert call["imgsz"] == 640
+
+    def test_le_prechauffage_n_appelle_jamais_track(self, tmp_path: Path) -> None:
+        """**Le test qui protège ADR 0047.**
+
+        `on_predict_start` sort immédiatement quand `predictor.trackers` existe et que
+        `persist` est vrai. Chauffer par `track` construirait donc un tracker au
+        démarrage depuis le fichier de **base**, et le premier job réel ne relirait
+        jamais son fichier dérivé — `reset_trackers` repose `REQUEST_TRACKER_KEYS`
+        mais pas `with_reid`, consommé à la construction. Ce serait 4× de cadence
+        perdue sur une tête `end2end`, en silence. `predict` n'avance pas non plus
+        `BaseTrack._count` (invariant 7).
+        """
+        model = self._warm(tmp_path, batch=4, imgsz=640)
+
+        assert model.track_calls == 0
+
+    def test_les_defauts_gardent_une_seule_image(self, tmp_path: Path) -> None:
+        """Un appelant qui ne passe rien obtient l'ancien lot : strictement additif."""
+        model = self._warm(tmp_path)
+
+        assert model.predict_calls[0]["count"] == 1

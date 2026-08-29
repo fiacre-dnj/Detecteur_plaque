@@ -38,6 +38,36 @@ logger = get_logger("traffic_analysis.models")
 
 WARMUP_SIDE = 640
 
+#: Forme du fond soumis au préchauffage : **celle d'une vidéo**, pas un carré.
+#:
+#: Le préchauffage soumettait un carré `640×640` sans `imgsz`, quand la production
+#: soumet un letterbox rectangulaire — une source 16:9 entre en `384×640`, et par lot.
+#: Or `BasePredictor.stream_inference` pose `done_warmup = True` après cette passe et
+#: le prédicteur est réutilisé : **la forme réellement analysée ne bénéficiait donc
+#: d'aucune chauffe du backend**.
+#:
+#: Mesuré en courses **alternées, processus neuf à chaque fois**, lot de 4 en 1080p :
+#:
+#: | préchauffage | 1ᵉʳ lot | régime |
+#: |---|---|---|
+#: | carré 640, lot 1 (avant) | 85,5 puis 76,6 ms | ~41,5 ms |
+#: | forme de production (après) | **65,3 puis 65,8 ms** | ~41,7 ms |
+#:
+#: Soit **~15 ms par job**, une seule fois — et non les 45 qu'une lecture optimiste
+#: du premier micro-banc laissait espérer. Le gain le plus net n'est d'ailleurs pas
+#: la moyenne mais la **reproductibilité** : ±0,5 ms contre ±9 avant.
+#:
+#: Il reste ~24 ms d'hésitation qu'aucun préchauffage au démarrage ne peut retirer :
+#: 16:9 est un choix par défaut — le rapport d'aspect de la vidéo n'est pas connu à
+#: ce moment-là — et le **dernier lot** de chaque vidéo, plus court donc de forme
+#: neuve, n'est de toute façon jamais chauffable.
+#:
+#: L'enjeu n'est pas le budget total (0,01 % d'une analyse de trois minutes) mais
+#: l'endroit où l'hésitation tombe : sur la **première image d'aperçu**, celle qu'on
+#: regarde pour savoir si ça a démarré.
+WARMUP_HEIGHT = 1080
+WARMUP_WIDTH = 1920
+
 
 @dataclass(slots=True)
 class _Resident:
@@ -600,7 +630,7 @@ class ModelRegistry:
 
     # ── Préchauffage et déchargement ─────────────────────────────────────────
 
-    def warmup(self, model_id: str) -> None:
+    def warmup(self, model_id: str, *, batch: int = 1, imgsz: int = WARMUP_SIDE) -> None:
         """Une inférence à vide, pour que la première requête réelle ne paie pas.
 
         Le premier appel d'un modèle inclut son chargement **et** sa fusion de
@@ -619,14 +649,34 @@ class ModelRegistry:
 
         Un échec est **journalisé, pas fatal** : mieux vaut un service qui démarre
         et qui sera lent une fois qu'un service qui refuse de démarrer.
+
+        **`batch` et `imgsz` servent à chauffer la forme de production**, et pas une
+        autre : voir `WARMUP_HEIGHT`. Le fond est une image de vidéo, pas un carré,
+        parce que le letterbox d'Ultralytics en tire la forme réelle du tenseur.
+
+        **Jamais par `track()`, et c'est le piège de ce correctif.**
+        `on_predict_start` sort immédiatement quand `predictor.trackers` existe et que
+        `persist` est vrai : chauffer par `track` construirait un tracker au démarrage,
+        depuis le fichier de **base**, et le premier job réel ne relirait jamais son
+        fichier dérivé. `reset_trackers` repose `REQUEST_TRACKER_KEYS` mais **pas**
+        `with_reid`, consommé à la construction — ce serait ADR 0047 défait en
+        silence, soit 4× de cadence perdue sur une tête `end2end`. `predict` ne
+        construit aucun tracker et n'avance pas `BaseTrack._count` (invariant 7).
         """
         try:
             import numpy as np
 
-            blank = np.zeros((WARMUP_SIDE, WARMUP_SIDE, 3), dtype=np.uint8)
+            blank = np.zeros((WARMUP_HEIGHT, WARMUP_WIDTH, 3), dtype=np.uint8)
+            source = [blank] * max(1, batch)
             try:
                 with self.lease(model_id) as model:
-                    model.predict(blank, verbose=False, device=self.device(), half=self.half())
+                    model.predict(
+                        source,
+                        imgsz=imgsz,
+                        verbose=False,
+                        device=self.device(),
+                        half=self.half(),
+                    )
             except Exception as exc:
                 # Un device explicitement demandé (`device != "auto"`) reste tel
                 # quel : l'opérateur a fait ce choix, et le retourner en silence
@@ -640,8 +690,17 @@ class ModelRegistry:
                     error=str(exc),
                 )
                 self._fall_back_to_cpu("échec d'inférence GPU au préchauffage, repli CPU")
+                # Mêmes arguments que la première tentative : un repli qui chaufferait
+                # une autre forme laisserait la production payer son hésitation quand
+                # même, et le repli passerait pour un correctif sans en être un.
                 with self.lease(model_id) as model:
-                    model.predict(blank, verbose=False, device=self.device(), half=self.half())
+                    model.predict(
+                        source,
+                        imgsz=imgsz,
+                        verbose=False,
+                        device=self.device(),
+                        half=self.half(),
+                    )
             logger.info(
                 "modèle préchauffé",
                 model_id=model_id,
