@@ -386,9 +386,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # pool de threads déjà dimensionné se redimensionne mal. `0` ne fait rien, donc
     # aucun coût pour qui n'a pas posé le réglage — l'import de torch lui-même est
     # évité dans ce cas, ce qui préserve les tests à moteur factice.
-    if settings.inference_threads > 0:
+    #
+    # La garde porte sur **les deux** réglages. N'appeler que sur
+    # `inference_threads` laisserait `TRAFFIC_OPENCV_THREADS` annoncé et sans effet
+    # dès qu'il est posé seul — le pire état d'un réglage, et celui que ce dépôt a
+    # déjà payé plusieurs fois.
+    if settings.inference_threads > 0 or settings.opencv_threads > 0:
         await anyio.to_thread.run_sync(
-            container.model_registry.apply_thread_budget, settings.inference_threads
+            container.model_registry.apply_thread_budget,
+            settings.inference_threads,
+            settings.opencv_threads,
         )
 
     # Même fenêtre et même raison que le budget de threads : avant la première

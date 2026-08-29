@@ -157,6 +157,37 @@ class Settings(BaseSettings):
     #:
     #: Sans effet sur GPU, où l'inférence ne vit pas sur ces threads.
     inference_threads: int = Field(0, ge=0, le=64)
+    #: Threads du `parallel_for_` d'**OpenCV**. `0` ne fait rien.
+    #:
+    #: Un second robinet, parce qu'`inference_threads` n'atteint qu'OpenCV via torch
+    #: — c'est-à-dire jamais. Au repos, OpenCV prend *tous* les processeurs logiques
+    #: (12 mesurés ici) quand torch en prend 6, et rien ne les arbitrait. Or le
+    #: prétraitement d'Ultralytics est du pur OpenCV et tourne **dans le fil qui
+    #: attend le GPU**, pendant que le fil de décodage d'ADR 0031 en veut autant :
+    #: c'est nommément la contention qu'ADR 0031 désigne comme la cause de son gain
+    #: non réalisé en 720p et 1080p, restée sans réglage jusqu'ici.
+    #:
+    #: **`0` par défaut, et c'est mesuré, pas prudent.** Trois mesures, et la
+    #: troisième est celle qui décide :
+    #:
+    #: - micro-banc, machine libre, OpenCV à 3 fils au lieu de 12 : *perd* 3,4 % ;
+    #: - micro-banc avec un fil OpenCV concurrent : *gagne* 9,7 puis 10,2 % ;
+    #: - **pipeline réel** (`pipeline_bench --anpr --ocr`, courses alternées) :
+    #:   20,92 → 20,97 puis 21,20 → 21,10 img/s. **Aucun effet**, et l'écart change
+    #:   de signe d'une passe à l'autre.
+    #:
+    #: Le fil concurrent du micro-banc était un substitut ; dans le vrai pipeline, le
+    #: décodage vit dans son propre fil depuis ADR 0031 et le détecteur de plaques
+    #: domine le budget, donc la contention que ce réglage vise ne se produit pas sur
+    #: ce profil. Il reste utile là où elle se produit — un navigateur qui lit la
+    #: vidéo sur la même machine, plusieurs analyses concurrentes — et c'est
+    #: précisément pourquoi il est réglable et non posé. Même doctrine
+    #: qu'`inference_threads` : l'échange se mesure, il ne se suppose pas.
+    #:
+    #: Ne borne **pas** le pool du décodeur FFmpeg, qui se pose par capture. Le
+    #: décodage vivant dans son propre fil depuis ADR 0031, il est hors du chemin
+    #: critique, et son effet n'a pas été mesuré ici.
+    opencv_threads: int = Field(0, ge=0, le=64)
     #: Laisser cuDNN choisir ses algorithmes de convolution **par la mesure**.
     #:
     #: **`false` par défaut, et c'est un correctif, pas un renoncement.** ADR 0013
@@ -554,6 +585,9 @@ class Settings(BaseSettings):
     #: l'utilisateur en voit est un aperçu qui cesse de hoqueter. Ce qui n'est pas
     #: servi n'est pas perdu — la piste repasse candidate à l'image suivante.
     reid_max_per_frame: int = Field(0, ge=0, le=32)
+    #: Threads intra-op d'onnxruntime pour l'encodeur d'apparence. `0` = repli sur
+    #: `inference_threads`. Voir `resolved_reid_intra_op_threads` pour la mesure.
+    reid_intra_op_threads: int = Field(0, ge=0, le=32)
     #: Netteté minimale (variance du laplacien) d'un recadrage encodé.
     #:
     #: Un véhicule assez large mais flou de mouvement rend un embedding instable.
@@ -706,6 +740,25 @@ class Settings(BaseSettings):
         être plus étroit que le budget de la machine.
         """
         return self.plate_ocr_intra_op_threads or self.inference_threads
+
+    @property
+    def resolved_reid_intra_op_threads(self) -> int:
+        """Threads intra-op d'onnxruntime pour l'encodeur d'apparence.
+
+        **Le même trou que l'OCR avait comblé, resté ouvert dans un second
+        adaptateur.** `OnnxVehicleEmbedder` construisait ses `SessionOptions` sans
+        budget, donc `TRAFFIC_INFERENCE_THREADS` atteignait torch et l'OCR mais pas
+        lui — sur un étage qui coûte 21,8 ms de CPU par vignette pendant que le fil
+        de décodage et le prétraitement torch veulent les mêmes cœurs.
+
+        Mesuré ici : défaut (0) **17,0 ms**, 3 fils 17,5, 6 fils 18,5, **12 fils
+        31,9 ms**. Borner à 3 coûte 3 % sur l'étage et rend trois cœurs au reste ;
+        forcer 12 est **1,9× pire** — l'hyperthreading dessert ce graphe, et un
+        opérateur qui poserait 12 « pour tout donner » ferait exactement cela.
+
+        Même repli que l'OCR, et pour la même raison.
+        """
+        return self.reid_intra_op_threads or self.inference_threads
 
     @property
     def resolved_plate_ocr_model_path(self) -> Path:

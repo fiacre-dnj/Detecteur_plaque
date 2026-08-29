@@ -457,3 +457,57 @@ class TestPlafondParImage:
 
         assert embedder.vectors_produced == 4
         assert all(vehicle.match_score is not None for vehicle in result.vehicles)
+
+
+class TestBudgetDeThreadsDeLEncodeur:
+    """Le budget d'onnxruntime atteint **aussi** l'encodeur d'apparence.
+
+    `TRAFFIC_INFERENCE_THREADS` atteignait torch et l'OCR, mais pas lui : ses
+    `SessionOptions` étaient construites sans budget. Sur un étage à 21,8 ms de CPU
+    par vignette, pendant que le fil de décodage et le prétraitement torch veulent
+    les mêmes cœurs, c'est le même trou que l'OCR avait comblé, resté ouvert dans un
+    second adaptateur.
+
+    Mesuré ici : défaut (0) 17,0 ms, 3 fils 17,5, 6 fils 18,5, **12 fils 31,9 ms** —
+    forcer tous les fils est 1,9× *pire*, l'hyperthreading desservant ce graphe.
+    """
+
+    @staticmethod
+    def _options_of(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, threads: int) -> object:
+        """Charge un encodeur en capturant les `SessionOptions` réellement passées."""
+        import onnxruntime as ort
+
+        from traffic_analysis.features.counting.infrastructure.onnx_vehicle_embedder import (
+            OnnxVehicleEmbedder,
+        )
+
+        captured: list[object] = []
+        model = tmp_path / "reid.onnx"
+        model.write_bytes(b"\x00" * 8)
+
+        def fake_session(_path: str, options: object, **_kwargs: object) -> object:
+            captured.append(options)
+            raise RuntimeError("on ne charge pas vraiment : seules les options comptent")
+
+        monkeypatch.setattr(ort, "InferenceSession", fake_session)
+        OnnxVehicleEmbedder(model, intra_op_threads=threads)._ensure_loaded()
+        return captured[0]
+
+    def test_le_budget_atteint_la_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        options = self._options_of(tmp_path, monkeypatch, 3)
+
+        assert options.intra_op_num_threads == 3  # type: ignore[attr-defined]
+
+    def test_zero_laisse_onnxruntime_decider(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`0` est la valeur d'onnxruntime pour « prends ce que tu veux ».
+
+        La poser explicitement reviendrait au même, mais ne rien poser garde la
+        distinction visible dans le code entre « pas de budget » et « budget nul ».
+        """
+        options = self._options_of(tmp_path, monkeypatch, 0)
+
+        assert options.intra_op_num_threads == 0  # type: ignore[attr-defined]

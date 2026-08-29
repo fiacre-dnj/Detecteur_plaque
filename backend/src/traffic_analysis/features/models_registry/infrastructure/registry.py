@@ -267,35 +267,72 @@ class ModelRegistry:
         self._device_reason = reason
         self._half = None
 
-    def apply_thread_budget(self, threads: int) -> None:
-        """Borne le nombre de threads d'inférence CPU de torch. `0` ne fait rien.
+    def apply_thread_budget(self, threads: int, opencv_threads: int = 0) -> None:
+        """Borne les threads CPU de torch **et** ceux d'OpenCV. `0` ne fait rien.
 
         **Appelée une fois au démarrage, avant toute inférence.** `set_num_threads`
         redimensionne un pool déjà créé, mais le faire en cours d'analyse changerait
         la cadence au milieu d'une mesure.
 
-        Sans effet sur GPU : l'inférence n'y vit pas sur ces threads. On l'applique
-        quand même sans condition, parce que le pré et le post-traitement, eux,
-        restent sur CPU.
+        Sans effet sur GPU pour torch : l'inférence n'y vit pas sur ces threads. On
+        l'applique quand même sans condition, parce que le pré et le post-traitement,
+        eux, restent sur CPU.
+
+        **`opencv_threads` est un second robinet, et il en fallait un.** Au repos,
+        OpenCV prend *tous* les processeurs logiques (12 mesurés ici) quand torch en
+        prend 6, et rien ne les arbitrait : `threads` ne touche que torch. Or le
+        prétraitement d'Ultralytics est du pur OpenCV et tourne dans le fil qui
+        attend le GPU, pendant que `decode_ahead` décode dans un autre — la
+        contention qu'ADR 0031 nomme comme la cause de son gain non réalisé en 720p
+        et 1080p, sans qu'aucun réglage ne la borne.
+
+        **Ce que ce robinet ne couvre pas, et c'est délibéré.**
+        `cv2.setNumThreads` borne le `parallel_for_` — `resize`, `copyMakeBorder`,
+        `cvtColor`, `Laplacian`, `imencode` — c'est-à-dire le prétraitement, qui est
+        sur le chemin critique. Il ne borne **pas** le pool du décodeur FFmpeg, qui
+        se pose par capture (`CAP_PROP_N_THREADS` ; ce build n'expose aucune variable
+        d'environnement pour lui). Ce second robinet n'est pas posé : le décodage vit
+        dans son propre fil depuis ADR 0031, donc hors du chemin critique, et son
+        effet n'a pas été mesuré ici. Poser un réglage dont on n'a pas mesuré l'effet
+        est exactement ce que ce dépôt refuse.
+
+        **Défaut `0`, et c'est mesuré, pas prudent** : machine libre, OpenCV à 3 fils
+        au lieu de 12 fait *perdre* 3,4 % au chemin d'inférence ; avec un fil OpenCV
+        concurrent, il en fait *gagner* 9,7 puis 10,2 %. L'échange change de signe
+        selon la charge et le nombre de cœurs — un défaut non nul serait juste ici et
+        faux ailleurs. Même doctrine que `inference_threads`.
 
         Ne lève jamais. Un budget de threads est un confort d'exécution ; un service
         qui refuserait de démarrer parce qu'il n'a pas pu le poser échangerait une
         gêne contre une panne.
         """
-        if threads <= 0:
-            return
-        try:
-            import torch
+        if threads > 0:
+            try:
+                import torch
 
-            torch.set_num_threads(threads)
-            # Le pool inter-op ne se redimensionne pas après la première inférence,
-            # et lève alors plutôt que d'ignorer. Toléré séparément : borner
-            # l'intra-op est l'essentiel du gain.
-            with suppress(Exception):
-                torch.set_num_interop_threads(max(1, threads // 2))
-            logger.info("budget de threads d'inférence posé", threads=threads)
-        except Exception as exc:
-            logger.warning("budget de threads non appliqué", error=str(exc))
+                torch.set_num_threads(threads)
+                # Le pool inter-op ne se redimensionne pas après la première inférence,
+                # et lève alors plutôt que d'ignorer. Toléré séparément : borner
+                # l'intra-op est l'essentiel du gain.
+                with suppress(Exception):
+                    torch.set_num_interop_threads(max(1, threads // 2))
+                logger.info("budget de threads d'inférence posé", threads=threads)
+            except Exception as exc:
+                logger.warning("budget de threads non appliqué", error=str(exc))
+
+        if opencv_threads > 0:
+            try:
+                import cv2
+
+                before = cv2.getNumThreads()
+                cv2.setNumThreads(opencv_threads)
+                logger.info(
+                    "budget de threads OpenCV posé",
+                    threads=opencv_threads,
+                    avant=before,
+                )
+            except Exception as exc:
+                logger.warning("budget de threads OpenCV non appliqué", error=str(exc))
 
     def enable_cudnn_autotune(self) -> None:
         """Laisse cuDNN choisir ses algorithmes de convolution par la mesure.

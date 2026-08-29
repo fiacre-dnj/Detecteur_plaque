@@ -954,10 +954,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         device=settings.device,
         half=settings.half,
     )
-    # Le service pose ce budget dans son `lifespan`, avant toute inférence : un
-    # banc qui ne le poserait pas mesurerait une autre machine que la sienne.
-    if settings.inference_threads > 0:
-        registry.apply_thread_budget(settings.inference_threads)
+    # Le service pose ces budgets dans son `lifespan`, avant toute inférence : un
+    # banc qui ne les poserait pas mesurerait une autre machine que la sienne.
+    #
+    # **Les deux**, et la garde porte sur les deux. Ne passer que le premier laissait
+    # `TRAFFIC_OPENCV_THREADS` sans effet *dans le banc* : on aurait comparé deux
+    # courses identiques en croyant mesurer un réglage — le pire état d'un outil de
+    # mesure, et la version en miroir du défaut que la garde d'`app_factory` évite.
+    if settings.inference_threads > 0 or settings.opencv_threads > 0:
+        registry.apply_thread_budget(settings.inference_threads, settings.opencv_threads)
 
     # Le `gmc_method` vient du réglage, exactement comme dans `container.py`. Le
     # passer par la ligne de commande servirait à comparer deux valeurs sans toucher

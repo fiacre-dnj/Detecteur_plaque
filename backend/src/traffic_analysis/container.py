@@ -308,6 +308,7 @@ def build_counting_stack(
         settings.resolved_reid_model_path,
         min_vehicle_width_px=settings.reid_min_vehicle_width_px,
         min_sharpness=settings.reid_min_sharpness,
+        intra_op_threads=settings.resolved_reid_intra_op_threads,
     )
     analysis_service = AnalysisService(
         resolved_engine,

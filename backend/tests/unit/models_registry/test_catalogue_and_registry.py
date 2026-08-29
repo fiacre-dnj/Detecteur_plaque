@@ -554,3 +554,61 @@ class TestPrechauffageEtDevice:
         (tmp_path / "yolov8n.pt").write_bytes(b"x" * 1234)
         assert registry.is_downloaded("yolov8n") is True
         assert registry.size_bytes("yolov8n") == 1234
+
+
+class TestBudgetDeThreads:
+    """Deux robinets distincts, et le second manquait.
+
+    `TRAFFIC_INFERENCE_THREADS` n'atteint qu'OpenCV *via* torch — c'est-à-dire
+    jamais. Or au repos OpenCV prend tous les processeurs logiques (12 mesurés ici)
+    quand torch en prend 6, et le prétraitement d'Ultralytics est du pur OpenCV
+    tournant dans le fil qui attend le GPU, pendant que le fil de décodage d'ADR 0031
+    en veut autant. C'est nommément la contention qu'ADR 0031 laisse sans réglage.
+    """
+
+    @staticmethod
+    def _registry(tmp_path: Path) -> ModelRegistry:
+        return ModelRegistry(weights_dir=tmp_path, device="cpu", half=False, max_loaded=2)
+
+    def test_zero_ne_touche_a_rien(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Le défaut ne doit poser **aucun** des deux robinets.
+
+        Le test relève la valeur avant et après : sans cela, il passerait pour de
+        mauvaises raisons sur une machine dont le budget vaudrait déjà zéro.
+        """
+        import cv2
+
+        poses: list[int] = []
+        monkeypatch.setattr(cv2, "setNumThreads", poses.append)
+        avant = cv2.getNumThreads()
+
+        self._registry(tmp_path).apply_thread_budget(0, 0)
+
+        assert poses == []
+        assert cv2.getNumThreads() == avant
+
+    def test_le_budget_opencv_atteint_opencv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import cv2
+
+        poses: list[int] = []
+        monkeypatch.setattr(cv2, "setNumThreads", poses.append)
+
+        self._registry(tmp_path).apply_thread_budget(0, 3)
+
+        assert poses == [3]
+
+    def test_un_opencv_indisponible_ne_fait_pas_echouer_le_demarrage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Un budget de threads est un confort ; refuser de démarrer pour lui
+        échangerait une gêne contre une panne."""
+        import cv2
+
+        def boom(_value: int) -> None:
+            raise RuntimeError("pas de pool")
+
+        monkeypatch.setattr(cv2, "setNumThreads", boom)
+
+        self._registry(tmp_path).apply_thread_budget(0, 3)  # ne lève pas

@@ -99,6 +99,7 @@ class OnnxVehicleEmbedder:
 
     __slots__ = (
         "_checked",
+        "_intra_op_threads",
         "_lock",
         "_min_sharpness",
         "_min_width_px",
@@ -112,10 +113,16 @@ class OnnxVehicleEmbedder:
         *,
         min_vehicle_width_px: float = 96.0,
         min_sharpness: float = 8.0,
+        intra_op_threads: int = 0,
     ) -> None:
         self._path = model_path
         self._min_width_px = min_vehicle_width_px
         self._min_sharpness = min_sharpness
+        #: `0` laisse onnxruntime prendre tous les cœurs, ce qui est **1,9× pire**
+        #: que le défaut mesuré ici sur 12 fils (31,9 ms contre 17,0). Le budget
+        #: vient de `Settings.resolved_reid_intra_op_threads`, avec repli sur
+        #: `inference_threads` — le même câblage que l'OCR, resté absent ici.
+        self._intra_op_threads = intra_op_threads
         self._session: Any = None
         self._checked = False
         self._lock = threading.Lock()
@@ -320,6 +327,8 @@ class OnnxVehicleEmbedder:
                 import onnxruntime as ort
 
                 options = ort.SessionOptions()
+                if self._intra_op_threads > 0:
+                    options.intra_op_num_threads = self._intra_op_threads
                 # Le modèle bavarde à chaque chargement (initialiseurs inutilisés
                 # d'un export torch) : des dizaines de lignes de journal qui ne
                 # décrivent rien d'actionnable.
