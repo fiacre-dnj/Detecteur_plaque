@@ -12,12 +12,14 @@ de la vitesse de la machine ne prouve rien.
 
 from __future__ import annotations
 
+from traffic_analysis.features.counting.domain.inference_budget import (
+    InferenceCandidate,
+    select_within_budget,
+)
 from traffic_analysis.features.counting.domain.models import BoundingBox
 from traffic_analysis.features.counting.domain.plate_policy import (
-    DetectionCandidate,
     PlateDetectOptions,
     PlateDetectPolicy,
-    select_within_budget,
 )
 
 #: Un véhicule largement au-dessus de `min_vehicle_width_px`.
@@ -233,8 +235,8 @@ class TestPlafondParImage:
     """
 
     @staticmethod
-    def _candidate(global_id: int, width: float, *, never: bool = False) -> DetectionCandidate:
-        return DetectionCandidate(global_id=global_id, width=width, never_detected=never)
+    def _candidate(global_id: int, width: float, *, never: bool = False) -> InferenceCandidate:
+        return InferenceCandidate(global_id=global_id, width=width, never_served=never)
 
     def test_sans_plafond_rien_n_est_ecarte(self) -> None:
         """`0` = illimité, le comportement historique. Le plafond doit rester

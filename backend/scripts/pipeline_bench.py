@@ -75,7 +75,8 @@ import argparse
 import json
 import statistics
 import sys
-from contextlib import contextmanager
+import threading
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import perf_counter
@@ -109,6 +110,25 @@ VIDEO_SUFFIXES = frozenset({".mp4", ".avi", ".mov", ".mkv", ".webm"})
 #: « 0,35 » se serait désynchronisé du service au premier changement de défaut, et le
 #: rapport aurait affirmé une valeur que la course n'avait pas utilisée.
 DEFAULT_CONFIDENCE = AnalysisJobConfig(model_id="").confidence_threshold
+
+#: Postes **contenus** dans un autre, et qui ne s'additionnent donc pas au total.
+#:
+#: Sans cette mention, un lecteur additionne `plateDetect` (46,6 %) et
+#: `plateInference` (35,1 %) et obtient 82 % pour un seul étage. Le rapport le disait
+#: déjà pour `decodeAndOther` (« par différence ») et se taisait sur `gmc`, contenu
+#: dans `tracker` depuis toujours.
+_CONTAINED_IN = {
+    "gmc": " (inclus dans tracker)",
+    "plateInference": " (inclus dans plateDetect)",
+}
+
+#: Plancher sous lequel une queue de distribution ne dit plus rien.
+#:
+#: Le rapport `max > 2 × p50` est le bon signal sur un poste qui coûte des dizaines
+#: de millisecondes (ADR 0033 : p50 27 ms, max 1 238). Sur un poste sub-milliseconde
+#: il ne décrit que la gigue de l'ordonnanceur, et un ⚠ à chaque course est un ⚠
+#: qu'on apprend à ignorer.
+TAIL_MIN_MS = 1.0
 
 
 @dataclass
@@ -181,6 +201,18 @@ class Timings:
     tracker: Stage = field(default_factory=lambda: Stage("tracker"))
     gmc: Stage = field(default_factory=lambda: Stage("gmc"))
     plate_detect: Stage = field(default_factory=lambda: Stage("plateDetect"))
+    #: Temps **GPU** du détecteur de plaques, extrait de son propre `result.speed`.
+    #:
+    #: **Le poste qui manquait pour trancher.** `plateDetect` pèse 45 à 73 % du budget
+    #: selon la scène, mais mélange recadrage numpy, letterbox, inférence CUDA, NMS et
+    #: `_select` : impossible de dire si le levier est « moins de pixels » ou « moins
+    #: de Python ». Ultralytics produit un `speed` synchronisé (`ops.Profile(device=…)`)
+    #: pour ce modèle comme pour l'autre ; il suffisait de le lire.
+    #:
+    #: **Contenu dans `plateDetect`**, donc exclu de `measured_ms()` exactement comme
+    #: `gmc` l'est de `tracker` : une somme de postes qui excède le total mesuré au
+    #: poignet se lit comme une erreur de mesure, et c'en serait une.
+    plate_inference: Stage = field(default_factory=lambda: Stage("plateInference"))
     ocr: Stage = field(default_factory=lambda: Stage("ocr"))
     domain: Stage = field(default_factory=lambda: Stage("domain"))
     serialise: Stage = field(default_factory=lambda: Stage("serialise"))
@@ -190,6 +222,16 @@ class Timings:
     plate_crops: int = 0
     #: Vignettes de plaques soumises à l'OCR, tous appels confondus.
     ocr_plates: int = 0
+    #: Crête d'allocation torch sur la carte, en mébioctets. `None` hors GPU.
+    #:
+    #: **Le seul chiffre qui attribue la VRAM à NOTRE processus** : `memory.used` de
+    #: NVML est celle de toute la carte, compositeur de bureau compris. Sur 4 Gio
+    #: partagés, c'est lui qui dit à quelle distance du mur on est — et donc si un
+    #: `--batch` plus grand ou un palier plus lourd tient.
+    vram_peak_mib: float | None = None
+    vram_reserved_mib: float | None = None
+    #: Utilisation GPU échantillonnée pendant la course. `None` sans `--gpu-probe`.
+    gpu: dict[str, float] | None = None
 
     def measured_ms(self) -> float:
         """Somme des postes réellement chronométrés.
@@ -225,6 +267,7 @@ class Timings:
                 "tracker": round(self.tracker.per_frame_ms(self.frames), 2),
                 "gmc": round(self.gmc.per_frame_ms(self.frames), 2),
                 "plateDetect": round(self.plate_detect.per_frame_ms(self.frames), 2),
+                "plateInference": round(self.plate_inference.per_frame_ms(self.frames), 2),
                 "ocr": round(self.ocr.per_frame_ms(self.frames), 2),
                 "domain": round(self.domain.per_frame_ms(self.frames), 2),
                 "serialise": round(self.serialise.per_frame_ms(self.frames), 2),
@@ -240,9 +283,26 @@ class Timings:
                     ("postprocess", self.postprocess),
                     ("tracker", self.tracker),
                     ("plateDetect", self.plate_detect),
+                    ("plateInference", self.plate_inference),
                     ("ocr", self.ocr),
+                    # `domain` et `serialise` n'en avaient pas, alors que ce sont deux
+                    # étages CPU du chemin critique : on n'en connaissait que la
+                    # moyenne, c'est-à-dire la lecture qui a caché six pauses d'une
+                    # seconde pendant toute une session (voir `Stage.spread`).
+                    ("domain", self.domain),
+                    ("serialise", self.serialise),
+                    ("gmc", self.gmc),
                 )
             },
+            # `decodeAndOther` n'a **pas** de `perCall`, et c'est délibéré : il est
+            # obtenu par différence, donc il n'a pas d'appels, donc pas de
+            # distribution. Lui en fabriquer une serait la seule vraie malhonnêteté
+            # possible dans ce rapport.
+            "vram": {
+                "peakMib": self.vram_peak_mib,
+                "reservedMib": self.vram_reserved_mib,
+            },
+            "gpu": self.gpu,
             # Le **volume de travail**, sans lequel une variation de coût ne
             # s'interprète pas : 3 ms de plus par image peuvent venir d'un étage
             # devenu plus lent ou de deux fois plus de plaques soumises, et les deux
@@ -254,6 +314,141 @@ class Timings:
                 "ocrCallsPerFrame": round(self.ocr.calls / per_frame, 2),
             },
         }
+
+
+def summarise_samples(samples: Sequence[float]) -> dict[str, float]:
+    """p50 / p90 / max d'une série. Fonction **pure**, donc testable sans GPU.
+
+    Séparée du fil d'échantillonnage exprès : c'est l'agrégation qu'on veut
+    vérifier, pas la capacité de la CI à parler à un pilote NVIDIA.
+    """
+    if not samples:
+        return {"p50": 0.0, "p90": 0.0, "max": 0.0, "samples": 0}
+    ordered = sorted(samples)
+    return {
+        "p50": round(statistics.median(ordered), 1),
+        "p90": round(ordered[min(len(ordered) - 1, int(0.9 * len(ordered)))], 1),
+        "max": round(ordered[-1], 1),
+        "samples": len(ordered),
+    }
+
+
+class _GpuSampler:
+    """Relève l'utilisation GPU pendant une course, dans un fil démon.
+
+    **Pourquoi ça vaut un fil.** Aucun poste du rapport ne dit si la carte est
+    saturée : `inference` est un plancher de temps GPU, `plateDetect` mélange GPU et
+    CPU, et la fourchette qui en résulte est trop large pour décider. Un relevé
+    externe (`nvidia-smi --loop-ms`) répond, mais il faut le recoller à la main et il
+    ne vit pas dans le rapport — donc `--compare` ne le voit pas et un rapport
+    archivé perd son contexte.
+
+    **5 Hz et pas plus.** `utilization.gpu` de NVML est un *rapport cyclique* sur la
+    dernière période d'échantillonnage du pilote, laquelle est fixée entre 1 s et
+    1/6 s selon le produit : interroger plus vite rend deux fois la même valeur,
+    c'est-à-dire de la fausse précision.
+
+    **Ce que le chiffre dit, et ce qu'il ne dit pas.** C'est le pourcentage de temps
+    pendant lequel *au moins un* noyau tournait — pas un taux d'occupation des unités
+    de calcul. 100 % peut vouloir dire un seul petit noyau en permanence.
+    """
+
+    def __init__(self, period_s: float = 0.2) -> None:
+        self._period_s = period_s
+        self._samples: list[float] = []
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._handle: Any = None
+
+    def start(self) -> bool:
+        """Rend `False` si la sonde est indisponible — jamais une exception.
+
+        Un banc qui tomberait en marche parce que sa sonde manque serait pire qu'un
+        banc sans sonde.
+        """
+        try:
+            import pynvml
+
+            pynvml.nvmlInit()
+            self._handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        except Exception:
+            return False
+
+        def loop() -> None:
+            import pynvml
+
+            while not self._stop.wait(self._period_s):
+                # Une lecture ratée n'arrête pas le relevé : un pilote occupé rend
+                # parfois une erreur transitoire, et perdre un échantillon sur deux
+                # cents vaut mieux que perdre la course.
+                with suppress(Exception):
+                    rates = pynvml.nvmlDeviceGetUtilizationRates(self._handle)
+                    self._samples.append(float(rates.gpu))
+
+        self._thread = threading.Thread(target=loop, name="bench-gpu-probe", daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self) -> dict[str, float]:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        return summarise_samples(self._samples)
+
+
+class _GpuProbe:
+    """Relevé GPU **et** crête VRAM, encadrant exactement la fenêtre mesurée.
+
+    Deux instruments complémentaires, et ils ne concluent qu'ensemble : NVML donne
+    le rapport cyclique sans attribution, le partage par étage donne l'attribution
+    sans savoir ce qui est GPU. La crête torch, elle, est le seul chiffre qui
+    attribue la VRAM à **notre** processus — `memory.used` de NVML est celle de toute
+    la carte, compositeur de bureau compris.
+
+    `start()` est appelée à la **fin du rodage** : un relevé qui le couvrirait
+    décrirait une passe qu'on vient justement de jeter. Même raison pour
+    `reset_peak_memory_stats`.
+    """
+
+    def __init__(self, *, enabled: bool) -> None:
+        self._enabled = enabled
+        self._sampler: _GpuSampler | None = None
+        self._torch: Any = None
+
+    def start(self) -> None:
+        if not self._enabled:
+            return
+        sampler = _GpuSampler()
+        if sampler.start():
+            self._sampler = sampler
+        else:
+            print("  ⚠ sonde GPU indisponible (pynvml) — course sans relevé")
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                self._torch = torch
+                torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            self._torch = None
+
+    def stop(self, timings: Timings) -> None:
+        if self._sampler is not None:
+            timings.gpu = self._sampler.stop()
+        if self._torch is not None:
+            timings.vram_peak_mib = round(self._torch.cuda.max_memory_allocated() / 2**20, 1)
+            timings.vram_reserved_mib = round(self._torch.cuda.max_memory_reserved() / 2**20, 1)
+
+
+@contextmanager
+def _gpu_probe(timings: Timings, *, enabled: bool) -> Iterator[None]:
+    """`_GpuProbe` pour les chemins dont la fenêtre mesurée est déjà isolée."""
+    probe = _GpuProbe(enabled=enabled)
+    probe.start()
+    try:
+        yield
+    finally:
+        probe.stop(timings)
 
 
 @contextmanager
@@ -361,6 +556,38 @@ def _instrumented_plates(timings: Timings) -> Iterator[None]:
     original_detect = UltralyticsPlateDetector.detect_many
     original_read = OnnxPlateReader.read
     original_snapshot = SessionTrack.snapshot
+    original_ensure = UltralyticsPlateDetector._ensure_loaded
+
+    def timed_ensure(self: Any) -> Any:  # noqa: ANN401
+        """Enveloppe le `predict` de l'instance **au premier chargement**.
+
+        C'est le seul crochet possible : le modèle de plaques est un objet
+        d'Ultralytics que nous ne possédons pas, et son chargement est paresseux.
+        L'envelopper à la classe toucherait aussi le détecteur de véhicules.
+        """
+        model = original_ensure(self)
+        if model is None or getattr(model, "_bench_wrapped", False):
+            return model
+
+        inner = model.predict
+
+        def timed_predict(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            results = inner(*args, **kwargs)
+            # **Sommer, jamais prendre le premier.** Ultralytics divise `speed` par la
+            # taille du lot, donc `results[0].speed["inference"]` est le coût par
+            # RECADRAGE, pas par appel. La somme rend le total de l'appel — et c'est
+            # ce qui rend le poste comparable à `plateDetect`, qui est mesuré par appel.
+            total = 0.0
+            for result in results or ():
+                speed = getattr(result, "speed", None) or {}
+                total += float(speed.get("inference") or 0.0)
+            if total > 0.0:
+                timings.plate_inference.add(total)
+            return results
+
+        model.predict = timed_predict
+        model._bench_wrapped = True
+        return model
 
     def timed_detect(self: Any, image: Any, boxes: Any, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
         # Matérialisé avant l'appel : le port accepte une `Sequence`, et un
@@ -390,12 +617,14 @@ def _instrumented_plates(timings: Timings) -> Iterator[None]:
             timings.serialise.add((perf_counter() - started) * 1000.0)
 
     UltralyticsPlateDetector.detect_many = timed_detect  # type: ignore[method-assign]
+    UltralyticsPlateDetector._ensure_loaded = timed_ensure  # type: ignore[method-assign]
     OnnxPlateReader.read = timed_read  # type: ignore[method-assign]
     SessionTrack.snapshot = timed_snapshot  # type: ignore[method-assign]
     try:
         yield
     finally:
         UltralyticsPlateDetector.detect_many = original_detect  # type: ignore[method-assign]
+        UltralyticsPlateDetector._ensure_loaded = original_ensure  # type: ignore[method-assign]
         OnnxPlateReader.read = original_read  # type: ignore[method-assign]
         SessionTrack.snapshot = original_snapshot  # type: ignore[method-assign]
 
@@ -407,6 +636,7 @@ def run_video(
     *,
     frames: int,
     warmup_frames: int,
+    gpu_probe: bool = False,
 ) -> tuple[Timings, dict[str, Any]]:
     """Analyse `frames` images et rend le partage du temps et les compteurs.
 
@@ -418,6 +648,9 @@ def run_video(
     info = engine.probe(video)
     session = AnalysisSession(config.session_config(), info.width, info.height)
     timings = Timings()
+    # Démarrée **à la fin du rodage** et non ici : un relevé qui couvrirait le rodage
+    # décrirait une passe qu'on vient justement de jeter.
+    probe = _GpuProbe(enabled=gpu_probe)
 
     with _instrumented(timings):
         started: float | None = None
@@ -439,10 +672,12 @@ def run_video(
                 # Le rodage est terminé : on jette ce qui a été mesuré et on
                 # démarre le chronomètre de référence au même instant.
                 _discard(timings)
+                probe.start()
                 started = perf_counter()
             if started is not None and analysed - warmup_frames >= frames:
                 break
 
+    probe.stop(timings)
     if started is None:  # vidéo plus courte que le rodage demandé
         timings.wall_ms = 0.0
         timings.frames = 0
@@ -460,6 +695,7 @@ def run_video_with_plates(
     *,
     frames: int,
     warmup_frames: int,
+    gpu_probe: bool = False,
 ) -> tuple[Timings, dict[str, Any]]:
     """Même mesure, mais par la **vraie** `AnalysisService`, ANPR et OCR comprises.
 
@@ -499,7 +735,7 @@ def run_video_with_plates(
     # `--start` sans échelle vise une fenêtre du fichier réel, et la borne de fin doit
     # la suivre. La borne est exclue, comme partout (ADR 0028).
     measured = replace(config, end_ms=config.start_ms + frames * per_frame_ms)
-    with _instrumented(timings, plates=True):
+    with _instrumented(timings, plates=True), _gpu_probe(timings, enabled=gpu_probe):
         started = perf_counter()
         result = service.run_video("bench", video, measured)
         timings.wall_ms = (perf_counter() - started) * 1000.0
@@ -550,6 +786,7 @@ def _discard(timings: Timings) -> None:
         timings.tracker,
         timings.gmc,
         timings.plate_detect,
+        timings.plate_inference,
         timings.ocr,
         timings.domain,
         timings.serialise,
@@ -754,15 +991,30 @@ def print_run(report: dict[str, Any]) -> None:
         per_call = timing.get("perCall", {})
         for name, value in sorted(stages.items(), key=lambda item: -item[1]):
             share = 100.0 * value / timing["msPerFrame"] if timing["msPerFrame"] else 0.0
-            marker = " (par différence)" if name == "decodeAndOther" else ""
+            marker = _CONTAINED_IN.get(name, "")
+            if name == "decodeAndOther":
+                marker = " (par différence)"
             spread = per_call.get(name)
             # La queue de distribution n'est affichée que si elle dit quelque chose :
             # un maximum au double de la médiane est une pause, pas un coût.
+            #
+            # **Plus un plancher absolu**, et il n'est pas cosmétique : sur un poste
+            # sub-milliseconde comme `domain`, un maximum à 0,36 ms pour une médiane à
+            # 0,14 franchit le rapport de 2 sans rien signaler d'autre que la gigue de
+            # l'ordonnanceur. Sans plancher, chaque course afficherait un ⚠ « p50 0 /
+            # p90 0 / max 0 » — un avertissement qu'on apprend à ignorer, ce qui est
+            # pire que pas d'avertissement.
             tail = ""
-            if spread and spread["p50"] and spread["max"] > 2.0 * spread["p50"]:
+            if (
+                spread
+                and spread["p50"]
+                and spread["max"] > 2.0 * spread["p50"]
+                and spread["max"] >= TAIL_MIN_MS
+            ):
+                digits = 2 if spread["p50"] < 1.0 else 0
                 tail = (
-                    f"   ⚠ par appel : p50 {spread['p50']:.0f} / p90 {spread['p90']:.0f} / "
-                    f"max {spread['max']:.0f} ms"
+                    f"   ⚠ par appel : p50 {spread['p50']:.{digits}f} / "
+                    f"p90 {spread['p90']:.{digits}f} / max {spread['max']:.{digits}f} ms"
                 )
             print(f"      {name:<16} {value:>6.2f} ms  {share:>5.1f} %{marker}{tail}")
         counts = source["counts"]
@@ -787,13 +1039,49 @@ def print_run(report: dict[str, Any]) -> None:
             print(f"    plaques  : {len(plates)} publiées{listed}")
 
 
-def print_comparison(current: dict[str, Any], previous: dict[str, Any]) -> None:
-    """Écart au rapport antérieur, débit **et** justesse.
+#: Réglages du contexte qui décident **de ce qui est compté**.
+#:
+#: Comparer les comptages de deux courses qui n'ont pas analysé la même chose produit
+#: une alerte qui n'apprend rien — et qu'on apprend donc à ignorer, ce qui est le pire
+#: sort possible pour un garde-fou. `batch` et `cudnnAutotune` en sont **absents**
+#: exprès : ils changent le débit, jamais les boîtes.
+COMPARABLE_SETTINGS = (
+    "modelId",
+    "imgsz",
+    "confidence",
+    "stride",
+    "frames",
+    "start",
+    "anpr",
+    "ocr",
+    "plateNetSize",
+    "gmc",
+    "withReid",
+    "trackHighThresh",
+    "newTrackThresh",
+)
+
+
+def incomparable_settings(current: dict[str, Any], previous: dict[str, Any]) -> list[str]:
+    """Les réglages qui diffèrent et qui interdisent de comparer les comptages."""
+    now = current.get("context", {}).get("settings", {})
+    was = previous.get("context", {}).get("settings", {})
+    return [key for key in COMPARABLE_SETTINGS if now.get(key) != was.get(key)]
+
+
+def print_comparison(current: dict[str, Any], previous: dict[str, Any]) -> bool:
+    """Écart au rapport antérieur, débit **et** justesse. Rend « un comptage a changé ».
 
     Les deux sont affichés côte à côte délibérément : un gain de débit payé par un
     comptage différent n'est pas un gain, et les lire dans deux tableaux séparés
     laisserait croire le contraire.
+
+    Le booléen rendu est ce qui permet à `main` de sortir en erreur : jusqu'ici la
+    comparaison **affichait** « LE COMPTAGE A CHANGÉ » puis rendait `0` dans tous les
+    cas, donc aucun script ni aucun crochet ne pouvait échouer sur une régression de
+    justesse.
     """
+    changed = False
     print("\n  ── Comparaison ──────────────────────────────────────────────")
     before = {source["name"]: source for source in previous.get("sources", [])}
     for source in current["sources"]:
@@ -813,6 +1101,7 @@ def print_comparison(current: dict[str, Any], previous: dict[str, Any]) -> None:
             print(f"      {name:<16} {old_value:>6.2f} → {value:>6.2f} ms")
 
         if source["counts"] != older["counts"]:
+            changed = True
             print("    ⚠ LE COMPTAGE A CHANGÉ — ce n'est pas une optimisation neutre :")
             for key in ("trackedVehicles", "crossings", "crossedUnique"):
                 if source["counts"].get(key) != older["counts"].get(key):
@@ -833,6 +1122,8 @@ def print_comparison(current: dict[str, Any], previous: dict[str, Any]) -> None:
                 print(f"      plaques : {was_plates} → {now_plates}")
         else:
             print("    comptage identique.")
+
+    return changed
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -917,6 +1208,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--gpu-probe",
+        dest="gpu_probe",
+        action="store_true",
+        help=(
+            "Relève l'utilisation GPU (pynvml, 5 Hz) et la crête VRAM torch pendant "
+            "la fenêtre mesurée. Aucun poste du rapport ne dit si la carte est "
+            "saturée : « inference » est un plancher de temps GPU et « plateDetect » "
+            "mélange GPU et CPU. Opt-in, jamais par défaut — la sonde est un fil de "
+            "plus, et son coût doit être mesuré avant d'être cru."
+        ),
+    )
+    parser.add_argument(
         "--cudnn",
         dest="cudnn",
         default=None,
@@ -954,10 +1257,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         device=settings.device,
         half=settings.half,
     )
-    # Le service pose ce budget dans son `lifespan`, avant toute inférence : un
-    # banc qui ne le poserait pas mesurerait une autre machine que la sienne.
-    if settings.inference_threads > 0:
-        registry.apply_thread_budget(settings.inference_threads)
+    # Le service pose ces budgets dans son `lifespan`, avant toute inférence : un
+    # banc qui ne les poserait pas mesurerait une autre machine que la sienne.
+    #
+    # **Les deux**, et la garde porte sur les deux. Ne passer que le premier laissait
+    # `TRAFFIC_OPENCV_THREADS` sans effet *dans le banc* : on aurait comparé deux
+    # courses identiques en croyant mesurer un réglage — le pire état d'un outil de
+    # mesure, et la version en miroir du défaut que la garde d'`app_factory` évite.
+    if settings.inference_threads > 0 or settings.opencv_threads > 0:
+        registry.apply_thread_budget(settings.inference_threads, settings.opencv_threads)
 
     # Le `gmc_method` vient du réglage, exactement comme dans `container.py`. Le
     # passer par la ligne de commande servirait à comparer deux valeurs sans toucher
@@ -1017,7 +1325,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "stride": args.stride,
                 "frames": args.frames,
                 "warmup": args.warmup,
+                # **Il manquait, et son absence rendait `--compare` menteur** : deux
+                # rapports mesurant deux fenêtres différentes de la même vidéo portent
+                # le même nom de source, donc l'appariement se faisait en silence et
+                # annonçait un écart de comptage qui n'était qu'un changement de scène.
+                "start": args.start,
                 "confidence": args.confidence,
+                "gpuProbe": bool(args.gpu_probe),
                 # Annoncé, jamais supposé : c'est ce réglage qui décide si un poste
                 # coûte ou s'il stalle, donc un rapport qui ne le porte pas n'est pas
                 # comparable à un autre (ADR 0033).
@@ -1052,11 +1366,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if stack is not None:
             timings, counts = run_video_with_plates(
-                stack.analysis, video, config, frames=args.frames, warmup_frames=args.warmup
+                stack.analysis,
+                video,
+                config,
+                frames=args.frames,
+                warmup_frames=args.warmup,
+                gpu_probe=args.gpu_probe,
             )
         else:
             timings, counts = run_video(
-                engine, video, config, frames=args.frames, warmup_frames=args.warmup
+                engine,
+                video,
+                config,
+                frames=args.frames,
+                warmup_frames=args.warmup,
+                gpu_probe=args.gpu_probe,
             )
         report["sources"].append(
             {
@@ -1074,8 +1398,22 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print_run(report)
 
+    status = 0
     if args.compare is not None and args.compare.is_file():
-        print_comparison(report, json.loads(args.compare.read_text(encoding="utf-8")))
+        previous = json.loads(args.compare.read_text(encoding="utf-8"))
+        differing = incomparable_settings(report, previous)
+        if differing:
+            # **Refusé AVANT d'être comparé**, et avec un code distinct. Deux courses
+            # qui n'ont pas analysé la même chose produiraient un écart de comptage
+            # qui n'est qu'un changement de scène — exactement le genre d'alerte
+            # qu'on apprend à ignorer, donc le pire sort d'un garde-fou.
+            print(
+                "\n  ⚠ COMPARAISON REFUSÉE — les deux courses ne mesurent pas la "
+                f"même chose : {', '.join(differing)}"
+            )
+            status = 3
+        elif print_comparison(report, previous):
+            status = 2
 
     if args.json is not None:
         args.json.parent.mkdir(parents=True, exist_ok=True)
@@ -1083,7 +1421,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
         print(f"\n  Rapport écrit : {args.json}")
-    return 0
+    # `2` = régression de justesse, `3` = contexte incomparable, `1` = aucune vidéo.
+    # Trois codes distincts parce qu'ils appellent trois gestes différents, et parce
+    # qu'un `0` universel rendait tout crochet de non-régression impossible.
+    return status
 
 
 def _sources(

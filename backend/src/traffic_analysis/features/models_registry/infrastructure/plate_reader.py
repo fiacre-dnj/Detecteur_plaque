@@ -8,8 +8,10 @@ d'une frame (`plate_detector.py`), la lecture quelques dizaines de millisecondes
 tout un lot. L'OCR n'est pas le goulot ; `plate_policy.py` existe donc surtout
 pour protéger la **justesse** du vote — ne pas voter quarante fois sur le même
 recadrage figé — plutôt que la cadence. C'est aussi ce qui autorise à dépenser
-plusieurs *variantes* de prétraitement par plaque : trois fois presque rien reste
-presque rien, et une plaque penchée ne se lit pas autrement.
+plusieurs *variantes* de prétraitement par plaque : **jusqu'à cinq** depuis ADR 0029
+(base, redressée, encart, deux rognées à gauche), et cinq fois presque rien reste
+presque rien puisqu'elles voyagent dans le même lot. Une plaque penchée ne se lit
+pas autrement, et un idéogramme de province mange son voisin sans les rognages.
 
 **`onnxruntime` n'est jamais importé au niveau module**, exactement comme
 `plate_detector.py` importe `YOLO` dans `_ensure_loaded`. Ce n'est pas un détail de
@@ -454,11 +456,14 @@ class OnnxPlateReader:
         du contrat d'alignement positionnel du port. Une vignette écartée par
         `_prepare` laisse un trou, elle ne décale pas les suivantes.
 
-        Chaque plaque produit une à trois *variantes* de prétraitement, toutes
-        envoyées dans le **même** lot. Le coût fixe d'une inférence domine sur un
-        tenseur de cette taille : trois variantes en un appel coûtent nettement moins
-        que trois appels, et la meilleure des trois lit des plaques que la seule
-        chaîne d'origine manquait.
+        Chaque plaque produit **une à cinq** variantes de prétraitement — base,
+        redressée, encart, plus une par fraction de `LEFT_INSET_FRACTIONS` depuis
+        ADR 0029 — toutes envoyées dans le **même** lot. Le coût fixe d'une inférence
+        domine sur un tenseur de cette taille : cinq variantes en un appel coûtent
+        nettement moins que cinq appels, et la meilleure d'entre elles lit des plaques
+        que la seule chaîne d'origine manquait.
+
+        (Cette docstring a longtemps annoncé « une à trois », resté d'avant ADR 0029.)
         """
         # `np.stack([])` lève : le cas vide se traite avant tout le reste.
         if not boxes:

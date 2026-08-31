@@ -9,13 +9,19 @@ livrable :
    recherche par image est un index de consultation, donc `crossings`,
    `tracked_vehicles` et tous les `by_line` doivent être **identiques** avec et sans
    encodeur. C'est ce que `TestAucuneRegression` vérifie sur le même clip ;
-2. **elle encode une fois par véhicule, pas une fois par image.**
+2. **elle encode quelques fois dans la vie d'un véhicule, pas une fois par image.**
    `FakeVehicleEmbedder.vectors_produced` compte les vecteurs réellement produits.
-   C'est ce chiffre, et non le contenu du registre, qui prouve que la règle monotone
-   protège le chemin critique — un code qui encoderait à chaque image rendrait
+   C'est ce chiffre, et non le contenu du registre, qui prouve que les gardes
+   protègent le chemin critique — un code qui encoderait à chaque image rendrait
    exactement les mêmes scores, deux ordres de grandeur plus cher, et aucun test
    portant seulement sur le résultat ne le verrait. Même raison d'être que le
-   comptage d'appels d'ADR 0042 ;
+   comptage d'appels d'ADR 0042.
+
+   **La règle monotone seule n'y suffisait pas**, et cette docstring a longtemps
+   annoncé « une fois par véhicule » sans que rien ne le vérifie : sur un véhicule
+   qui approche, « plus large que la meilleure vue » est vrai à presque chaque
+   image. Il faut la marge d'ADR 0050 pour borner le total, et le plafond par image
+   pour borner la rafale ;
 3. **elle ne dépend pas de l'ANPR.** Un utilisateur qui cherche une voiture n'a
    aucune raison d'activer la lecture de plaques.
 """
@@ -73,6 +79,51 @@ def _run(
         reid_min_similarity=min_similarity,
     )
     return service.run_video("job-1", video, CONFIG, query_image=query)
+
+
+def _growing(steps: int = 8) -> list[list[TrackObservation]]:
+    """Un véhicule qui **s'approche** : 60, 80, 100 … px de large.
+
+    Construit à la main parce que `track_path` n'accepte qu'une taille de boîte
+    **fixe**, et c'est justement l'élargissement qui est en jeu. C'est le profil qui
+    rend la règle monotone seule inopérante : chaque image bat la précédente, donc
+    « plus large que la meilleure vue » est vrai à chaque image.
+    """
+    return [
+        [
+            TrackObservation(
+                track_id=1,
+                class_id=CAR,
+                label="car",
+                score=0.9,
+                box=BoundingBox(
+                    x=700.0 - (60.0 + index * 20.0) / 2,
+                    y=250.0 + index * 80.0,
+                    width=60.0 + index * 20.0,
+                    height=60.0,
+                ),
+            )
+        ]
+        for index in range(steps)
+    ]
+
+
+def _run_growing(
+    video: Path,
+    *,
+    improvement: float,
+    steps: int = 8,
+) -> FakeVehicleEmbedder:
+    """Fait passer le véhicule qui s'approche, et rend la doublure pour la compter."""
+    embedder = FakeVehicleEmbedder()
+    service = AnalysisService(
+        FakeEngine(_growing(steps)),
+        vehicle_embedder=embedder,
+        reid_min_similarity=0.0,
+        reid_appearance_improvement=improvement,
+    )
+    service.run_video("job-1", video, CONFIG, query_image=QUERY)
+    return embedder
 
 
 class TestAucuneRegression:
@@ -147,34 +198,86 @@ class TestRegleMonotone:
         cela, un véhicule vu de loin garderait à jamais l'embedding le plus flou de sa
         vie, ce qui est exactement le contraire du but.
         """
-        # Construit à la main : `track_path` n'accepte qu'une taille de boîte **fixe**,
-        # et c'est justement l'élargissement qu'on veut ici.
-        growing = [
-            [
-                TrackObservation(
-                    track_id=1,
-                    class_id=CAR,
-                    label="car",
-                    score=0.9,
-                    box=BoundingBox(
-                        x=700.0 - (60.0 + index * 20.0) / 2,
-                        y=250.0 + index * 80.0,
-                        width=60.0 + index * 20.0,
-                        height=60.0,
-                    ),
-                )
-            ]
-            for index in range(8)
-        ]
-        embedder = FakeVehicleEmbedder()
-        service = AnalysisService(
-            FakeEngine(growing), vehicle_embedder=embedder, reid_min_similarity=0.0
-        )
-        service.run_video("job-1", video, CONFIG, query_image=QUERY)
+        # Marge neutralisée : c'est la règle monotone seule qu'on éprouve ici.
+        embedder = _run_growing(video, improvement=1.0)
 
         # Une vue de plus à chaque élargissement : la règle est strictement croissante,
         # donc chaque image bat la précédente sur ce trajet-là.
         assert embedder.vectors_produced > 1
+
+
+class TestMargeDeLargeur:
+    """La règle monotone **seule** ne bornait rien. ADR 0050.
+
+    « Strictement plus large que la meilleure vue » est vrai à presque chaque image
+    d'un véhicule qui approche : on payait donc jusqu'à un encodage par image
+    analysée — 21,8 ms de CPU mesurés par vignette — pour un étage que la docstring
+    de l'adaptateur annonçait comme « une fois par véhicule ». Ce que la mesure
+    d'ADR 0048 comptait (« 8 suivis, 2 encodés ») était un nombre de *véhicules*,
+    pas d'*encodages*.
+    """
+
+    def test_la_marge_borne_les_encodages_sur_la_vie_d_une_piste(self, video: Path) -> None:
+        """**Le test qui prouve l'optimisation**, et il porte sur un compteur d'appels.
+
+        Le clip va de 60 à 200 px par pas de 20. Sans marge, chaque image bat la
+        précédente : huit encodages. À 1,15, la marge écarte 160 (qui ne bat pas
+        140 × 1,15 = 161) et 200 (qui ne bat pas 180 × 1,15 = 207) : six.
+
+        Le bornage est **logarithmique** en largeur, ce qui est la propriété qui
+        distingue la marge d'une cadence : elle borne le *total* sur la vie d'une
+        piste, indépendamment de la cadence de la vidéo.
+        """
+        assert _run_growing(video, improvement=1.0).vectors_produced == 8
+        assert _run_growing(video, improvement=1.15).vectors_produced == 6
+
+    def test_la_marge_par_defaut_du_service_ne_change_rien(self, video: Path) -> None:
+        """`1.0` reproduit ADR 0048 au bit près : `w > best * 1.0` ≡ `w > best`.
+
+        C'est ce qui rend le réglage strictement additif — un appelant qui ne le
+        passe pas obtient exactement l'ancien comportement.
+        """
+        embedder = FakeVehicleEmbedder()
+        service = AnalysisService(
+            FakeEngine(_growing()), vehicle_embedder=embedder, reid_min_similarity=0.0
+        )
+        service.run_video("job-1", video, CONFIG, query_image=QUERY)
+
+        assert embedder.vectors_produced == _run_growing(video, improvement=1.0).vectors_produced
+
+    def test_la_premiere_vue_est_toujours_encodee(self, video: Path) -> None:
+        """**Aucun véhicule candidat ne perd son score.**
+
+        C'est ce qui sépare cette marge du mode de panne d'ADR 0029 : là-bas le
+        consommateur était un *vote* qu'on affamait jusqu'à ce qu'aucun texte
+        n'existe ; ici c'est un *remplacement*, et la première vue reste
+        inconditionnelle. Une marge absurde ne peut refuser qu'une amélioration.
+        """
+        embedder = _run_growing(video, improvement=4.0)
+
+        assert embedder.vectors_produced == 1
+
+    def test_une_marge_absurde_ne_prive_personne_de_ressemblance(self, video: Path) -> None:
+        """Le corollaire publié : le registre porte toujours un `matchScore`."""
+        embedder = FakeVehicleEmbedder(similarity_for=lambda _index: 0.83)
+        service = AnalysisService(
+            FakeEngine(_growing()),
+            vehicle_embedder=embedder,
+            reid_min_similarity=0.0,
+            reid_appearance_improvement=4.0,
+        )
+
+        result = service.run_video("job-1", video, CONFIG, query_image=QUERY)
+
+        assert result.vehicles[0].match_score == pytest.approx(0.83, abs=1e-4)
+
+    def test_une_marge_sous_un_est_ramenee_a_un(self, video: Path) -> None:
+        """`max(1.0, improvement)` : une marge < 1 ferait réencoder sur une vue *pire*.
+
+        Le champ `Settings` borne déjà à `ge=1.0`, mais le domaine ne dépend pas de
+        la validation d'une couche au-dessus de lui.
+        """
+        assert _run_growing(video, improvement=0.5).vectors_produced == 8
 
 
 class TestScorePublie:
@@ -274,3 +377,137 @@ class TestSimilariteCosinus:
         left = np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         right = np.asarray([0.0, 1.0, 0.0, 0.0], dtype=np.float32)
         assert cosine_similarity(left, right) == pytest.approx(0.0)
+
+
+class TestPlafondParImage:
+    """La rafale sur **une** image, que la marge d'ADR 0050 ne borne pas.
+
+    La marge borne le total sur la vie d'une piste ; elle ne dit rien du nombre de
+    vignettes soumises d'un coup. Sans plafond, une image chargée peut en soumettre
+    jusqu'à `MAX_BATCH` à 21,8 ms pièce — ~350 ms de blocage CPU en un seul appel,
+    pendant lequel le GPU dort et l'aperçu ne sort pas.
+
+    Le jumeau exact de `plate_detect_max_per_frame`, et il partage sa règle de
+    classement (`select_within_budget`) : jamais servie d'abord, la plus large
+    ensuite, l'identité à égalité stricte.
+    """
+
+    @staticmethod
+    def _crowd(vehicles: int, steps: int) -> list[list[TrackObservation]]:
+        """`vehicles` véhicules côte à côte, tous assez larges pour être encodés."""
+        return [
+            [
+                TrackObservation(
+                    track_id=index + 1,
+                    class_id=CAR,
+                    label="car",
+                    score=0.9,
+                    box=BoundingBox(
+                        x=60.0 + index * 220.0,
+                        y=250.0 + step * 40.0,
+                        # Des largeurs distinctes : c'est sur elles que le classement
+                        # départage, et des ex aequo ne prouveraient pas l'ordre.
+                        width=120.0 + index * 10.0,
+                        height=90.0,
+                    ),
+                )
+                for index in range(vehicles)
+            ]
+            for step in range(steps)
+        ]
+
+    def _run(self, video: Path, *, budget: int, vehicles: int = 4, steps: int = 1) -> int:
+        embedder = FakeVehicleEmbedder()
+        service = AnalysisService(
+            FakeEngine(self._crowd(vehicles, steps)),
+            vehicle_embedder=embedder,
+            reid_min_similarity=0.0,
+            reid_max_per_frame=budget,
+        )
+        service.run_video("job-1", video, CONFIG, query_image=QUERY)
+        return embedder.vectors_produced
+
+    def test_sans_plafond_toute_l_image_est_encodee(self, video: Path) -> None:
+        assert self._run(video, budget=0, vehicles=4, steps=1) == 4
+
+    def test_le_plafond_borne_la_rafale_d_une_image(self, video: Path) -> None:
+        assert self._run(video, budget=2, vehicles=4, steps=1) == 2
+
+    def test_un_plafond_plus_large_que_le_lot_ne_retire_rien(self, video: Path) -> None:
+        """Strictement additif : poser un plafond généreux ne doit rien changer."""
+        assert self._run(video, budget=8, vehicles=4, steps=1) == 4
+
+    def test_ce_qui_est_ecarte_est_reporte_et_jamais_perdu(self, video: Path) -> None:
+        """**La propriété qui rend le plafond acceptable.**
+
+        Rien n'étant enregistré pour une piste écartée, elle garde son
+        `appearance_width_px` et repasse candidate à l'image suivante. Sur quatre
+        véhicules et un budget de deux, deux images suffisent donc à servir tout le
+        monde — un abandon en laisserait deux sans ressemblance pour toujours.
+        """
+        embedder = FakeVehicleEmbedder()
+        service = AnalysisService(
+            FakeEngine(self._crowd(4, 2)),
+            vehicle_embedder=embedder,
+            reid_min_similarity=0.0,
+            reid_max_per_frame=2,
+        )
+
+        result = service.run_video("job-1", video, CONFIG, query_image=QUERY)
+
+        assert embedder.vectors_produced == 4
+        assert all(vehicle.match_score is not None for vehicle in result.vehicles)
+
+
+class TestBudgetDeThreadsDeLEncodeur:
+    """Le budget d'onnxruntime atteint **aussi** l'encodeur d'apparence.
+
+    `TRAFFIC_INFERENCE_THREADS` atteignait torch et l'OCR, mais pas lui : ses
+    `SessionOptions` étaient construites sans budget. Sur un étage à 21,8 ms de CPU
+    par vignette, pendant que le fil de décodage et le prétraitement torch veulent
+    les mêmes cœurs, c'est le même trou que l'OCR avait comblé, resté ouvert dans un
+    second adaptateur.
+
+    Mesuré ici : défaut (0) 17,0 ms, 3 fils 17,5, 6 fils 18,5, **12 fils 31,9 ms** —
+    forcer tous les fils est 1,9× *pire*, l'hyperthreading desservant ce graphe.
+    """
+
+    @staticmethod
+    def _options_of(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, threads: int) -> object:
+        """Charge un encodeur en capturant les `SessionOptions` réellement passées."""
+        import onnxruntime as ort
+
+        from traffic_analysis.features.counting.infrastructure.onnx_vehicle_embedder import (
+            OnnxVehicleEmbedder,
+        )
+
+        captured: list[object] = []
+        model = tmp_path / "reid.onnx"
+        model.write_bytes(b"\x00" * 8)
+
+        def fake_session(_path: str, options: object, **_kwargs: object) -> object:
+            captured.append(options)
+            raise RuntimeError("on ne charge pas vraiment : seules les options comptent")
+
+        monkeypatch.setattr(ort, "InferenceSession", fake_session)
+        OnnxVehicleEmbedder(model, intra_op_threads=threads)._ensure_loaded()
+        return captured[0]
+
+    def test_le_budget_atteint_la_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        options = self._options_of(tmp_path, monkeypatch, 3)
+
+        assert options.intra_op_num_threads == 3  # type: ignore[attr-defined]
+
+    def test_zero_laisse_onnxruntime_decider(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`0` est la valeur d'onnxruntime pour « prends ce que tu veux ».
+
+        La poser explicitement reviendrait au même, mais ne rien poser garde la
+        distinction visible dans le code entre « pas de budget » et « budget nul ».
+        """
+        options = self._options_of(tmp_path, monkeypatch, 0)
+
+        assert options.intra_op_num_threads == 0  # type: ignore[attr-defined]

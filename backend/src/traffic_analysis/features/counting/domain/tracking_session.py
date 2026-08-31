@@ -658,8 +658,8 @@ class AnalysisSession:
         aggregate.snapshot_score = score
         aggregate.snapshot_ms = timestamp_ms
 
-    def should_embed(self, global_id: int, width_px: float) -> bool:
-        """Cette vue bat-elle celle dont l'apparence a déjà été encodée ?
+    def should_embed(self, global_id: int, width_px: float, improvement: float = 1.0) -> bool:
+        """Cette vue bat-elle **franchement** celle dont l'apparence est déjà encodée ?
 
         **Le jumeau exact de `should_capture`**, et pour la même raison d'être : sans
         règle monotone, on encoderait à chaque image de chaque véhicule, ce qui est
@@ -677,11 +677,54 @@ class AnalysisSession:
         « est-ce que ça vaut une inférence » avant de la payer.
 
         Rend `False` sur une identité inconnue — `0` en est une.
+
+        **`improvement` est la marge, et sans elle la règle monotone ne bornait
+        rien.** « Strictement plus large » est vrai à *presque chaque image* d'un
+        véhicule qui approche, puisque sa largeur croît de façon quasi monotone : on
+        payait donc jusqu'à un encodage par image analysée — 21,8 ms de CPU mesurés
+        par vignette — pour un étage que la docstring de l'adaptateur annonçait
+        comme « une fois par véhicule ». Ce que la mesure d'ADR 0048 comptait (« 8
+        suivis, 2 encodés ») était un nombre de *véhicules*, pas d'*encodages*.
+
+        La marge borne le **total sur la vie d'une piste**, et c'est ce qui la
+        distingue d'une cadence : elle autorise au plus `log_k(W_max / W_min)`
+        encodages, soit onze à `1,15` entre le plancher de 96 px et 400 px, quelle
+        que soit la cadence de la vidéo. Une cadence `every_n_frames = 3` en
+        laisserait passer une cinquantaine sur un passage de six secondes.
+
+        **Le mode de panne d'ADR 0029 ne se rejoue pas ici**, et la raison est
+        structurelle : le consommateur de l'OCR est *statistique* — `PlateTextVote`
+        exige plusieurs lectures concordantes, donc raréfier les lectures empêche un
+        texte d'exister. Celui de la ReID est un *remplacement* : `record_embedding`
+        écrase `match_score` au lieu de l'accumuler. Il n'y a aucun vote à affamer,
+        et la première vue reste inconditionnelle (`appearance_width_px is None`),
+        donc **aucun véhicule candidat ne perd son score** — la marge ne peut
+        refuser qu'une amélioration.
+
+        `1.0` reproduit l'ancien comportement au bit près (`w > best * 1.0` ≡
+        `w > best`), ce qui rend le réglage strictement additif.
         """
         aggregate = self._aggregates.get(global_id)
         if aggregate is None:
             return False
-        return aggregate.appearance_width_px is None or width_px > aggregate.appearance_width_px
+        best = aggregate.appearance_width_px
+        return best is None or width_px > best * max(1.0, improvement)
+
+    def has_appearance(self, global_id: int) -> bool:
+        """Cette piste a-t-elle **déjà** été encodée, une fois au moins ?
+
+        Sert le classement du plafond par image : une piste jamais encodée passe
+        devant, sans quoi un véhicule apparu au milieu d'un embouteillage pourrait
+        traverser tout le champ sans jamais recevoir de score de ressemblance.
+
+        **Ce n'est pas `match_score is not None`**, et la nuance décide du
+        comportement : le score reste `None` après un encodage réussi quand il tombe
+        sous `reid_min_similarity`, ou quand il n'y a pas d'image de requête. Le
+        prendre pour prédicat ferait réencoder indéfiniment tous les véhicules qui ne
+        ressemblent pas à la requête — c'est-à-dire l'immense majorité.
+        """
+        aggregate = self._aggregates.get(global_id)
+        return aggregate is not None and aggregate.appearance_width_px is not None
 
     def record_embedding(self, global_id: int, width_px: float, match_score: float | None) -> None:
         """Retient la vue encodée et la ressemblance mesurée dessus.

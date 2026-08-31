@@ -308,6 +308,7 @@ def build_counting_stack(
         settings.resolved_reid_model_path,
         min_vehicle_width_px=settings.reid_min_vehicle_width_px,
         min_sharpness=settings.reid_min_sharpness,
+        intra_op_threads=settings.resolved_reid_intra_op_threads,
     )
     analysis_service = AnalysisService(
         resolved_engine,
@@ -327,8 +328,10 @@ def build_counting_stack(
             min_sharpness=settings.plate_ocr_min_sharpness,
             quality_improvement=settings.plate_ocr_quality_improvement,
         ),
-        # L'étranglement du détecteur — **le vrai goulot**, 702 ms par inférence
-        # contre 66 ms par vignette d'OCR sur cette machine. Les trois champs
+        # L'étranglement du détecteur — **le vrai goulot**, 73 % du budget par image
+        # sur une vue de circulation réelle (ADR 0032), à 17,5 ms par recadrage sur
+        # GPU. Le « 702 ms contre 66 » qui vivait ici datait d'une mesure CPU
+        # d'avant ADR 0015 et ADR 0030, et ADR 0030 l'a déclaré faux. Les trois champs
         # existaient et aucun n'était atteignable : seul `every_n_frames` était
         # passé, et il valait forcément celui de l'OCR. Le repli conserve ce
         # comportement (`resolved_plate_detect_every_n_frames`), mais il devient
@@ -356,6 +359,8 @@ def build_counting_stack(
         # vit côté client — voir ADR 0048 pour pourquoi il ne peut pas vivre ici.
         resolved_embedder,
         settings.reid_min_similarity,
+        settings.reid_appearance_improvement,
+        settings.reid_max_per_frame,
     )
     return CountingStack(
         engine=resolved_engine,

@@ -24,7 +24,9 @@ const BASE: AnalysisSummaryInput = {
   readPlateText: false,
   watchedPlateCount: 0,
   analysisSpeed: 1,
-  maxAnalysisFps: 30,
+  // Le défaut depuis ADR 0049 : un plafond absolu ici ferait porter à `BASE` une
+  // contradiction entre les deux bridages, et « tout est réglé » cesserait d'être vrai.
+  maxAnalysisFps: null,
 };
 
 function row(input: Partial<AnalysisSummaryInput>, label: string) {
@@ -94,10 +96,26 @@ describe("analysisSummaryRows", () => {
   });
 
   it("compose les deux bridages, et chacun vaut même quand l'autre est nul", () => {
-    expect(row({}, "Cadence").value).toBe("Temps réel · max 30 img/s");
-    expect(row({ analysisSpeed: null }, "Cadence").value).toBe("Illimitée · max 30 img/s");
+    expect(row({ maxAnalysisFps: 30 }, "Cadence").value).toBe("Temps réel · max 30 img/s");
+    expect(row({ analysisSpeed: null, maxAnalysisFps: 30 }, "Cadence").value).toBe(
+      "Illimitée · max 30 img/s",
+    );
     expect(row({ analysisSpeed: 2, maxAnalysisFps: null }, "Cadence").value).toBe(
       "2× le temps réel",
     );
+  });
+
+  it("**avertit quand le plafond absolu peut battre la cadence de scène**", () => {
+    // Les deux bridages se contredisent en silence : `ScenePacer` retient la
+    // période la plus longue, donc « Temps réel · max 30 img/s » rend la moitié du
+    // temps réel sur une source 60 fps. C'est le défaut qu'ADR 0049 a retiré.
+    expect(row({ maxAnalysisFps: 30 }, "Cadence").warning).toContain("30 images par seconde");
+  });
+
+  it("n'avertit pas quand un seul des deux bridages existe", () => {
+    // Sans plafond, rien ne peut contredire la cadence de scène ; sans cadence de
+    // scène, le plafond est le seul juge et ne contredit personne.
+    expect(row({ maxAnalysisFps: null }, "Cadence").warning).toBeUndefined();
+    expect(row({ analysisSpeed: null, maxAnalysisFps: 30 }, "Cadence").warning).toBeUndefined();
   });
 });
