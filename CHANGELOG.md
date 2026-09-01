@@ -11,6 +11,30 @@ plus deux fois dans le même sens » si.
 
 ### Ajouté
 
+- **Les alertes disent à quel point elles sont sûres.** Une plaque recherchée affiche
+  sa **confiance de lecture**, un véhicule trouvé par recherche par image sa
+  **ressemblance**, en pourcentage sur la carte — jusqu'ici seul le mot « probable »
+  distinguait une hypothèse d'une certitude. Le chiffre suit l'analyse : il monte
+  quand une meilleure vue du véhicule est encodée ou qu'une nouvelle lecture gagne le
+  vote, et il ne peut plus rester en désaccord avec le registre. Une infraction, elle,
+  n'en porte pas : c'est un fait observé, pas une hypothèse.
+  La photo en grand porte les deux pourcentages elle aussi, y compris quand on
+  l'ouvre depuis une alerte — où la confiance de lecture manquait.
+
+- **Une photo dès qu'il y a quelque chose à montrer.** La capture ne demande plus
+  qu'une plaque ait été *lue* : un véhicule dont la plaque est seulement **repérée**
+  — trop petite, trop floue, illisible — reçoit désormais sa photo, et c'est là
+  qu'elle sert le plus, puisqu'elle permet de lire ce que le serveur a refusé
+  d'affirmer. Un véhicule trouvé par **recherche par image** en reçoit une aussi, sans
+  qu'aucune option de plaque ne soit cochée : l'alerte disait « à vérifier sur la
+  capture » et il n'y en avait pas.
+  Toujours **une seule photo par véhicule** : une plaque lue passe devant une plaque
+  repérée, qui passe devant une ressemblance. La modale et l'infobulle du registre
+  disent maintenant *pourquoi* cette image a été gardée, et une photo retenue pour la
+  ressemblance l'annonce au lieu d'afficher une vignette de plaque cassée. Les
+  candidats d'une recherche par image ont leur photo **même sous le curseur de
+  ressemblance**, de sorte que le baisser après coup montre bien les nouveaux
+  candidats.
 - **Une photo par véhicule dont la plaque est lue.** Le registre gagne une colonne
   « Capture » : la voiture recadrée, et sa plaque en dessous. Un clic ouvre l'image en
   grand, avec l'instant de la prise de vue et la confiance de lecture ; les flèches du
@@ -351,6 +375,54 @@ plus deux fois dans le même sens » si.
 
 ### Modifié
 
+- **L'analyse est un peu plus rapide quand elle lit des plaques.** Le serveur ne fait
+  plus attendre la détection de l'image suivante pendant qu'il lit la plaque de la
+  précédente : les deux avancent en parallèle. Mesuré sur une vue de circulation
+  1080p, **+10 % d'images par seconde** quand la lecture de plaques travaille, +5 %
+  quand elle repère des plaques sans les lire, et **rien du tout** quand aucune plaque
+  n'est lisible — le gain suit exactement la quantité de lecture, et il n'y a rien à
+  régler. Les comptages, les horodatages et les plaques publiées sont identiques au
+  chiffre près : c'est le même travail, fait en même temps plutôt que l'un après
+  l'autre.
+  À savoir pour ne pas espérer davantage : la détection de plaques occupe elle aussi
+  la carte graphique, et deux calculs sur la même carte ne peuvent pas se recouvrir.
+  Le chemin qui reste pour aller nettement plus vite n'est pas un réglage — c'est un
+  plan plus serré, où les plaques sont assez grandes pour être lues sans que le
+  serveur cherche partout.
+
+- **La barre du studio pilote l'analyse.** « Lancer l'analyse » quitte le bas du lecteur
+  et rejoint l'import ; une fois l'analyse partie, il devient « Suspendre » et
+  « Annuler », au même endroit. La progression les suit sous forme d'anneau — le
+  pourcentage, centré au-dessus du compte d'images — au lieu d'un bloc sous la vidéo
+  qu'il fallait aller chercher en défilant. Le bloc reste pour ce qu'il est seul à
+  savoir dire : l'envoi du fichier, le chargement du modèle, une erreur, et ce qu'une
+  pause coûte.
+- **Le lancement dit à nouveau ce qu'il fait.** Une analyse qui démarre, ou qui attend
+  son tour derrière une autre, affichait un anneau à « 0 % » et rien d'autre — le
+  message « Lecture suspendue » restant le seul texte visible, le lancement passait
+  pour un échec alors que l'analyse tournait. La progression écrit maintenant l'état
+  en toutes lettres tant qu'elle n'a pas d'images à compter, l'attente d'une place sur
+  le serveur est expliquée sous la vidéo, et la phrase sur la lecture figée commence
+  par « Analyse en cours ».
+- **Les boutons de la barre n'affichent plus que leur icône**, et leur nom se déplie au
+  survol comme au clavier. Six libellés en toutes lettres ne tenaient plus sur une ligne
+  dès que les alertes étaient armées.
+- **Les chiffres de cadence sont là dès l'import de la vidéo**, à « — » tant qu'aucune
+  analyse n'a tourné, et plus petits. Ils n'apparaissaient qu'au premier résultat, donc
+  la barre changeait de forme au moment précis où l'on venait de lancer.
+- **La navigation passe à gauche, dans un rail d'icônes.** Le bandeau de titre et
+  d'onglets qui coiffait chaque page disparaît : Studio, Historique et Benchmark sont
+  désormais trois icônes dans une colonne étroite, avec l'état du serveur et le thème
+  en bas. Le haut de l'écran revient entièrement à la barre du studio, et la vidéo
+  gagne la hauteur d'un bandeau — près de cent pixels, sur l'écran où la place manque
+  le plus. Le sous-titre annonçait encore une « ré-identification » retirée il y a
+  trois semaines ; il ne manquait à personne.
+- **La barre du studio se lit par groupes et tient sur une ligne.** Chaque bouton
+  porte son icône, un filet sépare l'import des réglages et les réglages des outils de
+  scène, et les chevrons ont disparu — ils répétaient sept fois la même chose. Les
+  chiffres de cadence, qui décrochaient en seconde ligne dès que la fenêtre se
+  resserrait, se replient maintenant proprement dans un tiroir « État ». Géométrie,
+  Recherche et Alertes se reconnaissent à leur icône, comme la cloche avant elles.
 - **Les captures de véhicules sont effacées en même temps que la vidéo**, plus tôt
   que les chiffres. Une voiture et sa plaque recadrées sont exactement ce que la
   purge de la vidéo existe pour effacer ; le registre garde ses colonnes et affiche

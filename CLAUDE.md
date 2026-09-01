@@ -37,10 +37,21 @@ Le type est **dérivé** de la paire de rôles (`lineKind` / `rolesForKind` dans
 `shared/lib/directions.ts`) et n'existe dans aucun champ du contrat — deux sources
 pour la même vérité finiraient par se contredire. Les rôles sont donc cinq : `entry`,
 `exit`, `forbidden` (« Interdit »), `transit` (« Passage », compté hors bilan) et
-`neutral`, hérité et jamais produit par l'éditeur. **« Comptage seul » n'affiche pas
-ses deux sens** dans le panneau : ils diraient « Passage » deux fois sous un bouton
-d'inversion déjà grisé. Le canevas, lui, garde ses deux flèches — elles disent de quel
-côté est chaque sens, ce qui reste vrai.
+`neutral`, hérité et jamais produit par l'éditeur. **« Comptage seul » n'affiche
+aucun sens, ni dans le panneau ni sur le trait** : les rangées diraient « Passage »
+deux fois sous un bouton d'inversion déjà grisé, et le canevas peignait deux
+étiquettes identiques plus une flèche au milieu du trait. Sur cette ligne les deux
+côtés portent le même rôle, comptent pareil et s'affichent pareil — la flèche ne
+répondait donc à aucune question qu'on puisse encore se poser, et elle en suggérait
+une fausse : qu'un sens compterait et pas l'autre. Le **nom** de la ligne reste, il
+n'indique pas un sens. `showsDirections` en est le seul juge, lu par le panneau **et**
+par `draw.ts` — deux comparaisons `kind === "transit"` recopiées auraient fini par
+diverger, et la panne aurait été un panneau muet au-dessus d'un trait bavard.
+
+**Attention à ne pas confondre avec « Infranchissable »**, dont les deux rôles sont
+identiques eux aussi : lui garde ses flèches et ses libellés, parce que savoir de quel
+côté on n'aurait pas dû passer est toute l'information. `showsDirections` n'est donc
+pas `lineHasRule` sous un autre nom, et un test verrouille l'écart.
 
 Une ligne peut en plus être **réservée** à certaines classes (`allowedClassIds`),
 indépendamment de son type — une voie de bus à sens unique porte les deux. Le panneau
@@ -103,12 +114,50 @@ mesurée, reprojetée sur la boîte du véhicule
 ([ADR 0010](docs/adr/0010-etranglement-du-detecteur-de-plaques.md)). Le direct n'a
 pas d'ANPR du tout.
 
-**Un véhicule dont la plaque est lue reçoit une photo depuis le 2026-08-27** ([ADR
-0042](docs/adr/0042-une-capture-par-vehicule.md)) : deux JPEG — lui recadré, sa
-plaque — pris sur l'image dont la **lecture** est la plus sûre, une seule par
-véhicule. Ils vivent dans `data/jobs/<id>/snapshots/`, sont servis par
+**Un véhicule reçoit une photo dès qu'il y a quelque chose à montrer de lui** ([ADR
+0042](docs/adr/0042-une-capture-par-vehicule.md), élargie le 2026-08-31 par [ADR
+0051](docs/adr/0051-une-photo-des-qu-il-y-a-quelque-chose-a-montrer.md)) : deux JPEG —
+lui recadré, sa plaque — pris sur la même image, **une seule photo par véhicule**. Ils
+vivent dans `data/jobs/<id>/snapshots/`, sont servis par
 `GET /jobs/{id}/vehicles/{n}/{snapshot,plate}.jpg`, et **partent avec la vidéo** et
 non avec le résultat — ce sont des plaques et des visages.
+
+**Trois causes, une échelle de priorité**, publiées dans `snapshotKind` :
+`plate_text` (une plaque a été **lue** sur cette image) > `plate_box` (une plaque y a
+été **localisée** sans qu'aucun texte soit publié — trop petite, trop floue, lecture
+refusée, OCR éteint) > `appearance` (l'apparence du véhicule vient d'être encodée pour
+une recherche par image ; **aucune vignette de plaque** dans ce cas). Un tier plus haut
+passe toujours, un tier plus bas jamais ; à tier égal, la règle monotone tranche.
+Quatre points qui ne se devinent pas :
+
+- **le rang n'est comparable qu'à l'intérieur de son tier** — une confiance pour
+  `plate_text`, des pixels pour les deux autres. Les fondre en un nombre unique ferait
+  perdre une plaque lue à 0,95 contre n'importe quelle boîte de 40 px, et le chiffre
+  resterait plausible ;
+- **les deux tiers en largeur portent une marge** (`TRAFFIC_SNAPSHOT_WIDTH_IMPROVEMENT`,
+  1,15), et c'est ADR 0050 qui se rejouerait sans elle : une largeur croît à presque
+  chaque image d'un véhicule qui approche, et l'étranglement du détecteur de plaques ne
+  divise le problème que par trois. Pas de marge sur `plate_text`, dont le rang ne croît
+  pas avec l'approche ;
+- **on capture tout véhicule encodé, pas seulement les ressemblants** : le seuil
+  exacte/probable vit côté client et se déplace sans réanalyser (ADR 0048/0041), donc une
+  photo conditionnée à un seuil serveur manquerait au moment précis où l'on descend le
+  curseur pour la regarder. Un véhicule dont `matchScore` est `null` a donc une photo ;
+- **le plancher de recadrage de la vignette de plaque est à 8 px, pas 16**, et c'est une
+  panne silencieuse déjà payée : `vehicle_crop.MIN_CROP_SIDE_PX` vaut 16 parce que c'est
+  le plancher d'une **entrée de réseau**, alors qu'une plaque de vue de circulation fait
+  27 à 88 px de large pour **9 à 28 px de haut**. `crop` rendait donc `None`, et le refus
+  étant total, la photo du véhicule partait avec elle — mesuré sur une vraie course : 18
+  encodages demandés, **zéro capture**, sans qu'une ligne de journal le dise. Aucune
+  doublure ne pouvait le voir. `MIN_PLATE_CROP_SIDE_PX` vit dans
+  `opencv_snapshot_encoder.py`, et un test l'y verrouille avec les dimensions mesurées ;
+- **`snapshotScore` n'est plus le drapeau de présence** — c'est `snapshotMs`, doublé de
+  `snapshotKind`. Deux causes sur trois n'ont rien lu ; dans l'autre sens la garantie
+  tient par construction (`record_snapshot` *dérive* la confiance de la cause), donc
+  non-nul implique `plate_text`. Un lecteur resté sur l'ancien drapeau **manque** les
+  deux nouvelles populations, silencieusement. Le seul juge côté client est
+  `shared/lib/snapshotKind.ts`, et `snapshotHasPlateFace(undefined)` vaut **`true`** :
+  sur un résultat archivé, la lecture était la seule cause possible.
 
 **Ils sont écrits pendant l'analyse depuis le 2026-08-28** ([ADR
 0046](docs/adr/0046-les-captures-s-ecrivent-pendant-l-analyse.md)) : la colonne
@@ -144,7 +193,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1665 tests
+uv run pytest                                                            # 1700 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -159,7 +208,7 @@ uv run python scripts/audit_lignes.py                # « pourquoi cette ligne e
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 864 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 882 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -274,13 +323,56 @@ Quatre conséquences à connaître avant d'y toucher :
   recadre `scrollY`, et l'enregistrer au moment de la bascule sauvegarderait la
   valeur déjà tronquée.
 
-#### La disposition du studio, depuis le 2026-08-12 (barre collante, géométrie en tiroir et actions dans le lecteur le 2026-08-19 ; cloche d'alertes le 2026-08-28)
+#### La coquille : un rail, pas une entête (2026-08-31)
+
+La navigation d'application vit dans un **rail vertical de 56 px, en icônes**
+(`AppShell`), et le haut de page appartient à la seule barre du studio, collée à
+`top: 0`. Elle a été une entête horizontale de ~76 px, empilée sur la barre de ~64 :
+~140 px de chrome avant la première image, sous deux bordures et deux fonds
+translucides presque identiques. La hauteur est la ressource rare de cet écran ; la
+largeur ne l'est pas, le cadre étant borné à 1600 px
+([ADR 0052](docs/adr/0052-la-navigation-passe-dans-un-rail-lateral.md)).
+
+**L'invariant à ne pas franchir : le document défile sur `window`, et la coquille ne
+porte AUCUN `overflow`.** Trois mécanismes en dépendent et **aucun ne casse
+bruyamment** — `useScrollMemory` enregistrerait `0` pour les trois pages et ne
+restituerait plus rien, la barre du studio se calerait sur le mauvais défileur, et le
+`100dvh` de la colonne des résultats cesserait de décrire la zone utile. D'où
+`sticky top-0 h-dvh` et non `fixed`.
+
+Cinq points qui ne se devinent pas :
+
+- **`--app-header-h` n'est plus mesurée**, elle est déclarée dans `index.css` : `0px`
+  en rail, `3.5rem` sous 48rem où le rail se replie en barre horizontale. Les deux
+  raisons du `ResizeObserver` sont mortes avec l'entête — plus rien ne s'enroule, et
+  le badge serveur ne grandit plus. **Condition de retour** : si le rail replié porte
+  un jour du texte de largeur variable, la constante ment et la barre du studio
+  disparaît derrière lui, en fenêtre étroite seulement ;
+- **`<header>` et non `<aside>`** : le repère `banner` est conservé. Un `<aside>`
+  deviendrait `complementary`, et l'application n'en aurait plus du tout ;
+- **56 / 40 / 44 px** : le rail est dimensionné par l'anneau de focus (2 px de contour
+  à 2 px d'écart autour d'un bouton de 40). À 48 px, il toucherait les bords ;
+- **`min-w-0` sur `<main>` est obligatoire**, sans quoi la largeur minimale du canvas
+  et du registre pousse le rail hors de l'écran ;
+- **le badge serveur perd son texte, pas son sens** : pastille plus `CUDA`/`CPU`
+  empilés, et en erreur **le badge et « Réessayer » fusionnent en un seul bouton
+  rond**. La phrase « Serveur injoignable » n'est plus lisible à l'œil, seule la teinte
+  la porte — mais le studio grise déjà « Lancer l'analyse » et dit la cause là où le
+  geste échoue.
+
+#### La disposition du studio, depuis le 2026-08-12 (barre collante, géométrie en tiroir et actions dans le lecteur le 2026-08-19 ; cloche d'alertes le 2026-08-28 ; rail latéral le 2026-08-31)
 
 ```
-━━ barre COLLANTE sous l'entête (sticky, top: --app-header-h, z-30) ━━━━━━━━━━
-[⇧ Importer] [Détection ▾] [Comptage ▾] [Affichage ▾] [Géométrie ▾] [🔔3 ▾]  suivis · cadence · latence · flux →
-             └─ tiroir flottant du panneau ouvert, 2 colonnes, PAR-DESSUS la page
-                    la cloche ouvre le MÊME genre de tiroir : résumé + filtres + flux
+rail  ━━ barre COLLANTE en haut de la fenêtre (sticky, top: --app-header-h = 0) ━━
+56 px [⇧ Importer] [▶] ◕39% 330/817 │ [⊙][∑][◉] │ [⬡][🔍][🔔3]   suivis cadence latence écart flux
+ ▣                     └─ tiroir flottant du panneau ouvert, 2 colonnes, PAR-DESSUS la page
+ ⊡ Studio                     la cloche ouvre le MÊME genre de tiroir : résumé + filtres + flux
+ 🗂 Historique          TOUTES les pilules sont en ICÔNE SEULE ; le libellé se déplie au
+ 📊 Benchmark          survol et au focus, en poussant ses voisins (max-width, 150 ms)
+ ●CUDA                 SAUF les commandes du job [▶][⏸][✕], qui ne se déplient JAMAIS
+ ☀                     [▶] devient [⏸][✕] pendant l'analyse ; l'anneau les SUIT
+                       groupes séparés par un filet : source+job │ réglages │ outils
+                       sous 1280 px, les chiffres passent dans un 6ᵉ tiroir « État »
 ┌─────────────────────────────────────┬────────────────────┐
 │ nom du fichier ⟨ ⟩ WxH              │ RÉSULTATS ⌾        │  23 rem
 │ vidéo + canvas + HUD                │ KPI de tête        │
@@ -321,11 +413,13 @@ la même observation : le bas de page s'était allongé (trois sections plus la
 chronologie), donc tout ce qui vivait « en haut à droite » finissait hors de
 l'écran dès qu'on lisait un résultat.
 
-- **la barre est collante** (`sticky`, décalée de `--app-header-h` que `AppShell`
-  mesure et publie ; `-mx-6 px-6` pour peindre son fond jusqu'aux gouttières).
-  Sans le fond opaque, la vidéo défile visiblement sous les pilules. La hauteur
-  d'entête est **mesurée** et non écrite en dur : elle s'enroule en fenêtre
-  étroite, et le badge serveur grandit quand il porte une erreur ;
+- **la barre est collante** (`sticky`, décalée de `--app-header-h` ; `-mx-6 px-6`
+  pour peindre son fond jusqu'aux gouttières). Sans le fond opaque, la vidéo défile
+  visiblement sous les pilules. Cette hauteur a été **mesurée** par un
+  `ResizeObserver` tant qu'une entête horizontale la portait — elle s'enroulait en
+  fenêtre étroite, et le badge serveur grandissait d'un message d'erreur. Depuis le
+  rail (2026-08-31) elle vaut **zéro** et n'est plus qu'une déclaration CSS : la barre
+  est le premier élément de la page ;
 - **« Géométrie » est le quatrième tiroir**, plus un panneau permanent de la
   colonne. `SettingsPanels` l'accepte par `panels` (`ExtraPanel[]`) — la feature
   des réglages ne connaît pas `geometry-editor`, c'est le studio qui câble, même
@@ -333,7 +427,10 @@ l'écran dès qu'on lisait un résultat.
   titre** : le tiroir est déjà une région nommée « Géométrie » ;
 - **les chiffres d'instant** — **objets suivis**, cadence serveur, latence, **écart
   image** et flux analysé — sont à l'extrémité de la barre (`TechnicalMetrics`,
-  `trailing`), en
+  `trailing`). Depuis le 2026-09-01 ils sont **montés dès qu'une vidéo est chargée**, à
+  « — » tant que rien n'a tourné, et en 12 px au lieu de 14 : la barre ne change plus de
+  forme au moment où l'on lance, c'est-à-dire à l'endroit exact où l'on regarde. Ils
+  sont en
   libellé plus chiffre sur deux lignes, sans carte. Ils tenaient quatre des six
   `MetricCard` de tête, à égalité visuelle avec le bilan du comptage. Ils étaient
   trois jusqu'au soir du 2026-08-19 : « Objets suivis » les a rejoints pour la même
@@ -344,10 +441,12 @@ l'écran dès qu'on lisait un résultat.
 - **le nom du fichier est sur la scène**, coin haut-gauche, dans **exactement**
   l'écrin du badge de dimensions d'en face (`SourceBadge`, `pointer-events-none`
   obligatoire — la scène est une surface de tracé) ;
-- **« Lancer l'analyse » et « Fermer » sont dans le lecteur** (`TransportBar.actions`,
-  poussés par `ms-auto`), là où se réglait la vitesse — laquelle rejoint le groupe
-  de boutons qui lit. Le rappel « Portion retenue » disparaît avec eux : l'intervalle
-  est écrit deux rangées plus haut, dans l'entête du rail qui le dessine.
+- **« Fermer » est dans le lecteur** (`TransportBar.actions`, poussé par `ms-auto`),
+  là où se réglait la vitesse — laquelle rejoint le groupe de boutons qui lit. Le
+  rappel « Portion retenue » disparaît avec lui : l'intervalle est écrit deux rangées
+  plus haut, dans l'entête du rail qui le dessine. **« Lancer l'analyse » y a vécu
+  jusqu'au 2026-09-01** et est passé dans la barre, avec Suspendre, Reprendre et
+  Annuler — voir « La barre pilote l'analyse » ci-dessous.
 
 **Les deux rails du lecteur ont la même longueur, et c'est vérifiable** (mesuré :
 `x = 79`, `w = 1128` pour les deux). Le temps courant était écrit *à côté* du
@@ -471,10 +570,56 @@ Le tiroir ouvrait initialement **en flux normal**, pleine largeur — il grandis
 la page et poussait la vidéo et les résultats de plusieurs centaines de pixels vers
 le bas à chaque ouverture. Depuis le 2026-08-16 il **flotte** (`position: absolute`,
 ancré sous la barre, `z-30`) : la page ne bouge plus quand on l'ouvre. Un clic en
-dehors ou `Échap` le referme. L'entête de l'application (`AppShell`) est fixée en
-haut de l'écran (`sticky top-0 z-40`) pour la même raison de fond — rester
-atteignable pendant que la page défile en dessous, et **la barre du studio l'est à
-son tour** depuis le 2026-08-19, calée sur la hauteur mesurée de cette entête.
+dehors ou `Échap` le referme. Le rail de navigation (`AppShell`) est collé au bord
+gauche sur toute la hauteur (`sticky top-0 h-dvh`, `z-40`) pour la même raison de
+fond — rester atteignable pendant que la page défile à côté —, et **la barre du studio
+l'est à son tour** depuis le 2026-08-19. Elle se cale sur `--app-header-h`, qui vaut
+zéro depuis que le rail est vertical et redevient une hauteur sous 48rem.
+
+#### La barre pilote l'analyse (2026-09-01)
+
+Les commandes d'un job vivaient à **trois** endroits qu'on ne voit pas d'un même coup
+d'œil — « Lancer » au bas du lecteur, « Suspendre » et « Annuler » sous la vidéo, les
+réglages dans la barre. Elles sont désormais **toutes dans la barre**, juste après
+l'import ([ADR 0053](docs/adr/0053-la-barre-du-studio-pilote-l-analyse.md)).
+
+Six points qui ne se devinent pas :
+
+- **toutes les pilules sont en icône seule**, et le libellé se déplie au survol **et au
+  focus** en poussant ses voisins. `shared/ui/ToolbarButton` en est la seule
+  implémentation — les tiroirs vivent dans `analysis-settings`, les commandes dans
+  `analysis-job`, et une feature n'importe jamais une autre ;
+- **les commandes du job ne se déplient pas** (`expandOnHover={false}`). Elles sont en
+  tête de rangée, donc leur expansion pousserait tout ce qui suit — y compris l'anneau
+  et les chiffres qu'on est justement en train de lire quand on hésite à suspendre —
+  et elles changent de nature en cours de route, si bien qu'une pilule qui s'ouvre à
+  l'instant où « Lancer » devient « Suspendre » se lit comme un déplacement ;
+- **« Lancer » est bleu et non vert.** Le vert est celui du bouton d'import, à sa
+  gauche immédiate : deux pastilles vertes voisines se lisaient comme un seul groupe.
+  La **source est verte, le job est bleu**. `--color-info` ne servait nulle part
+  ailleurs, et `text-accent-ink` lui va — ce jeton vaut noir en sombre et blanc en
+  clair, exactement ce que demandent les deux bleus ;
+- **l'anneau de progression suit ses commandes**, à gauche, et non les chiffres à
+  droite : il répond au bouton qu'on vient de cliquer. Son détail ne porte que le
+  compte d'images, le pourcentage centré dessus — la cadence y a figuré et en est
+  partie, la rangée de chiffres l'affichant déjà sous « Cadence serveur » ;
+- **c'est une `max-width` qu'on anime, et `grid-template-columns: 0fr → 1fr` a été
+  essayé puis mesuré faux** : ce motif suppose un conteneur qui distribue de l'espace
+  libre, alors que la pilule est un `inline-flex` dimensionné par son contenu. Mesuré,
+  `1fr` forcé à la main : 48 px avant, 48 px après. La `max-width` donne 40 → 138 px ;
+- **`analysisProgress` (pur, testé) est le seul juge de l'état du job.** La barre et le
+  bloc sous la vidéo le lisent tous deux : deux calculs séparés afficheraient deux
+  pourcentages du même job ;
+- **un job en file d'attente n'affiche pas de compteur d'images.** `totalFrames` vaut
+  zéro tant que le serveur n'a pas sondé la vidéo, et « 0 / 0 images · 0.0 img/s » se
+  lit comme une analyse plantée. Vu à l'usage, derrière une analyse **suspendue** qui
+  gardait sa place : le message dit désormais la cause de l'attente ;
+- **le bloc sous la vidéo ne garde que ce que la barre ne peut pas porter** — l'envoi
+  et ses octets, la préparation et le nom du modèle, l'échec, et la phrase qui explique
+  ce qu'une pause coûte. Sa barre de progression n'apparaît que pendant l'envoi, la
+  seule phase où l'anneau n'existe pas encore ;
+- **entre 1280 et ~1500 px, pendant une analyse, le détail de l'anneau se tronque**
+  plutôt que de faire passer la rangée sur deux lignes.
 
 #### Ce que portent les quatre tiroirs, depuis le 2026-08-17 (le quatrième depuis le 2026-08-19)
 
@@ -505,7 +650,11 @@ diagnostic n'étaient renseignés par personne.
   véhicule soit franchement d'un côté ; **la date, elle, est celle du passage sur le
   trait** depuis ADR 0038), le diagnostic, et les
   **quasi-franchissements**, redevenus visibles ;
-- **Affichage & analyse** — trajectoires (le seul réglage purement visuel), pas
+- **Affichage** (« Affichage & analyse » jusqu'au 2026-08-31 : le libellé le plus
+  long de la rangée coûtait ~130 px à la seule chose qui doit tenir sur une ligne, et
+  le tiroir dit ce qu'il contient dès qu'il est ouvert ; depuis le 2026-09-01 aucun
+  libellé n'est visible au repos de toute façon) — trajectoires (le seul
+  réglage purement visuel), pas
   d'analyse et les deux cadences. L'**échelle globale** px/m y a vécu jusqu'au
   2026-08-21 : elle est supprimée avec toute la mesure de vitesse
   ([ADR 0034](docs/adr/0034-la-mesure-de-vitesse-est-retiree.md)) ;
@@ -517,10 +666,17 @@ diagnostic n'étaient renseignés par personne.
   `geometry-editor`. La longueur réelle par ligne en a disparu le 2026-08-21, pour
   la même raison.
 
-**Cliquer une forme sur la vidéo déplie « Géométrie »** (2026-08-20) : cliquer un
-trait *est* le début du réglage, et l'utilisateur cliquait puis cherchait dans la
-barre où le renommer ou lui donner ses rôles de sens. Trois
-points qui ne se devinent pas :
+**Double-cliquer une forme sur la vidéo déplie « Géométrie »** (2026-08-20,
+**double-clic depuis le 2026-08-31**) : ouvrir le réglage d'un trait est un geste
+distinct de sa manipulation, et l'utilisateur cherchait auparavant dans la barre où
+le renommer ou lui donner ses rôles de sens. Le **simple clic sélectionne et rien de
+plus** — c'est lui qui amorce le glisser, donc le geste le plus fréquent de cet
+écran, et déplier un tiroir par-dessus la vidéo qu'on est en train de tracer était du
+bruit à chaque déplacement de ligne. `GeometryCanvas` sépare les deux par
+`onSelect` et `onActivate` ; le second refait un `hitTest` au lieu de lire la
+sélection courante, qui serait périmée dans le cycle de rendu du double-clic (piège
+42), et n'est jamais appelé en mode tracé de zone, où le double-clic **ferme** le
+polygone. Trois points qui ne se devinent pas :
 
 - **l'état du tiroir ouvert a quitté `SettingsPanels` pour `StudioPage`** : deux
   endroits l'ouvrent désormais, et un seul des deux est la barre. `openPanel` /
@@ -536,9 +692,10 @@ points qui ne se devinent pas :
   d'utiliser pour la tracer ;
 - **deux bornes à l'ouverture** : rien pendant une analyse ou un direct (`busy`),
   où le panneau est grisé et où un formulaire intouchable par-dessus la vidéo
-  serait du bruit ; rien sur un clic dans le vide, qui **désélectionne** — c'est la
-  fin d'un réglage, pas son début. Fermer reste à `Échap`, au re-clic sur la pilule
-  et au clic hors de la scène.
+  serait du bruit ; rien sur un double-clic dans le vide, où le canvas n'appelle pas
+  le rappel du tout — le clic qui le précède **désélectionne**, c'est la fin d'un
+  réglage et pas son début. Fermer reste à `Échap`, au re-clic sur la pilule et au
+  clic hors de la scène.
 
 **Tracer la première zone coche « Ignorer hors zone »** (2026-08-24). Le geste dit
 « ce qui m'intéresse est là-dedans », et il n'avait pourtant aucun effet sur les
@@ -772,19 +929,25 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
   primitive ARIA générique et accessible (flèches, Home/Fin, roving `tabIndex`),
   gardée pour un futur besoin plutôt que supprimée pour un gain nul ;
 - **le Registre montre la voiture** (2026-08-27) : une colonne « Capture » porte une
-  vignette de 40 px du véhicule dont une plaque a été lue, et le clic l'ouvre en
-  grand — le véhicule, sa plaque en dessous, l'instant et la confiance. La modale est
+  vignette de 40 px du véhicule, et le clic l'ouvre en grand — le véhicule, sa plaque
+  en dessous, **pourquoi** cette photo existe, l'instant et la confiance. La modale est
   `shared/ui/SnapshotDialog.tsx`, partagée avec les alertes, sur le patron `<dialog>`
-  + `showModal()` de `PresetDialog`. Quatre points qui ne se devinent pas :
+  + `showModal()` de `PresetDialog`. Cinq points qui ne se devinent pas :
   - **la colonne apparaît dès la première capture** (`jobId !== null &&
     hasSnapshots(vehicles)`), pendant l'analyse comprise depuis ADR 0046. Elle se
     décide sur `vehicles` **entier** et jamais sur les rangées rendues : une colonne
-    qui apparaîtrait au défilement décalerait toutes les autres sous le curseur. Sans
-    ANPR ni OCR, aucun véhicule ne porte de `snapshotScore`, donc aucune colonne — la
-    condition « seulement si les plaques sont lues » est obtenue sans réglage.
-    **Ce n'est plus la règle des trois boutons d'export**, qui restent liés à
+    qui apparaîtrait au défilement décalerait toutes les autres sous le curseur.
+    **Elle apparaît aussi sans ANPR depuis ADR 0051**, dès qu'une image de requête est
+    fournie — la phrase « sans ANPR ni OCR, aucune colonne » qui vivait ici est
+    abrogée, et le drapeau est `snapshotMs` et non plus `snapshotScore`.
+    **Ce n'est pas la règle des trois boutons d'export**, qui restent liés à
     `result` : un CSV à mi-parcours ment sur son contenu, une vignette manquante ne
     ment sur rien ;
+  - **la modale sait montrer une photo sans vignette de plaque, et dit pourquoi**
+    (`snapshotHasPlateFace`) : une capture retenue pour la ressemblance du véhicule n'a
+    pas de plaque, et la demander rendrait un 409 que la modale afficherait en
+    « Capture purgée » — un repère d'échec sur un état parfaitement normal. Elle rend
+    donc une phrase à la place, jamais l'icône barrée ;
   - **la rangée passe à 48 px, et seulement alors.** `visibleWindow` accepte déjà une
     hauteur en paramètre. **Le `height` d'une rangée n'est qu'un minimum en CSS** : la
     cellule de capture supprime son rembourrage vertical (`py-0`, son propre `<td>` et
@@ -799,7 +962,12 @@ et les résultats vivaient sous la grille. Conséquences à connaître :
     l'analyse **et seulement alors**, la vignette réessaie **une fois** (avec un
     paramètre `retry` qui casse le cache d'échec) : le fichier peut arriver quelques
     centaines de millisecondes après l'aperçu qui l'annonce. Après, réessayer
-    doublerait des requêtes vouées à échouer sur chaque rangée visible ;
+    doublerait des requêtes vouées à échouer sur chaque rangée visible. **La requête
+    est composée dans `shared/api/jobUrls.ts` et nulle part ailleurs** : elle l'était
+    chez les deux appelants, chacun devinant la ponctuation de l'autre — `&retry=` ici
+    en supposant `?v=` présent, `?retry=` dans le tiroir d'alertes en supposant
+    l'inverse. Aucun n'était faux, et les deux le devenaient au premier changement
+    d'appelant ;
 - **le Registre porte deux filtres qui se composent** (2026-08-27) : la recherche
   par plaque et un **filtre par ligne**, dont les options portent les noms saisis par
   l'utilisateur et se renomment sans réanalyser. `filterByLine` est le jumeau de
@@ -1005,7 +1173,7 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
    `DESIGN.md` remplacent le `bg-slate-950` de `prompt/09`, et l'accent vert est
    **strictement fonctionnel** — la couleur du canvas encode une donnée, donc le
    vert n'est jamais une couleur de classe.
-7. **Thème sombre par défaut, clair au choix** (bascule dans l'entête). Le clair
+7. **Thème sombre par défaut, clair au choix** (bascule en bas du rail). Le clair
    ne fait que redéfinir les jetons sous `:root[data-theme="light"]` : aucune
    variante `dark:` dans les composants, et **les couleurs du canvas ne changent
    pas** — elles sont posées sur de la vidéo, pas sur le fond de page. Amendement
@@ -1095,6 +1263,11 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     suivi des véhicules 90 ms (21 %), détection de plaques 81 ms (19 %). **C'est
     l'OCR qu'il faut optimiser maintenant**, et le seul levier structurel restant est
     de la recouvrir avec le travail GPU — elle est aujourd'hui sérialisée avec lui.
+
+    **Ce levier a été construit et mesuré depuis, et il vaut 1,10×** : voir la
+    décision 38 et
+    [ADR 0054](docs/adr/0054-le-moteur-et-son-aval-se-recouvrent.md). Ne pas le
+    relire comme une réserve encore disponible.
 
     **Cette conclusion a été vérifiée, et elle ne vaut que pour ce profil-là.** Les
     262 ms viennent d'une mesure où les trois étages sont forcés sur chaque image. Sur
@@ -1498,9 +1671,17 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     et aujourd'hui **une cloche et un tiroir** dans la barre du studio. Aucune de ces
     trois ADR ne change un calcul ; `violationCounts` a seulement déménagé dans
     `shared/lib/violationTally.ts` et gagné ses ventilations.
-33. **Un véhicule dont la plaque est lue reçoit une photo, et une seule.** Deux JPEG
-    — le véhicule recadré, sa plaque — pris sur la **même** image, celle dont la
-    lecture est la plus sûre. Cinq points :
+33. **Un véhicule reçoit une photo, et une seule, dès qu'il y a quelque chose à
+    montrer.** Deux JPEG — le véhicule recadré, sa plaque — pris sur la **même** image.
+    **Trois causes depuis le 2026-08-31** (ADR 0051), en échelle de priorité :
+    `plate_text` (plaque lue) > `plate_box` (plaque localisée, aucun texte publié) >
+    `appearance` (apparence encodée pour une recherche par image, **sans vignette de
+    plaque**). Publiées dans `snapshotKind` ; le rang ne se compare qu'à l'intérieur
+    d'un tier — une confiance d'un côté, des pixels de l'autre — et les deux tiers en
+    largeur portent la marge d'ADR 0050 (`TRAFFIC_SNAPSHOT_WIDTH_IMPROVEMENT`), sans
+    quoi on encoderait un JPEG par image et par véhicule. `snapshotScore` n'est plus le
+    drapeau de présence : c'est `snapshotMs`, et non-nul **implique** `plate_text`.
+    Les cinq points d'origine restent vrais :
     - **le score est celui de l'image, jamais celui du vote.** `PlateTextVote.score`
       est une moyenne sur la vie du véhicule : il bouge quand une *autre* image est
       lue, donc classer les images dessus ferait recapturer sans rapport avec la
@@ -1511,10 +1692,13 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     - **jamais depuis une boîte reprojetée** (ADR 0010) : le point d'accroche est la
       branche *mesure fraîche* de `_detect_plates`, la seule où les deux boîtes, le
       texte et les pixels coexistent ;
-    - **encodage à l'amélioration.** Mesuré sur 1 800 images : **41 encodages,
-      98 ms, 0,056 %** du temps d'analyse. Le chiffre qui compte est 41 — c'est la
-      règle monotone qui protège le chemin critique, pas la vitesse de l'encodeur, et
-      un test **compte les appels** pour cette raison ;
+    - **encodage à l'amélioration.** Mesuré sur 1 800 images, **du temps où la lecture
+      était la seule cause** : 41 encodages, 98 ms, 0,056 % du temps d'analyse. Le
+      chiffre qui compte est 41 — c'est la règle monotone qui protège le chemin
+      critique, pas la vitesse de l'encodeur, et un test **compte les appels** pour
+      cette raison. **Ces trois chiffres ne valent plus depuis ADR 0051** : la
+      population photographiée est d'un autre ordre de grandeur, et les recopier
+      serait malhonnête ;
     - **écriture au fil de l'eau depuis le 2026-08-28**, et non plus à la fin : un
       rappel `on_snapshot`, appelé depuis le thread worker exactement là où les octets
       viennent d'être produits, et **après** `record_snapshot` — le fichier existe donc
@@ -1525,7 +1709,8 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       plaques et des visages, la donnée même que le TTL court efface.
 
     [ADR 0042](docs/adr/0042-une-capture-par-vehicule.md), amendée par
-    [ADR 0046](docs/adr/0046-les-captures-s-ecrivent-pendant-l-analyse.md).
+    [ADR 0046](docs/adr/0046-les-captures-s-ecrivent-pendant-l-analyse.md) puis par
+    [ADR 0051](docs/adr/0051-une-photo-des-qu-il-y-a-quelque-chose-a-montrer.md).
 34. **La ReID d'apparence du tracker n'est gratuite que sur une tête avec NMS.**
     `botsort_reid.yaml` porte `with_reid: true` et `model: auto` depuis le début, et
     ADR 0013 l'a gardée sur une mesure — 0,3 à 3,5 ms par image — restée vraie pour v8,
@@ -1636,7 +1821,11 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       la vie d'une piste — 11 encodages au lieu d'une centaine — et un **plafond par
       image** (`TRAFFIC_REID_MAX_PER_FRAME`) qui borne la *rafale*. Le mode de panne
       d'ADR 0029 ne s'y rejoue pas : le consommateur de l'OCR est un **vote** qu'on
-      affamait, celui de la ReID un **remplacement** ([ADR 0050](docs/adr/0050-la-regle-monotone-de-la-reid-ne-bornait-rien.md)) ;
+      affamait, celui de la ReID un **remplacement** ([ADR 0050](docs/adr/0050-la-regle-monotone-de-la-reid-ne-bornait-rien.md)).
+      **La leçon vaut pour toute nouvelle clé de rang en largeur**, et elle s'est
+      appliquée une seconde fois le 2026-08-31 à la largeur de boîte de plaque
+      (ADR 0051) : l'étranglement du détecteur, une image sur trois, ne divise le
+      problème que par trois ;
     - **la carte n'est pas saturée, et c'est mesuré.** `pipeline_bench --gpu-probe`
       relève une utilisation **p50 50 % / max 71 %** sur 1080p ANPR+OCR, pour une crête
       VRAM de 332 Mio sur 4096. Le nouveau poste `plateInference` montre que **16,74 des
@@ -1651,6 +1840,34 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     deux courses identiques est de **11 %** : tout gain inférieur n'existe pas. C'est
     pourquoi le budget de threads OpenCV (`TRAFFIC_OPENCV_THREADS`) reste à `0` — mesuré
     sans effet en pipeline réel, contrairement à ce qu'un micro-banc laissait espérer.
+38. **Le moteur et son aval se recouvrent, et c'est tout ce qu'il restait à
+    recouvrir.** `iter_video` est un générateur : le `track()` du modèle pour l'image
+    suivante n'était appelé qu'une fois `AnalysisService` sorti de la précédente —
+    plaques, OCR, captures, apparence. Un fil et un lot d'avance (`prefetch`, jumeau
+    exact de `decode_ahead` un étage plus bas) les font avancer ensemble.
+    `TRAFFIC_INFERENCE_PREFETCH_BATCHES`, **`1` par défaut**, `0` rend le chemin
+    séquentiel à l'identique. Quatre points, et le troisième est le plus utile :
+    - **aucun chiffre ne change** — ni l'ordre des appels au modèle, ni leurs
+      arguments, ni l'état du tracker, ni l'ordre des images rendues. Cinq paires de
+      courses alternées rendent les mêmes véhicules, franchissements et plaques ;
+    - **le `join` n'est PAS borné**, contrairement à celui de `decode_ahead`, et
+      `yield from` remplace la boucle `for`. Le fil tient le *modèle*, sous le bail
+      d'`iter_video` : une expiration ou une fermeture laissée au ramasse-miettes
+      relâcherait le bail sous une inférence en vol — invariant 9 ;
+    - **le gain est de 1,10× au mieux, et l'hypothèse de départ était fausse.** Elle
+      annonçait « moteur GPU contre aval CPU, donc `max` au lieu de la somme ».
+      L'aval est **lui aussi** du GPU aux deux tiers : détection de plaques 22,0 ms
+      par image dont 17,9 de passe avant. Deux flux CUDA sur une carte se
+      sérialisent ; seules les moitiés CPU se recouvrent. Le gain suit donc
+      exactement la quantité d'OCR de la scène — **1,10× quand elle publie, 1,05×
+      quand elle localise sans lire, 1,00× quand elle ne se déclenche jamais** —, et
+      c'est le *signe* (cinq paires alternées gagnées sur cinq) et non le rapport qui
+      le rend crédible, 11 % étant le bruit de cette machine ;
+    - **le rapport du banc ne s'additionne plus.** Les postes sont désormais
+      concurrents : leur somme dépasse le temps par image, et `decodeAndOther`,
+      calculé par différence, tombe à zéro. Ce n'est pas une panne de mesure.
+
+    [ADR 0054](docs/adr/0054-le-moteur-et-son-aval-se-recouvrent.md).
 
 ## Ce que l'analyse signale — les alertes
 
@@ -1688,6 +1905,33 @@ Cinq points qui ne se devinent pas :
   probable. C'est un amendement assumé à « le rouge est réservé aux échecs » de
   `StaleResultBanner` : il veut désormais aussi dire « la scène présente une
   infraction », et le titre porte la différence ;
+- **une hypothèse porte son pourcentage** (2026-08-31). Une plaque recherchée affiche
+  sa **confiance de lecture**, un véhicule ressemblant sa **ressemblance** — le titre
+  dit « exacte » ou « probable », le chiffre dit à quel point. Sans lui, les deux
+  seuls faux positifs que cet écran puisse produire — l'OCR qui perd un caractère
+  (ADR 0029), des distributions de similarité qui se recouvrent (ADR 0048) — se
+  présentent comme des certitudes. Quatre points qui ne se devinent pas :
+  - **une infraction n'en porte pas**, et c'est délibéré : un franchissement est un
+    fait observé, pas une hypothèse. La plaque qu'il porte n'est qu'un renseignement
+    de contexte, souvent absente — le franchissement est émis avant la passe OCR de
+    la même image ;
+  - **le score vient d'une carte `globalId → scores` passée en prop, jamais de
+    l'`Alert`** — même piège que `capturedMs` : `mergeAlerts` garde la **première**
+    occurrence d'une clé, donc un score porté par l'alerte serait gelé à sa première
+    publication alors que les deux montent en cours d'analyse (ADR 0050, invariant 4).
+    Une carte figée à « 57 % » sous un registre qui affiche « 84 % » pour le même
+    véhicule se lit comme un désaccord entre deux écrans ;
+  - **le repli sur le score gelé de l'alerte reste nécessaire pour les plaques** : le
+    registre de l'aperçu est restreint aux franchisseurs (ADR 0026), et une plaque
+    recherchée peut appartenir à un véhicule à l'arrêt, absent de la carte ;
+  - **`alertScore` nomme l'unité en même temps que le nombre** (`read` / `match`).
+    Lecture et ressemblance ne mesurent pas la même chose, et les afficher sous le
+    même mot serait une erreur d'unité invisible, les deux chiffres étant plausibles.
+
+  Les deux se lisent aussi **sous la photo en grand** : `shared/lib/snapshotCaption.ts`
+  est le juge unique de cette légende — elle vivait dans le registre seul, et la copie
+  du studio avait déjà perdu la confiance de lecture en route. `formatScore` a suivi le
+  même chemin vers `shared/lib/score.ts`, trois features l'affichant ;
 - **rien ne s'affiche tant qu'aucune règle n'est posée ni aucune plaque cherchée.**
   Un « 0 infraction » sous une règle que personne n'a déclarée se lit « aucune
   infraction », l'inverse de la vérité — même honnêteté que le « — » de « Passages en
@@ -1827,6 +2071,9 @@ uv run python scripts/pipeline_bench.py --videos data/jobs/<id> --anpr --ocr \
 # « Le GPU est-il saturé ? » — utilisation NVML à 5 Hz et crête VRAM torch.
 uv run python scripts/pipeline_bench.py --videos data/jobs/<id> --anpr --ocr \
     --frames 600 --warmup 40 --start 11 --gpu-probe --json out/gpu.json
+# « Le recouvrement moteur/aval sert-il sur MA scène ? » — 0 rend le chemin
+# séquentiel d'avant ADR 0054, dans le même processus, comme témoin.
+uv run python scripts/pipeline_bench.py --videos data/jobs/<id> --anpr --ocr \n    --frames 250 --warmup 30 --start 20 --prefetch 0 --json out/sequentiel.json
 ```
 
 **Deux pièges de mesure propres à cette machine, et ils dominent tout le reste.**
@@ -2144,7 +2391,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1665 (1 skip) | 864 |
+| Nombre | 1700 (1 skip) | 882 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 
