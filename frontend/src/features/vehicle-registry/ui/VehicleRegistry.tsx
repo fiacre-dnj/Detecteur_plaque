@@ -65,7 +65,7 @@ import {
 import { filterByLine } from "../model/filterLine";
 import { filterByPlate } from "../model/filterPlate";
 import { plateBestGuessMessage, plateUnreadLabel, plateUnreadMessage } from "../model/plateUnread";
-import { rematchPair } from "../model/rematchPair";
+import { hasRematch, isRematched, rematchPair } from "../model/rematchPair";
 import { crossingsWithRole, crossingsWithoutRole } from "../model/roleCrossings";
 import {
   capturedVehicles,
@@ -213,18 +213,18 @@ export function VehicleRegistry({
   );
 
   /**
-   * Un véhicule a-t-il été **re-détecté** quelque part dans ce registre (ADR 0055) ?
+   * Le registre porte-t-il **au moins une** re-détection crédible (ADR 0055) ?
    *
-   * Même règle et même raison que `hasMatch` juste au-dessus : décidé sur `vehicles`
-   * entier, jamais sur les rangées rendues.
+   * Le seuil est dans la condition, et il l'a longtemps manqué : le serveur publie
+   * le meilleur voisin de chaque franchisseur quel qu'en soit le score, donc sans
+   * lui la colonne existait toujours et se remplissait de numéros à 2 %. Elle
+   * n'apparaît désormais que si elle a quelque chose à affirmer.
    *
-   * **Sans seuil dans la condition**, contrairement à `hasMatch` : `rematchOf` n'est
-   * publié que si le serveur a trouvé quelque chose, donc sa seule présence dit que
-   * la fonctionnalité a tourné. La colonne montre alors aussi les scores sous le
-   * curseur, en gris — c'est ce qui permet de voir qu'on est passé à côté de peu.
+   * Même règle et même raison que `hasMatch` juste au-dessus pour le reste : décidé
+   * sur `vehicles` entier, jamais sur les rangées rendues.
    */
-  const hasRematch = useMemo(
-    () => vehicles.some((entry) => entry.rematchOf !== null && entry.rematchOf !== undefined),
+  const withRematch = useMemo(
+    () => hasRematch(vehicles, DEFAULT_REMATCH_THRESHOLD),
     [vehicles],
   );
 
@@ -388,7 +388,7 @@ export function VehicleRegistry({
               d'apparence et se lisent ensemble. Elles ne disent pourtant pas la même
               chose — l'une compare à une photo fournie, l'autre aux véhicules déjà
               passés — d'où deux colonnes et non une. */}
-          {hasRematch && <Th className="w-28">Déjà vu</Th>}
+          {withRematch && <Th className="w-28">Déjà vu</Th>}
           {/* « Passages » remplace « Ré-id » : la ré-identification n'existe plus
               (ADR 0016), et le nombre de franchissements d'un véhicule est
               l'information qui rend une ligne du registre vérifiable — un 0 dit
@@ -446,7 +446,7 @@ export function VehicleRegistry({
               />
             )}
             {hasMatch && <MatchCell vehicle={vehicle} threshold={matchThreshold} />}
-            {hasRematch && (
+            {withRematch && (
               <RematchCell
                 vehicle={vehicle}
                 // Sans job, aucune image n'existe : la cellule reste du texte plutôt
@@ -1063,25 +1063,39 @@ function RematchCell({
   onCompare?: (() => void) | undefined;
 }) {
   const { rematchOf, rematchScore } = vehicle;
-  if (rematchOf === null || rematchOf === undefined) {
-    return <Td className="w-28 text-ink-muted">—</Td>;
+
+  // **Sous le seuil, aucune identité n'est affirmée.** Le serveur publie le meilleur
+  // voisin de chaque franchisseur quel qu'en soit le score : sans cette porte, un
+  // véhicule qui n'a par construction aucun jumeau — les sept de la première moitié
+  // d'une vidéo doublée — affiche quand même un numéro, à 2 % ou à 31 %, et l'écran
+  // se lit comme « le système se trompe partout ». Une identité à 2 % n'est pas une
+  // information nuancée, c'est une affirmation fausse.
+  //
+  // Le score brut reste dans l'infobulle : il sert à régler le seuil, et rien de ce
+  // qui a été mesuré n'est perdu.
+  if (!isRematched(vehicle, DEFAULT_REMATCH_THRESHOLD)) {
+    return (
+      <Td className="w-28 text-ink-muted">
+        <span
+          title={
+            rematchOf == null || rematchScore == null
+              ? "Aucun véhicule antérieur ne lui ressemble."
+              : `Meilleure ressemblance : #${rematchOf} à ${formatScore(rematchScore)} — sous le seuil de ${formatScore(DEFAULT_REMATCH_THRESHOLD)}.`
+          }
+        >
+          —
+        </span>
+      </Td>
+    );
   }
-  const under = !matches(rematchScore, DEFAULT_REMATCH_THRESHOLD);
-  const strength =
-    rematchScore == null ? null : matchStrength(rematchScore, DEFAULT_REMATCH_THRESHOLD);
-  const ink = under
-    ? "text-ink-muted"
-    : strength === "exact"
+
+  const score = rematchScore as number;
+  const ink =
+    matchStrength(score, DEFAULT_REMATCH_THRESHOLD) === "exact"
       ? "font-medium text-negative"
       : "text-warning";
-  const label =
-    rematchScore == null ? `#${rematchOf}` : `#${rematchOf} — ${Math.round(rematchScore * 100)} %`;
-  const detail =
-    rematchScore == null
-      ? `Ressemble au véhicule #${rematchOf}`
-      : `Similarité ${rematchScore.toFixed(3)} avec le véhicule #${rematchOf}${
-          under ? " — sous le seuil retenu" : ""
-        }`;
+  const label = `#${rematchOf} — ${formatScore(score)}`;
+  const detail = `Similarité ${score.toFixed(3)} avec le véhicule #${rematchOf}`;
 
   // **Cliquable, et c'est ce qui rend l'affirmation vérifiable.** Le score dit « ces
   // deux véhicules se ressemblent » ; seule la comparaison des deux photos permet de

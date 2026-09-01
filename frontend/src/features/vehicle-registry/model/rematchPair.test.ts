@@ -10,7 +10,7 @@ import { describe, expect, it } from "bun:test";
 
 import type { VehicleRecord } from "@/shared/api/contracts";
 
-import { rematchPair } from "./rematchPair";
+import { hasRematch, isRematched, rematchPair } from "./rematchPair";
 
 function vehicle(globalId: number, overrides: Partial<VehicleRecord> = {}): VehicleRecord {
   return {
@@ -70,5 +70,47 @@ describe("rematchPair", () => {
 
   it("ne rend rien pour un numéro absent de la liste", () => {
     expect(rematchPair([vehicle(12)], 404)).toBeNull();
+  });
+});
+
+describe("isRematched / hasRematch — la porte du seuil", () => {
+  const THRESHOLD = 0.75;
+
+  it("refuse une identité affirmée sous le seuil", () => {
+    // **Le test qui porte le correctif d'affichage.** Sur une vidéo doublée, les
+    // sept véhicules de la première moitié n'ont par construction aucun jumeau
+    // antérieur, et le serveur leur publie quand même leur meilleur voisin — à 2 %,
+    // 27 %, 31 %. Les afficher en gris se lisait comme « le système se trompe
+    // partout » : une identité à 2 % n'est pas une information nuancée.
+    expect(isRematched(vehicle(42, { rematchOf: 12, rematchScore: 0.31 }), THRESHOLD)).toBe(
+      false,
+    );
+    expect(isRematched(vehicle(42, { rematchOf: 12, rematchScore: 0.87 }), THRESHOLD)).toBe(true);
+  });
+
+  it("accepte le seuil lui-même", () => {
+    // `matches` est inclusif à la borne : le curseur dit « à partir de », pas
+    // « au-delà de ».
+    expect(isRematched(vehicle(42, { rematchOf: 12, rematchScore: 0.75 }), THRESHOLD)).toBe(true);
+  });
+
+  it("refuse un antécédent sans score", () => {
+    // `rematchOf` sans `rematchScore` ne devrait pas exister — le sérialiseur les
+    // pose ensemble — mais un résultat rouvert n'a pas à faire confiance à cette
+    // invariance pour afficher un numéro.
+    expect(isRematched(vehicle(42, { rematchOf: 12 }), THRESHOLD)).toBe(false);
+    expect(isRematched(vehicle(42), THRESHOLD)).toBe(false);
+  });
+
+  it("la colonne n'existe que si une rangée affirme quelque chose", () => {
+    const noise = [
+      vehicle(12),
+      vehicle(42, { rematchOf: 12, rematchScore: 0.31 }),
+    ];
+    const real = [...noise, vehicle(43, { rematchOf: 12, rematchScore: 0.99 })];
+
+    expect(hasRematch(noise, THRESHOLD)).toBe(false);
+    expect(hasRematch(real, THRESHOLD)).toBe(true);
+    expect(hasRematch([], THRESHOLD)).toBe(false);
   });
 });

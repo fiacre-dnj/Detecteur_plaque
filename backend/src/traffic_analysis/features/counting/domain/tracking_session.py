@@ -813,23 +813,49 @@ class AnalysisSession:
         `match_score` à `None` est un état **normal** : il n'y a pas d'image de
         requête. L'apparence est alors encodée pour rien — c'est pourquoi le service
         n'appelle cet étage qu'en présence d'une requête.
+
+        **La largeur ne redescend jamais**, et cette clause manquait. Depuis
+        ADR 0055, un franchissement force un encodage quelle que soit la largeur de
+        la boîte : écrire cette largeur telle quelle rabaissait la référence de la
+        règle monotone, qui rouvrait alors des ré-encodages déjà payés — ADR 0050 à
+        l'envers. `appearance_width_px` décrit « la meilleure vue déjà encodée », pas
+        « la dernière ».
+
+        `match_score`, lui, est bien **remplacé** : c'est une mesure sur la vue
+        courante, pas un rang. Une vue plus étroite peut parfaitement donner une
+        meilleure ressemblance, et la taire serait mentir sur ce qu'on a mesuré.
         """
         aggregate = self._aggregates.get(global_id)
         if aggregate is None:
             return
-        aggregate.appearance_width_px = width_px
+        best = aggregate.appearance_width_px
+        aggregate.appearance_width_px = width_px if best is None else max(best, width_px)
         aggregate.match_score = match_score
 
     def record_rematch(self, global_id: int, other_id: int, score: float) -> None:
-        """Retient que ce véhicule ressemble à un franchisseur antérieur.
+        """Retient la **meilleure** ressemblance mesurée à un franchisseur antérieur.
 
-        Ne revérifie rien : le service a déjà interrogé la galerie et compare déjà
-        au plancher de déploiement. Reposer la question ici ferait exister deux
-        endroits qui décident de la même chose.
+        Ne revérifie pas le plancher de déploiement : le service l'a déjà appliqué.
+        Reposer cette question-là ferait exister deux endroits qui décident de la
+        même chose.
 
-        **Remplacement et non accumulation**, comme `record_embedding` : une vue
-        plus large peut désigner un autre antécédent, et c'est la dernière mesure
-        qui vaut. Aucun vote n'est affamé, il n'y en a pas.
+        **Le maximum, et non la dernière mesure.** Cette méthode a écrasé sans
+        comparer, et c'était le défaut qui rendait la fonctionnalité inutilisable.
+        Un véhicule franchit plusieurs lignes, donc interroge la galerie plusieurs
+        fois, et chaque interrogation compare une vue *différente* à la galerie —
+        deux vues d'un même véhicule ne se ressemblant pas autant qu'on croit
+        (0,387 mesuré au plus bas, ADR 0048), la dernière mesure est souvent la plus
+        mauvaise.
+
+        Mesuré sur une vidéo doublée bout à bout, où la bonne réponse vaut 1,00 par
+        construction : trois jumeaux sur sept publiaient 0,42, 0,60 et 0,27, et le
+        dernier désignait **un autre véhicule** — parce que sa seconde mesure, prise
+        sous un angle qui ne correspondait pas, trouvait mieux ailleurs. Le maximum
+        publie la mesure la plus favorable, qui est aussi la seule qui ait comparé
+        deux vues comparables.
+
+        **Le numéro suit le score**, jamais l'inverse : on ne garde pas le meilleur
+        score d'un antécédent et le numéro d'un autre.
 
         **N'écrit rien qu'un compteur puisse lire.** C'est la clause qui tient
         ADR 0016 à distance, et elle est vérifiable : `test_redetection.py` compare
@@ -837,6 +863,8 @@ class AnalysisSession:
         """
         aggregate = self._aggregates.get(global_id)
         if aggregate is None:
+            return
+        if aggregate.rematch_score is not None and score <= aggregate.rematch_score:
             return
         aggregate.rematch_of = other_id
         aggregate.rematch_score = score

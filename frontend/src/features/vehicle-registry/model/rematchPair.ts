@@ -10,6 +10,39 @@
  */
 
 import type { VehicleRecord } from "@/shared/api/contracts";
+import { matches } from "@/shared/lib/vehicleMatch";
+
+/**
+ * Ce véhicule porte-t-il une re-détection **à laquelle on croit** ?
+ *
+ * Le seuil entre dans le prédicat, et c'est un changement de doctrine assumé. La
+ * colonne affichait les scores sous le curseur en gris, au motif qu'on voulait
+ * « voir qu'on est passé à côté de peu ». Mesuré à l'usage, le résultat est
+ * l'inverse : sur une vidéo doublée, les sept véhicules de la première moitié —
+ * qui n'ont par construction **aucun** jumeau antérieur — affichaient tous un
+ * numéro à 2, 27 ou 38 %, et l'écran se lisait comme « le système se trompe partout ».
+ *
+ * Une identité affirmée à 2 % n'est pas une information nuancée, c'est une
+ * affirmation fausse. Le score brut reste dans l'infobulle, où il sert au réglage
+ * sans rien prétendre.
+ *
+ * Aligne du même coup le registre sur le tiroir d'alertes, qui applique déjà le
+ * seuil : les deux surfaces disaient deux choses différentes des mêmes données.
+ */
+export function isRematched(vehicle: VehicleRecord, threshold: number): boolean {
+  return vehicle.rematchOf != null && matches(vehicle.rematchScore, threshold);
+}
+
+/**
+ * Le registre porte-t-il **au moins une** re-détection crédible ?
+ *
+ * Décidé sur `vehicles` entier et jamais sur les rangées rendues, même règle que
+ * « Capture » et « Ressemblance » : une colonne qui apparaîtrait au défilement
+ * décalerait toutes les autres sous le curseur.
+ */
+export function hasRematch(vehicles: readonly VehicleRecord[], threshold: number): boolean {
+  return vehicles.some((vehicle) => isRematched(vehicle, threshold));
+}
 
 /**
  * Les deux côtés, **dans l'ordre chronologique**.
