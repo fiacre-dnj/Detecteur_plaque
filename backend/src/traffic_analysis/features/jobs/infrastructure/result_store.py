@@ -17,7 +17,7 @@ import shutil
 from typing import TYPE_CHECKING, Any
 
 from traffic_analysis.core.logging import get_logger
-from traffic_analysis.features.jobs.application.ports import SnapshotKind
+from traffic_analysis.features.jobs.application.ports import SnapshotFace
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -142,9 +142,16 @@ class FileResultStore:
         directory = self.snapshot_directory_for(job_id)
         written = 0
         for global_id, snapshot in snapshots.items():
-            faces: tuple[tuple[SnapshotKind, bytes], ...] = (
+            # **Une face ou deux.** Une capture retenue pour la ressemblance du
+            # véhicule n'a pas de plaque à écrire (ADR 0051), donc `written` ne se
+            # relit plus comme un multiple de deux.
+            #
+            # Aucun `unlink` en face : l'échelle de priorité des causes est monotone
+            # croissante, donc on ne passe jamais d'une capture avec plaque à une
+            # capture sans, et aucun `-plate.jpg` ne devient orphelin.
+            faces: tuple[tuple[SnapshotFace, bytes], ...] = (
                 ("vehicle", snapshot.vehicle_jpeg),
-                ("plate", snapshot.plate_jpeg),
+                *(() if snapshot.plate_jpeg is None else (("plate", snapshot.plate_jpeg),)),
             )
             for kind, payload in faces:
                 try:
@@ -157,7 +164,7 @@ class FileResultStore:
                 written += 1
         return written
 
-    def snapshot_path_for(self, job_id: str, global_id: int, kind: SnapshotKind) -> Path | None:
+    def snapshot_path_for(self, job_id: str, global_id: int, kind: SnapshotFace) -> Path | None:
         """Chemin d'une capture, ou `None` si elle n'existe pas ou plus.
 
         `None` et non une exception : une capture purgée est le cas **normal** après
@@ -210,6 +217,6 @@ class FileResultStore:
         shutil.rmtree(self._root / job_id, ignore_errors=True)
 
 
-def _snapshot_name(global_id: int, kind: SnapshotKind) -> str:
+def _snapshot_name(global_id: int, kind: SnapshotFace) -> str:
     """`12-vehicle.jpg`. Un entier et un littéral, donc rien qui vienne du client."""
     return f"{global_id}-{kind}.jpg"

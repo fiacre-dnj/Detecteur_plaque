@@ -20,19 +20,28 @@ import { classColor } from "@/shared/config/palettes";
 import { classLabel } from "@/shared/lib/classes";
 import { crossingHeadingDeg, directionArrow } from "@/shared/lib/directions";
 import { formatSceneTimePrecise } from "@/shared/lib/sceneTime";
+import { formatScore } from "@/shared/lib/score";
 
-import type { Alert } from "../model/alerts";
+import type { Alert, AlertScore } from "../model/alerts";
 import { ALERT_LOOK, SEVERITY_INK, SEVERITY_RAIL, SEVERITY_SURFACE } from "./alertLook";
 
 interface AlertCardProps {
   alert: Alert;
+  /**
+   * La confiance de l'alerte, ou `null` — il n'y a rien à chiffrer.
+   *
+   * En prop et non lue sur l'`Alert` : les deux scores s'améliorent pendant
+   * l'analyse, et `mergeAlerts` gèle la première occurrence d'une clé. `alertScore`
+   * en est le seul juge, et c'est lui qui décide qu'une infraction n'en porte pas.
+   */
+  score?: AlertScore | null | undefined;
   /** Le tracé **courant**, pour l'angle de la flèche. */
   lines: readonly CountingLine[];
   /** Amène la tête de lecture à l'instant du fait. Absent = carte inerte. */
   onSeek?: ((timestampMs: number) => void) | undefined;
 }
 
-export function AlertCard({ alert, lines, onSeek }: AlertCardProps) {
+export function AlertCard({ alert, score = null, lines, onSeek }: AlertCardProps) {
   const look = ALERT_LOOK[alert.kind];
   const headingDeg =
     alert.line === null || alert.direction === null
@@ -64,6 +73,38 @@ export function AlertCard({ alert, lines, onSeek }: AlertCardProps) {
           </span>
         )}
       </p>
+
+      {/* **Le pourcentage de confiance, et son unité avec lui.** Une plaque
+          recherchée et un véhicule ressemblant sont des *hypothèses* : le titre dit
+          « exacte » ou « probable », ce chiffre dit à quel point. Sans lui, les deux
+          seuls faux positifs que cet écran puisse produire — l'OCR qui perd un
+          caractère (ADR 0029), des distributions de similarité qui se recouvrent
+          (ADR 0048) — se présentent comme des certitudes.
+
+          **Sur sa propre rangée** et non collé à la plaque : le mot qui nomme
+          l'unité est indispensable — « lecture » et « ressemblance » ne mesurent pas
+          la même chose — et deux étiquettes de plus dans la rangée du véhicule la
+          faisaient passer à la ligne dès qu'une plaque y figurait. */}
+      {score !== null && (
+        <p className="mt-0.5 flex items-baseline gap-1.5 text-micro">
+          <span className="text-ink-dim">
+            {score.kind === "read" ? "Confiance de lecture" : "Ressemblance"}
+          </span>
+          {/* Le score brut en infobulle : le pourcentage arrondi suffit à comparer
+              deux cartes, pas à comprendre pourquoi un véhicule tombe juste sous le
+              curseur de ressemblance. Même discipline que la colonne du registre. */}
+          <span
+            className={`font-medium tabular ${SEVERITY_INK[alert.severity]}`}
+            title={
+              score.kind === "read"
+                ? `Confiance de la lecture retenue — ${score.value.toFixed(3)}`
+                : `Similarité à l'image recherchée — ${score.value.toFixed(3)}`
+            }
+          >
+            {formatScore(score.value)}
+          </span>
+        </p>
+      )}
 
       {alert.line !== null && (
         <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-micro text-ink-muted">

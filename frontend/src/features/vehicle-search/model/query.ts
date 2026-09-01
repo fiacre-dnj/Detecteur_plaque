@@ -89,4 +89,3 @@ export function clampCrop(crop: CropRect): CropRect {
     y: Math.min(1 - height, Math.max(0, crop.y)),
   };
 }
-

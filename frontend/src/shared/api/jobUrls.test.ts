@@ -39,6 +39,40 @@ describe("les adresses des fichiers d'un job", () => {
     expect(plate.startsWith(prefix)).toBe(true);
   });
 
+  it("versionne l'adresse avec l'instant de la capture", () => {
+    // Sans `?v=`, ces images servies `immutable` resteraient un an sur la première
+    // capture d'un véhicule dont la vue s'améliore ensuite.
+    expect(vehicleSnapshotUrl(JOB, 12, 12_400)).toBe(
+      "/api/v1/jobs/0123456789abcdef/vehicles/12/snapshot.jpg?v=12400",
+    );
+  });
+
+  it("compose la version et le réessai avec la bonne ponctuation", () => {
+    // **Le piège que ce test ferme.** Deux appelants concaténaient `retry` eux-mêmes,
+    // chacun en devinant la ponctuation de l'autre : le registre écrivait `&retry=`
+    // en supposant `?v=` présent, la pile d'alertes `?retry=` en supposant l'inverse.
+    // Aucun n'était faux, et les deux le devenaient au premier changement d'appelant.
+    expect(vehicleSnapshotUrl(JOB, 12, 12_400, 1)).toBe(
+      "/api/v1/jobs/0123456789abcdef/vehicles/12/snapshot.jpg?v=12400&retry=1",
+    );
+    expect(vehicleSnapshotUrl(JOB, 12, null, 1)).toBe(
+      "/api/v1/jobs/0123456789abcdef/vehicles/12/snapshot.jpg?retry=1",
+    );
+    expect(platePhotoUrl(JOB, 12, 900, 2)).toBe(
+      "/api/v1/jobs/0123456789abcdef/vehicles/12/plate.jpg?v=900&retry=2",
+    );
+  });
+
+  it("n'ajoute rien pour la première tentative", () => {
+    // `retry=0` priverait de cache toutes les vignettes visibles, pour rien.
+    expect(vehicleSnapshotUrl(JOB, 12, 12_400, 0)).toBe(
+      "/api/v1/jobs/0123456789abcdef/vehicles/12/snapshot.jpg?v=12400",
+    );
+    expect(vehicleSnapshotUrl(JOB, 12, null, 0)).toBe(
+      "/api/v1/jobs/0123456789abcdef/vehicles/12/snapshot.jpg",
+    );
+  });
+
   it("toujours relatives — aucune URL de base nulle part", () => {
     for (const url of [inputVideoUrl(JOB), vehicleSnapshotUrl(JOB, 1), platePhotoUrl(JOB, 1)]) {
       expect(url.startsWith("/api/v1/")).toBe(true);

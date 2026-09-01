@@ -41,9 +41,24 @@ function vehicle(globalId: number, snapshotScore: number | null = null): Vehicle
 }
 
 describe("hasSnapshot", () => {
-  it("lit la non-nullité du score, qui est le drapeau", () => {
+  it("lit l'instant, qui est le drapeau", () => {
     expect(hasSnapshot(vehicle(1, 0.9))).toBe(true);
     expect(hasSnapshot(vehicle(1))).toBe(false);
+  });
+
+  it("compte une photo sans confiance de lecture", () => {
+    // **La régression que le changement de champ existe pour éviter** (ADR 0051) :
+    // une plaque repérée non lue, ou un véhicule retenu pour sa ressemblance, portent
+    // une photo et aucun `snapshotScore`. L'ancien drapeau les manquait tous les
+    // deux, silencieusement — et ce sont les deux populations qu'ADR 0051 ajoute.
+    const sansLecture: VehicleRecord = {
+      ...vehicle(1),
+      snapshotScore: null,
+      snapshotMs: 12_400,
+      snapshotKind: "appearance",
+    };
+
+    expect(hasSnapshot(sansLecture)).toBe(true);
   });
 
   it("traite un résultat archivé sans le champ comme sans capture", () => {

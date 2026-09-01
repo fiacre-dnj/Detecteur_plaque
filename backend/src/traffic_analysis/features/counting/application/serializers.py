@@ -194,10 +194,19 @@ def serialise_vehicle(record: VehicleRecord) -> dict[str, Any]:
         # La capture retenue. **Un score et un instant, jamais une URL** : le serveur
         # ne fabrique pas les adresses du client, qui les construit lui-même depuis
         # l'identifiant du job et le numéro du véhicule — même convention que la
-        # vidéo déposée. La non-nullité de `snapshotScore` est le drapeau « il existe
-        # une capture ».
+        # vidéo déposée.
+        #
+        # **Le drapeau « il existe une capture » est `snapshotMs`, doublé de
+        # `snapshotKind`** (ADR 0051) : deux des trois causes de capture n'ont aucune
+        # confiance de lecture à porter, donc `snapshotScore` y vaut `null` alors que
+        # la photo existe. Dans l'autre sens la garantie tient : non-nul **implique**
+        # `snapshotKind == "plate_text"`.
         "snapshotScore": None if record.snapshot_score is None else _score(record.snapshot_score),
         "snapshotMs": record.snapshot_ms,
+        # **Pourquoi** cette photo existe : plaque lue, plaque seulement localisée, ou
+        # ressemblance du véhicule. C'est ce qui dit au client s'il doit demander la
+        # vignette de plaque — une capture de ressemblance n'en a pas.
+        "snapshotKind": record.snapshot_kind,
         # La ressemblance à l'image de requête. **Le score brut et non un verdict** :
         # le seuil d'affichage vit côté client, ce qui permet de le déplacer sans
         # réanalyser — indispensable ici, la mesure ayant montré que les distributions

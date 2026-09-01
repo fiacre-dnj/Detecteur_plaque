@@ -59,7 +59,7 @@ if TYPE_CHECKING:
         JobRepository,
         ModelPreparer,
         ResultStore,
-        SnapshotKind,
+        SnapshotFace,
     )
 
 logger = get_logger("traffic_analysis.jobs")
@@ -279,7 +279,7 @@ class JobManager:
             )
         return path
 
-    async def snapshot_path(self, job_id: str, global_id: int, kind: SnapshotKind) -> Path:
+    async def snapshot_path(self, job_id: str, global_id: int, kind: SnapshotFace) -> Path:
         """Chemin d'une capture, ou une erreur qui dit **pourquoi** elle manque.
 
         Deux refus distincts, parce qu'ils appellent deux gestes différents — la
@@ -307,9 +307,11 @@ class JobManager:
         path = self._result_store.snapshot_path_for(job_id, global_id, kind)
         if path is None:
             raise ConflictError(
-                "Aucune capture pour ce véhicule — soit aucune plaque n'y a été lue, "
-                "soit les captures ont été purgées avec la vidéo. Les chiffres du "
-                "registre restent intacts.",
+                "Aucune capture pour ce véhicule — soit rien n'y a été vu à montrer, "
+                "soit elle n'est pas encore écrite, soit cette photo a été retenue "
+                "pour la ressemblance du véhicule et ne porte donc pas de vignette de "
+                "plaque, soit les captures ont été purgées avec la vidéo. Les chiffres "
+                "du registre restent intacts.",
                 code="snapshot_missing",
             )
         return path

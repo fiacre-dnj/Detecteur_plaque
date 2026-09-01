@@ -24,11 +24,7 @@
 import { ArrowUp, Ban, ImageOff, ShieldAlert } from "lucide-react";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 
-import {
-  formatSceneTime,
-  formatSceneTimePrecise,
-  formatScore,
-} from "@/features/results-dashboard";
+import { formatSceneTime, formatSceneTimePrecise } from "@/features/results-dashboard";
 import type {
   AnalysisResult,
   CountingLine,
@@ -49,6 +45,9 @@ import {
 import { platePhotoUrl, vehicleSnapshotUrl } from "@/shared/api/jobUrls";
 import type { LineRule } from "@/shared/lib/lineRules";
 import { plateCell, plateTitle } from "@/shared/lib/plate";
+import { formatScore } from "@/shared/lib/score";
+import { snapshotCaption } from "@/shared/lib/snapshotCaption";
+import { snapshotHasPlateFace, snapshotReasonLabel } from "@/shared/lib/snapshotKind";
 import { Button } from "@/shared/ui/Button";
 import { SnapshotDialog } from "@/shared/ui/SnapshotDialog";
 
@@ -631,9 +630,16 @@ export function VehicleRegistry({
           open
           onClose={() => setOpenSnapshot(null)}
           title={`${classLabel(shownSnapshot.label)} #${shownSnapshot.globalId}`}
-          subtitle={snapshotCaption(shownSnapshot)}
+          subtitle={snapshotCaption(shownSnapshot, formatSceneTimePrecise)}
           vehicleSrc={vehicleSnapshotUrl(jobId, shownSnapshot.globalId, shownSnapshot.snapshotMs)}
-          plateSrc={platePhotoUrl(jobId, shownSnapshot.globalId, shownSnapshot.snapshotMs)}
+          // **Demandée seulement si elle existe.** Une capture retenue pour la
+          // ressemblance du véhicule n'a pas de plaque : la demander rendrait 409, et
+          // la modale afficherait « Capture purgée » sur un état parfaitement normal.
+          plateSrc={
+            snapshotHasPlateFace(shownSnapshot.snapshotKind)
+              ? platePhotoUrl(jobId, shownSnapshot.globalId, shownSnapshot.snapshotMs)
+              : null
+          }
           plateText={shownSnapshot.plateText}
           // La navigation porte sur les véhicules **affichés**, filtres compris :
           // après avoir filtré sur une ligne, « suivant » doit rester dans ce qu'on
@@ -644,20 +650,6 @@ export function VehicleRegistry({
       )}
     </section>
   );
-}
-
-/**
- * Ce que la modale dit sous le titre : quand la photo a été prise, et à quel point
- * la plaque y était sûre.
- *
- * Les deux ensemble, parce qu'ils répondent à deux questions différentes — « où
- * regarder dans la vidéo » et « pourquoi cette image-là a été gardée ».
- */
-function snapshotCaption(vehicle: VehicleRecord): string | undefined {
-  const parts: string[] = [];
-  if (vehicle.snapshotMs != null) parts.push(`capturée à ${formatSceneTimePrecise(vehicle.snapshotMs)}`);
-  if (vehicle.snapshotScore != null) parts.push(`lecture ${formatScore(vehicle.snapshotScore)}`);
-  return parts.length === 0 ? undefined : parts.join(" · ");
 }
 
 /**
@@ -1015,7 +1007,9 @@ function SnapshotCell({
       <button
         type="button"
         onClick={onOpen}
-        title={`Voir la capture du véhicule #${vehicle.globalId}`}
+        // **Pourquoi** cette photo existe, dans l'infobulle : sans elle, une photo
+        // sans plaque lue se lirait comme une lecture perdue.
+        title={`Voir la capture du véhicule #${vehicle.globalId} — ${snapshotReasonLabel(vehicle.snapshotKind)}`}
         className="block overflow-hidden rounded-input ring-1 ring-line/40 transition-transform hover:scale-105"
       >
         <img
@@ -1025,10 +1019,10 @@ function SnapshotCell({
           // garderait la première pour un an. `retry` casse en plus le cache
           // d'échec, sans quoi un second chargement de la même adresse
           // ressusciterait la réponse en erreur au lieu de redemander.
-          src={
-            vehicleSnapshotUrl(jobId, vehicle.globalId, vehicle.snapshotMs) +
-            (attempt === 0 ? "" : `&retry=${attempt}`)
-          }
+          // La composition de la requête vit dans `jobUrls` : elle était écrite ici
+          // en supposant `?v=` présent, et dans la pile d'alertes en supposant
+          // l'inverse — deux appelants qui devinaient la ponctuation l'un de l'autre.
+          src={vehicleSnapshotUrl(jobId, vehicle.globalId, vehicle.snapshotMs, attempt)}
           alt={`Capture du véhicule #${vehicle.globalId}`}
           width={40}
           height={40}

@@ -8,7 +8,14 @@
  * lecteurs, un seul juge.
  */
 
-export { ALERT_LIMIT, isViolation, type Alert, type AlertKind, type AlertSeverity } from "./model/alerts";
+export {
+  ALERT_LIMIT,
+  isViolation,
+  type Alert,
+  type AlertKind,
+  type AlertSeverity,
+  type VehicleScores,
+} from "./model/alerts";
 export { matchPlate, plateHits, type PlateHit, type PlateMatch } from "./model/plateWatch";
 export { alertsFromResult } from "./model/replayAlerts";
 export { useAlertLog } from "./model/useAlertLog";

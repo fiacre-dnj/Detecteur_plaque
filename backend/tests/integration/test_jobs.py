@@ -872,6 +872,29 @@ class TestCapturesDeVehicules:
         assert response.status_code == 200
         assert response.content == b"jpeg-en-cours"
 
+    async def test_la_vignette_de_plaque_d_une_photo_de_ressemblance_refuse_en_409(
+        self, client: AsyncClient, settings: Settings
+    ) -> None:
+        """Une capture retenue pour la ressemblance n'a qu'une face, et c'est normal.
+
+        Aucun code d'erreur nouveau : `snapshot_missing` couvre déjà « il n'y a pas ce
+        fichier », et le client sait par `snapshotKind` qu'il n'a pas à le demander.
+        Inventer un `plate_face_missing` ferait un code que personne ne branche.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+
+        directory = settings.data_dir / "jobs" / job_id / SNAPSHOT_DIRNAME
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "1-vehicle.jpg").write_bytes(b"jpeg-ressemblance")
+
+        vehicle = await client.get(f"/api/v1/jobs/{job_id}/vehicles/1/snapshot.jpg")
+        plate = await client.get(f"/api/v1/jobs/{job_id}/vehicles/1/plate.jpg")
+
+        assert vehicle.status_code == 200
+        assert plate.status_code == 409
+        assert plate.json()["code"] == "snapshot_missing"
+
     async def test_une_capture_pas_encore_ecrite_reste_un_409_missing(
         self, client: AsyncClient
     ) -> None:

@@ -654,6 +654,52 @@ class Settings(BaseSettings):
     #: étirée à 208 px par le réseau, donc n'apporterait rien.
     max_query_image_kb: int = Field(2048, ge=16, le=32768)
 
+    # ── Captures de véhicules ────────────────────────────────────────────────
+    #
+    # Les deux causes de capture ajoutées par ADR 0051, plus la marge qui les borne.
+    # Aucun seuil de **confiance** ici, et c'est délibéré : la capture hérite de ceux
+    # de l'utilisateur — une plaque n'existe qu'au-dessus de « Confiance plaques », un
+    # texte qu'au-dessus de « Confiance lecture », une apparence qu'au-dessus des
+    # planchers de largeur et de netteté de la ReID.
+
+    #: Photographier un véhicule dont une plaque est **localisée** sans être lue.
+    #:
+    #: C'est le cas dominant sur une vue large : plaques sous le plancher de lecture
+    #: (~64 px), trop floues, ou lectures refusées. La photo y est la seule chose qui
+    #: permette de lire ce que le serveur a refusé d'affirmer.
+    #:
+    #: Ce que ça coûte : la population photographiée passe de « les véhicules dont une
+    #: plaque est lue » à « ceux dont une plaque est vue », soit un ordre de grandeur
+    #: sur une vue large.
+    snapshot_on_plate_box: bool = True
+    #: Photographier tout véhicule dont l'apparence est **encodée** pour une recherche
+    #: par image.
+    #:
+    #: Tout véhicule encodé, et non les seuls ressemblants : le seuil qui décide de ce
+    #: qui s'affiche vit côté client et se déplace sans réanalyser (ADR 0048/0041). Une
+    #: photo qui n'existerait qu'au-dessus d'un seuil serveur manquerait exactement au
+    #: moment où l'on descend le curseur pour la regarder.
+    #:
+    #: Ne coûte rien sans image de requête : l'étage entier est alors éteint.
+    snapshot_on_appearance: bool = True
+    #: Marge de largeur exigée pour **remplacer** une capture par une meilleure vue.
+    #:
+    #: Elle ne s'applique qu'aux deux causes dont le rang est une **largeur** — plaque
+    #: localisée, apparence — et jamais à la plaque lue, dont le rang est une
+    #: confiance. Sans elle, la règle monotone ne borne rien : « plus large » est vrai
+    #: à presque chaque image d'un véhicule qui approche. C'est ADR 0050 mot pour mot,
+    #: et l'étranglement du détecteur de plaques (une image sur trois) ne divise le
+    #: problème que par trois.
+    #:
+    #: `1.0` désactive la marge et rend une comparaison stricte.
+    snapshot_width_improvement: float = Field(1.15, ge=1.0, le=4.0)
+    #: Combien de véhicules une analyse peut photographier.
+    #:
+    #: Une borne **mémoire**, donc pas de `0 = illimité` — cette convention est celle
+    #: des plafonds *par image*. Elle est devenue atteignable avec les deux causes
+    #: ci-dessus, et elle n'évince pas : la première cause servie garde la place.
+    snapshot_max_vehicles: int = Field(500, ge=1, le=5000)
+
     # ── Bornes d'exécution ───────────────────────────────────────────────────
     # Un GPU = une analyse à la fois. Les suivantes attendent en file et sont
     # acceptées en 202 « queued », jamais refusées en 503.

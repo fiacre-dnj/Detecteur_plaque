@@ -55,8 +55,10 @@ if TYPE_CHECKING:
         VehicleSnapshotEncoder,
     )
     from traffic_analysis.features.counting.domain.models import (
+        BoundingBox,
         CrossingEvent,
         SessionTrack,
+        SnapshotCause,
         ZoneEntryEvent,
     )
 
@@ -68,12 +70,19 @@ PROGRESS_EVERY_FRAMES = 10
 
 #: Combien de captures de véhicules une analyse peut retenir en mémoire.
 #:
-#: Une borne défensive, pas une limite attendue : la capture ne concerne que les
-#: véhicules dont une plaque est **lue**, soit une poignée sur une centaine suivis
-#: en pratique. À ~15 Ko la capture, 500 tiennent dans une douzaine de mégaoctets.
+#: Le **défaut** de la borne, que le déploiement peut relever (ADR 0051).
 #:
-#: Elle est **annoncée** quand elle est atteinte : une analyse qui cesserait
-#: silencieusement de capturer se lirait comme une panne de l'OCR.
+#: Elle était une borne défensive quand la capture ne concernait que les véhicules
+#: dont une plaque est **lue** — une poignée sur une centaine suivis. Elle est
+#: devenue atteignable : « une plaque vue » et « une apparence encodée » sont des
+#: populations d'un autre ordre de grandeur. À ~15 Ko la capture, 500 tiennent dans
+#: une douzaine de mégaoctets.
+#:
+#: Elle est **annoncée** quand elle est atteinte, avec la cause qui l'a heurtée : une
+#: analyse qui cesserait silencieusement de capturer se lirait comme une panne de
+#: l'OCR. Ce qu'elle ne fait pas est évincer : la première cause servie garde la
+#: place, donc au-delà de la borne un véhicule à plaque lue peut rester sans photo
+#: alors qu'un véhicule seulement ressemblant en occupe une.
 MAX_SNAPSHOTS = 500
 
 #: Intervalle minimal entre deux aperçus, en secondes.
@@ -167,6 +176,7 @@ class AnalysisService:
 
     __slots__ = (
         "_engine",
+        "_max_snapshots",
         "_plate_detect",
         "_plate_detector",
         "_plate_ocr",
@@ -175,6 +185,9 @@ class AnalysisService:
         "_reid_max_per_frame",
         "_reid_min_similarity",
         "_snapshot_encoder",
+        "_snapshot_on_appearance",
+        "_snapshot_on_plate_box",
+        "_snapshot_width_improvement",
         "_vehicle_embedder",
     )
 
@@ -190,6 +203,10 @@ class AnalysisService:
         reid_min_similarity: float = 0.0,
         reid_appearance_improvement: float = 1.0,
         reid_max_per_frame: int = 0,
+        snapshot_on_plate_box: bool = False,
+        snapshot_on_appearance: bool = False,
+        snapshot_width_improvement: float = 1.0,
+        max_snapshots: int = MAX_SNAPSHOTS,
     ) -> None:
         self._engine = engine
         self._plate_detector = plate_detector
@@ -213,6 +230,23 @@ class AnalysisService:
         # `None` désactive proprement la capture : le comptage, les plaques et le
         # registre sont identiques, les véhicules n'ont simplement pas de photo.
         self._snapshot_encoder = snapshot_encoder
+        # Les deux causes de capture ajoutées par ADR 0051, **éteintes ici et allumées
+        # par le conteneur**. Ce ne sont pas des réglages de scène : ils arbitrent du
+        # débit d'encodage et d'écriture contre de la preuve, donc ils ne passent pas
+        # par `SessionConfig`. Le défaut éteint garde le régime d'ADR 0042 pour tout
+        # appelant qui ne demande rien — et rend chaque test explicite sur ce qu'il
+        # exerce.
+        self._snapshot_on_plate_box = snapshot_on_plate_box
+        self._snapshot_on_appearance = snapshot_on_appearance
+        # Marge de rang des deux tiers dont le rang est une **largeur**. Sans elle, la
+        # règle monotone ne borne rien — une largeur croît à presque chaque image d'un
+        # véhicule qui approche (ADR 0050, rejoué à l'identique sur la largeur de
+        # plaque). `1.0` reproduit une comparaison stricte, donc le défaut est neutre.
+        self._snapshot_width_improvement = snapshot_width_improvement
+        # Borne mémoire des captures retenues, réglable depuis ADR 0051 : elle devient
+        # atteignable maintenant que « vu avec une plaque » ou « encodé » remplace
+        # « plaque lue ».
+        self._max_snapshots = max_snapshots
         self._plate_ocr = plate_ocr or PlateOcrOptions()
         # Réglages de déploiement, comme ceux de l'OCR : ils ne voyagent pas par
         # requête, parce qu'ils arbitrent du débit contre de la fraîcheur de
@@ -499,7 +533,10 @@ class AnalysisService:
                 self._match_appearances(
                     session=session,
                     query=query,
+                    snapshots=result.snapshots,
+                    on_snapshot=on_snapshot,
                     image=frame.image,
+                    timestamp_ms=frame.timestamp_ms,
                     tracks=outcome.tracks,
                 )
 
@@ -791,7 +828,10 @@ class AnalysisService:
         *,
         session: AnalysisSession,
         query: VehicleAppearance,
+        snapshots: dict[int, VehicleSnapshot],
+        on_snapshot: SnapshotCallback | None,
         image: npt.NDArray[np.uint8],
+        timestamp_ms: float,
         tracks: Sequence[SessionTrack],
     ) -> None:
         """Encode les vues qui valent mieux que la précédente, et note la ressemblance.
@@ -874,6 +914,35 @@ class AnalysisService:
                 track.box.width,
                 score if score >= self._reid_min_similarity else None,
             )
+            # **Une photo pour ce que la recherche par image va proposer** (ADR 0051).
+            # L'écran promet « à vérifier sur la capture » : sans cela, il n'y en avait
+            # aucune, l'ANPR étant la seule cause de capture. Trois points :
+            #
+            # - **uniquement les vues réellement encodées.** Les planchers de
+            #   l'adaptateur — largeur et netteté — viennent d'accepter ce recadrage.
+            #   C'est exactement la barre qu'on veut pour une photo, et elle est déjà
+            #   payée : capturer les refusés donnerait des vignettes trop petites ou
+            #   floues de mouvement ;
+            # - **après `record_embedding`**, pour que la ressemblance et la photo
+            #   entrent dans le **même** aperçu SSE. L'inverse publierait une photo un
+            #   tour avant le score qu'elle sert à vérifier ;
+            # - **indépendamment de `reid_min_similarity`**, donc y compris pour un
+            #   véhicule dont le score est tu. Le seuil d'affichage vit côté client et
+            #   se déplace sans réanalyser (ADR 0048/0041) : une photo qui n'existerait
+            #   qu'au-dessus d'un seuil serveur manquerait exactement au moment où l'on
+            #   descend le curseur pour la regarder.
+            self._keep_snapshot(
+                session,
+                snapshots,
+                on_snapshot,
+                image,
+                timestamp_ms,
+                track,
+                cause="appearance",
+                rank=track.box.width,
+                improvement=self._snapshot_width_improvement,
+                plate=None,
+            )
 
     def _capture_vehicle(
         self,
@@ -885,52 +954,95 @@ class AnalysisService:
         track: SessionTrack,
         plates: Sequence[PlateDetection],
     ) -> None:
-        """Garde la photo du véhicule quand sa plaque vient d'être **mieux** lue.
+        """Garde la photo d'un véhicule dont **cette image** dit quelque chose de sa plaque.
 
-        Trois gardes, dans cet ordre, et l'ordre est ce qui rend le poste
+        Deux causes, et le juge les départage en une passe : une plaque **lue**, ou une
+        plaque seulement **localisée** (ADR 0051). Les seuils de déclenchement ne sont
+        écrits nulle part ici parce qu'ils sont déjà appliqués — une plaque n'existe
+        qu'au-dessus de « Confiance plaques », un texte qu'au-dessus de « Confiance
+        lecture » (ADR 0036). La capture hérite donc des réglages de l'utilisateur sans
+        en ajouter un troisième.
+        """
+        chosen = _plate_for_capture(plates)
+        if chosen is None:
+            return
+        cause, plate, rank = chosen
+        self._keep_snapshot(
+            session,
+            snapshots,
+            on_snapshot,
+            image,
+            timestamp_ms,
+            track,
+            cause=cause,
+            rank=rank,
+            # **`1.0` sur le tier lu, et ce n'est pas une omission** : son rang est une
+            # confiance, pas une largeur, donc il ne croît pas avec l'approche du
+            # véhicule — le piège d'ADR 0050 ne s'y applique pas, et une marge y
+            # affamerait la meilleure preuve pour rien. Le tier `plate_box`, lui, se
+            # classe sur une largeur de boîte, qui croît, et il la paie.
+            improvement=1.0 if cause == "plate_text" else self._snapshot_width_improvement,
+            plate=plate.box,
+        )
+
+    def _keep_snapshot(
+        self,
+        session: AnalysisSession,
+        snapshots: dict[int, VehicleSnapshot],
+        on_snapshot: SnapshotCallback | None,
+        image: npt.NDArray[np.uint8],
+        timestamp_ms: float,
+        track: SessionTrack,
+        *,
+        cause: SnapshotCause,
+        rank: float,
+        improvement: float,
+        plate: BoundingBox | None,
+    ) -> None:
+        """Encode et retient une capture, si elle bat celle déjà gardée. Tier-agnostique.
+
+        Quatre gardes, dans cet ordre, et l'ordre est ce qui rend le poste
         négligeable :
 
-        1. **une lecture, pas seulement un rectangle.** La capture suit l'OCR : sans
-           texte lu, il n'y a rien à prouver et rien à classer. Le seuil de
-           déclenchement n'est écrit nulle part ici parce qu'il est déjà appliqué —
-           une plaque n'existe qu'au-dessus de « Confiance plaques », et un texte
-           qu'au-dessus de « Confiance lecture » (ADR 0036). La capture hérite donc
-           des réglages de l'utilisateur sans en ajouter un troisième ;
-        2. **elle doit battre la précédente.** C'est la règle demandée : 0,80 capture,
-           0,90 remplace, 0,85 ensuite ne fait rien. La comparaison est faite **avant**
-           l'encodage, donc l'immense majorité des images ne coûte qu'un test ;
-        3. **l'encodage peut refuser.** On n'enregistre le score qu'une fois les
-           octets réellement produits, sinon un véhicule annoncerait une capture sans
-           fichier — et l'interface afficherait une image cassée.
-
-        La borne `MAX_SNAPSHOTS` est **annoncée** quand elle est atteinte : une
-        analyse qui cesse silencieusement de capturer se lirait comme une panne de
-        l'OCR.
+        1. **la cause doit être armée.** Les deux causes ajoutées par ADR 0051 sont
+           des réglages de déploiement, éteints par défaut au niveau du service et
+           allumés par le conteneur : un test dit donc toujours explicitement ce qu'il
+           exerce ;
+        2. **elle doit battre la précédente**, cause d'abord et rang ensuite. La
+           comparaison est faite **avant** l'encodage, donc l'immense majorité des
+           images ne coûte qu'un test ;
+        3. **la borne mémoire**, annoncée quand elle est atteinte : une analyse qui
+           cesse silencieusement de capturer se lirait comme une panne de l'OCR ;
+        4. **l'encodage peut refuser.** On n'enregistre rien avant que les octets
+           existent, sinon un véhicule annoncerait une capture sans fichier — et
+           l'interface afficherait une image cassée.
         """
         encoder = self._snapshot_encoder
         if encoder is None:
             return
+        if cause == "plate_box" and not self._snapshot_on_plate_box:
+            return
+        if cause == "appearance" and not self._snapshot_on_appearance:
+            return
+        if not session.should_capture(track.global_id, cause, rank, improvement):
+            return
+        if track.global_id not in snapshots and len(snapshots) >= self._max_snapshots:
+            if len(snapshots) == self._max_snapshots:
+                logger.warning(
+                    "capture de véhicules bornée", limit=self._max_snapshots, cause=cause
+                )
+            return
 
-        best = _best_readable_plate(plates)
-        if best is None or best.text_score is None:
-            return
-        if not session.should_capture(track.global_id, best.text_score):
-            return
-        if track.global_id not in snapshots and len(snapshots) >= MAX_SNAPSHOTS:
-            if len(snapshots) == MAX_SNAPSHOTS:
-                logger.warning("capture de véhicules bornée", limit=MAX_SNAPSHOTS)
-            return
-
-        snapshot = encoder.encode(image, track.box, best.box)
+        snapshot = encoder.encode(image, track.box, plate)
         if snapshot is None:
             return
         snapshots[track.global_id] = snapshot
-        session.record_snapshot(track.global_id, best.text_score, timestamp_ms)
-        # **Écrite avant d'être annoncée.** Le rappel écrit le fichier ; le score
-        # qu'on vient de poser sur la session est ce que le prochain aperçu SSE
-        # publiera, et c'est lui qui fait apparaître la vignette côté client. Dans
-        # cet ordre, le fichier existe déjà quand le client apprend qu'il existe —
-        # l'inverse afficherait une image cassée le temps d'un aperçu.
+        session.record_snapshot(track.global_id, cause, rank, timestamp_ms)
+        # **Écrite avant d'être annoncée.** Le rappel écrit le fichier ; ce qu'on vient
+        # de poser sur la session est ce que le prochain aperçu SSE publiera, et c'est
+        # lui qui fait apparaître la vignette côté client. Dans cet ordre, le fichier
+        # existe déjà quand le client apprend qu'il existe — l'inverse afficherait une
+        # image cassée le temps d'un aperçu.
         #
         # Il vient **après** `record_snapshot` et non à sa place : la mémoire reste
         # la source de l'écriture finale, qui réécrit les mêmes octets et sert de
@@ -1115,17 +1227,41 @@ class AnalysisService:
             )
 
 
-def _best_readable_plate(plates: Sequence[PlateDetection]) -> PlateDetection | None:
-    """La plaque **mesurée et lue** la plus sûre de cette image, ou `None`.
+def _plate_for_capture(
+    plates: Sequence[PlateDetection],
+) -> tuple[SnapshotCause, PlateDetection, float] | None:
+    """La plaque **mesurée** de cette image qui vaut une photo, et pourquoi.
 
-    Le filtre `not stale` est le même que celui de `record_plates` : une boîte
-    reprojetée ne nourrit aucun agrégat, et une capture est un agrégat comme un
-    autre. Sans texte, aucune capture — la vignette existe pour prouver une lecture.
+    Rend `(cause, plaque, rang)`, ou `None` quand cette image ne dit rien de la
+    plaque de ce véhicule. Le rang n'est comparable qu'à l'intérieur de son tier :
+    une confiance de lecture pour `plate_text`, une largeur de boîte pour
+    `plate_box` (voir `AnalysisSession.should_capture`).
+
+    **Un seul juge et non deux**, parce que les deux tiers partagent le seul filtre
+    qui compte : `not stale`. Une boîte reprojetée n'est pas une mesure de cette
+    image (ADR 0010), la recadrer donnerait une vignette décalée, et que la plaque
+    ait été lue ou non ne change rien à cet argument.
+
+    **Une boîte sans texte vaut désormais une photo** (ADR 0051) : c'est le cas
+    dominant sur une vue large — plaques sous le plancher de lecture, trop floues, ou
+    lectures refusées — et la photo y est la seule chose qui permette de lire ce que
+    le serveur a refusé d'affirmer.
     """
-    best: PlateDetection | None = None
+    best_text: PlateDetection | None = None
+    widest: PlateDetection | None = None
     for plate in plates:
-        if plate.stale or not plate.text or plate.text_score is None:
+        if plate.stale:
             continue
-        if best is None or plate.text_score > (best.text_score or 0.0):
-            best = plate
-    return best
+        if (
+            plate.text
+            and plate.text_score is not None
+            and (best_text is None or plate.text_score > (best_text.text_score or 0.0))
+        ):
+            best_text = plate
+        if widest is None or plate.box.width > widest.box.width:
+            widest = plate
+    if best_text is not None and best_text.text_score is not None:
+        return ("plate_text", best_text, best_text.text_score)
+    if widest is not None:
+        return ("plate_box", widest, widest.box.width)
+    return None

@@ -181,6 +181,7 @@ class TestSerialiseVehicle:
             "plateText",
             "plateTextScore",
             "plateUnreadReason",
+            "snapshotKind",
             "snapshotMs",
             "snapshotScore",
             "zonesVisited",
@@ -206,9 +207,10 @@ class TestSerialiseVehicle:
         payload = serialise_vehicle(_vehicle(match_score=0.8812345))
         assert payload["matchScore"] == pytest.approx(0.8812)
 
-    def test_un_vehicule_sans_capture_rend_deux_null(self) -> None:
-        """La non-nullité de `snapshotScore` **est** le drapeau « il y a une photo ».
+    def test_un_vehicule_sans_capture_rend_trois_null(self) -> None:
+        """`snapshotMs` et `snapshotKind` **sont** le drapeau « il y a une photo ».
 
+        Plus `snapshotScore`, qui n'existe que sur la cause `plate_text` (ADR 0051).
         Pas de booléen en plus, et surtout pas d'URL : le serveur ne fabrique pas les
         adresses du client, qui les construit depuis l'identifiant du job et le numéro
         du véhicule — même convention que la vidéo déposée.
@@ -216,11 +218,29 @@ class TestSerialiseVehicle:
         payload = serialise_vehicle(_vehicle())
         assert payload["snapshotScore"] is None
         assert payload["snapshotMs"] is None
+        assert payload["snapshotKind"] is None
 
     def test_un_vehicule_capture_porte_sa_confiance_et_son_instant(self) -> None:
-        payload = serialise_vehicle(_vehicle(snapshot_score=0.921234, snapshot_ms=12_400.0))
+        payload = serialise_vehicle(
+            _vehicle(snapshot_score=0.921234, snapshot_ms=12_400.0, snapshot_kind="plate_text")
+        )
         assert payload["snapshotScore"] == pytest.approx(0.9212)
         assert payload["snapshotMs"] == pytest.approx(12_400.0)
+        assert payload["snapshotKind"] == "plate_text"
+
+    def test_une_capture_sans_lecture_publie_une_cause_et_aucun_score(self) -> None:
+        """Le cas qui a fait changer le drapeau (ADR 0051).
+
+        Une plaque localisée sans être lue, ou un véhicule retenu pour sa
+        ressemblance, portent une photo et **aucune** confiance de lecture. Un client
+        qui lirait `snapshotScore != null` comme « il y a une photo » les manquerait
+        tous les deux, silencieusement.
+        """
+        for kind in ("plate_box", "appearance"):
+            payload = serialise_vehicle(_vehicle(snapshot_ms=8_100.0, snapshot_kind=kind))
+            assert payload["snapshotKind"] == kind
+            assert payload["snapshotMs"] == pytest.approx(8_100.0)
+            assert payload["snapshotScore"] is None
 
     def test_une_plaque_vue_mais_illisible_garde_son_score_de_detection(self) -> None:
         """L'état que l'interface rate le plus facilement, et qui doit rester lisible.

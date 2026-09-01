@@ -662,10 +662,15 @@ export interface VehicleRecord {
   /**
    * Confiance de **lecture** de la capture retenue pour ce véhicule.
    *
-   * **Sa non-nullité est le drapeau « il existe une photo »** : pas de booléen en
-   * plus, et surtout pas d'URL — le serveur ne fabrique pas les adresses du client,
-   * qui les construit lui-même (`vehicleSnapshotUrl`), exactement comme pour la
-   * vidéo déposée.
+   * **Ce n'est plus le drapeau « il existe une photo »** (ADR 0051) : deux des trois
+   * causes de capture n'ont aucune lecture à publier, donc ce champ y vaut `null`
+   * alors que la photo existe. Le drapeau est `snapshotMs`, doublé de `snapshotKind`.
+   * Dans l'autre sens la garantie tient : non-nul **implique**
+   * `snapshotKind === "plate_text"`.
+   *
+   * Pas d'URL ici, et c'est inchangé — le serveur ne fabrique pas les adresses du
+   * client, qui les construit lui-même (`vehicleSnapshotUrl`), exactement comme pour
+   * la vidéo déposée.
    *
    * C'est la confiance de l'**image retenue** et non celle du vote : le vote est une
    * moyenne sur toute la vie du véhicule, il bouge quand une *autre* image est lue.
@@ -675,12 +680,30 @@ export interface VehicleRecord {
    */
   snapshotScore?: number | null;
   /**
-   * Instant de **scène** de cette capture. `null` ssi `snapshotScore` l'est.
+   * Instant de **scène** de cette capture. `null` ssi `snapshotKind` l'est.
+   *
+   * **C'est le drapeau de présence** — voir `snapshotExists` dans
+   * `shared/lib/snapshotKind.ts`, seul juge lu par les trois surfaces qui montrent
+   * une vignette.
    *
    * Il dit *quand* regarder dans la vidéo — c'est ce qui rend la photo vérifiable
-   * plutôt que seulement consultable.
+   * plutôt que seulement consultable — et il **versionne** l'adresse de l'image
+   * (`?v=`), qui est servie `immutable`.
    */
   snapshotMs?: number | null;
+  /**
+   * **Pourquoi** cette photo existe, ou `null` — il n'y en a pas.
+   *
+   * Trois causes et une échelle de priorité, une seule photo par véhicule : plaque
+   * lue > plaque seulement localisée > ressemblance à l'image recherchée. C'est ce
+   * champ qui dit s'il faut demander la vignette de plaque — une capture retenue pour
+   * la ressemblance n'en a pas, et sa route répond alors 409.
+   *
+   * `null` avec un `snapshotMs` non nul ne veut **pas** dire « pas de photo » : cela
+   * veut dire « analyse antérieure à ADR 0051 », donc `plate_text` de fait, puisque
+   * c'était alors la seule cause possible.
+   */
+  snapshotKind?: SnapshotKind | null;
   /**
    * Ressemblance à l'image de requête, dans [-1, 1], ou `null`.
    *
@@ -713,6 +736,24 @@ export type PlateUnreadReason =
   | "too_small"
   | "too_blurry"
   | "no_consensus";
+
+/**
+ * Pourquoi un véhicule a une photo — miroir exact du `Literal` pydantic.
+ *
+ * - `plate_text` : une plaque a été **lue** sur l'image retenue. La seule cause qui
+ *   porte une confiance de lecture (`snapshotScore`), et la seule qui existait avant
+ *   ADR 0051.
+ * - `plate_box` : une plaque y a été **localisée** sans qu'aucun texte soit publié —
+ *   trop petite, trop floue, lecture refusée, OCR éteint. C'est là que la photo sert
+ *   le plus : elle permet de lire ce que le serveur a refusé d'affirmer.
+ * - `appearance` : l'apparence du véhicule a été encodée pour une recherche par
+ *   image. **Aucune vignette de plaque** n'accompagne cette photo.
+ *
+ * Une échelle de priorité dans cet ordre, donc une seule photo par véhicule. Ce n'est
+ * pas la *face* d'un fichier (`snapshot.jpg` / `plate.jpg`) mais la raison d'être de
+ * la capture entière.
+ */
+export type SnapshotKind = "plate_text" | "plate_box" | "appearance";
 
 export interface VideoInfo {
   width: number;

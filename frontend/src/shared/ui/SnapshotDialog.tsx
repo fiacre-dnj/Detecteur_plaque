@@ -28,7 +28,15 @@ interface SnapshotDialogProps {
   /** Sous le titre : l'instant de la capture, la confiance de lecture. */
   subtitle?: string | undefined;
   vehicleSrc: string;
-  plateSrc: string;
+  /**
+   * La vignette de plaque, ou rien — **il n'y avait aucune plaque à recadrer**.
+   *
+   * C'est le cas d'une photo retenue pour la ressemblance du véhicule (ADR 0051).
+   * Absente, la modale l'explique au lieu d'afficher le repère d'échec : ici rien ne
+   * manque, et un pictogramme d'erreur pour un état normal est exactement ce que le
+   * repère muet existe pour éviter.
+   */
+  plateSrc?: string | null | undefined;
   /** Le texte lu, affiché sous la plaque — c'est ce qu'on vient vérifier. */
   plateText?: string | null | undefined;
   /**
@@ -109,7 +117,14 @@ export function SnapshotDialog(props: SnapshotDialogProps) {
         <Frame src={props.vehicleSrc} alt={`Photo du véhicule — ${props.title}`} tall />
 
         {/* La plaque en dessous, plus basse et pleine largeur : c'est sa forme. */}
-        <Frame src={props.plateSrc} alt={`Plaque du véhicule — ${props.title}`} />
+        {props.plateSrc != null ? (
+          <Frame src={props.plateSrc} alt={`Plaque du véhicule — ${props.title}`} />
+        ) : (
+          <p className="rounded-card bg-surface-2 p-3 text-center text-micro text-ink-dim">
+            Aucune vignette de plaque — cette photo a été retenue pour la ressemblance du
+            véhicule.
+          </p>
+        )}
 
         {(props.plateText != null || props.watched != null) && (
           <div className="rounded-card bg-surface-2 p-3">

@@ -219,6 +219,70 @@ export function sortAlerts(alerts: readonly Alert[], limit: number = ALERT_LIMIT
   return [...alerts].sort((a, b) => b.timestampMs - a.timestampMs).slice(0, limit);
 }
 
+/**
+ * Les scores **vivants** d'un véhicule, republiés à chaque aperçu.
+ *
+ * En paramètre et non dans l'`Alert`, pour la raison exacte de `capturedMs` :
+ * `mergeAlerts` garde la **première** occurrence d'une clé, donc un score porté par
+ * l'alerte serait gelé à sa première publication. Or les deux bougent, et vers le
+ * haut — la ressemblance quand une meilleure vue est encodée (ADR 0050), la confiance
+ * de lecture quand une nouvelle vignette gagne le vote (invariant 4). Une alerte
+ * figée à « 57 % » sous un registre qui affiche « 84 % » pour le même véhicule se lit
+ * comme un désaccord entre deux écrans.
+ */
+export interface VehicleScores {
+  matchScore?: number | null;
+  plateTextScore?: number | null;
+}
+
+/**
+ * Le pourcentage de confiance d'une alerte, et **ce qu'il mesure**.
+ *
+ * Deux natures, jamais fondues en un nombre : `read` est la confiance de **lecture**
+ * de la plaque votée, `match` la **similarité** à l'image recherchée. Les afficher
+ * sous le même mot serait une erreur d'unité invisible, les deux chiffres étant
+ * plausibles — le même mode de panne que « passages » contre « véhicules »
+ * (invariant 3).
+ */
+export interface AlertScore {
+  kind: "read" | "match";
+  value: number;
+}
+
+/**
+ * Ce que vaut la confiance affichée sur une carte, ou `null` — rien à afficher.
+ *
+ * **Rien sur une infraction**, et c'est délibéré : le franchissement est un fait
+ * observé, pas une hypothèse, et la plaque qu'il porte n'est qu'un renseignement de
+ * contexte — souvent absente, le franchissement étant émis avant la passe OCR de la
+ * même image. Un pourcentage y répondrait à une question que personne ne pose, et
+ * ferait douter d'un fait certain.
+ *
+ * Le score **vivant** l'emporte sur celui que l'alerte a figé ; le second sert de
+ * repli, indispensable pour une plaque recherchée pendant l'analyse — le registre de
+ * l'aperçu est restreint aux franchisseurs (ADR 0026), et un véhicule à l'arrêt n'y
+ * figure pas.
+ */
+export function alertScore(alert: Alert, live?: VehicleScores | undefined): AlertScore | null {
+  switch (alert.kind) {
+    case "plate-exact":
+    case "plate-partial": {
+      const value = live?.plateTextScore ?? alert.plateTextScore;
+      return value == null ? null : { kind: "read", value };
+    }
+    case "vehicle-exact":
+    case "vehicle-partial": {
+      // Aucun repli possible : l'alerte ne porte pas le score de ressemblance, et
+      // c'est voulu — l'inclure ferait réapparaître le même véhicule à chaque
+      // amélioration de sa meilleure vue.
+      const value = live?.matchScore ?? null;
+      return value === null ? null : { kind: "match", value };
+    }
+    default:
+      return null;
+  }
+}
+
 /** Une infraction, par opposition à une plaque trouvée. */
 export function isViolation(alert: Alert): boolean {
   return alert.line !== null;

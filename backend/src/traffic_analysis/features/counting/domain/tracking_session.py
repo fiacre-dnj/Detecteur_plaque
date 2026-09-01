@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from traffic_analysis.features.counting.domain.line_counter import LineCrossingCounter
 from traffic_analysis.features.counting.domain.models import (
+    SNAPSHOT_CAUSE_PRIORITY,
     AnalysisStats,
     CountingLineDef,
     CrossingEvent,
@@ -34,6 +35,7 @@ from traffic_analysis.features.counting.domain.models import (
     LineTally,
     PlateDetection,
     SessionTrack,
+    SnapshotCause,
     TrackObservation,
     VehicleRecord,
     ZoneDef,
@@ -157,14 +159,31 @@ class _VehicleAggregate:
     #: dégage. Sans ce drapeau, les deux se confondraient en « pas de texte », et
     #: les deux appellent pourtant des gestes opposés.
     plate_read_attempted: bool = False
-    #: Confiance de lecture de la **capture** retenue, ou `None` — aucune capture.
+    #: Confiance de lecture de la **capture** retenue, ou `None`.
     #:
     #: Le pendant exact de `best_plate_score` pour l'image plutôt que pour la boîte,
     #: et la règle est la même : strictement croissante. Une lecture moins sûre que
     #: la précédente ne remplace rien.
+    #:
+    #: **`None` n'est plus « aucune capture »** depuis ADR 0051 : les causes
+    #: `plate_box` et `appearance` n'ont aucune lecture à porter. Ce champ est
+    #: **dérivé** de `snapshot_rank` par `record_snapshot`, et n'existe que pour
+    #: publier une confiance sans obliger l'écran à savoir quel tier porte quoi.
     snapshot_score: float | None = None
-    #: Instant de scène de cette capture. `None` ssi `snapshot_score` l'est.
+    #: Instant de scène de cette capture. `None` ssi `snapshot_cause` l'est.
     snapshot_ms: float | None = None
+    #: Pourquoi la capture retenue existe, ou `None` — il n'y en a aucune.
+    #:
+    #: **C'est le drapeau de présence**, avec `snapshot_ms` : voir `SnapshotCause`.
+    snapshot_cause: SnapshotCause | None = None
+    #: Valeur de rang de la capture retenue, **dans son tier et jamais au-delà**.
+    #:
+    #: `plate_text` → une confiance de lecture, dans [0, 1]. `plate_box` → la largeur
+    #: de la boîte de plaque, en pixels. `appearance` → la largeur de la boîte du
+    #: véhicule, en pixels. Les fondre en un seul nombre comparable ferait comparer
+    #: des pixels à une probabilité : la comparaison serait vraie **par accident**, et
+    #: une plaque lue à 0,95 perdrait contre n'importe quelle boîte de 40 px.
+    snapshot_rank: float | None = None
     #: Largeur, en pixels, de la vue dont l'apparence a été encodée. `None` = jamais.
     #:
     #: Même rôle que `snapshot_score` pour la capture, et même règle : strictement
@@ -624,13 +643,40 @@ class AnalysisSession:
         aggregate = self._aggregates.get(global_id)
         return aggregate is not None and aggregate.plate_vote.is_confident
 
-    def should_capture(self, global_id: int, score: float) -> bool:
-        """Cette lecture bat-elle la capture déjà retenue pour ce véhicule ?
+    def should_capture(
+        self,
+        global_id: int,
+        cause: SnapshotCause,
+        rank: float,
+        improvement: float = 1.0,
+    ) -> bool:
+        """Cette vue bat-elle la capture déjà retenue pour ce véhicule ?
 
-        **La règle que l'utilisateur a décrite, et rien d'autre** : à 0,80 on
-        capture, à 0,90 on remplace, à 0,85 ensuite on ne touche plus à rien. Une
+        **Deux questions dans l'ordre, et l'ordre est la décision d'ADR 0051.**
+        D'abord la cause : une plaque lue prouve plus qu'une plaque vue, qui prouve
+        plus qu'une ressemblance, donc un tier plus haut passe **toujours** et un tier
+        plus bas ne passe **jamais**. Ensuite, et seulement à tier égal, le rang.
+
+        Comparer les rangs entre tiers serait une erreur d'unité invisible : l'un est
+        une probabilité, les deux autres des pixels. `0,95` de confiance perdrait
+        contre une boîte de 40 px, et le chiffre resterait plausible.
+
+        À tier égal, **la règle que l'utilisateur a décrite pour la lecture** : à 0,80
+        on capture, à 0,90 on remplace, à 0,85 ensuite on ne touche plus à rien. Une
         comparaison stricte, donc monotone croissante — une capture ne peut jamais
         être remplacée par moins bien.
+
+        **`improvement` est la marge, et elle est obligatoire sur les deux tiers dont
+        le rang est une largeur.** « Strictement plus large » est vrai à presque chaque
+        image d'un véhicule qui approche : c'est exactement ce qu'ADR 0050 a payé sur
+        l'encodage d'apparence, et la largeur d'une boîte de plaque croît de la même
+        façon — l'étranglement du détecteur (une image sur trois) ne divise le problème
+        que par trois. Sur `plate_text`, la marge doit rester à `1.0` : son rang est une
+        probabilité, il ne croît pas avec l'approche, et une marge y affamerait la
+        meilleure preuve pour rien.
+
+        `1.0` reproduit l'ancien comportement au bit près (`r > best * 1.0` ≡
+        `r > best`), ce qui rend le tier `plate_text` inchangé.
 
         Une **question pure**, séparée de `record_snapshot` : l'appelant doit
         pouvoir demander « est-ce que ça vaut le coup » *avant* de dépenser un
@@ -644,19 +690,38 @@ class AnalysisSession:
         aggregate = self._aggregates.get(global_id)
         if aggregate is None:
             return False
-        return aggregate.snapshot_score is None or score > aggregate.snapshot_score
+        current = aggregate.snapshot_cause
+        if current is None:
+            return True
+        if SNAPSHOT_CAUSE_PRIORITY[cause] != SNAPSHOT_CAUSE_PRIORITY[current]:
+            return SNAPSHOT_CAUSE_PRIORITY[cause] > SNAPSHOT_CAUSE_PRIORITY[current]
+        return rank > (aggregate.snapshot_rank or 0.0) * max(1.0, improvement)
 
-    def record_snapshot(self, global_id: int, score: float, timestamp_ms: float) -> None:
+    def record_snapshot(
+        self,
+        global_id: int,
+        cause: SnapshotCause,
+        rank: float,
+        timestamp_ms: float,
+    ) -> None:
         """Retient la capture qui vient d'être produite. À appeler **après** succès.
 
         Ne revérifie pas `should_capture` : le service a déjà posé la question, et
         la reposer ici ferait exister deux endroits qui décident de la même chose.
+
+        **La confiance publiée est dérivée ici**, et non passée en cinquième
+        paramètre : c'est ce qui interdit à un appelant d'annoncer `plate_box` en
+        posant une confiance de lecture, donc de publier un `snapshot_score` que rien
+        n'a lu. L'invariant « non-nul implique `plate_text` » tient par construction
+        et pas par discipline.
         """
         aggregate = self._aggregates.get(global_id)
         if aggregate is None:
             return
-        aggregate.snapshot_score = score
+        aggregate.snapshot_cause = cause
+        aggregate.snapshot_rank = rank
         aggregate.snapshot_ms = timestamp_ms
+        aggregate.snapshot_score = rank if cause == "plate_text" else None
 
     def should_embed(self, global_id: int, width_px: float, improvement: float = 1.0) -> bool:
         """Cette vue bat-elle **franchement** celle dont l'apparence est déjà encodée ?
@@ -907,6 +972,7 @@ class AnalysisSession:
                     plate_best_guess_score=best_guess[1] if best_guess else None,
                     snapshot_score=aggregate.snapshot_score,
                     snapshot_ms=aggregate.snapshot_ms,
+                    snapshot_kind=aggregate.snapshot_cause,
                     match_score=aggregate.match_score,
                 )
             )

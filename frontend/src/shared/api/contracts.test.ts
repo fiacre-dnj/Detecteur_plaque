@@ -383,24 +383,45 @@ describe("contrat du registre des véhicules", () => {
       "plateText",
       "plateTextScore",
       "plateUnreadReason",
-      // La capture retenue : une confiance et un instant, **jamais une URL**. Le
-      // serveur ne fabrique pas les adresses du client, qui les construit depuis
-      // l'identifiant du job et le numéro du véhicule — même convention que la
-      // vidéo déposée. La non-nullité de `snapshotScore` est le drapeau
-      // « il existe une photo ».
+      // La capture retenue : une cause, un instant, parfois une confiance, **jamais
+      // une URL**. Le serveur ne fabrique pas les adresses du client, qui les
+      // construit depuis l'identifiant du job et le numéro du véhicule — même
+      // convention que la vidéo déposée. Le drapeau « il existe une photo » est
+      // `snapshotMs`, doublé de `snapshotKind` qui dit pourquoi (ADR 0051).
+      "snapshotKind",
       "snapshotMs",
       "snapshotScore",
       "zonesVisited",
     ]);
   });
 
-  it("une capture porte toujours son instant, et réciproquement", () => {
-    // Les deux champs sont un seul fait : une confiance sans instant ne dirait pas
-    // où regarder dans la vidéo, et un instant sans confiance ne dirait pas
-    // pourquoi cette image-là a été gardée.
+  it("une capture porte toujours sa cause et son instant", () => {
+    // Les deux champs sont un seul fait : une cause sans instant ne dirait pas où
+    // regarder dans la vidéo, et un instant sans cause ne dirait pas pourquoi cette
+    // image-là a été gardée.
     for (const vehicle of result.vehicles) {
-      expect(vehicle.snapshotScore === null).toBe(vehicle.snapshotMs === null);
+      expect((vehicle.snapshotKind ?? null) === null).toBe(vehicle.snapshotMs === null);
     }
+  });
+
+  it("une confiance de lecture implique une capture de plaque lue", () => {
+    // L'invariant qu'ADR 0051 tient par construction : `snapshotScore` est dérivé de
+    // la cause côté domaine, jamais posé à part. Un lecteur qui prendrait ce champ
+    // pour le drapeau de présence manquerait silencieusement les deux autres causes —
+    // c'est-à-dire les plaques repérées non lues et les véhicules ressemblants.
+    for (const vehicle of result.vehicles) {
+      if (vehicle.snapshotScore != null) expect(vehicle.snapshotKind).toBe("plate_text");
+    }
+  });
+
+  it("la fixture exerce vraiment plusieurs causes de capture", () => {
+    // Une fixture qui ne fait pas varier un champ ne protège rien du renommage de ses
+    // valeurs — c'est la doctrine de `build_fixtures.py`. `appearance` demanderait un
+    // quatrième véhicule dans la scène, donc de changer tous ses compteurs : il est
+    // couvert par `snapshotKind.test.ts` et `snapshots.test.ts`.
+    const kinds = new Set(result.vehicles.map((vehicle) => vehicle.snapshotKind ?? null));
+    expect(kinds).toContain("plate_text");
+    expect(kinds).toContain("plate_box");
   });
 
   it("un texte lu implique toujours une plaque détectée", () => {

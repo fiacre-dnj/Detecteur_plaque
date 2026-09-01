@@ -7,12 +7,20 @@
  */
 
 import type { VehicleRecord } from "@/shared/api/contracts";
+import { snapshotExists } from "@/shared/lib/snapshotKind";
 
 import { ROW_HEIGHT, SNAPSHOT_ROW_HEIGHT } from "./virtualise";
 
-/** Ce véhicule a-t-il une photo ? La non-nullité du score **est** le drapeau. */
+/**
+ * Ce véhicule a-t-il une photo ?
+ *
+ * Le juge est dans `shared/lib` et non ici : les alertes posent la même question sur
+ * les mêmes données, et une feature n'importe jamais une autre. C'est **l'instant** et
+ * non la confiance de lecture qui fait le drapeau depuis ADR 0051 — voir
+ * `snapshotExists`.
+ */
 export function hasSnapshot(vehicle: VehicleRecord): boolean {
-  return (vehicle.snapshotScore ?? null) !== null;
+  return snapshotExists(vehicle.snapshotMs);
 }
 
 /**

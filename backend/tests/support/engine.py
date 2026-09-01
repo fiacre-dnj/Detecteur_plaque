@@ -381,21 +381,25 @@ class FakeSnapshotEncoder:
         #: monotone protège bien le chemin critique.
         self.calls = 0
         #: Les boîtes reçues, dans l'ordre — pour vérifier qu'on recadre le véhicule
-        #: et sa plaque, et pas deux fois la même chose.
-        self.boxes: list[tuple[BoundingBox, BoundingBox]] = []
+        #: et sa plaque, et pas deux fois la même chose. La plaque vaut `None` sur une
+        #: capture retenue pour la ressemblance du véhicule (ADR 0051).
+        self.boxes: list[tuple[BoundingBox, BoundingBox | None]] = []
 
     def encode(
         self,
         image: npt.NDArray[np.uint8],
         vehicle: BoundingBox,
-        plate: BoundingBox,
+        plate: BoundingBox | None,
     ) -> VehicleSnapshot | None:
         del image
         self.calls += 1
         self.boxes.append((vehicle, plate))
         if self._fails:
             return None
-        return VehicleSnapshot(vehicle_jpeg=b"vehicle-jpeg", plate_jpeg=b"plate-jpeg")
+        return VehicleSnapshot(
+            vehicle_jpeg=b"vehicle-jpeg",
+            plate_jpeg=None if plate is None else b"plate-jpeg",
+        )
 
 
 class FakeVehicleEmbedder:

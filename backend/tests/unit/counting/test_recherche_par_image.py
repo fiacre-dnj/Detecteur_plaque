@@ -34,7 +34,7 @@ import numpy as np
 import pytest
 
 from tests.support.builders import CAR, compose, make_line, straight_line, track_path
-from tests.support.engine import FakeEngine, FakeVehicleEmbedder
+from tests.support.engine import FakeEngine, FakeSnapshotEncoder, FakeVehicleEmbedder
 from traffic_analysis.features.counting.application.analysis_service import AnalysisService
 from traffic_analysis.features.counting.application.dto import AnalysisJobConfig
 from traffic_analysis.features.counting.domain.appearance import cosine_similarity
@@ -159,6 +159,55 @@ class TestAucuneRegression:
         assert [crossing.timestamp_ms for crossing in avec.crossings] == [
             crossing.timestamp_ms for crossing in sans.crossings
         ]
+
+    def test_les_comptages_ne_bougent_pas_avec_la_capture_par_ressemblance(
+        self, video: Path
+    ) -> None:
+        """La même propriété, étendue à la photo qu'ADR 0051 prend au passage.
+
+        Une capture est un effet de bord du même étage : elle ne doit ni décaler un
+        horodatage ni changer un compteur. Un encodage JPEG de plus dans la boucle
+        n'en change aucun, mais c'est le genre d'affirmation qui mérite un test plutôt
+        qu'une relecture.
+        """
+        encoder = FakeSnapshotEncoder()
+        service = AnalysisService(
+            FakeEngine(_frames()),
+            vehicle_embedder=FakeVehicleEmbedder(),
+            snapshot_encoder=encoder,
+            snapshot_on_appearance=True,
+            snapshot_width_improvement=1.15,
+        )
+        avec = service.run_video("job-1", video, CONFIG, query_image=QUERY)
+        sans = _run(video, embedder=FakeVehicleEmbedder())
+
+        assert encoder.calls >= 1
+        assert avec.stats.crossings == sans.stats.crossings
+        assert avec.stats.tracked_vehicles == sans.stats.tracked_vehicles
+        assert avec.stats.by_class == sans.stats.by_class
+        assert [crossing.timestamp_ms for crossing in avec.crossings] == [
+            crossing.timestamp_ms for crossing in sans.crossings
+        ]
+
+    def test_au_plus_une_photo_par_encodage_retenu(self, video: Path) -> None:
+        """La capture se greffe sur l'étage étranglé, elle n'en ouvre pas un second.
+
+        Si elle était demandée hors de la boucle des candidats — par exemple sur
+        toutes les pistes de l'image — ce rapport s'inverserait sans qu'aucun chiffre
+        publié ne change.
+        """
+        encoder = FakeSnapshotEncoder()
+        embedder = FakeVehicleEmbedder()
+        service = AnalysisService(
+            FakeEngine(_growing()),
+            vehicle_embedder=embedder,
+            snapshot_encoder=encoder,
+            snapshot_on_appearance=True,
+            snapshot_width_improvement=1.15,
+        )
+        service.run_video("job-1", video, CONFIG, query_image=QUERY)
+
+        assert encoder.calls <= embedder.vectors_produced
 
     def test_un_encodeur_sans_image_de_requete_ne_fait_rien(self, video: Path) -> None:
         """Pas de requête ⇒ pas un seul encodage. L'étage entier reste éteint.

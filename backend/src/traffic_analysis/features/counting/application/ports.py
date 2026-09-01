@@ -295,12 +295,22 @@ class VehicleSnapshot:
     """
 
     vehicle_jpeg: bytes
-    plate_jpeg: bytes
+    #: La vignette de plaque, ou `None` — **il n'y avait aucune plaque à recadrer**.
+    #:
+    #: `None` ne dit pas que l'encodage a échoué : il dit que cette capture a été
+    #: retenue pour la ressemblance du véhicule à une image de requête (ADR 0051), et
+    #: qu'aucune plaque n'y entre. Un échec de recadrage de plaque, quand une plaque
+    #: était demandée, refuse la capture **entière** — sans quoi une capture annoncée
+    #: « plaque lue » n'aurait pas de plaque à montrer.
+    #:
+    #: Pas de valeur par défaut : les deux faces sont passées nommément, pour qu'un
+    #: futur appelant ne produise pas une capture sans plaque en croyant le contraire.
+    plate_jpeg: bytes | None
 
 
 @runtime_checkable
 class VehicleSnapshotEncoder(Protocol):
-    """Recadre un véhicule et sa plaque, et rend deux JPEG.
+    """Recadre un véhicule et, s'il y en a une, sa plaque.
 
     Un port et non un appel direct à OpenCV, pour la raison qui vaut pour tous les
     autres ici : `cv2` est interdit dans `application/**` comme dans `domain/**`, et
@@ -312,12 +322,16 @@ class VehicleSnapshotEncoder(Protocol):
         self,
         image: npt.NDArray[np.uint8],
         vehicle: BoundingBox,
-        plate: BoundingBox,
+        plate: BoundingBox | None,
     ) -> VehicleSnapshot | None:
         """Rend la capture, ou `None` s'il n'y a rien d'exploitable à recadrer.
 
-        Les deux boîtes sont en coordonnées de l'image **complète**, comme partout
-        ailleurs dans ces ports.
+        Les boîtes sont en coordonnées de l'image **complète**, comme partout
+        ailleurs dans ces ports. `plate` à `None` demande une capture **sans vignette
+        de plaque** — c'est le cas d'une photo retenue pour la ressemblance du
+        véhicule, où aucune plaque n'a été localisée (ADR 0051). Ce n'est pas une
+        dégradation : quand une plaque est fournie et que son recadrage échoue, la
+        capture entière est refusée.
 
         **Ne lève jamais.** Une capture ratée n'est pas une analyse ratée : le
         véhicule reste compté, son texte reste publié, il n'a simplement pas de

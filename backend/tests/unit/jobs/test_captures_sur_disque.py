@@ -61,6 +61,42 @@ class TestEcriture:
         assert vehicle.read_bytes() == b"voiture-7"
         assert plate.read_bytes() == b"plaque-7"
 
+    def test_une_capture_sans_plaque_n_ecrit_qu_un_fichier(self, tmp_path: Path) -> None:
+        """Une photo retenue pour la ressemblance du véhicule n'a pas de plaque.
+
+        `written` cesse donc de se relire comme un multiple de deux, et c'est la seule
+        conséquence : la route de la vignette de plaque rend son 409 habituel, que le
+        client n'a même pas à provoquer puisque `snapshotKind` le lui dit.
+        """
+        store = _store(tmp_path)
+        snapshots = {3: VehicleSnapshot(vehicle_jpeg=b"voiture-3", plate_jpeg=None)}
+
+        assert store.write_snapshots(JOB, snapshots) == 1
+
+        directory = tmp_path / "jobs" / JOB / SNAPSHOT_DIRNAME
+        assert [path.name for path in directory.iterdir()] == ["3-vehicle.jpg"]
+        assert store.snapshot_path_for(JOB, 3, "plate") is None
+
+    def test_une_capture_de_plaque_ecrase_une_capture_sans_plaque(self, tmp_path: Path) -> None:
+        """La montée en tier : la face véhicule est remplacée, la plaque apparaît.
+
+        C'est aussi ce qui rend tout `unlink` inutile — l'échelle de priorité étant
+        monotone croissante, on ne redescend jamais vers une capture sans plaque, donc
+        aucun `-plate.jpg` ne devient orphelin.
+        """
+        store = _store(tmp_path)
+        store.write_snapshots(JOB, {3: VehicleSnapshot(vehicle_jpeg=b"loin", plate_jpeg=None)})
+        store.write_snapshots(
+            JOB, {3: VehicleSnapshot(vehicle_jpeg=b"pres", plate_jpeg=b"plaque-3")}
+        )
+
+        vehicle = store.snapshot_path_for(JOB, 3, "vehicle")
+        plate = store.snapshot_path_for(JOB, 3, "plate")
+        assert vehicle is not None
+        assert plate is not None
+        assert vehicle.read_bytes() == b"pres"
+        assert plate.read_bytes() == b"plaque-3"
+
     def test_aucune_capture_n_ecrit_aucun_repertoire(self, tmp_path: Path) -> None:
         """Le cas courant : la plupart des analyses ne lisent aucune plaque.
 

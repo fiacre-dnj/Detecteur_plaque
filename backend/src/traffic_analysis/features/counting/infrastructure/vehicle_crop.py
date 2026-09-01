@@ -38,11 +38,22 @@ if TYPE_CHECKING:
 VEHICLE_MARGIN = 0.06
 
 #: En dessous, il n'y a plus d'image — même borne que le détecteur de plaques.
+#:
+#: **C'est le plancher d'une entrée de réseau, et il ne vaut pas pour une preuve.**
+#: Une vignette de plaque montrée à l'écran est utile bien plus bas : mesuré sur une
+#: vue de circulation réelle, les plaques localisées font 27 à 88 px de large pour 9 à
+#: 28 px de haut, donc ce plancher-là refusait la capture **entière** du véhicule
+#: exactement dans le cas qu'ADR 0051 existe pour servir. D'où `min_side`, et
+#: `MIN_PLATE_CROP_SIDE_PX` chez l'encodeur de captures.
 MIN_CROP_SIDE_PX = 16
 
 
 def crop(
-    image: npt.NDArray[np.uint8], box: BoundingBox, *, margin: float
+    image: npt.NDArray[np.uint8],
+    box: BoundingBox,
+    *,
+    margin: float,
+    min_side: int = MIN_CROP_SIDE_PX,
 ) -> npt.NDArray[np.uint8] | None:
     """Le recadrage borné aux dimensions de l'image, marge comprise.
 
@@ -62,7 +73,7 @@ def crop(
     y1 = max(0, int(box.y - pad_y))
     x2 = min(width, int(box.x + box.width + pad_x))
     y2 = min(height, int(box.y + box.height + pad_y))
-    if x2 - x1 < MIN_CROP_SIDE_PX or y2 - y1 < MIN_CROP_SIDE_PX:
+    if x2 - x1 < min_side or y2 - y1 < min_side:
         return None
     return image[y1:y2, x1:x2]
 

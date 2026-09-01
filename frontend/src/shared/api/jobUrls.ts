@@ -47,18 +47,40 @@ export function inputVideoUrl(jobId: string): string {
  * requête : rien à changer côté route.
  *
  * `null`/`undefined` rend l'adresse nue, celle d'avant : un appelant qui ne connaît
- * pas l'instant — la pile d'alertes n'a que le numéro du véhicule — reste servi,
- * au risque d'une vignette de 40 px en retard d'une amélioration.
+ * pas l'instant reste servi, au risque d'une vignette de 40 px en retard d'une
+ * amélioration.
+ *
+ * **`retry` est ici, et pas chez l'appelant.** Deux composants le concaténaient
+ * eux-mêmes, chacun en devinant la ponctuation de l'autre : le registre écrivait
+ * `&retry=` en supposant `?v=` présent, la pile d'alertes `?retry=` en supposant
+ * l'inverse. Aucun des deux n'était faux, et les deux le devenaient au premier
+ * changement d'appelant — c'est-à-dire maintenant, les alertes recevant leur version.
+ * Composer la requête au seul endroit qui connaît le chemin ferme le piège.
+ *
+ * `retry` à `0` n'ajoute rien : c'est la première tentative, et la faire porter un
+ * paramètre priverait la vignette du cache pour toutes les rangées visibles.
  */
-function versioned(path: string, capturedMs: number | null | undefined): string {
-  return capturedMs == null ? path : `${path}?v=${capturedMs}`;
+function versioned(
+  path: string,
+  capturedMs: number | null | undefined,
+  retry: number | null | undefined,
+): string {
+  const query = [
+    capturedMs == null ? null : `v=${capturedMs}`,
+    retry == null || retry === 0 ? null : `retry=${retry}`,
+  ].filter((part) => part !== null);
+  return query.length === 0 ? path : `${path}?${query.join("&")}`;
 }
 
 /**
- * La photo du véhicule, prise sur l'image dont sa plaque a été le mieux lue.
+ * La photo du véhicule, prise sur l'image qui la méritait le plus.
  *
- * Peut répondre 409 `snapshot_missing`, et c'est le cas **courant** : soit aucune
- * plaque n'a été lue sur ce véhicule, soit la capture n'est pas encore écrite —
+ * « Le plus » dépend de la cause (`snapshotKind`) : la meilleure lecture de plaque,
+ * la plus large plaque repérée, ou la plus large vue encodée pour une recherche par
+ * image.
+ *
+ * Peut répondre 409 `snapshot_missing`, et c'est le cas **courant** : soit rien n'a
+ * été vu à montrer sur ce véhicule, soit la capture n'est pas encore écrite —
  * l'analyse tourne —, soit les captures ont été purgées avec la vidéo, dont elles
  * suivent le TTL. Comme pour la vidéo, l'échec arrive par l'événement `error` de la
  * balise, et l'interface montre un repère muet plutôt qu'une image cassée.
@@ -69,8 +91,9 @@ export function vehicleSnapshotUrl(
   jobId: string,
   globalId: number,
   capturedMs?: number | null,
+  retry?: number | null,
 ): string {
-  return versioned(`/api/v1/jobs/${jobId}/vehicles/${globalId}/snapshot.jpg`, capturedMs);
+  return versioned(`/api/v1/jobs/${jobId}/vehicles/${globalId}/snapshot.jpg`, capturedMs, retry);
 }
 
 /**
@@ -82,11 +105,16 @@ export function vehicleSnapshotUrl(
  * Elle porte la **même** version que la photo du véhicule, forcément : les deux
  * sortent de la même image, et les désynchroniser montrerait la plaque d'une prise
  * de vue sous la voiture d'une autre.
+ *
+ * **Elle n'existe pas pour toute capture** : une photo retenue pour la ressemblance
+ * du véhicule n'a aucune plaque à recadrer, et cette adresse rend alors 409. Demander
+ * à `snapshotHasPlateFace` avant d'y aller, plutôt que d'attendre l'échec.
  */
 export function platePhotoUrl(
   jobId: string,
   globalId: number,
   capturedMs?: number | null,
+  retry?: number | null,
 ): string {
-  return versioned(`/api/v1/jobs/${jobId}/vehicles/${globalId}/plate.jpg`, capturedMs);
+  return versioned(`/api/v1/jobs/${jobId}/vehicles/${globalId}/plate.jpg`, capturedMs, retry);
 }

@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 #:
 #: Un `Literal` et non une chaîne libre : ce mot compose un nom de fichier, et un
 #: type fermé est ce qui garantit qu'aucune valeur venue du client n'y entre.
-type SnapshotKind = Literal["vehicle", "plate"]
+type SnapshotFace = Literal["vehicle", "plate"]
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -170,7 +170,7 @@ class ResultStore(Protocol):
         """
         ...
 
-    def snapshot_path_for(self, job_id: str, global_id: int, kind: SnapshotKind) -> Path | None:
+    def snapshot_path_for(self, job_id: str, global_id: int, kind: SnapshotFace) -> Path | None:
         """Chemin d'une capture si elle est encore là, `None` sinon.
 
         `None` est un état **normal** : les captures suivent le TTL de la vidéo, donc

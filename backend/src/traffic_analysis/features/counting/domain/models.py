@@ -41,6 +41,34 @@ type PlateUnreadReason = Literal[
     "no_consensus",
 ]
 
+#: Pourquoi un véhicule a reçu une photo — **trois causes, une seule photo**.
+#:
+#: - `plate_text` : une plaque a été **lue** sur l'image retenue. C'est la cause
+#:   d'origine (ADR 0042), et la seule qui porte une confiance de lecture.
+#: - `plate_box` : une plaque y a été **localisée** sans qu'aucun texte soit publié —
+#:   trop petite, trop floue, lecture refusée, OCR éteint. La photo est alors la seule
+#:   chose qui permette de lire ce que le serveur a refusé d'affirmer, et ce cas est
+#:   le plus fréquent sur une vue large (voir `too_small` ci-dessus).
+#: - `appearance` : l'apparence du véhicule a été encodée pour une recherche par
+#:   image. **Aucune plaque n'entre dans cette capture**, et elle ne dépend ni de
+#:   l'ANPR ni de l'OCR.
+#:
+#: Ce n'est pas la *face* d'un fichier (`vehicle` / `plate`, `SnapshotFace` dans la
+#: feature `jobs`) : c'est la raison d'être de la capture entière.
+type SnapshotCause = Literal["plate_text", "plate_box", "appearance"]
+
+#: L'échelle de priorité des causes, et le seul endroit qui la déclare.
+#:
+#: Une photo d'un tier plus haut remplace toujours celle d'un tier plus bas, et
+#: jamais l'inverse : une plaque lue prouve plus qu'une plaque vue, qui prouve plus
+#: qu'une ressemblance. Comparer les *rangs* entre tiers n'aurait aucun sens — l'un
+#: est une probabilité, les deux autres des pixels (voir `should_capture`).
+SNAPSHOT_CAUSE_PRIORITY: dict[SnapshotCause, int] = {
+    "appearance": 1,
+    "plate_box": 2,
+    "plate_text": 3,
+}
+
 # Les quatre classes COCO comptées, traitées à l'identique.
 #
 # `car`, `motorcycle`, `bus` et `truck` sont mutuellement exclusives sur un objet
@@ -654,8 +682,13 @@ class VehicleRecord:
     plate_best_guess_score: float | None = None
     #: Confiance de **lecture** de la capture retenue pour ce véhicule, ou `None`.
     #:
-    #: **Sa non-nullité est le drapeau « il existe une capture »** : pas de booléen
-    #: en plus, et surtout pas d'URL — le serveur ne fabrique pas les adresses du
+    #: **Ce n'est plus le drapeau « il existe une capture »** (ADR 0051) : deux des
+    #: trois causes de capture n'ont aucune lecture à publier, donc ce champ y vaut
+    #: `None` alors que la photo existe. Le drapeau est `snapshot_ms`, doublé de
+    #: `snapshot_kind` qui dit *pourquoi*. Dans l'autre sens la garantie tient
+    #: toujours : non-nul **implique** `snapshot_kind == "plate_text"`.
+    #:
+    #: Pas d'URL ici, et c'est inchangé — le serveur ne fabrique pas les adresses du
     #: client, qui les construit lui-même depuis l'identifiant du job et le numéro
     #: du véhicule (même convention que la vidéo déposée).
     #:
@@ -665,11 +698,23 @@ class VehicleRecord:
     #: qui n'a rien à voir avec la qualité de l'image courante.
     snapshot_score: float | None = None
     #: Instant de **scène** de cette capture (invariant 1). `None` ssi
-    #: `snapshot_score` l'est.
+    #: `snapshot_kind` l'est — **c'est le drapeau de présence**.
     #:
     #: Il dit *quand* regarder dans la vidéo, et c'est ce qui rend la capture
     #: vérifiable plutôt que seulement consultable.
     snapshot_ms: float | None = None
+    #: **Pourquoi** cette photo existe, ou `None` — il n'y en a pas.
+    #:
+    #: Trois causes, une échelle de priorité, une seule photo : voir `SnapshotCause`.
+    #: Trois propriétés que le domaine garantit et que des tests verrouillent :
+    #: `snapshot_ms is not None` ⟺ `snapshot_kind is not None` ; `snapshot_score is
+    #: not None` ⟹ `snapshot_kind == "plate_text"` ; la cause ne redescend jamais
+    #: l'échelle sur la vie d'un véhicule.
+    #:
+    #: `None` sur un résultat archivé qui porte pourtant `snapshot_ms` ne veut pas
+    #: dire « pas de photo » : cela veut dire « analyse antérieure à ADR 0051 », donc
+    #: `plate_text` de fait — c'était alors la seule cause possible.
+    snapshot_kind: SnapshotCause | None = None
     #: Ressemblance à l'image de requête, dans [-1, 1], ou `None`.
     #:
     #: `None` a **deux** causes qu'il ne faut pas confondre à l'écran : aucune image

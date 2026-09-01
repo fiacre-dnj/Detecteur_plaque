@@ -278,6 +278,7 @@ def build_counting_stack(
         gmc_method=settings.tracker_gmc,
         imgsz=settings.inference_imgsz,
         batch=settings.inference_batch,
+        prefetch_batches=settings.inference_prefetch_batches,
     )
     resolved_plates = plate_detector or UltralyticsPlateDetector(
         settings.resolved_plate_model_path,
@@ -346,11 +347,12 @@ def build_counting_stack(
             readable_min_samples=settings.plate_detect_readable_min_samples,
             readable_retry_every=settings.plate_detect_readable_retry_every,
         ),
-        # La capture des véhicules. Aucun réglage : son seuil de déclenchement est
-        # déjà celui de l'utilisateur — une plaque n'existe qu'au-dessus de
-        # « Confiance plaques », un texte qu'au-dessus de « Confiance lecture ». Un
-        # troisième seuil serait un réglage de plus, capable de contredire les deux
-        # autres.
+        # La capture des véhicules. Aucun seuil de **confiance** : celui de
+        # déclenchement est déjà celui de l'utilisateur — une plaque n'existe
+        # qu'au-dessus de « Confiance plaques », un texte qu'au-dessus de « Confiance
+        # lecture ». Un troisième seuil serait un réglage de plus, capable de
+        # contredire les deux autres. Ses causes, elles, s'allument **ici** : voir
+        # les quatre réglages passés plus bas.
         snapshot_encoder or OpenCvSnapshotEncoder(),
         # La recherche par image. Ses deux planchers sont des réglages de
         # **déploiement** et non de requête : ils arbitrent du coût d'inférence contre
@@ -361,6 +363,13 @@ def build_counting_stack(
         settings.reid_min_similarity,
         settings.reid_appearance_improvement,
         settings.reid_max_per_frame,
+        # Les deux causes de capture d'ADR 0051 et leurs bornes. Le service les tient
+        # éteintes par défaut, pour que tout appelant qui ne demande rien garde le
+        # régime d'ADR 0042 : c'est ici, et seulement ici, qu'elles s'allument.
+        snapshot_on_plate_box=settings.snapshot_on_plate_box,
+        snapshot_on_appearance=settings.snapshot_on_appearance,
+        snapshot_width_improvement=settings.snapshot_width_improvement,
+        max_snapshots=settings.snapshot_max_vehicles,
     )
     return CountingStack(
         engine=resolved_engine,

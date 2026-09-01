@@ -15,6 +15,7 @@ import type { Violation } from "@/shared/lib/lineViolations";
 
 import {
   alertFromPlateHit,
+  alertScore,
   alertFromVehicleMatch,
   alertFromViolation,
   crossingsBefore,
@@ -192,5 +193,55 @@ describe("alertFromVehicleMatch", () => {
     expect(alert.line).toBeNull();
     expect(alert.direction).toBeNull();
     expect(alert.watched).toBeNull();
+  });
+});
+
+describe("alertScore", () => {
+  const vehicle = {
+    globalId: 12,
+    label: "car",
+    firstSeenMs: 4200,
+    matchScore: 0.83,
+    plateText: null,
+    plateTextScore: null,
+  };
+
+  it("chiffre la ressemblance depuis la source vivante, jamais depuis l'alerte", () => {
+    // **Le test qui empêche un score figé.** `mergeAlerts` garde la première
+    // occurrence d'une clé ; si la carte lisait l'alerte, elle afficherait encore
+    // 0,83 pendant que le registre affiche 0,91 pour le même véhicule.
+    const alert = alertFromVehicleMatch(vehicle, "exact");
+
+    expect(alertScore(alert, { matchScore: 0.91 })).toEqual({ kind: "match", value: 0.91 });
+    expect(alertScore(alert)).toBeNull();
+  });
+
+  it("chiffre la lecture d'une plaque recherchée, et retombe sur l'alerte", () => {
+    // Le repli n'est pas décoratif : pendant l'analyse le registre de l'aperçu est
+    // restreint aux franchisseurs (ADR 0026), et une plaque recherchée peut
+    // appartenir à un véhicule à l'arrêt, donc absent de la carte des scores.
+    const alert = alertFromPlateHit(HIT, 1_000);
+
+    expect(alertScore(alert, { plateTextScore: 0.96 })).toEqual({ kind: "read", value: 0.96 });
+    expect(alertScore(alert)).toEqual({ kind: "read", value: 0.9 });
+  });
+
+  it("ne chiffre pas une infraction", () => {
+    // Un franchissement est un fait observé, pas une hypothèse : un pourcentage y
+    // répondrait à une question que personne ne pose, et ferait douter d'un fait
+    // certain. La plaque qu'il porte n'est qu'un renseignement de contexte.
+    const alert = alertFromViolation(violation({ plateTextScore: 0.88 }));
+
+    expect(alertScore(alert, { plateTextScore: 0.88, matchScore: 0.7 })).toBeNull();
+  });
+
+  it("distingue une lecture nulle d'une lecture absente", () => {
+    // `0 %` est une mesure — la lecture a eu lieu et ne vaut rien — là où l'absence
+    // dit « rien à chiffrer ». Les fondre effacerait le seul chiffre qui explique
+    // pourquoi une correspondance est annoncée « probable ».
+    const alert = alertFromPlateHit({ ...HIT, plateTextScore: 0 }, 1_000);
+
+    expect(alertScore(alert)).toEqual({ kind: "read", value: 0 });
+    expect(alertScore(alertFromPlateHit({ ...HIT, plateTextScore: null }, 1_000))).toBeNull();
   });
 });

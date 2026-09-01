@@ -57,6 +57,22 @@ MAX_PLATE_WIDTH_PX = 320
 #: recadrée ; au-delà le fichier grossit sans que rien ne se lise mieux.
 JPEG_QUALITY = 82
 
+#: Plancher d'existence de la **vignette de plaque**, plus bas que celui du véhicule.
+#:
+#: Mesuré, et c'est ce qui a fait ajouter cette constante : sur une vue de circulation
+#: réelle, les plaques localisées font 27 à 88 px de large pour **9 à 28 px de haut**.
+#: Le plancher de 16 px de `vehicle_crop` — qui est celui d'une entrée de réseau —
+#: refusait donc la capture **entière**, véhicule compris, exactement dans le cas
+#: qu'ADR 0051 existe pour servir : la plaque vue mais illisible. La panne était
+#: silencieuse : `encode` rend `None`, rien n'est enregistré, et l'analyse se termine
+#: sans une photo ni un message.
+#:
+#: 8 px et non 1 : en dessous il n'y a plus rien à agrandir, et une « plaque » de 6×3
+#: px n'est pas une plaque mais un artefact du détecteur — la refuser refuse aussi la
+#: photo du véhicule, ce qui est le bon comportement puisqu'il n'y avait rien à
+#: montrer.
+MIN_PLATE_CROP_SIDE_PX = 8
+
 
 class OpenCvSnapshotEncoder:
     """Implémentation OpenCV de `VehicleSnapshotEncoder`. Ne lève jamais."""
@@ -67,17 +83,31 @@ class OpenCvSnapshotEncoder:
         self,
         image: npt.NDArray[np.uint8],
         vehicle: BoundingBox,
-        plate: BoundingBox,
+        plate: BoundingBox | None,
     ) -> VehicleSnapshot | None:
         try:
             vehicle_thumb = crop(image, vehicle, margin=VEHICLE_MARGIN)
-            plate_thumb = crop(image, plate, margin=0.0)
-            if vehicle_thumb is None or plate_thumb is None:
+            if vehicle_thumb is None:
+                return None
+            plate_thumb = (
+                None
+                if plate is None
+                else crop(image, plate, margin=0.0, min_side=MIN_PLATE_CROP_SIDE_PX)
+            )
+            # **Refus total et jamais dégradation.** Rendre la vignette de véhicule
+            # sans celle de la plaque quand une plaque était demandée donnerait un
+            # `snapshotKind == "plate_text"` sans plaque à montrer : un contrat qui se
+            # contredit, et un écran qui annonce « plaque lue » sans la montrer.
+            if plate is not None and plate_thumb is None:
                 return None
 
             vehicle_jpeg = _encode(fit(vehicle_thumb, MAX_VEHICLE_SIDE_PX))
-            plate_jpeg = _encode(fit_width(plate_thumb, MAX_PLATE_WIDTH_PX))
-            if vehicle_jpeg is None or plate_jpeg is None:
+            if vehicle_jpeg is None:
+                return None
+            plate_jpeg = (
+                None if plate_thumb is None else _encode(fit_width(plate_thumb, MAX_PLATE_WIDTH_PX))
+            )
+            if plate is not None and plate_jpeg is None:
                 return None
         except Exception:
             # Une capture ratée n'est pas une analyse ratée : le véhicule reste

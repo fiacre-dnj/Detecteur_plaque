@@ -1270,8 +1270,9 @@
       "plateBestWidthPx": 64.0,
       "plateBestGuess": null,
       "plateBestGuessScore": null,
-      "snapshotScore": null,
-      "snapshotMs": null,
+      "snapshotScore": 0.93,
+      "snapshotMs": 0.0,
+      "snapshotKind": "plate_text",
       "matchScore": null
     },
     {
@@ -1295,7 +1296,8 @@
       "plateBestGuess": null,
       "plateBestGuessScore": null,
       "snapshotScore": null,
-      "snapshotMs": null,
+      "snapshotMs": 0.0,
+      "snapshotKind": "plate_box",
       "matchScore": null
     },
     {
@@ -1312,8 +1314,9 @@
       "plateBestWidthPx": 64.0,
       "plateBestGuess": "AB-123-CD",
       "plateBestGuessScore": 0.93,
-      "snapshotScore": null,
-      "snapshotMs": null,
+      "snapshotScore": 0.93,
+      "snapshotMs": 0.0,
+      "snapshotKind": "plate_text",
       "matchScore": null
     }
   ],
