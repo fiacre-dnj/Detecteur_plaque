@@ -11,6 +11,21 @@ plus deux fois dans le même sens » si.
 
 ### Ajouté
 
+- **L'analyse dit quand un véhicule est déjà passé.** Une case « Signaler les
+  véhicules déjà vus » dans le tiroir Détection : chaque véhicule qui franchit une
+  ligne — de n'importe quel type — est comparé à ceux qui ont franchi avant lui, et
+  une ressemblance forte déclenche une alerte, avec son pourcentage, la ligne
+  franchie et la photo des deux véhicules à comparer. Le registre gagne une colonne
+  « Déjà vu » qui nomme le véhicule d'origine, et l'export CSV deux colonnes.
+  **Aucun chiffre ne change** : un véhicule reconnu reste un véhicule de plus et son
+  passage reste compté. L'écran signale, il ne fusionne pas — deux passages du même
+  véhicule sont deux passages, et c'est à vous de dire si c'est bien la même
+  voiture, sur les captures.
+  Éteinte par défaut, et gratuite tant qu'elle l'est. Deux choses à savoir avant de
+  s'y fier : deux véhicules visibles en même temps ne sont jamais rapprochés, si
+  ressemblants soient-ils ; et un véhicule trop petit ou trop flou à l'écran reste
+  sans réponse plutôt que d'en recevoir une inventée.
+
 - **Les alertes disent à quel point elles sont sûres.** Une plaque recherchée affiche
   sa **confiance de lecture**, un véhicule trouvé par recherche par image sa
   **ressemblance**, en pourcentage sur la carte — jusqu'ici seul le mot « probable »

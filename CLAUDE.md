@@ -1868,11 +1868,61 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       calculé par différence, tombe à zéro. Ce n'est pas une panne de mesure.
 
     [ADR 0054](docs/adr/0054-le-moteur-et-son-aval-se-recouvrent.md).
+39. **Un véhicule déjà vu est signalé, jamais fusionné.** Une **galerie interne au
+    clip** (`counting/domain/appearance_gallery.py`) : chaque franchisseur y dépose
+    l'apparence de sa meilleure vue et y est comparé aux précédents. Née d'un cas
+    d'usage précis — la même vidéo doublée sur une timeline, dont la seconde moitié
+    doit se reconnaître.
+
+    **Ceci n'abroge pas ADR 0016**, et c'est la seule question qui compte. La galerie
+    supprimée alimentait le **compteur** : elle ré-attachait une identité, donc `#1`
+    réapparaissait au milieu d'une vidéo et le total n'avançait pas. Celle-ci ne
+    touche aucun compteur — les deux numéros existent, les deux véhicules sont
+    comptés, les deux franchissements aussi. Ce n'est pas une nuance de vocabulaire :
+    `TestAucuneRegression` compare `crossings`, `tracked_vehicles`, `by_class`, la
+    ventilation `by_line` **entière** et les **horodatages**, avec et sans galerie.
+    Son échec devrait faire retirer la fonctionnalité, pas la corriger.
+
+    Cinq points qui ne se devinent pas :
+    - **interroger avant de déposer.** `lookup` exclut bien son propre numéro, mais
+      déposer d'abord ferait remonter, au franchissement **suivant du même
+      véhicule**, sa propre vue précédente à un score proche de 1 — un aller-retour
+      se signalerait lui-même ;
+    - **la garde temporelle** : un déposant n'est éligible que s'il avait **disparu**
+      avant que le candidat n'apparaisse. Deux véhicules simultanément visibles ne
+      peuvent pas être le même objet physique, et c'est le faux positif le plus
+      visible en trafic dense. La galerie tient donc sa **propre** fenêtre de
+      présence (`observe` sur toute piste visible) plutôt que de l'interroger sur la
+      session — ce qui lierait un index de consultation au cœur du comptage ;
+    - **le franchissement contourne la marge de largeur et le plafond par image, pas
+      les planchers de l'adaptateur.** La question se pose au moment du passage, et
+      un franchissement n'a pas de seconde chance — c'est un instant, pas un état.
+      Mais un embedding sur 40 px ressemble surtout au flou (ADR 0048) : un score
+      calculé dessus serait plausible et faux. Le coût est donc borné par le nombre
+      de **franchissements**, pas d'images, ce qui évite d'avoir à inventer la marge
+      d'ADR 0050 ;
+    - **deux seuils et pas un** — `reid_rematch_min_similarity` côté serveur,
+      `DEFAULT_REMATCH_THRESHOLD` (0,75) côté client, tous deux distincts de leurs
+      jumeaux d'ADR 0048. Ici personne n'a demandé ce véhicule, donc un faux positif
+      coûte plus cher ; et surtout on compare à **tous** les précédents, donc le
+      meilleur score d'un lot de cent est mécaniquement plus haut que celui d'un lot
+      de deux — un seuil partagé dériverait avec la durée de la vidéo ;
+    - **`isViolation` ne se décide plus sur `alert.line !== null`.** Ce raccourci
+      était exact tant que seules les infractions nommaient une ligne, et il est
+      devenu faux à l'instant où une re-détection en a porté une : elle aurait été
+      teintée, comptée et filtrée comme une infraction, sans que rien ne lève. Une
+      propriété vraie par coïncidence qui cesse de l'être en silence — la famille de
+      panne que ce fichier documente le plus.
+
+    **Le seuil n'est pas mesuré**, et l'ADR le dit : la vidéo doublée est le cas
+    idéal (métrage identique au pixel près) et valide le câblage, pas le chiffre.
+    `scripts/reid_bench.py` est l'outil pour trancher sur du métrage réel.
+    [ADR 0055](docs/adr/0055-signaler-un-vehicule-deja-vu.md).
 
 ## Ce que l'analyse signale — les alertes
 
 Depuis le 2026-08-27, l'écran ne fait plus que compter et ranger : il **signale**.
-Deux familles, une seule feature (`features/alerts`), un seul type d'alerte —
+Trois familles, une seule feature (`features/alerts`), un seul type d'alerte —
 elles partagent tout ce qui compte à l'écran : un véhicule, un instant, une
 gravité, un motif.
 
@@ -1884,7 +1934,14 @@ gravité, un motif.
   **vote** de plaque (invariant 4). Correspondance *exacte* en rouge, *probable* —
   l'une contient l'autre — en orange, parce qu'ADR 0029 documente que l'OCR perd
   régulièrement le premier caractère d'une plaque. Différé seulement : le direct n'a
-  pas d'ANPR.
+  pas d'ANPR ;
+- **les véhicules déjà vus** (2026-09-01, [ADR
+  0055](docs/adr/0055-signaler-un-vehicule-deja-vu.md)) — chaque véhicule qui
+  franchit une ligne, **quel qu'en soit le type**, est comparé aux franchisseurs
+  antérieurs de la même analyse. Case à cocher dans le tiroir Détection, **éteinte
+  par défaut**. À ne pas confondre avec la recherche par image (ADR 0048), qui
+  compare à une photo fournie : ici la vidéo est comparée à elle-même, et les deux
+  peuvent porter un score sur le même véhicule sans dire la même chose.
 
 Cinq points qui ne se devinent pas :
 
