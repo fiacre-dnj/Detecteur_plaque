@@ -181,6 +181,8 @@ class TestSerialiseVehicle:
             "plateText",
             "plateTextScore",
             "plateUnreadReason",
+            "rematchOf",
+            "rematchScore",
             "snapshotKind",
             "snapshotMs",
             "snapshotScore",

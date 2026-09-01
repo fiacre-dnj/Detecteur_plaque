@@ -594,6 +594,20 @@ class Settings(BaseSettings):
     #: Celui-ci ne sert qu'à ne pas transporter des scores dont on sait qu'ils ne
     #: veulent rien dire.
     reid_min_similarity: float = Field(0.0, ge=0.0, le=1.0)
+    #: Même plancher, pour la **re-détection** au franchissement (ADR 0055).
+    #:
+    #: Distinct de `reid_min_similarity` et pas par symétrie : les deux étages ne
+    #: comparent pas la même chose. Celui-là confronte un véhicule à une photo que
+    #: l'utilisateur a choisie, donc à une intention ; celui-ci confronte chaque
+    #: franchisseur à **tous** les précédents, donc le nombre de comparaisons croît
+    #: avec le clip et le meilleur score d'un lot de cent est mécaniquement plus haut
+    #: que celui d'un lot de deux. Les régler ensemble ferait bouger l'un en croyant
+    #: régler l'autre.
+    #:
+    #: `0.0` par défaut, comme son jumeau : le seuil qui compte est celui du client,
+    #: et ce plancher-ci n'existe que pour ne pas transporter des scores dont on sait
+    #: qu'ils ne veulent rien dire.
+    reid_rematch_min_similarity: float = Field(0.0, ge=0.0, le=1.0)
     #: Largeur de véhicule, en pixels, sous laquelle on n'encode pas.
     #:
     #: **Mesuré, pas supposé** (`scripts/reid_bench.py --truth-ladder`) : l'entrée du

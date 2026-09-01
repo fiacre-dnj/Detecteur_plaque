@@ -208,6 +208,19 @@ class _VehicleAggregate:
     #: c'est ce qui met cette fonctionnalité hors du champ d'ADR 0016 : un véhicule
     #: ressemblant n'est pas un véhicule compté deux fois.
     match_score: float | None = None
+    #: Numéro du véhicule **antérieur** auquel celui-ci ressemble, ou `None`.
+    #:
+    #: Le résultat de la galerie interne au clip (ADR 0055). Se lit « on a déjà vu
+    #: ce véhicule, c'était le #N » — une **hypothèse à vérifier sur la capture**,
+    #: jamais une fusion : les deux numéros continuent d'exister, les deux véhicules
+    #: restent comptés, et les deux franchissements aussi.
+    #:
+    #: **Aucun compteur ne le lit**, même clause que `match_score` juste au-dessus,
+    #: et pour la même raison — c'est elle qui met la galerie hors du champ
+    #: d'ADR 0016, dont la galerie supprimée alimentait le comptage.
+    rematch_of: int | None = None
+    #: Ressemblance au véhicule ci-dessus, dans [-1, 1]. `None` ssi `rematch_of` l'est.
+    rematch_score: float | None = None
 
 
 class AnalysisSession:
@@ -807,6 +820,27 @@ class AnalysisSession:
         aggregate.appearance_width_px = width_px
         aggregate.match_score = match_score
 
+    def record_rematch(self, global_id: int, other_id: int, score: float) -> None:
+        """Retient que ce véhicule ressemble à un franchisseur antérieur.
+
+        Ne revérifie rien : le service a déjà interrogé la galerie et compare déjà
+        au plancher de déploiement. Reposer la question ici ferait exister deux
+        endroits qui décident de la même chose.
+
+        **Remplacement et non accumulation**, comme `record_embedding` : une vue
+        plus large peut désigner un autre antécédent, et c'est la dernière mesure
+        qui vaut. Aucun vote n'est affamé, il n'y en a pas.
+
+        **N'écrit rien qu'un compteur puisse lire.** C'est la clause qui tient
+        ADR 0016 à distance, et elle est vérifiable : `test_redetection.py` compare
+        comptages, ventilations et horodatages avec et sans galerie.
+        """
+        aggregate = self._aggregates.get(global_id)
+        if aggregate is None:
+            return
+        aggregate.rematch_of = other_id
+        aggregate.rematch_score = score
+
     # ── Sorties ──────────────────────────────────────────────────────────────
 
     def stats(self) -> AnalysisStats:
@@ -974,6 +1008,8 @@ class AnalysisSession:
                     snapshot_ms=aggregate.snapshot_ms,
                     snapshot_kind=aggregate.snapshot_cause,
                     match_score=aggregate.match_score,
+                    rematch_of=aggregate.rematch_of,
+                    rematch_score=aggregate.rematch_score,
                 )
             )
         return tuple(records)

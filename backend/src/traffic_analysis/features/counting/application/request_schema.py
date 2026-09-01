@@ -267,6 +267,17 @@ class AnalysisRequestSchema(CamelModel):
         ),
         examples=[["AB-123-CD"]],
     )
+    vehicle_rematch: bool = Field(
+        default=False,
+        description=(
+            "Signaler les véhicules déjà vus. Chaque véhicule qui franchit une ligne "
+            "est comparé à ceux qui ont franchi avant lui, et une ressemblance forte "
+            "est **signalée** — jamais fusionnée : les deux véhicules restent comptés "
+            "séparément et les deux franchissements aussi, donc aucun total ne change. "
+            "Le score est publié brut, le seuil d'affichage vivant côté client. Sans "
+            "effet si l'encodeur d'apparence est absent du serveur."
+        ),
+    )
     lines: list[LineSchema] = Field(default_factory=list)
     zones: list[ZoneSchema] = Field(default_factory=list)
 
@@ -434,4 +445,5 @@ class AnalysisRequestSchema(CamelModel):
             start_ms=self.start_ms,
             end_ms=self.end_ms,
             plate_watchlist=tuple(self.plate_watchlist),
+            vehicle_rematch=self.vehicle_rematch,
         )

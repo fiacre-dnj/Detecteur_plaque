@@ -728,6 +728,23 @@ class VehicleRecord:
     #: same/diff se recouvrent — aucun seuil global n'est à la fois sûr et utile
     #: (ADR 0048).
     match_score: float | None = None
+    #: Numéro du franchisseur **antérieur** auquel ce véhicule ressemble, ou `None`.
+    #:
+    #: La galerie interne au clip (ADR 0055), à ne pas confondre avec `match_score`
+    #: juste au-dessus : celui-ci compare à une photo que l'utilisateur a fournie,
+    #: celui-là aux véhicules déjà passés dans cette même analyse. Les deux peuvent
+    #: être renseignés en même temps et ne disent pas la même chose.
+    #:
+    #: **Une hypothèse, jamais une fusion** : les deux numéros continuent d'exister
+    #: et les deux véhicules restent comptés. `None` couvre trois cas — la galerie
+    #: est éteinte, le véhicule n'a franchi aucune ligne, ou rien ne lui ressemblait
+    #: assez.
+    rematch_of: int | None = None
+    #: Ressemblance au véhicule ci-dessus. `None` ssi `rematch_of` l'est.
+    #:
+    #: Brute et non seuillée, même doctrine que `match_score` : le curseur vit côté
+    #: client et se déplace sans réanalyser.
+    rematch_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
