@@ -42,6 +42,20 @@ from traffic_analysis.features.models_registry.application.catalogue_access impo
     known_model_ids,
 )
 
+#: Combien de plaques peuvent être recherchées à la fois.
+#:
+#: Dix, parce qu'au-delà ce n'est plus une surveillance mais un fichier — et parce
+#: que la comparaison est faite côté client à chaque image d'aperçu : le coût est
+#: linéaire en entrées, et une liste sans borne le rendrait perceptible.
+MAX_WATCHED_PLATES = 10
+
+#: Longueur maximale d'une entrée recherchée, séparateurs compris.
+MAX_WATCHED_PLATE_LENGTH = 16
+
+#: En dessous, une entrée correspondrait à trop de plaques pour signaler quoi que ce
+#: soit. Même seuil que `MIN_ALPHANUMERIC` du domaine, et pour la même raison.
+MIN_WATCHED_PLATE_CHARS = 4
+
 
 class PointSchema(CamelModel):
     x: float
@@ -78,20 +92,45 @@ class LineSchema(CamelModel):
     negative_name: str = Field(default="", max_length=60, examples=["Vers la rocade"])
     positive_role: DirectionRole = "neutral"
     negative_role: DirectionRole = "neutral"
-    #: Longueur **réelle** du trait, en mètres. `None` = non calibrée.
+    #: Classes autorisées à franchir cette ligne — `None` (le défaut) = aucune
+    #: restriction. Une voie de bus, une piste cyclable.
     #:
-    #: Contrairement aux quatre champs de sens, celle-ci **est** lue par le
-    #: serveur : elle donne l'échelle pixels/mètre locale qui convertit les
-    #: vitesses en km/h à la profondeur où la ligne est posée. Une longueur
-    #: corrigée demande donc une réanalyse, là où un rôle corrigé ne demande rien.
+    #: **Le serveur ne l'interprète pas** : une classe non autorisée est comptée
+    #: comme les autres, et c'est l'interface qui qualifie le franchissement
+    #: d'infraction. Même doctrine que les rôles de sens — un chiffre ne dépend pas
+    #: d'une règle que l'utilisateur peut corriger après coup.
     #:
-    #: Bornée à 500 m : au-delà, c'est une saisie erronée (un chiffre tapé deux
-    #: fois), et elle produirait des vitesses absurdement basses sans rien signaler.
-    #:
-    #: `length_meters` et non `length_m` : l'alias camelCase est **généré** du nom
-    #: Python, et `length_m` donnerait `lengthM` — un champ que le client
-    #: n'enverrait jamais, donc une calibration silencieusement ignorée.
-    length_meters: float | None = Field(default=None, gt=0.0, le=500.0, examples=[7.0])
+    #: Bornée à 80 entrées : c'est la taille de COCO, donc une liste plus longue ne
+    #: peut être qu'une répétition ou une erreur.
+    allowed_class_ids: list[int] | None = Field(default=None, max_length=80)
+
+    @field_validator("allowed_class_ids")
+    @classmethod
+    def _clean_allowed_classes(cls, value: list[int] | None) -> list[int] | None:
+        """Écarte les doublons, refuse une liste vide.
+
+        Une liste **vide** n'est pas « aucune restriction » : elle dirait « aucune
+        classe n'a le droit de passer », ce qui est un cas déjà couvert — et bien
+        mieux nommé — par les deux sens en `forbidden`. La confondre avec `None`
+        rendrait toute ligne infranchissable en silence.
+        """
+        if value is None:
+            return None
+        unique = list(dict.fromkeys(value))
+        if not unique:
+            message = (
+                "allowedClassIds ne peut pas être vide : utilisez null pour ne rien restreindre."
+            )
+            raise ValueError(message)
+        unknown = sorted(set(unique) - DETECTABLE_CLASS_IDS)
+        if unknown:
+            # Même mode de défaillance muet que `class_ids` : une classe hors COCO
+            # ne correspondrait à aucun `by_class`, donc la voie réservée
+            # n'accepterait jamais rien et **tout** franchissement deviendrait une
+            # infraction. Un refus vaut mieux qu'un écran d'alertes fausses.
+            message = f"Classes autorisées inconnues : {unknown}."
+            raise ValueError(message)
+        return unique
 
     def to_domain(self) -> CountingLineDef:
         return CountingLineDef(
@@ -104,7 +143,9 @@ class LineSchema(CamelModel):
             negative_name=self.negative_name,
             positive_role=self.positive_role,
             negative_role=self.negative_role,
-            length_m=self.length_meters,
+            allowed_class_ids=(
+                None if self.allowed_class_ids is None else tuple(self.allowed_class_ids)
+            ),
         )
 
 
@@ -132,6 +173,18 @@ class AnalysisRequestSchema(CamelModel):
     frame_stride: int = Field(1, ge=1, le=10)
     detect_plates: bool = False
     plate_confidence: float | None = Field(None, ge=0.05, le=0.95)
+    plate_text_confidence: float | None = Field(
+        None,
+        ge=0.0,
+        le=0.95,
+        description=(
+            "Plancher de confiance d'une **lecture** de plaque. Sous ce seuil, la "
+            "chaîne n'atteint pas le vote, donc ne peut rien publier. `null` garde "
+            "le plancher du déploiement (`plateOcrMinTextScore`, 0,50). `0` accepte "
+            "toutes les lectures ; la borne haute s'arrête à 0,95, parce qu'à 1,0 "
+            "plus aucune lecture ne passerait jamais."
+        ),
+    )
     read_plate_text: bool = Field(
         False,
         description=(
@@ -140,12 +193,6 @@ class AnalysisRequestSchema(CamelModel):
             "modèle d'OCR est installé (`plateOcrAvailable`). Le texte publié est un "
             "vote sur toute la vie du véhicule, pas la lecture de l'image courante."
         ),
-    )
-    pixels_per_meter: float | None = Field(
-        None,
-        gt=0,
-        description="Échelle de la scène. Sans elle, les vitesses restent en px/s.",
-        examples=[12.5],
     )
     class_ids: list[int] = Field(
         default_factory=lambda: list(VEHICLE_CLASS_IDS),
@@ -206,8 +253,58 @@ class AnalysisRequestSchema(CamelModel):
         ),
         examples=[300000],
     )
+    plate_watchlist: list[str] = Field(
+        default_factory=list,
+        max_length=MAX_WATCHED_PLATES,
+        description=(
+            "Plaques recherchées pendant l'analyse. Le serveur les **accepte et les "
+            "rend telles quelles** sans jamais les comparer à quoi que ce soit : la "
+            "correspondance est calculée par l'interface, sur le texte voté, ce qui "
+            "permet de corriger la liste après coup sans relancer l'analyse. Elles "
+            "voyagent ici pour être persistées avec la configuration du job, donc "
+            "pour qu'un résultat rouvert sache ce qu'on cherchait. Sans effet si "
+            "`readPlateText` est faux — il n'y a alors aucun texte à comparer."
+        ),
+        examples=[["AB-123-CD"]],
+    )
     lines: list[LineSchema] = Field(default_factory=list)
     zones: list[ZoneSchema] = Field(default_factory=list)
+
+    @field_validator("plate_watchlist")
+    @classmethod
+    def _clean_watchlist(cls, value: list[str]) -> list[str]:
+        """Borne les entrées, sans jamais les **canoniser**.
+
+        Le serveur ne compare rien : la correspondance est calculée par l'interface,
+        avec la même normalisation que la recherche du registre. Canoniser ici
+        installerait une **seconde** définition de « la même plaque » — et la
+        canonique du domaine (`normalise_plate_text`) n'est justement pas celle-là,
+        puisqu'elle **conserve le tiret**. Deux règles pour une seule question, c'est
+        la famille de bug que ce dépôt documente le plus.
+
+        Ce qui est vérifié est donc une **borne**, pas une forme : sous
+        `MIN_WATCHED_PLATE_CHARS` caractères alphanumériques, une entrée
+        correspondrait à trop de plaques pour signaler quoi que ce soit — elle serait
+        un générateur de fausses alertes, pas une recherche.
+        """
+        cleaned: list[str] = []
+        for raw in value:
+            entry = raw.strip()
+            if len(entry) > MAX_WATCHED_PLATE_LENGTH:
+                message = (
+                    f"« {raw} » dépasse {MAX_WATCHED_PLATE_LENGTH} caractères : ce "
+                    "n'est pas une plaque."
+                )
+                raise ValueError(message)
+            if sum(1 for character in entry if character.isalnum()) < MIN_WATCHED_PLATE_CHARS:
+                message = (
+                    f"« {raw} » est trop court pour être recherché : il faut au moins "
+                    f"{MIN_WATCHED_PLATE_CHARS} caractères alphanumériques."
+                )
+                raise ValueError(message)
+            if entry not in cleaned:
+                cleaned.append(entry)
+        return cleaned
 
     @field_validator("class_ids")
     @classmethod
@@ -326,8 +423,8 @@ class AnalysisRequestSchema(CamelModel):
             frame_stride=self.frame_stride,
             detect_plates=self.detect_plates,
             plate_confidence=self.plate_confidence,
+            plate_text_confidence=self.plate_text_confidence,
             read_plate_text=self.read_plate_text,
-            pixels_per_meter=self.pixels_per_meter,
             max_lost_ms=self.max_lost_ms,
             lines=tuple(line.to_domain() for line in self.lines),
             zones=tuple(zone.to_domain() for zone in self.zones),
@@ -336,4 +433,5 @@ class AnalysisRequestSchema(CamelModel):
             max_analysis_fps=self.max_analysis_fps,
             start_ms=self.start_ms,
             end_ms=self.end_ms,
+            plate_watchlist=tuple(self.plate_watchlist),
         )

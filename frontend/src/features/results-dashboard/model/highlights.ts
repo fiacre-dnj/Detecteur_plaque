@@ -44,9 +44,35 @@ function best(flows: readonly LineFlow[], score: (flow: LineFlow) => number): Li
   return { lineId: winner.lineId, lineName: winner.lineName, color: winner.color, value: score(winner) };
 }
 
+/**
+ * Le pendant de `best` pour un **minimum**, et il ne s'écrit pas
+ * `best(flows, (f) => -f.total)` : le `value` rendu serait négatif, alors que
+ * c'est la fréquentation elle-même qu'affiche l'écran. L'égalité se tranche de
+ * la même façon — comparaison **stricte**, donc la première ligne du tracé
+ * l'emporte, comme pour `best`.
+ */
+function least(flows: readonly LineFlow[], score: (flow: LineFlow) => number): LineHighlight | null {
+  if (flows.length === 0) return null;
+  const winner = flows.reduce((low, flow) => (score(flow) < score(low) ? flow : low));
+  return { lineId: winner.lineId, lineName: winner.lineName, color: winner.color, value: score(winner) };
+}
+
 /** La ligne la plus fréquentée — la plus grande somme de passages, tous sens confondus. */
 export function busiestLine(stats: AnalysisStats, lines: readonly CountingLine[]): LineHighlight | null {
   return best(lineFlows(stats, lines), (flow) => flow.total);
+}
+
+/**
+ * La ligne la **moins** fréquentée, pendant exact de `busiestLine` : la plus
+ * petite somme de passages, tous sens confondus.
+ *
+ * Une ligne à `0` est un résultat, pas une absence de résultat — `lineFlows`
+ * rend toute ligne tracée, même déserte, et c'est justement celle-là qu'il faut
+ * pouvoir nommer : elle sépare « la voie est calme » de « le trait est mal
+ * posé » (voir « Cette voiture est passée et elle n'est pas comptée »).
+ */
+export function quietestLine(stats: AnalysisStats, lines: readonly CountingLine[]): LineHighlight | null {
+  return least(lineFlows(stats, lines), (flow) => flow.total);
 }
 
 /** La ligne dont le bilan entrées − sorties est le plus positif : le carrefour s'y remplit le plus. */
@@ -85,6 +111,26 @@ export function mostExitedLine(
   lines: readonly CountingLine[],
 ): LineHighlight | null {
   return best(lineFlows(stats, lines), (flow) => flow.exits ?? 0);
+}
+
+/**
+ * La ligne la plus **empruntée à contresens**.
+ *
+ * Le seul comparatif qui désigne un endroit plutôt qu'un flux : il répond à « où
+ * faut-il aller voir », pas à « comment le carrefour se remplit ». Une ligne à sens
+ * unique que dix véhicules remontent chaque heure est un problème de terrain — un
+ * panneau invisible, un marquage effacé — et c'est la ligne, pas le total, qui le
+ * dit.
+ *
+ * Compte les seuls sens **interdits** (`LineFlow.forbidden`), donc jamais une voie
+ * réservée franchie par la mauvaise classe : les deux sont des infractions, mais la
+ * question « quelle ligne remonte-t-on » n'a de sens que pour la première.
+ */
+export function mostForbiddenLine(
+  stats: AnalysisStats,
+  lines: readonly CountingLine[],
+): LineHighlight | null {
+  return best(lineFlows(stats, lines), (flow) => flow.forbidden ?? 0);
 }
 
 /**

@@ -127,6 +127,29 @@ describe("loadSettings — jamais d'exception, toujours des valeurs utilisables"
 
     expect(loadSettings(fakeStorage(stored)).confidenceThreshold).toBeNull();
   });
+
+  it("relit un plancher de lecture persisté, `0` compris", () => {
+    // `0` est une valeur, pas une absence : « accepte toutes les lectures ». Un
+    // relecteur qui le confondrait avec « non renseigné » remettrait silencieusement
+    // le plancher du serveur sur un réglage que l'écran affiche à zéro.
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { plateTextConfidence: 0 },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).plateTextConfidence).toBe(0);
+  });
+
+  it("reprend le défaut du plancher de lecture sur un stockage antérieur au champ", () => {
+    // La fusion est champ par champ : un `localStorage` écrit avant ce réglage est le
+    // cas **normal** après une mise à jour, pas une anomalie.
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { minHits: 4 },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).plateTextConfidence).toBeNull();
+  });
 });
 
 describe("saveSettings", () => {
@@ -144,7 +167,6 @@ describe("saveSettings", () => {
       ...DEFAULT_SETTINGS,
       modelId: "yolo12l",
       confidenceThreshold: 0.6,
-      pixelsPerMeter: 12.5,
       detectPlates: true,
     };
     saveSettings(settings, storage);
@@ -171,7 +193,6 @@ describe("toRequest — la traduction vers le serveur", () => {
       negativeName: "",
       positiveRole: "neutral" as const,
       negativeRole: "neutral" as const,
-      lengthMeters: null,
       a: { x: 0, y: 100 },
       b: { x: 200, y: 100 },
     },
@@ -191,14 +212,6 @@ describe("toRequest — la traduction vers le serveur", () => {
     expect(request.confidenceThreshold).toBe(0.72);
   });
 
-  it("traduit une échelle nulle en `null`, que le serveur exige", () => {
-    // Le curseur utilise 0 pour « non définie », mais le serveur refuse 0
-    // (`gt=0`) — et il a raison, une échelle nulle n'a pas de sens.
-    expect(toRequest({ ...DEFAULT_SETTINGS, pixelsPerMeter: 0 }, LINES, []).pixelsPerMeter).toBeNull();
-    expect(
-      toRequest({ ...DEFAULT_SETTINGS, pixelsPerMeter: 12.5 }, LINES, []).pixelsPerMeter,
-    ).toBe(12.5);
-  });
 
   it("n'envoie pas de confiance de plaque quand l'ANPR est désactivé", () => {
     // Un seuil de plaque sans lecture de plaque est un réglage sans effet : le
@@ -210,6 +223,52 @@ describe("toRequest — la traduction vers le serveur", () => {
     );
 
     expect(request.plateConfidence).toBeNull();
+  });
+
+  it("transmet le plancher de lecture quand l'ANPR et l'OCR sont actifs", () => {
+    const request = toRequest(
+      { ...DEFAULT_SETTINGS, detectPlates: true, readPlateText: true, plateTextConfidence: 0.7 },
+      LINES,
+      [],
+    );
+
+    expect(request.plateTextConfidence).toBe(0.7);
+  });
+
+  it("n'envoie pas de plancher de lecture quand l'OCR est désactivée", () => {
+    // Un plancher sur ce que l'OCR rend, sans OCR, est un réglage sans effet — même
+    // règle que `plateConfidence` sans ANPR. Le laisser passer demanderait au serveur
+    // d'arbitrer une incohérence que le client pouvait éviter.
+    const request = toRequest(
+      { ...DEFAULT_SETTINGS, detectPlates: true, readPlateText: false, plateTextConfidence: 0.7 },
+      LINES,
+      [],
+    );
+
+    expect(request.plateTextConfidence).toBeNull();
+  });
+
+  it("laisse `null` signifier « suivre le défaut du serveur »", () => {
+    // `null` n'est pas `0` : l'un garde le plancher du déploiement (0,50), l'autre
+    // accepte **toutes** les lectures. Les confondre publierait des plaques que le
+    // serveur refusait jusque-là.
+    const request = toRequest(
+      { ...DEFAULT_SETTINGS, detectPlates: true, readPlateText: true },
+      LINES,
+      [],
+    );
+
+    expect(request.plateTextConfidence).toBeNull();
+  });
+
+  it("transmet un plancher de lecture nul, qui n'est pas une absence de réglage", () => {
+    const request = toRequest(
+      { ...DEFAULT_SETTINGS, detectPlates: true, readPlateText: true, plateTextConfidence: 0 },
+      LINES,
+      [],
+    );
+
+    expect(request.plateTextConfidence).toBe(0);
   });
 
   it("**désactive le masque quand aucune zone n'existe**", () => {
@@ -336,7 +395,7 @@ describe("classIds dans la requête", () => {
   // Une ligne quelconque : `toRequest` en exige une, mais aucun de ces tests ne
   // parle de géométrie.
   const LINES = [
-    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 }, lengthMeters: null },
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
   ];
 
   it("part avec les quatre véhicules par défaut", () => {
@@ -359,7 +418,7 @@ describe("classIds dans la requête", () => {
 
 describe("analysisSpeed — la cadence d'analyse", () => {
   const LINES = [
-    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 }, lengthMeters: null },
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
   ];
 
   it("part en temps réel par défaut", () => {
@@ -426,14 +485,18 @@ describe("analysisSpeed — la cadence d'analyse", () => {
 
 describe("maxAnalysisFps — le plafond absolu de cadence", () => {
   const LINES = [
-    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 }, lengthMeters: null },
+    { id: "l1", name: "", color: "", zoneId: null, a: { x: 0, y: 0 }, positiveName: "", negativeName: "", positiveRole: "neutral" as const, negativeRole: "neutral" as const, b: { x: 10, y: 10 } },
   ];
 
-  it("part à 30 img/s par défaut", () => {
-    // Depuis ADR 0022 : la cadence vidéo la plus courante, qui ne borne rien en
-    // pratique sur une source à cette cadence ou en dessous.
-    expect(DEFAULT_SETTINGS.maxAnalysisFps).toBe(30);
-    expect(toRequest(DEFAULT_SETTINGS, LINES, []).maxAnalysisFps).toBe(30);
+  it("part à « Illimité » par défaut, pour ne pas contredire la cadence de scène", () => {
+    // Depuis ADR 0049, qui abroge le `30` d'ADR 0022. `ScenePacer` retient la
+    // période la **plus longue** des deux bridages : un plafond à 30 img/s bat
+    // `analysisSpeed: 1` sur toute source au-dessus de 30 fps, et l'aperçu
+    // défile alors à la moitié de la vitesse réelle — l'inverse exact de ce
+    // qu'ADR 0019 garantit. Mesuré sur une source 60 fps : 30 img/s au lieu de
+    // 58,8 que la machine tient.
+    expect(DEFAULT_SETTINGS.maxAnalysisFps).toBeNull();
+    expect(toRequest(DEFAULT_SETTINGS, LINES, []).maxAnalysisFps).toBeNull();
   });
 
   it("transmet un plafond choisi", () => {
@@ -475,8 +538,8 @@ describe("maxAnalysisFps — le plafond absolu de cadence", () => {
       settings: { maxAnalysisFps: 999 },
     });
 
-    // Repli sur le défaut du module (30 img/s depuis ADR 0022), pas sur `null`.
-    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBe(30);
+    // Repli sur le défaut du module, qui vaut « Illimité » depuis ADR 0049.
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBeNull();
   });
 
   it("ignore un plafond d'un type faux", () => {
@@ -485,6 +548,99 @@ describe("maxAnalysisFps — le plafond absolu de cadence", () => {
       settings: { maxAnalysisFps: "30 img/s" },
     });
 
-    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBe(30);
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBeNull();
+  });
+
+  it("**relâche le plafond de 30 hérité de la version 1**", () => {
+    // Le cœur d'ADR 0049 : `mergeSettings` ne réécrit jamais un choix persisté,
+    // donc sans cette migration le correctif n'atteindrait aucun poste existant.
+    const stored = JSON.stringify({
+      version: 1,
+      settings: { maxAnalysisFps: 30, modelId: "yolo11s" },
+    });
+
+    const loaded = loadSettings(fakeStorage(stored));
+
+    expect(loaded.maxAnalysisFps).toBeNull();
+    // Et rien d'autre n'est perdu : c'est ce qui distingue la migration ciblée
+    // d'une remise à zéro sur les défauts.
+    expect(loaded.modelId).toBe("yolo11s");
+  });
+
+  it("garde un plafond de 60 hérité de la version 1 : c'est un choix, pas un défaut", () => {
+    const stored = JSON.stringify({
+      version: 1,
+      settings: { maxAnalysisFps: 60 },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).maxAnalysisFps).toBe(60);
+  });
+
+  it("garde un « Illimité » hérité de la version 1", () => {
+    const stored = JSON.stringify({
+      version: 1,
+      settings: { maxAnalysisFps: null, modelId: "yolo11m" },
+    });
+
+    const loaded = loadSettings(fakeStorage(stored));
+
+    expect(loaded.maxAnalysisFps).toBeNull();
+    expect(loaded.modelId).toBe("yolo11m");
+  });
+
+  it("retombe sur les défauts pour une version ni 1 ni courante", () => {
+    const stored = JSON.stringify({
+      version: 99,
+      settings: { maxAnalysisFps: 60, modelId: "yolo11s" },
+    });
+
+    const loaded = loadSettings(fakeStorage(stored));
+
+    expect(loaded.maxAnalysisFps).toBeNull();
+    expect(loaded.modelId).toBe(DEFAULT_SETTINGS.modelId);
+  });
+});
+
+describe("les plaques recherchées", () => {
+  it("ne sont ni écrites ni relues du stockage", () => {
+    // Le seul réglage non persisté, à deux titres : il décrit une **recherche en
+    // cours** et non une préférence, et écrire un numéro de plaque dans le
+    // `localStorage` du poste franchirait le cran de confidentialité que ce projet
+    // impose déjà en laissant l'OCR décoché par défaut.
+    let written = "";
+    saveSettings(
+      { ...DEFAULT_SETTINGS, plateWatchlist: ["AB-123-CD"] },
+      { setItem: (_key, value) => (written = value) },
+    );
+
+    expect(written).not.toContain("AB-123-CD");
+    expect(loadSettings(fakeStorage(written)).plateWatchlist).toEqual([]);
+  });
+
+  it("ne partent qu'avec la lecture des plaques", () => {
+    // Sans OCR, aucun texte n'existe à comparer : envoyer la liste quand même
+    // afficherait dans « Configuration système » une recherche que rien ne peut
+    // satisfaire. Le tiroir Détection avertit séparément, ce qui est la vraie
+    // protection contre la panne silencieuse.
+    const base = { ...DEFAULT_SETTINGS, plateWatchlist: ["AB-123-CD"] };
+
+    expect(toRequest(base, [], []).plateWatchlist).toEqual([]);
+    expect(
+      toRequest({ ...base, detectPlates: true, readPlateText: true }, [], []).plateWatchlist,
+    ).toEqual(["AB-123-CD"]);
+  });
+
+  it("écarte les entrées que le serveur refuserait, sans les corriger", () => {
+    // Un filtre et non une correction : compléter ou tronquer une plaque à la place
+    // de l'utilisateur produirait une recherche qu'il n'a pas demandée, et qui
+    // trouverait peut-être quelque chose — le pire des deux résultats.
+    const settings = {
+      ...DEFAULT_SETTINGS,
+      detectPlates: true,
+      readPlateText: true,
+      plateWatchlist: ["AB1", "AB-123-CD", "AB-123-CD", "0123456789ABCDEFGH"],
+    };
+
+    expect(toRequest(settings, [], []).plateWatchlist).toEqual(["AB-123-CD"]);
   });
 });

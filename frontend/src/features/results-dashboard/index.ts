@@ -15,7 +15,9 @@ export {
   hasEnteredCrossroad,
 } from "./model/crossedVehicles";
 
-export { entriesByClass } from "./model/entriesByClass";
+export { crossedByClass } from "./model/crossedByClass";
+
+export { visibleClasses } from "./model/visibleClasses";
 
 export { type LineFlow, lineFlows } from "./model/lineFlows";
 
@@ -25,6 +27,7 @@ export {
   busiestVsQuietestShareGap,
   mostEnteredLine,
   mostExitedLine,
+  quietestLine,
   strongestInflowLine,
   strongestOutflowLine,
 } from "./model/highlights";
@@ -39,7 +42,6 @@ export {
   formatSceneTime,
   formatSceneTimePrecise,
   formatScore,
-  formatSpeed,
   plural,
 } from "./model/labels";
 

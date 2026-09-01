@@ -56,8 +56,6 @@ def _vehicle(**overrides: object) -> VehicleRecord:
         "last_seen_ms": 480.0,
         "crossed_lines": (),
         "zones_visited": (),
-        "avg_speed_px_s": None,
-        "avg_speed_kmh": None,
         "best_plate_score": 0.71,
     }
     base.update(overrides)
@@ -92,7 +90,6 @@ class TestSerialiseTrack:
             "plateTextScore",
             "plates",
             "score",
-            "speedPxS",
             "trackId",
         ]
 
@@ -171,22 +168,79 @@ class TestSerialiseCrossing:
 class TestSerialiseVehicle:
     def test_le_jeu_de_cles_du_registre(self) -> None:
         assert sorted(serialise_vehicle(_vehicle())) == [
-            "avgSpeedKmh",
-            "avgSpeedPxS",
             "bestPlateScore",
             "crossedLines",
             "firstSeenMs",
             "globalId",
             "label",
             "lastSeenMs",
+            "matchScore",
             "plateBestGuess",
             "plateBestGuessScore",
             "plateBestWidthPx",
             "plateText",
             "plateTextScore",
             "plateUnreadReason",
+            "snapshotKind",
+            "snapshotMs",
+            "snapshotScore",
             "zonesVisited",
         ]
+
+    def test_un_vehicule_sans_recherche_par_image_rend_un_score_nul(self) -> None:
+        """`matchScore` à `null` couvre **deux** causes, et c'est assumé.
+
+        Aucune image de requête fournie, ou véhicule jamais assez grand ni assez net
+        pour être encodé. Les distinguer côté serveur demanderait un second champ pour
+        une différence que l'écran n'a pas à faire : dans les deux cas il n'y a rien à
+        classer. Le tiroir d'alertes, lui, sait s'il a une requête — c'est lui qui
+        décide s'il faut afficher une colonne.
+        """
+        assert serialise_vehicle(_vehicle())["matchScore"] is None
+
+    def test_une_ressemblance_est_arrondie_comme_les_autres_scores(self) -> None:
+        """Même arrondi que toutes les confiances : quatre décimales (ADR 0026).
+
+        Un score de ressemblance non arrondi porterait dix-sept chiffres dans chaque
+        aperçu SSE, pour une précision que rien n'affiche.
+        """
+        payload = serialise_vehicle(_vehicle(match_score=0.8812345))
+        assert payload["matchScore"] == pytest.approx(0.8812)
+
+    def test_un_vehicule_sans_capture_rend_trois_null(self) -> None:
+        """`snapshotMs` et `snapshotKind` **sont** le drapeau « il y a une photo ».
+
+        Plus `snapshotScore`, qui n'existe que sur la cause `plate_text` (ADR 0051).
+        Pas de booléen en plus, et surtout pas d'URL : le serveur ne fabrique pas les
+        adresses du client, qui les construit depuis l'identifiant du job et le numéro
+        du véhicule — même convention que la vidéo déposée.
+        """
+        payload = serialise_vehicle(_vehicle())
+        assert payload["snapshotScore"] is None
+        assert payload["snapshotMs"] is None
+        assert payload["snapshotKind"] is None
+
+    def test_un_vehicule_capture_porte_sa_confiance_et_son_instant(self) -> None:
+        payload = serialise_vehicle(
+            _vehicle(snapshot_score=0.921234, snapshot_ms=12_400.0, snapshot_kind="plate_text")
+        )
+        assert payload["snapshotScore"] == pytest.approx(0.9212)
+        assert payload["snapshotMs"] == pytest.approx(12_400.0)
+        assert payload["snapshotKind"] == "plate_text"
+
+    def test_une_capture_sans_lecture_publie_une_cause_et_aucun_score(self) -> None:
+        """Le cas qui a fait changer le drapeau (ADR 0051).
+
+        Une plaque localisée sans être lue, ou un véhicule retenu pour sa
+        ressemblance, portent une photo et **aucune** confiance de lecture. Un client
+        qui lirait `snapshotScore != null` comme « il y a une photo » les manquerait
+        tous les deux, silencieusement.
+        """
+        for kind in ("plate_box", "appearance"):
+            payload = serialise_vehicle(_vehicle(snapshot_ms=8_100.0, snapshot_kind=kind))
+            assert payload["snapshotKind"] == kind
+            assert payload["snapshotMs"] == pytest.approx(8_100.0)
+            assert payload["snapshotScore"] is None
 
     def test_une_plaque_vue_mais_illisible_garde_son_score_de_detection(self) -> None:
         """L'état que l'interface rate le plus facilement, et qui doit rester lisible.

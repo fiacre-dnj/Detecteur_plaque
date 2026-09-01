@@ -20,8 +20,13 @@ from traffic_analysis.features.counting.application.ports import (
     EngineFrame,
     EngineSpec,
     PlateText,
+    VehicleSnapshot,
 )
 from traffic_analysis.features.counting.domain.geometry import Point
+from traffic_analysis.features.counting.domain.inference_budget import (
+    InferenceCandidate,
+    select_within_budget,
+)
 from traffic_analysis.features.counting.domain.models import (
     DETECTABLE_CLASS_IDS,
     DETECTABLE_CLASSES,
@@ -41,12 +46,10 @@ from traffic_analysis.features.counting.domain.plate_geometry import (
     select_best,
 )
 from traffic_analysis.features.counting.domain.plate_policy import (
-    DetectionCandidate,
     PlateDetectOptions,
     PlateDetectPolicy,
     PlateOcrOptions,
     PlateOcrPolicy,
-    select_within_budget,
 )
 from traffic_analysis.features.counting.domain.tracking_session import (
     AnalysisSession,
@@ -88,15 +91,15 @@ __all__ = [
     "BoundingBox",
     "CountingLineDef",
     "DetectableClass",
-    # Une candidate au budget de détection de plaques, réexportée pour le service :
-    # le classement est une règle pure du domaine, la décision de plafonner appartient
-    # à qui sait ce qu'une inférence coûte.
-    "DetectionCandidate",
     # Le vocabulaire des sens de ligne, publié pour le schéma de requête : c'est lui
     # qui valide « entry | exit | neutral », et il ne doit pas recopier la liste.
     "DirectionRole",
     "EngineFrame",
     "EngineSpec",
+    # Une candidate au plafond de dépense par image, réexportée pour le service. Elle
+    # sert **deux** étages sans rapport — détection de plaques et encodage
+    # d'apparence — d'où son domicile neutre dans `domain/inference_budget`.
+    "InferenceCandidate",
     # Réexportés pour le conteneur et le banc de mesure. `PlateGeometry` en
     # particulier : le filtre géométrique vit dans le domaine et non dans
     # l'adaptateur, parce que derrière `ultralytics` il n'était jamais traversé par
@@ -116,6 +119,9 @@ __all__ = [
     "Progress",
     "TimelineRow",
     "TrackObservation",
+    # La capture d'un véhicule, publiée pour que `jobs` sache l'écrire sans importer
+    # le domaine du comptage — même règle que tout ce qui précède.
+    "VehicleSnapshot",
     "VideoInfo",
     "ZoneDef",
     "is_plausible",
@@ -157,6 +163,19 @@ class AnalysisJobConfig:
     #: argument de `detect_many`, ce qui lève l'impasse où ADR 0007 l'avait laissé
     #: mort — annoncé au contrat et sans effet, le pire état d'un réglage.
     plate_confidence: float | None = None
+    #: Plancher de confiance d'une **lecture**, pour cette course. `None` garde celui
+    #: du déploiement (`plate_ocr_min_text_score`).
+    #:
+    #: Il voyage par requête pour la même raison que `plate_confidence`, et c'est la
+    #: seule exception à la règle énoncée sous `read_plate_text` : il répond à une
+    #: question que seul l'utilisateur peut trancher devant sa vidéo — « des plaques
+    #: fausses, ou pas de plaques ». Les autres seuils d'OCR restent des arbitrages de
+    #: déploiement, dont il ne pourrait pas juger l'effet.
+    #:
+    #: Il descend jusqu'à l'adaptateur en argument de `read`, où il décide ce qui
+    #: devient un `PlateText`. Une lecture écartée ne vote pas, donc le véhicule reste
+    #: sans plaque et le registre en donne la raison (`no_consensus`).
+    plate_text_confidence: float | None = None
     #: Lire le **texte** des plaques localisées, en plus de les encadrer.
     #:
     #: Distinct de `detect_plates`, et subordonné à lui : lire sans détecter n'a pas
@@ -165,12 +184,12 @@ class AnalysisJobConfig:
     #: que persister un texte de plaque franchit un cran de confidentialité qui
     #: mérite un consentement explicite plutôt qu'un effet de bord (ADR 0007).
     #:
-    #: Aucun seuil OCR ici, délibérément : ils vivent tous dans `Settings`. Ce sont
-    #: des arbitrages de déploiement — combien de cœurs, quelle cadence, quelles
-    #: variantes de prétraitement — que l'utilisateur d'une analyse n'a pas à
-    #: connaître, et dont il ne pourrait pas juger l'effet sur sa vidéo.
+    #: Un seul seuil OCR ici — `plate_text_confidence` ci-dessus, le plancher de
+    #: lecture. Tous les autres vivent dans `Settings` : ce sont des arbitrages de
+    #: déploiement — combien de cœurs, quelle cadence, quelles variantes de
+    #: prétraitement — que l'utilisateur d'une analyse n'a pas à connaître, et dont il
+    #: ne pourrait pas juger l'effet sur sa vidéo.
     read_plate_text: bool = False
-    pixels_per_meter: float | None = None
     max_lost_ms: float = 2500.0
     lines: tuple[CountingLineDef, ...] = ()
     zones: tuple[ZoneDef, ...] = ()
@@ -236,6 +255,19 @@ class AnalysisJobConfig:
     #: Incluse, une fenêtre `[0 ; 1000]` et une fenêtre `[1000 ; 2000]` partageraient
     #: l'image de 1000 ms, donc compteraient deux fois ce qui s'y passe.
     end_ms: float | None = None
+    #: Plaques recherchées, telles que l'utilisateur les a saisies.
+    #:
+    #: **Le domaine ne les lit jamais.** Elles traversent l'orchestration pour être
+    #: persistées dans la configuration du job et rendues à l'interface, qui compare
+    #: elle-même le texte **voté** de chaque véhicule (invariant 4). Même doctrine
+    #: que les rôles de sens, et les mêmes deux conséquences : corriger la liste ne
+    #: demande pas de réanalyser, et la règle de correspondance n'existe qu'à un
+    #: seul endroit — donc elle ne peut pas diverger entre l'aperçu vivant et un
+    #: résultat rouvert.
+    #:
+    #: Ni canonisées ni comparées ici : voir `_clean_watchlist` dans le schéma de
+    #: requête. Sans effet si `read_plate_text` est faux.
+    plate_watchlist: tuple[str, ...] = ()
 
     def engine_spec(self) -> EngineSpec:
         """Ce que le moteur doit savoir : les seuils **vivants** de la requête."""
@@ -267,7 +299,6 @@ class AnalysisJobConfig:
             # d'une observation suivie si elle tenait le seuil ou si elle a été
             # rattrapée par la bande basse (ADR 0024).
             confidence_threshold=self.confidence_threshold,
-            pixels_per_meter=self.pixels_per_meter,
         )
 
 
@@ -385,6 +416,16 @@ class AnalysisResultData:
     zone_events: list[ZoneEntryEvent] = field(default_factory=list)
     vehicles: tuple[VehicleRecord, ...] = ()
     stats: AnalysisStats | None = None
+    #: Les captures retenues, par numéro de véhicule. **En mémoire seulement.**
+    #:
+    #: Jamais sérialisées dans `result.json.gz` : ce sont des octets d'image, et un
+    #: résultat JSON qui les porterait en base64 grossirait d'un ordre de grandeur
+    #: pour une donnée que personne ne lit dans ce fichier. Le `JobManager` les écrit
+    #: en fichiers séparés, à côté du résultat, et l'interface les demande par URL.
+    #:
+    #: Vide quand aucun encodeur n'est fourni ou qu'aucune plaque n'est lue — le cas
+    #: le plus fréquent.
+    snapshots: dict[int, VehicleSnapshot] = field(default_factory=dict)
 
 
 class AnalysisCancelled(Exception):

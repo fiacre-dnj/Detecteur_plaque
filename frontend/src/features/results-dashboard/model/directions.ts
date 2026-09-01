@@ -16,7 +16,7 @@
  *   de bug plus que toute autre : deux copies d'une règle finissent par diverger, et
  *   c'est un passage qui change de colonne selon l'écran qui le montre. C'est
  *   exactement pourquoi `isEntryRow` ci-dessous est **exportée** plutôt que
- *   réécrite dans `entriesByClass.ts` : deux fichiers qui décident chacun ce
+ *   réécrite chez chacun de ses lecteurs : deux fichiers qui décident chacun ce
  *   qu'est un sens d'entrée finiraient par diverger.
  *
  * Tout ici est **dérivé** de `stats.byLine` et de la géométrie courante, jamais
@@ -100,17 +100,33 @@ export interface FlowBalance {
   exits: number;
   /** `entries - exits`. Positif = la zone se remplit, négatif = elle se vide. */
   net: number;
-  /** Passages sur des sens sans rôle déclaré — du transit, ou un rôle oublié. */
+  /** Passages sur des sens marqués « interdit ». Comptés, et signalés ailleurs. */
+  forbidden: number;
+  /** Passages sur des sens marqués « passage » — comptés, hors bilan, voulus. */
+  transit: number;
+  /** Passages sur des sens sans rôle déclaré — un rôle oublié, jamais un choix. */
   neutral: number;
-  /** Un rôle a-t-il été déclaré quelque part ? Sinon, l'écran affiche « — ». */
+  /**
+   * Un sens **entrée ou sortie** a-t-il été déclaré quelque part ?
+   *
+   * Sinon, l'écran affiche « — ». La définition est restée exactement celle-là
+   * malgré l'arrivée de `transit` et `forbidden`, et c'est délibéré : une géométrie
+   * entièrement en « comptage seul » n'a pas de bilan de carrefour à montrer, et
+   * afficher `0` y dirait « personne n'entre » au lieu de « ce n'est pas un
+   * carrefour ». C'est la même honnêteté que le `null` de `LineFlow.entries`.
+   */
   declared: boolean;
 }
 
 /**
  * Un sens marqué « entrée » — le seul prédicat qui décide ce qui compte comme une
- * entrée, réutilisé par `flowBalance` et par `entriesByClass.ts`. L'exporter
- * plutôt que le laisser inline est ce qui empêche les deux calculs de diverger
- * silencieusement si l'un des deux change un jour de condition.
+ * entrée, réutilisé par `flowBalance` et par le bilan par ligne. L'exporter plutôt
+ * que le laisser inline est ce qui empêche ces calculs de diverger silencieusement
+ * si l'un d'eux change un jour de condition.
+ *
+ * **Il ne décide plus du chiffre de tête** : depuis ADR 0045 « Passages globaux »
+ * compte des véhicules distincts et ne lit aucun rôle. Le bilan entrées / sorties
+ * qu'il sert reste entier — cartes de ligne, Statistique, colonnes du registre.
  */
 export function isEntryRow(row: DirectionRow): boolean {
   return row.role === "entry";
@@ -127,15 +143,26 @@ export function isEntryRow(row: DirectionRow): boolean {
 export function flowBalance(stats: AnalysisStats, lines: readonly CountingLine[]): FlowBalance {
   let entries = 0;
   let exits = 0;
+  let forbidden = 0;
+  let transit = 0;
   let neutral = 0;
   let declared = false;
 
   for (const row of directionRows(stats, lines)) {
-    if (row.role !== "neutral") declared = true;
-    if (isEntryRow(row)) entries += row.tally.total;
-    else if (row.role === "exit") exits += row.tally.total;
-    else neutral += row.tally.total;
+    if (isEntryRow(row)) {
+      declared = true;
+      entries += row.tally.total;
+    } else if (row.role === "exit") {
+      declared = true;
+      exits += row.tally.total;
+    } else if (row.role === "forbidden") {
+      forbidden += row.tally.total;
+    } else if (row.role === "transit") {
+      transit += row.tally.total;
+    } else {
+      neutral += row.tally.total;
+    }
   }
 
-  return { entries, exits, net: entries - exits, neutral, declared };
+  return { entries, exits, net: entries - exits, forbidden, transit, neutral, declared };
 }

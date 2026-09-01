@@ -19,6 +19,7 @@ import type {
   Zone,
 } from "@/shared/api/contracts";
 import { nextGeometryColor } from "@/shared/config/palettes";
+import { directionRole, rolesForKind, type LineKind } from "@/shared/lib/directions";
 import { clampToSource } from "@/shared/lib/geometry";
 
 import { EMPTY_GEOMETRY, NO_SELECTION, type GeometryState } from "./types";
@@ -32,8 +33,10 @@ export type GeometryAction =
   | { type: "renameZone"; id: string; name: string }
   | { type: "renameDirection"; id: string; sign: DirectionSign; name: string }
   | { type: "setDirectionRole"; id: string; sign: DirectionSign; role: DirectionRole }
+  | { type: "setLineKind"; id: string; kind: LineKind }
+  | { type: "swapLineDirections"; id: string }
+  | { type: "setLineClasses"; id: string; classIds: number[] | null }
   | { type: "setLineZone"; id: string; zoneId: string | null }
-  | { type: "setLineLength"; id: string; lengthMeters: number | null }
   | { type: "removeLine"; id: string }
   | { type: "removeZone"; id: string }
   | { type: "select"; selection: GeometryState["selection"] }
@@ -72,11 +75,9 @@ export function defaultLine(width: number, height: number, index: number): Count
     // deux côtés à sa guise.
     positiveRole: "entry",
     negativeRole: "exit",
-    // **Pas de longueur par défaut**, et surtout pas une valeur plausible : une
-    // échelle inventée produirait des km/h que l'utilisateur prendrait au
-    // sérieux. `null` laisse les vitesses en px/s jusqu'à ce qu'une vraie mesure
-    // de terrain soit saisie — la même honnêteté que `to_kmh` côté serveur.
-    lengthMeters: null,
+    // Aucune restriction de classe par défaut : une voie réservée est une règle
+    // qu'on pose, jamais un état dans lequel on tombe.
+    allowedClassIds: null,
   };
 }
 
@@ -102,12 +103,11 @@ export function withDirectionDefaults(line: CountingLine): CountingLine {
     negativeName: line.negativeName ?? "",
     positiveRole: line.positiveRole ?? "neutral",
     negativeRole: line.negativeRole ?? "neutral",
-    // Même raison que les quatre champs au-dessus : un preset enregistré avant la
-    // calibration par ligne ne porte pas ce champ, et `undefined` traverserait là
-    // où le type promet `number | null`. Le repli est `null` — « non calibrée » —
-    // et surtout pas une longueur devinée : une échelle inventée produirait des
-    // km/h que l'utilisateur prendrait au sérieux.
-    lengthMeters: line.lengthMeters ?? null,
+    // `null` et non `[]` : une liste vide dirait « aucune classe n'a le droit de
+    // passer », donc **tout** franchissement en infraction. Se tromper de repli
+    // fabriquerait ici un écran d'alertes entièrement faux, sur une géométrie qui
+    // n'a jamais rien restreint.
+    allowedClassIds: line.allowedClassIds ?? null,
   };
 }
 
@@ -215,32 +215,68 @@ export function geometryReducer(state: GeometryState, action: GeometryAction): G
       };
     }
 
-    case "setLineZone":
+    case "setLineKind": {
+      // **La paire entière, en un geste.** Le type d'une ligne est dérivé de ses
+      // deux rôles (`shared/lib/directions.ts`) : les poser un par un laisserait
+      // exister, entre les deux gestes, une paire que `lineKind` ne sait pas
+      // nommer — et un rendu intermédiaire l'afficherait « à préciser ».
+      const roles = rolesForKind(action.kind);
       return {
         ...state,
         lines: state.lines.map((line) =>
-          line.id === action.id ? { ...line, zoneId: action.zoneId } : line,
+          line.id === action.id
+            ? { ...line, positiveRole: roles.positive, negativeRole: roles.negative }
+            : line,
         ),
       };
+    }
 
-    // Une longueur **nulle ou négative n'est pas une longueur** : elle est
-    // normalisée en `null` ici, et pas seulement dans le champ de saisie. Le
-    // reducer est la dernière barrière avant une requête que le serveur
-    // refuserait en 422 (`gt=0`), et avant une division par zéro qui rendrait une
-    // échelle infinie — donc une vitesse infinie affichée comme un chiffre.
-    case "setLineLength":
+    case "swapLineDirections":
+      // Échange les deux rôles sans en juger : c'est ce qui fait passer le côté
+      // interdit d'une ligne à sens unique d'un bord du trait à l'autre, et ce qui
+      // inverse entrée et sortie sur une ligne ordinaire — **un seul geste pour
+      // les deux**, parce que c'est la même opération.
+      //
+      // Une ligne héritée dont un sens est resté `neutral` n'a rien à échanger :
+      // elle reçoit la paire par défaut plutôt qu'un bilan deviné, exactement
+      // comme avant (ADR 0021).
+      return {
+        ...state,
+        lines: state.lines.map((line) => {
+          if (line.id !== action.id) return line;
+          const positive = directionRole(line, "positive");
+          const negative = directionRole(line, "negative");
+          if (positive === "neutral" || negative === "neutral") {
+            return { ...line, positiveRole: "entry", negativeRole: "exit" };
+          }
+          return { ...line, positiveRole: negative, negativeRole: positive };
+        }),
+      };
+
+    case "setLineClasses":
+      // `null` = aucune restriction. Une liste **vide** n'est jamais écrite ici :
+      // elle voudrait dire « rien ne passe », ce que le type « Infranchissable »
+      // exprime déjà, en le disant.
       return {
         ...state,
         lines: state.lines.map((line) =>
           line.id === action.id
             ? {
                 ...line,
-                lengthMeters:
-                  action.lengthMeters !== null && action.lengthMeters > 0
-                    ? action.lengthMeters
-                    : null,
+                allowedClassIds:
+                  action.classIds === null || action.classIds.length === 0
+                    ? null
+                    : [...new Set(action.classIds)],
               }
             : line,
+        ),
+      };
+
+    case "setLineZone":
+      return {
+        ...state,
+        lines: state.lines.map((line) =>
+          line.id === action.id ? { ...line, zoneId: action.zoneId } : line,
         ),
       };
 

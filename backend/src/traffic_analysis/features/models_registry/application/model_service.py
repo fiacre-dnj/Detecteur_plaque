@@ -26,7 +26,11 @@ from traffic_analysis.features.models_registry.domain.catalogue import (
 )
 
 if TYPE_CHECKING:
-    from traffic_analysis.features.counting.application.ports import PlateDetector, PlateReader
+    from traffic_analysis.features.counting.application.ports import (
+        PlateDetector,
+        PlateReader,
+        VehicleEmbedder,
+    )
     from traffic_analysis.features.models_registry.infrastructure.registry import ModelRegistry
 
 
@@ -58,6 +62,8 @@ class ModelService:
         "_plate_loadable",
         "_plate_reader",
         "_registry",
+        "_reid_loadable",
+        "_vehicle_embedder",
     )
 
     def __init__(
@@ -67,15 +73,21 @@ class ModelService:
         default_model_id: str,
         plate_detector: PlateDetector | None = None,
         plate_reader: PlateReader | None = None,
+        vehicle_embedder: VehicleEmbedder | None = None,
     ) -> None:
         self._registry = registry
         self._default_model_id = default_model_id
         self._plate_detector = plate_detector
         self._plate_reader = plate_reader
+        self._vehicle_embedder = vehicle_embedder
         #: Verdict de l'auto-test, `None` tant qu'il n'a pas tourné. Trois états et
         #: non deux : « pas encore testé » n'est pas « en échec », et les afficher
         #: pareil ferait passer un démarrage sans préchauffage pour une panne.
         self._plate_loadable: bool | None = None
+        #: Même sémantique à trois états pour l'encodeur de ressemblance : un `.onnx`
+        #: présent mais illisible — un `.pt` renommé, un fichier tronqué, une sortie
+        #: d'une autre dimension — passe `available` et échoue ici.
+        self._reid_loadable: bool | None = None
 
     def catalogue_with_state(self) -> list[ModelInfo]:
         loaded = set(self._registry.loaded_ids())
@@ -151,6 +163,36 @@ class ModelService:
         drapeau vert et une ANPR muette.
         """
         return self._plate_loadable
+
+    def reid_available(self) -> bool:
+        """L'encodeur de ressemblance est-il disponible ?
+
+        Présence du fichier seulement, comme les deux étages de plaques : c'est ce qui
+        permet à l'interface de griser la recherche par image sans que `/health` charge
+        8,8 Mo d'ONNX à chaque sonde.
+        """
+        return self._vehicle_embedder is not None and self._vehicle_embedder.available
+
+    def reid_loadable(self) -> bool | None:
+        """L'encodeur a-t-il passé son auto-test ? Trois états, comme les plaques.
+
+        `False` — poids présents, recherche muette — est l'état à surveiller, et le
+        seul que `reid_available` ne peut pas distinguer d'un fonctionnement normal.
+        """
+        return self._reid_loadable
+
+    async def probe_reid(self) -> bool | None:
+        """Auto-test de l'encodeur, **dans un thread worker** (invariant 11).
+
+        Rend `None` sans rien tenter quand les poids sont absents : l'absence est déjà
+        dite par `reid_available`, et la répéter en « échec » ferait passer un
+        déploiement neuf pour une panne.
+        """
+        embedder = self._vehicle_embedder
+        if embedder is None or not embedder.available:
+            return None
+        self._reid_loadable = await anyio.to_thread.run_sync(embedder.probe)
+        return self._reid_loadable
 
     async def probe_plates(self) -> bool | None:
         """Lance l'auto-test du détecteur **dans un thread worker**, et retient son

@@ -30,10 +30,25 @@
  * composant rend donc son contenu nu : c'est son conteneur qui décide de l'écrin.
  */
 
-import { ArrowUp, ArrowUpDown, Bookmark, Plus, Square, Trash2 } from "lucide-react";
+import { ArrowUp, ArrowUpDown, Ban, Bookmark, Plus, ShieldCheck, Square, Trash2 } from "lucide-react";
 
-import type { CountingLine, DirectionRole, DirectionSign, Zone } from "@/shared/api/contracts";
-import { directionHeadingDeg, directionRole } from "@/shared/lib/directions";
+import type {
+  CountingLine,
+  DetectableClass,
+  DirectionRole,
+  DirectionSign,
+  Zone,
+} from "@/shared/api/contracts";
+import {
+  LINE_KINDS,
+  directionHeadingDeg,
+  directionName,
+  directionRole,
+  isForbiddenRole,
+  lineKind,
+  showsDirections,
+  type LineKind,
+} from "@/shared/lib/directions";
 import type { Selection } from "@/entities/geometry";
 
 interface GeometryPanelProps {
@@ -55,9 +70,18 @@ interface GeometryPanelProps {
   onSelect: (selection: Selection) => void;
   onRenameLine: (id: string, name: string) => void;
   onRenameZone: (id: string, name: string) => void;
-  onSetDirectionRole: (id: string, sign: DirectionSign, role: DirectionRole) => void;
-  /** Longueur réelle du trait, en mètres. `null` efface la calibration. */
-  onSetLineLength: (id: string, lengthMeters: number | null) => void;
+  /**
+   * Le catalogue des classes détectables, servi par le serveur.
+   *
+   * Fourni par le studio et jamais lu ici : cette feature ne connaît ni
+   * `analysis-settings` ni la route qui le publie. Vide tant que le serveur n'a pas
+   * répondu — la voie réservée est alors masquée plutôt que proposée sans noms,
+   * parce qu'une case sans libellé ne se coche pas.
+   */
+  classes: readonly DetectableClass[];
+  onSetLineKind: (id: string, kind: LineKind) => void;
+  onSwapDirections: (id: string) => void;
+  onSetLineClasses: (id: string, classIds: number[] | null) => void;
   onSetLineZone: (id: string, zoneId: string | null) => void;
   onRemoveLine: (id: string) => void;
   onRemoveZone: (id: string) => void;
@@ -194,10 +218,13 @@ export function GeometryPanel(props: GeometryPanelProps) {
               </div>
 
               {selection.kind === "line" && selection.id === line.id && (
-                <>
-                  <DirectionFields line={line} onSetDirectionRole={props.onSetDirectionRole} />
-                  <LengthField line={line} onSetLineLength={props.onSetLineLength} />
-                </>
+                <LineRules
+                  line={line}
+                  classes={props.classes}
+                  onSetLineKind={props.onSetLineKind}
+                  onSwapDirections={props.onSwapDirections}
+                  onSetLineClasses={props.onSetLineClasses}
+                />
               )}
             </li>
           ))}
@@ -245,152 +272,284 @@ export function GeometryPanel(props: GeometryPanelProps) {
 }
 
 /**
- * Les deux sens de la ligne sélectionnée, et le bouton qui les inverse.
+ * Les règles de la ligne sélectionnée : son **type**, ses deux sens, sa voie
+ * réservée.
  *
- * Il n'y a plus de libellé libre : le rôle **est** le nom (`directionName`). Et
- * puisqu'une paire n'a jamais que deux états — « positif entrée, négatif sortie »
- * ou l'inverse — un bouton qui bascule de l'un à l'autre remplace deux menus
- * déroulants à faire correspondre l'un à l'autre à l'œil. Les deux rangées
- * restent lisibles pendant la bascule : c'est **elles** qui disent l'état actuel,
- * le bouton ne fait qu'agir dessus.
+ * Deux réglages et non un seul, parce qu'ils sont **orthogonaux** : une voie de bus
+ * peut être à sens unique *et* réservée. Les fondre dans un même sélecteur rendrait
+ * ce cas inexprimable, alors qu'il est le cas d'usage le plus courant des deux.
+ *
+ * Le type est un choix de **paire** : c'est lui qui pose les deux rôles d'un coup
+ * (`rolesForKind`), et les rangées en dessous ne font que dire l'état obtenu. Poser
+ * les rôles un par un laisserait exister, entre deux gestes, une paire que
+ * `lineKind` ne sait pas nommer.
+ *
+ * Le bloc ne s'ouvre que sur la ligne **sélectionnée**, et c'est délibéré : six
+ * lignes dépliées feraient six sélecteurs et douze rangées dans une colonne de
+ * 24 rem, où on ne retrouverait plus la ligne qu'on cherchait.
  */
-function DirectionFields({
+function LineRules({
   line,
-  onSetDirectionRole,
+  classes,
+  onSetLineKind,
+  onSwapDirections,
+  onSetLineClasses,
 }: {
   line: CountingLine;
-  onSetDirectionRole: (id: string, sign: DirectionSign, role: DirectionRole) => void;
+  classes: readonly DetectableClass[];
+  onSetLineKind: (id: string, kind: LineKind) => void;
+  onSwapDirections: (id: string) => void;
+  onSetLineClasses: (id: string, classIds: number[] | null) => void;
 }) {
-  const positiveRole = directionRole(line, "positive");
-  const negativeRole = directionRole(line, "negative");
-  // `neutral` n'est plus atteignable depuis ce panneau, mais une ligne tracée
-  // avant qu'il le devienne peut encore le porter des deux côtés
-  // (`withDirectionDefaults`). Il n'y a alors rien à inverser : le bouton pose
-  // la paire par défaut plutôt que de deviner un bilan que personne n'a demandé.
-  const undecided = positiveRole === "neutral" || negativeRole === "neutral";
+  const kind = lineKind(line);
+  const selected = LINE_KINDS.find((option) => option.kind === kind) ?? null;
+  // Une ligne dont les deux sens portent le **même** rôle n'a rien à inverser :
+  // l'échange rendrait la paire identique, et un bouton qui ne fait rien se lit
+  // comme un bouton cassé. Sur une ligne héritée « à préciser », il garde son rôle
+  // d'ADR 0021 : poser la paire par défaut au premier clic.
+  //
+  // `transit` n'est plus testé ici, et ce n'est pas un oubli : le bouton ne vit que
+  // dans la branche où les sens s'affichent, dont « Comptage seul » est justement
+  // exclu. L'y garder laisserait croire qu'un cas reste à couvrir.
+  const swappable = kind !== "closed";
+  const reserved = line.allowedClassIds ?? null;
 
-  const swap = (): void => {
-    onSetDirectionRole(line.id, "positive", undecided ? "entry" : negativeRole);
+  return (
+    <div className="mt-1 ms-5 space-y-2 border-s border-line ps-2">
+      <fieldset>
+        <legend className="label-micro mb-1">Type de ligne</legend>
+        <div className="flex flex-wrap gap-1">
+          {LINE_KINDS.map((option) => (
+            <button
+              key={option.kind}
+              type="button"
+              onClick={() => onSetLineKind(line.id, option.kind)}
+              aria-pressed={option.kind === kind}
+              title={option.hint}
+              className={[
+                "rounded-pill px-2 py-0.5 text-micro transition-colors",
+                option.kind === kind
+                  ? "bg-ink text-base font-bold"
+                  : "bg-surface-2 text-ink-muted hover:bg-elevated hover:text-ink",
+              ].join(" ")}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        {/* L'aide décrit **une conséquence**, jamais une définition : « tout passage
+            en face est signalé » dit ce que le choix fait aux chiffres, là où « ligne
+            à sens unique » ne ferait que redire son nom. */}
+        <p className="mt-1 text-micro text-ink-dim">
+          {selected?.hint ??
+            "Sens hérités d'un tracé antérieur : choisissez un type pour les préciser."}
+        </p>
+      </fieldset>
+
+      {/* **« Comptage seul » n'a pas de sens à régler.** Les deux rangées y
+          disaient « Passage » deux fois, sous un bouton d'inversion déjà grisé :
+          trois éléments d'interface pour zéro information, dans une colonne où
+          chaque rangée coûte de la place à la ligne suivante. Le type dit déjà
+          tout ce qu'il y a à savoir — ce qui franchit compte, quel que soit le
+          côté d'où il vient.
+
+          **Le canevas se tait aussi**, et c'est `showsDirections` qui le décide
+          pour les deux surfaces — ici et dans `draw.ts`. Deux comparaisons
+          `kind === "transit"` recopiées auraient fini par diverger : un panneau muet
+          au-dessus d'un trait qui, lui, continuerait d'afficher deux flèches. */}
+      {!showsDirections(line) ? (
+        <p className="rounded-input bg-base p-2 text-micro text-ink-dim">
+          Les deux sens sont comptés ensemble : tout véhicule qui franchit la ligne
+          compte, quel que soit le côté d'où il vient. Le trait n'affiche donc aucune
+          flèche sur la vidéo.
+        </p>
+      ) : (
+        <div className="flex items-stretch gap-1.5">
+          <ul className="min-w-0 flex-1 space-y-1">
+            {(["positive", "negative"] as const).map((sign) => (
+              <DirectionRoleRow key={sign} line={line} sign={sign} />
+            ))}
+          </ul>
+          <button
+            type="button"
+            onClick={() => onSwapDirections(line.id)}
+            disabled={!swappable}
+            title={
+              swappable
+                ? "Échanger les deux sens de la ligne"
+                : "Les deux sens portent le même rôle : il n'y a rien à échanger"
+            }
+            aria-label={`Échanger les deux sens de ${line.name}`}
+            className="grid shrink-0 place-items-center rounded-input bg-surface-2 px-2 text-ink-muted transition-colors hover:bg-elevated hover:text-ink active:scale-95 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <ArrowUpDown aria-hidden="true" className="size-4" />
+          </button>
+        </div>
+      )}
+
+      {classes.length > 0 && (
+        <ReservedLane
+          line={line}
+          classes={classes}
+          reserved={reserved}
+          onSetLineClasses={onSetLineClasses}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * La voie réservée : quelles classes ont le droit de franchir cette ligne.
+ *
+ * **Un interrupteur puis des cases, et pas seulement des cases.** Sans
+ * l'interrupteur, « aucune case cochée » et « pas de restriction » seraient le même
+ * écran pour deux règles opposées — la première interdit tout le monde, la seconde
+ * n'interdit personne. L'état « restreint » est donc explicite, et décocher la
+ * dernière classe éteint la règle plutôt que de fermer la voie.
+ *
+ * Les libellés viennent du **catalogue du serveur** et ne sont jamais recopiés :
+ * une case cochable que le serveur refuserait à l'envoi est exactement le mode de
+ * panne que la publication du catalogue existe pour empêcher.
+ */
+function ReservedLane({
+  line,
+  classes,
+  reserved,
+  onSetLineClasses,
+}: {
+  line: CountingLine;
+  classes: readonly DetectableClass[];
+  reserved: readonly number[] | null;
+  onSetLineClasses: (id: string, classIds: number[] | null) => void;
+}) {
+  const active = reserved !== null;
+  // Le **complément** de la liste autorisée, et non une seconde liste stockée : la
+  // règle est écrite une fois (`allowedClassIds`), et ce qui est interdit s'en
+  // déduit. Deux listes finiraient par se contredire — un type absent des deux, ou
+  // présent dans les deux — et l'écran dirait alors autre chose que le juge
+  // (`shared/lib/lineRules.ts`).
+  const barred = active
+    ? classes.filter((entry) => !(reserved ?? []).includes(entry.id))
+    : [];
+
+  const toggle = (id: number): void => {
+    const current = reserved ?? [];
+    const next = current.includes(id)
+      ? current.filter((entry) => entry !== id)
+      : [...current, id];
+    // Une liste vidée éteint la règle : `null` et jamais `[]`, qui voudrait dire
+    // « aucune classe n'a le droit de passer » — ce que le type « Infranchissable »
+    // exprime déjà, en le disant.
+    onSetLineClasses(line.id, next.length === 0 ? null : next);
   };
 
   return (
-    <div className="mt-1 ms-5 border-s border-line ps-2">
-      <div className="flex items-stretch gap-1.5">
-        <ul className="min-w-0 flex-1 space-y-1">
-          {(["positive", "negative"] as const).map((sign) => (
-            <DirectionRoleRow
-              key={sign}
-              line={line}
-              sign={sign}
-              role={sign === "positive" ? positiveRole : negativeRole}
-            />
-          ))}
-        </ul>
-        <button
-          type="button"
-          onClick={swap}
-          title="Inverser entrée et sortie"
-          aria-label={`Inverser les sens entrée et sortie de ${line.name}`}
-          className="grid shrink-0 place-items-center rounded-input bg-surface-2 px-2 text-ink-muted transition-colors hover:bg-elevated hover:text-ink active:scale-95"
-        >
-          <ArrowUpDown aria-hidden="true" className="size-4" />
-        </button>
-      </div>
+    <div>
+      <label className="flex cursor-pointer items-center gap-1.5">
+        <input
+          type="checkbox"
+          checked={active}
+          onChange={(event) =>
+            onSetLineClasses(
+              line.id,
+              // À l'activation, on part des classes cochées du catalogue plutôt que
+              // d'une liste vide : une case activée qui n'autorise personne mettrait
+              // tout le trafic en infraction le temps de cocher la première classe.
+              event.target.checked ? classes.map((entry) => entry.id) : null,
+            )
+          }
+          className="size-3.5 shrink-0 accent-[var(--color-accent)]"
+        />
+        <ShieldCheck aria-hidden="true" className="size-3.5 shrink-0 text-ink-dim" />
+        <span className="text-micro text-ink">Voie réservée</span>
+      </label>
+
+      {active && (
+        <>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {classes.map((entry) => {
+              const allowed = (reserved ?? []).includes(entry.id);
+              return (
+                <button
+                  key={entry.id}
+                  type="button"
+                  onClick={() => toggle(entry.id)}
+                  aria-pressed={allowed}
+                  className={[
+                    "rounded-pill px-2 py-0.5 text-micro transition-colors",
+                    allowed
+                      ? "bg-ink/15 text-ink"
+                      : "bg-surface-2 text-ink-dim line-through hover:text-ink-muted",
+                  ].join(" ")}
+                >
+                  {entry.label}
+                </button>
+              );
+            })}
+          </div>
+          {/* **La phrase nomme les types barrés, elle ne décrit plus la règle en
+              général.** « Les types barrés sont signalés » demandait de relire les
+              pastilles pour savoir *lesquels*, et une pastille barrée se distingue
+              d'une pastille autorisée par un trait et deux crans de gris — sur des
+              libellés de six lettres. Écrire « Interdits : Camion, Bus » rend la
+              règle vérifiable sans avoir lancé d'analyse, ce qui était la seule
+              façon de la vérifier jusqu'ici.
+
+              Le cas « rien de barré » est dit lui aussi : l'interrupteur est
+              allumé, toutes les pastilles sont actives, et rien à l'écran ne
+              distinguait cet état d'une restriction qui ne se déclencherait
+              jamais. */}
+          <p className="mt-1 text-micro text-ink-dim">
+            {barred.length === 0 ? (
+              "Tous les types sont autorisés : aucune infraction ne sera signalée. Barrez ceux qui n'ont pas le droit de passer."
+            ) : (
+              <>
+                <strong className="text-negative">
+                  Interdits : {barred.map((entry) => entry.label).join(", ")}
+                </strong>{" "}
+                — leur passage sur cette ligne sera signalé. Il reste compté : une
+                infraction est un passage qualifié, pas un passage retiré.
+              </>
+            )}
+          </p>
+        </>
+      )}
     </div>
   );
 }
 
 /**
  * Une rangée de sens, en **lecture seule** : la flèche réelle du tracé, son
- * libellé. Plus aucune interaction directe — `DirectionFields` porte le seul
- * geste possible, le bouton d'inversion.
+ * libellé.
  *
- * Pas d'icône de rôle : la flèche suffit à distinguer les deux rangées, et le
- * mot « Entrée »/« Sortie » à côté dit ce qu'elle signifie. Une icône
- * supplémentaire n'ajoutait qu'une convention à retenir.
+ * Aucune interaction directe — le type de ligne et le bouton d'inversion portent
+ * les deux seuls gestes possibles. Le libellé passe par `directionName` et n'est
+ * plus écrit ici : c'est le même mot que sur le canvas, et deux tables de libellés
+ * finiraient par dire « Interdit » d'un côté du trait et autre chose dans le
+ * panneau qui le décrit.
+ *
+ * Un sens interdit se distingue par **le rouge et une icône**, pas par le mot seul :
+ * c'est la seule rangée de ce panneau qui annonce une règle plutôt qu'un rôle, et
+ * elle doit se repérer sans être lue.
  */
-/**
- * La longueur **réelle** du trait — la seule calibration que ce projet demande.
- *
- * **Pourquoi par ligne et non une échelle globale.** Une caméra de trafic regarde
- * la chaussée en biais : un mètre y vaut quelques pixels au fond de l'image et
- * quelques dizaines au premier plan. Un réglage unique est donc juste à une
- * profondeur et faux partout ailleurs. La longueur d'un trait, elle, donne une
- * échelle mesurée **là où ce trait est posé** — c'est-à-dire là où les véhicules
- * le franchissent, donc là où leur vitesse nous intéresse.
- *
- * Ce champ est **le seul de la ligne que le serveur interprète**. Les noms et les
- * rôles ne font que traverser et se corrigent après coup ; une longueur corrigée
- * demande une réanalyse, et l'indice le dit.
- *
- * Vide = non calibrée, et surtout pas zéro : les vitesses restent alors en px/s
- * plutôt que d'être converties à tort. Un chiffre en km/h sans calibration est
- * une invention que l'utilisateur prendrait au sérieux.
- */
-function LengthField({
-  line,
-  onSetLineLength,
-}: {
-  line: CountingLine;
-  onSetLineLength: (id: string, lengthMeters: number | null) => void;
-}) {
-  const pixels = Math.hypot(line.b.x - line.a.x, line.b.y - line.a.y);
-  const scale = line.lengthMeters !== null && line.lengthMeters > 0
-    ? pixels / line.lengthMeters
-    : null;
-
-  return (
-    <div className="mt-1 ps-6 pe-1">
-      <label className="flex items-center gap-2">
-        <span className="shrink-0 text-micro text-ink-dim">Longueur réelle</span>
-        <input
-          type="number"
-          min={0}
-          step={0.5}
-          value={line.lengthMeters ?? ""}
-          placeholder="—"
-          onChange={(event) => {
-            const raw = event.target.value.trim();
-            const parsed = Number(raw);
-            // Vide, illisible ou non strictement positif ⇒ pas de calibration.
-            // `Number("")` vaut 0, d'où le test sur la chaîne avant le nombre.
-            onSetLineLength(
-              line.id,
-              raw === "" || !Number.isFinite(parsed) || parsed <= 0 ? null : parsed,
-            );
-          }}
-          aria-label={`Longueur réelle de ${line.name}, en mètres`}
-          className="w-20 rounded-input bg-surface-2 px-1.5 py-0.5 text-micro text-ink"
-        />
-        <span className="shrink-0 text-micro text-ink-dim">m</span>
-      </label>
-      <p className="mt-0.5 text-micro text-ink-dim">
-        {scale === null
-          ? "Sans longueur, les vitesses restent en px/s."
-          : `${Math.round(pixels)} px mesurés — ${scale.toFixed(1)} px/m ici. Vitesses en km/h.`}
-      </p>
-    </div>
-  );
-}
-
-function DirectionRoleRow({
-  line,
-  sign,
-  role,
-}: {
-  line: CountingLine;
-  sign: DirectionSign;
-  role: DirectionRole;
-}) {
+function DirectionRoleRow({ line, sign }: { line: CountingLine; sign: DirectionSign }) {
   // `directionHeadingDeg` **et pas** une négation du normal écrite ici : c'est la
   // fonction partagée qui décide de cet angle, et elle sert aussi à la chronologie
   // des franchissements et aux puces du registre. Trois écrans, une flèche — la
   // négation en double était exactement le signe qu'on inverse sans le remarquer,
   // mode de panne que `shared/lib/geometry.ts` documente.
   const headingDeg = directionHeadingDeg(line, sign);
+  const role: DirectionRole = directionRole(line, sign);
+  const forbidden = isForbiddenRole(role);
 
   return (
-    <li className="flex items-center gap-1.5 rounded-input bg-surface-2 px-2 py-1">
+    <li
+      className={[
+        "flex items-center gap-1.5 rounded-input px-2 py-1",
+        forbidden ? "bg-negative/10 ring-1 ring-negative/30" : "bg-surface-2",
+      ].join(" ")}
+    >
       {/* La flèche dit **quel** sens dans la convention du canvas — pivotée à
           l'angle **exact** du tracé, pas arrondie au huitième de tour le plus
           proche comme le ferait un glyphe unicode. Sans elle, l'utilisateur ne
@@ -402,12 +561,24 @@ function DirectionRoleRow({
       {headingDeg !== null && (
         <ArrowUp
           aria-hidden="true"
-          className="size-3.5 shrink-0"
-          style={{ color: line.color, transform: `rotate(${headingDeg}deg)` }}
+          className={`size-3.5 shrink-0 ${forbidden ? "text-negative" : ""}`}
+          // La teinte de la ligne sur un sens ordinaire, le jeton `negative` sur un
+          // sens interdit — d'où `undefined` ici, qui laisse la classe décider
+          // plutôt que d'écraser la couleur avec un style en ligne.
+          style={{
+            color: forbidden ? undefined : line.color,
+            transform: `rotate(${headingDeg}deg)`,
+          }}
         />
       )}
-      <span className="min-w-0 truncate text-micro text-ink">
-        {role === "entry" ? "Entrée" : role === "exit" ? "Sortie" : "À préciser"}
+      {forbidden && <Ban aria-hidden="true" className="size-3 shrink-0 text-negative" />}
+      <span
+        className={[
+          "min-w-0 truncate text-micro",
+          forbidden ? "font-bold text-negative" : "text-ink",
+        ].join(" ")}
+      >
+        {role === "neutral" ? "À préciser" : directionName(line, sign)}
       </span>
     </li>
   );

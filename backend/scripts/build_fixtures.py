@@ -43,6 +43,7 @@ from tests.support.engine import (
     FakeEngine,
     FakePlateDetector,
     FakePlateReader,
+    FakeSnapshotEncoder,
 )
 
 from traffic_analysis.features.counting.application.analysis_service import (
@@ -130,6 +131,18 @@ def build_result() -> dict[str, Any]:
             text_for=lambda box: _text_for(box, discordant_reads=discordant_reads),
         ),
         PlateOcrOptions(min_width_px=8.0),
+        # **Les captures sont exercées, et sur deux causes des trois** (ADR 0051) : le
+        # véhicule 1 porte une plaque lue, le véhicule 2 une plaque vue et illisible.
+        # Sans encodeur, `snapshotKind` sortirait à `null` partout — et une fixture qui
+        # ne fait pas varier un champ ne protège rien du renommage de ses valeurs.
+        #
+        # La troisième cause, `appearance`, demanderait un véhicule sans plaque
+        # détectable, donc un quatrième véhicule dans la scène : elle changerait tous
+        # les compteurs de la fixture pour un champ que trois tests client couvrent
+        # déjà. Elle est laissée de côté sciemment.
+        snapshot_encoder=FakeSnapshotEncoder(),
+        snapshot_on_plate_box=True,
+        snapshot_width_improvement=1.15,
     )
     result = service.run_video(
         "fixture-job",

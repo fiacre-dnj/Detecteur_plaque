@@ -19,14 +19,19 @@ tourne sans GPU, sans poids et sans ultralytics.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import yaml
 
 from traffic_analysis.core.settings import Settings
 from traffic_analysis.features.models_registry.infrastructure.ultralytics_engine import (
+    LIVE_TRACKER_KEYS,
+    REQUEST_HIGH_KEYS,
+    REQUEST_TRACKER_KEYS,
     TRACKER_CONFIG,
     detector_floor,
+    head_is_end2end,
     resolved_tracker_config,
 )
 
@@ -45,6 +50,10 @@ def _load(path: Path) -> dict[str, object]:
 
 #: Le seuil que le fichier versionné porte déjà — celui qui ne dérive rien.
 BASE_HIGH = float(_load(TRACKER_CONFIG)["track_high_thresh"])  # type: ignore[arg-type]
+
+#: Le plancher que le fichier versionné porte — celui qui valait pour tout le monde
+#: quand il était figé.
+BASE_LOW = float(_load(TRACKER_CONFIG)["track_low_thresh"])  # type: ignore[arg-type]
 
 
 def test_la_valeur_du_fichier_de_base_rend_le_fichier_de_base() -> None:
@@ -108,10 +117,64 @@ def test_le_plancher_du_detecteur_alimente_bien_la_bande_basse() -> None:
     seconde association redeviendrait du code mort, et une confiance qui plonge
     couperait de nouveau la piste — donc perdrait des franchissements.
     """
-    floor = detector_floor()
+    floor = detector_floor(BASE_HIGH)
 
     assert floor == _load(TRACKER_CONFIG)["track_low_thresh"]
     assert floor < BASE_HIGH, "sans écart, la bande basse est vide"
+
+
+def test_le_plancher_ne_bouge_pas_au_dessus_du_seuil_du_fichier() -> None:
+    """**La preuve de migration** : l'usage courant ne change pas d'un chiffre.
+
+    Le plancher ne descend que sous le seuil de piste du fichier versionné. Au
+    défaut du contrat (0,35) comme partout au-dessus de 0,25, il vaut exactement ce
+    qu'il valait quand il était figé — donc aucune analyse existante ne bouge.
+    """
+    for confidence in (BASE_HIGH, 0.35, 0.5, 0.99):
+        assert detector_floor(confidence) == BASE_LOW
+
+
+def test_le_plancher_suit_le_curseur_quand_il_descend() -> None:
+    """Sous le seuil du fichier, le curseur doit redevenir opérant.
+
+    C'est le geste de l'utilisateur qui ne voit pas ses motos : il descend
+    « Confiance véhicules ». Tant que le plancher restait figé à 0,10, le détecteur
+    ne rendait **aucune** boîte en dessous, donc descendre sous 0,10 ne changeait
+    rien — le curseur était mort sur tout le bas de sa plage.
+    """
+    assert detector_floor(0.20) < detector_floor(BASE_HIGH)
+    assert detector_floor(0.05) < detector_floor(0.20)
+
+
+def test_la_bande_basse_n_est_jamais_vide_sur_toute_la_plage() -> None:
+    """**Le test qui empêche ADR 0024 de se défaire par l'autre bout.**
+
+    La bande basse de ByteTrack est `track_low_thresh < s < track_high_thresh`.
+    Avec un plancher figé à 0,10 et un seuil de requête à 0,05, cet ensemble est
+    **vide** : la seconde association redevient du code mort sans qu'aucun message
+    ne le dise, et une confiance qui plonge coupe de nouveau la piste.
+
+    Vérifié valeur par valeur sur toute la plage du contrat
+    (`AnalysisRequestSchema.confidence_threshold`, `ge=0.01, le=0.99`), y compris
+    aux deux bornes — c'est précisément là que la panne vivait.
+
+    La plage entière est passée sur la **fonction pure** : chaque appel à
+    `resolved_tracker_config` écrit un fichier, et cent fichiers temporaires pour
+    vérifier une inégalité arithmétique seraient un test lent qui ne prouve rien de
+    plus. Le fichier lui-même est vérifié juste après, sur les valeurs basses qui
+    sont les seules où le plancher bouge.
+    """
+    for step in range(1, 100):
+        confidence = step / 100.0
+        assert detector_floor(confidence) < confidence, f"bande vide à {confidence}"
+
+    for confidence in (0.01, 0.05, 0.20):
+        derived = _load(resolved_tracker_config("orb", confidence))
+        low = float(derived["track_low_thresh"])  # type: ignore[arg-type]
+        high = float(derived["track_high_thresh"])  # type: ignore[arg-type]
+
+        assert low < high, f"bande basse vide à confiance {confidence}"
+        assert low == detector_floor(confidence)
 
 
 def test_le_defaut_des_reglages_est_bien_celui_du_fichier_versionne() -> None:
@@ -123,3 +186,124 @@ def test_le_defaut_des_reglages_est_bien_celui_du_fichier_versionne() -> None:
     réglage existe — et c'est le premier endroit où on regarde.
     """
     assert Settings(_env_file=None).tracker_gmc == _gmc_of(TRACKER_CONFIG)  # type: ignore[call-arg]
+
+
+def test_le_fichier_derive_ne_change_que_les_cles_annoncees() -> None:
+    """`resolved_tracker_config` écrit exactement le mouvement et les clés de requête.
+
+    Ce test tient l'autre bout de `reset_trackers` : celle-ci ne repose que
+    `REQUEST_TRACKER_KEYS` sur un tracker déjà construit. Une clé de plus dans le
+    fichier dérivé et non dans cet ensemble serait un réglage qui n'arriverait au
+    tracker qu'à la **première** analyse du processus — la panne exacte qu'on vient
+    de corriger, revenue par l'autre porte.
+
+    **Inclusion et non égalité**, depuis que le plancher suit le curseur : à seuil
+    haut il garde la valeur du fichier de base, donc il ne figure pas parmi les
+    clés *modifiées* alors qu'il est bien une clé de requête. Ce qui compte est
+    qu'aucune clé ne change **hors** de l'ensemble reposé — le second cas, à seuil
+    bas, vérifie que le plancher y entre bien quand il bouge.
+    """
+    base = _load(TRACKER_CONFIG)
+
+    derived = _load(resolved_tracker_config("orb", 0.5))
+    changed = {key for key, value in derived.items() if base.get(key) != value}
+    assert changed <= {"gmc_method", *REQUEST_TRACKER_KEYS}
+    assert changed >= {"gmc_method", *REQUEST_HIGH_KEYS}
+
+    low = _load(resolved_tracker_config("orb", 0.05))
+    changed_low = {key for key, value in low.items() if base.get(key) != value}
+    assert changed_low == {"gmc_method", *REQUEST_TRACKER_KEYS}
+
+
+def test_les_cles_de_requete_sont_relues_a_chaque_image() -> None:
+    """**La condition qui rend `reset_trackers` suffisante.**
+
+    Les clés de requête doivent être lues par le tracker sur `self.args` à chaque
+    image, et non consommées dans son `__init__`. Sinon les reposer ne changerait
+    rien et il faudrait reconstruire le tracker — ce qui obligerait à désinscrire
+    les rappels d'Ultralytics, dont un doublon appellerait `tracker.update()` deux
+    fois par image.
+
+    Vérifié dans la roue installée : `byte_tracker.py` lit `track_high_thresh` et
+    `new_track_thresh` dans `update()` / `init_track()`.
+    """
+    assert REQUEST_TRACKER_KEYS <= LIVE_TRACKER_KEYS
+
+
+def _model_with_head(**attributes: object) -> object:
+    """Reproduit l'emboîtement `model.model.model[-1]` d'Ultralytics.
+
+    Le reproduire plutôt que le contourner est le seul moyen que ces tests échouent
+    si `head_is_end2end` cesse de regarder au bon endroit.
+    """
+    return SimpleNamespace(model=SimpleNamespace(model=[SimpleNamespace(**attributes)]))
+
+
+class TestFormeDeLaTete:
+    """`head_is_end2end` — interroger le graphe, jamais le nom du fichier."""
+
+    def test_une_tete_classique_n_est_pas_end2end(self) -> None:
+        assert head_is_end2end(_model_with_head(end2end=False)) is False
+
+    def test_une_tete_sans_nms_est_end2end(self) -> None:
+        assert head_is_end2end(_model_with_head(end2end=True)) is True
+
+    def test_une_tete_qui_ne_dit_rien_est_traitee_comme_classique(self) -> None:
+        """Repli **conservateur** : le comportement d'avant ADR 0047.
+
+        `False` laisse la ré-identification d'apparence active. Se tromper dans ce
+        sens ne coûte que de la cadence sur un modèle exotique ; se tromper dans
+        l'autre changerait des comptages sur toute la famille v8/11/12.
+        """
+        assert head_is_end2end(_model_with_head()) is False
+
+    def test_un_objet_sans_graphe_ne_leve_pas(self) -> None:
+        """Une doublure de test, ou une version d'Ultralytics qui change de forme.
+
+        Le moteur résout son fichier de suivi à chaque course : lever ici ferait
+        échouer l'analyse au lieu de la faire tourner comme avant.
+        """
+        assert head_is_end2end(object()) is False
+        assert head_is_end2end(None) is False
+
+
+class TestApparenceCoupeeSurTeteEnd2End:
+    """ADR 0047 — l'apparence n'est gratuite que si le détecteur fournit ses features."""
+
+    def test_l_apparence_coupee_pose_with_reid_false_et_rien_d_autre(self) -> None:
+        """**La propriété centrale.** Une seule clé change, et c'est la bonne.
+
+        `model` n'est délibérément **pas** touché : `build_encoder` sort sur son
+        premier argument, donc à `with_reid: False` la valeur de `model` n'est jamais
+        lue. La changer serait un réglage annoncé et sans effet — le pire état d'un
+        réglage (ADR 0016).
+        """
+        base = _load(TRACKER_CONFIG)
+        derived = _load(
+            resolved_tracker_config(_gmc_of(TRACKER_CONFIG), BASE_HIGH, appearance_reid=False)
+        )
+
+        assert derived == {**base, "with_reid": False}
+
+    def test_le_defaut_ne_change_pour_personne(self) -> None:
+        """`appearance_reid` vaut `True` par défaut : v8, 11 et 12 sont intouchés.
+
+        C'est ce qui rend le correctif non régressif — et c'est aussi pourquoi tous
+        les appelants antérieurs continuent de fonctionner sans être modifiés.
+        """
+        assert resolved_tracker_config(_gmc_of(TRACKER_CONFIG), BASE_HIGH) == TRACKER_CONFIG
+
+    def test_les_deux_apparences_n_ecrivent_pas_dans_le_meme_fichier(self) -> None:
+        """Sinon un job `yolo26n` emporterait le fichier d'un job `yolov8n` en cours.
+
+        Les deux modes partagent le processus et le dossier temporaire : deux courses
+        qui ne diffèrent que par l'apparence doivent obtenir deux chemins distincts,
+        sans quoi la seconde réécrirait sous les pieds de la première — et le
+        comptage de la première changerait en cours de route, sans rien lever.
+        """
+        with_reid = resolved_tracker_config("orb", 0.5, appearance_reid=True)
+        without = resolved_tracker_config("orb", 0.5, appearance_reid=False)
+
+        assert with_reid != without
+        assert _load(with_reid)["with_reid"] is True
+        assert _load(without)["with_reid"] is False

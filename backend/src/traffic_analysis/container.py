@@ -27,6 +27,12 @@ from traffic_analysis.features.counting.application.dto import (
     PlateGeometry,
     PlateOcrOptions,
 )
+from traffic_analysis.features.counting.infrastructure.onnx_vehicle_embedder import (
+    OnnxVehicleEmbedder,
+)
+from traffic_analysis.features.counting.infrastructure.opencv_snapshot_encoder import (
+    OpenCvSnapshotEncoder,
+)
 from traffic_analysis.features.jobs.application.job_manager import JobManager
 from traffic_analysis.features.jobs.application.progress_hub import ProgressHub
 from traffic_analysis.features.jobs.infrastructure.result_store import FileResultStore
@@ -60,6 +66,8 @@ if TYPE_CHECKING:
         DetectionTrackingEngine,
         PlateDetector,
         PlateReader,
+        VehicleEmbedder,
+        VehicleSnapshotEncoder,
     )
     from traffic_analysis.features.jobs.application.ports import JobRepository
 
@@ -81,6 +89,9 @@ class CountingStack:
     engine: DetectionTrackingEngine
     plate_detector: PlateDetector
     plate_reader: PlateReader
+    #: L'encodeur d'apparence. Présent même sans poids installé : c'est lui qui répond
+    #: `available: False`, et `scripts/reid_bench.py` a besoin de l'objet pour mesurer.
+    vehicle_embedder: VehicleEmbedder
     analysis: AnalysisService
 
 
@@ -173,6 +184,7 @@ def build_container(
         default_model_id=settings.default_model_id,
         plate_detector=resolved_plates,
         plate_reader=resolved_plate_reader,
+        vehicle_embedder=stack.vehicle_embedder,
     )
     realtime_service = RealtimeSessionService(
         resolved_engine, max_sessions=settings.max_realtime_sessions
@@ -249,6 +261,8 @@ def build_counting_stack(
     engine: DetectionTrackingEngine | None = None,
     plate_detector: PlateDetector | None = None,
     plate_reader: PlateReader | None = None,
+    snapshot_encoder: VehicleSnapshotEncoder | None = None,
+    vehicle_embedder: VehicleEmbedder | None = None,
 ) -> CountingStack:
     """Assemble le moteur, les deux étages de plaques et l'`AnalysisService`.
 
@@ -264,6 +278,7 @@ def build_counting_stack(
         gmc_method=settings.tracker_gmc,
         imgsz=settings.inference_imgsz,
         batch=settings.inference_batch,
+        prefetch_batches=settings.inference_prefetch_batches,
     )
     resolved_plates = plate_detector or UltralyticsPlateDetector(
         settings.resolved_plate_model_path,
@@ -290,6 +305,12 @@ def build_counting_stack(
         # tout couper, sinon « désactivé pour comparer » ne compare pas ce qu'on croit.
         left_insets=settings.plate_ocr_left_insets if settings.plate_ocr_variants else (),
     )
+    resolved_embedder = vehicle_embedder or OnnxVehicleEmbedder(
+        settings.resolved_reid_model_path,
+        min_vehicle_width_px=settings.reid_min_vehicle_width_px,
+        min_sharpness=settings.reid_min_sharpness,
+        intra_op_threads=settings.resolved_reid_intra_op_threads,
+    )
     analysis_service = AnalysisService(
         resolved_engine,
         resolved_plates,
@@ -308,8 +329,10 @@ def build_counting_stack(
             min_sharpness=settings.plate_ocr_min_sharpness,
             quality_improvement=settings.plate_ocr_quality_improvement,
         ),
-        # L'étranglement du détecteur — **le vrai goulot**, 702 ms par inférence
-        # contre 66 ms par vignette d'OCR sur cette machine. Les trois champs
+        # L'étranglement du détecteur — **le vrai goulot**, 73 % du budget par image
+        # sur une vue de circulation réelle (ADR 0032), à 17,5 ms par recadrage sur
+        # GPU. Le « 702 ms contre 66 » qui vivait ici datait d'une mesure CPU
+        # d'avant ADR 0015 et ADR 0030, et ADR 0030 l'a déclaré faux. Les trois champs
         # existaient et aucun n'était atteignable : seul `every_n_frames` était
         # passé, et il valait forcément celui de l'OCR. Le repli conserve ce
         # comportement (`resolved_plate_detect_every_n_frames`), mais il devient
@@ -320,11 +343,38 @@ def build_counting_stack(
             max_anchor_age=settings.plate_detect_max_anchor_age,
             max_consecutive_misses=settings.plate_detect_max_consecutive_misses,
             max_per_frame=settings.plate_detect_max_per_frame,
+            readable_gate=settings.plate_detect_readable_gate,
+            readable_min_samples=settings.plate_detect_readable_min_samples,
+            readable_retry_every=settings.plate_detect_readable_retry_every,
         ),
+        # La capture des véhicules. Aucun seuil de **confiance** : celui de
+        # déclenchement est déjà celui de l'utilisateur — une plaque n'existe
+        # qu'au-dessus de « Confiance plaques », un texte qu'au-dessus de « Confiance
+        # lecture ». Un troisième seuil serait un réglage de plus, capable de
+        # contredire les deux autres. Ses causes, elles, s'allument **ici** : voir
+        # les quatre réglages passés plus bas.
+        snapshot_encoder or OpenCvSnapshotEncoder(),
+        # La recherche par image. Ses deux planchers sont des réglages de
+        # **déploiement** et non de requête : ils arbitrent du coût d'inférence contre
+        # une chance de ressemblance sur un véhicule lointain, c'est-à-dire un choix de
+        # machine et de cadrage de caméra. Le seuil qui décide de ce qui s'affiche, lui,
+        # vit côté client — voir ADR 0048 pour pourquoi il ne peut pas vivre ici.
+        resolved_embedder,
+        settings.reid_min_similarity,
+        settings.reid_appearance_improvement,
+        settings.reid_max_per_frame,
+        # Les deux causes de capture d'ADR 0051 et leurs bornes. Le service les tient
+        # éteintes par défaut, pour que tout appelant qui ne demande rien garde le
+        # régime d'ADR 0042 : c'est ici, et seulement ici, qu'elles s'allument.
+        snapshot_on_plate_box=settings.snapshot_on_plate_box,
+        snapshot_on_appearance=settings.snapshot_on_appearance,
+        snapshot_width_improvement=settings.snapshot_width_improvement,
+        max_snapshots=settings.snapshot_max_vehicles,
     )
     return CountingStack(
         engine=resolved_engine,
         plate_detector=resolved_plates,
         plate_reader=resolved_plate_reader,
+        vehicle_embedder=resolved_embedder,
         analysis=analysis_service,
     )

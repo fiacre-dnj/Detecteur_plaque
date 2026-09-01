@@ -20,6 +20,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 
+from traffic_analysis.features.counting.application.dto import DirectionRole
+
 
 @dataclass(frozen=True, slots=True)
 class PresetPoint:
@@ -38,6 +40,22 @@ class PresetLine:
 
     `color` et `name` sont conservés pour que le rechargement soit fidèle : un preset
     qui rendrait des lignes grises et anonymes obligerait à tout renommer.
+
+    **Les quatre champs de sens sont conservés pour une raison plus forte que la
+    fidélité : sans eux, un preset rechargé ne compte plus rien de lisible.** Depuis
+    ADR 0021 le rôle d'un sens est obligatoire et **est** le libellé affiché ; c'est
+    lui qui range un passage en entrée ou en sortie. Une ligne rechargée sans rôle
+    retombe sur `neutral`, et tout l'aval se tait d'un coup — « Passages en entrée »
+    affiche « — », les cartes par ligne perdent entrées et sorties, les comparatifs
+    de Statistique rendent `null`, le registre n'a plus d'heure d'entrée ni de sortie
+    et fait apparaître sa colonne « Hors rôle », la chronologie retombe sur son
+    libellé « sens ↑ ». Les compteurs, eux, restent justes : c'est exactement la
+    panne silencieuse que ce dépôt documente le plus.
+
+    Le type vient de `counting.application.dto`, le contrat publié de la feature
+    `counting` — jamais de son domaine. Il n'introduit aucune dépendance
+    d'infrastructure : `DirectionRole` est un `Literal`, et la chaîne d'imports qui y
+    mène est libre de `pydantic` comme du reste.
     """
 
     id: str
@@ -46,6 +64,18 @@ class PresetLine:
     zone_id: str | None
     a: PresetPoint
     b: PresetPoint
+    #: Nom du sens A→B. `""` demande à l'interface de poser son défaut géométrique,
+    #: recalculé quand la ligne bouge — même convention que `LineSchema`.
+    positive_name: str = ""
+    negative_name: str = ""
+    positive_role: DirectionRole = "neutral"
+    negative_role: DirectionRole = "neutral"
+    #: Classes autorisées à franchir la ligne — `None` = aucune restriction.
+    #:
+    #: Conservée pour la même raison que les rôles : c'est une **règle**, pas une
+    #: décoration. Un preset de voie de bus rechargé sans elle cesserait de signaler
+    #: la moindre infraction, sans que rien ne l'explique.
+    allowed_class_ids: tuple[int, ...] | None = None
 
     def scaled(self, factor_x: float, factor_y: float) -> PresetLine:
         return replace(

@@ -11,6 +11,94 @@ plus deux fois dans le même sens » si.
 
 ### Ajouté
 
+- **Les alertes disent à quel point elles sont sûres.** Une plaque recherchée affiche
+  sa **confiance de lecture**, un véhicule trouvé par recherche par image sa
+  **ressemblance**, en pourcentage sur la carte — jusqu'ici seul le mot « probable »
+  distinguait une hypothèse d'une certitude. Le chiffre suit l'analyse : il monte
+  quand une meilleure vue du véhicule est encodée ou qu'une nouvelle lecture gagne le
+  vote, et il ne peut plus rester en désaccord avec le registre. Une infraction, elle,
+  n'en porte pas : c'est un fait observé, pas une hypothèse.
+  La photo en grand porte les deux pourcentages elle aussi, y compris quand on
+  l'ouvre depuis une alerte — où la confiance de lecture manquait.
+
+- **Une photo dès qu'il y a quelque chose à montrer.** La capture ne demande plus
+  qu'une plaque ait été *lue* : un véhicule dont la plaque est seulement **repérée**
+  — trop petite, trop floue, illisible — reçoit désormais sa photo, et c'est là
+  qu'elle sert le plus, puisqu'elle permet de lire ce que le serveur a refusé
+  d'affirmer. Un véhicule trouvé par **recherche par image** en reçoit une aussi, sans
+  qu'aucune option de plaque ne soit cochée : l'alerte disait « à vérifier sur la
+  capture » et il n'y en avait pas.
+  Toujours **une seule photo par véhicule** : une plaque lue passe devant une plaque
+  repérée, qui passe devant une ressemblance. La modale et l'infobulle du registre
+  disent maintenant *pourquoi* cette image a été gardée, et une photo retenue pour la
+  ressemblance l'annonce au lieu d'afficher une vignette de plaque cassée. Les
+  candidats d'une recherche par image ont leur photo **même sous le curseur de
+  ressemblance**, de sorte que le baisser après coup montre bien les nouveaux
+  candidats.
+- **Une photo par véhicule dont la plaque est lue.** Le registre gagne une colonne
+  « Capture » : la voiture recadrée, et sa plaque en dessous. Un clic ouvre l'image en
+  grand, avec l'instant de la prise de vue et la confiance de lecture ; les flèches du
+  clavier passent d'un véhicule à l'autre sans refermer.
+  **C'est la meilleure lecture qui décide de l'image gardée** — à 80 % de confiance on
+  capture, à 90 % on remplace, et une lecture moins sûre ensuite ne change plus rien.
+  Une seule photo par véhicule, donc, et c'est la plus lisible.
+  Le cas le plus utile est celui qu'on n'attendait pas : quand l'OCR **refuse** de
+  publier une plaque faute de consensus, la photo permet de la lire soi-même.
+  La capture se déclenche avec les réglages déjà en place — il n'y a aucun nouveau
+  seuil à régler — et elle ne coûte rien : **98 ms sur 176 s d'analyse, soit
+  0,056 %**, mesurés sur une vraie course.
+- **La capture apparaît aussi sur les alertes de plaque recherchée**, à côté de
+  l'alerte. La grande image y montre le texte **lu** face au texte **cherché** : c'est
+  là qu'on tranche, en regardant la plaque — l'OCR perd régulièrement un caractère, et
+  une correspondance annoncée « probable » ne se valide pas autrement.
+- **Une ligne de comptage a maintenant un type, et un sens peut être interdit.**
+  Cinq choix dans le tiroir Géométrie : deux sens (le cas ordinaire), sens unique en
+  entrée, sens unique en sortie, infranchissable, ou comptage seul. Sur une ligne à
+  sens unique, les deux sens s'appellent « Entrée » et « Interdit », et le mot
+  interdit s'écrit en rouge sur la vidéo, du bon côté du trait. Le comptage ne change
+  pas d'un chiffre : un véhicule qui passe là où c'est interdit est compté comme les
+  autres — il est en plus **signalé**. Changer le type d'une ligne après coup ne
+  demande pas de relancer l'analyse.
+- **Une ligne peut être réservée à certains types de véhicules** — une voie de bus,
+  une piste cyclable. Tout autre type qui la franchit est signalé. Le réglage est
+  indépendant du type de ligne : une voie de bus à sens unique se décrit avec les
+  deux.
+- **Des alertes, pendant l'analyse et après.** Sur la vidéo, une pile de cartes
+  annonce ce qui vient de se passer — le numéro du véhicule, son type, sa plaque, la
+  ligne franchie, la flèche à l'angle réel du tracé et l'instant au dixième de
+  seconde. En bas de page, une section « Alertes » les reprend toutes, filtrables par
+  nature, et **cliquer une alerte amène la vidéo au moment du fait**. Les alertes
+  n'apparaissent que si une règle a été posée ou une plaque recherchée : un « 0 » sous
+  une règle que personne n'a déclarée se lirait comme « aucune infraction ».
+- **On peut rechercher une plaque pendant l'analyse.** Jusqu'à dix numéros se
+  saisissent dans le tiroir Détection ; dès qu'une plaque lue correspond, une alerte
+  le dit. La casse et les séparateurs sont ignorés, et une lecture à un caractère près
+  déclenche une alerte « probable » plutôt que rien — la lecture perd régulièrement le
+  premier caractère d'une plaque. La liste n'est pas conservée après fermeture, et un
+  avertissement prévient si elle est remplie alors que la lecture des plaques est
+  désactivée.
+- **De nouveaux chiffres pour les infractions.** Un compteur « Franchissements
+  interdits » en tête de la colonne de résultats, le détail sur chaque carte de ligne,
+  la ligne la plus empruntée à contresens parmi les comparatifs de Statistique, et une
+  colonne « Infraction » au registre — qui n'apparaît que si le tracé en déclare une.
+- **Un filtre par ligne au registre des véhicules**, à côté de la recherche de plaque,
+  avec les noms que vous avez donnés aux lignes. Les deux filtres se composent, et le
+  message affiché quand rien ne correspond dit lequel des deux est en cause.
+- **Un curseur « Confiance lecture », dans le tiroir Détection.** Il décide de la
+  sûreté minimale d'une lecture de plaque : sous ce seuil, le texte n'est pas retenu et
+  le véhicule reste sans plaque plutôt qu'avec une plaque douteuse. Le serveur
+  appliquait déjà cette règle, mais à une valeur fixée dans sa configuration, hors de
+  portée. À ne pas confondre avec « Confiance plaques », qui porte sur le **repérage**
+  du rectangle : une plaque peut être parfaitement encadrée et illisible. Le bouton
+  « Défaut » revient au réglage du serveur, et le curseur descend jusqu'à « aucune »
+  pour qui préfère tout voir. Il ne change pas la durée d'une analyse : la lecture a
+  lieu de toute façon, elle est seulement retenue ou non.
+- **Tracer la première zone coche « Ignorer hors zone ».** Le geste dit « ce qui
+  m'intéresse est là-dedans » ; jusqu'ici il fallait encore aller cocher une case dans
+  un autre tiroir pour que ce soit vrai, sans quoi tout ce qui passait à l'extérieur
+  était compté quand même. La case reste décochable, et une deuxième zone ne la recoche
+  pas — une géométrie chargée depuis un preset garde, elle, le réglage enregistré avec
+  elle.
 - Socle du dépôt : licence AGPL-3.0, hooks de pré-commit, journal, guide de
   contribution, et les cinq premières décisions d'architecture documentées.
 - Le service répond : `GET /api/v1/health/live` (vivacité),
@@ -285,8 +373,95 @@ plus deux fois dans le même sens » si.
   conservent désormais leur état, y compris la position de lecture de la vidéo, une
   analyse en cours et la position de défilement de chacune.
 
+### Modifié
+
+- **L'analyse est un peu plus rapide quand elle lit des plaques.** Le serveur ne fait
+  plus attendre la détection de l'image suivante pendant qu'il lit la plaque de la
+  précédente : les deux avancent en parallèle. Mesuré sur une vue de circulation
+  1080p, **+10 % d'images par seconde** quand la lecture de plaques travaille, +5 %
+  quand elle repère des plaques sans les lire, et **rien du tout** quand aucune plaque
+  n'est lisible — le gain suit exactement la quantité de lecture, et il n'y a rien à
+  régler. Les comptages, les horodatages et les plaques publiées sont identiques au
+  chiffre près : c'est le même travail, fait en même temps plutôt que l'un après
+  l'autre.
+  À savoir pour ne pas espérer davantage : la détection de plaques occupe elle aussi
+  la carte graphique, et deux calculs sur la même carte ne peuvent pas se recouvrir.
+  Le chemin qui reste pour aller nettement plus vite n'est pas un réglage — c'est un
+  plan plus serré, où les plaques sont assez grandes pour être lues sans que le
+  serveur cherche partout.
+
+- **La barre du studio pilote l'analyse.** « Lancer l'analyse » quitte le bas du lecteur
+  et rejoint l'import ; une fois l'analyse partie, il devient « Suspendre » et
+  « Annuler », au même endroit. La progression les suit sous forme d'anneau — le
+  pourcentage, centré au-dessus du compte d'images — au lieu d'un bloc sous la vidéo
+  qu'il fallait aller chercher en défilant. Le bloc reste pour ce qu'il est seul à
+  savoir dire : l'envoi du fichier, le chargement du modèle, une erreur, et ce qu'une
+  pause coûte.
+- **Le lancement dit à nouveau ce qu'il fait.** Une analyse qui démarre, ou qui attend
+  son tour derrière une autre, affichait un anneau à « 0 % » et rien d'autre — le
+  message « Lecture suspendue » restant le seul texte visible, le lancement passait
+  pour un échec alors que l'analyse tournait. La progression écrit maintenant l'état
+  en toutes lettres tant qu'elle n'a pas d'images à compter, l'attente d'une place sur
+  le serveur est expliquée sous la vidéo, et la phrase sur la lecture figée commence
+  par « Analyse en cours ».
+- **Les boutons de la barre n'affichent plus que leur icône**, et leur nom se déplie au
+  survol comme au clavier. Six libellés en toutes lettres ne tenaient plus sur une ligne
+  dès que les alertes étaient armées.
+- **Les chiffres de cadence sont là dès l'import de la vidéo**, à « — » tant qu'aucune
+  analyse n'a tourné, et plus petits. Ils n'apparaissaient qu'au premier résultat, donc
+  la barre changeait de forme au moment précis où l'on venait de lancer.
+- **La navigation passe à gauche, dans un rail d'icônes.** Le bandeau de titre et
+  d'onglets qui coiffait chaque page disparaît : Studio, Historique et Benchmark sont
+  désormais trois icônes dans une colonne étroite, avec l'état du serveur et le thème
+  en bas. Le haut de l'écran revient entièrement à la barre du studio, et la vidéo
+  gagne la hauteur d'un bandeau — près de cent pixels, sur l'écran où la place manque
+  le plus. Le sous-titre annonçait encore une « ré-identification » retirée il y a
+  trois semaines ; il ne manquait à personne.
+- **La barre du studio se lit par groupes et tient sur une ligne.** Chaque bouton
+  porte son icône, un filet sépare l'import des réglages et les réglages des outils de
+  scène, et les chevrons ont disparu — ils répétaient sept fois la même chose. Les
+  chiffres de cadence, qui décrochaient en seconde ligne dès que la fenêtre se
+  resserrait, se replient maintenant proprement dans un tiroir « État ». Géométrie,
+  Recherche et Alertes se reconnaissent à leur icône, comme la cloche avant elles.
+- **Les captures de véhicules sont effacées en même temps que la vidéo**, plus tôt
+  que les chiffres. Une voiture et sa plaque recadrées sont exactement ce que la
+  purge de la vidéo existe pour effacer ; le registre garde ses colonnes et affiche
+  « capture purgée » à la place de la vignette.
+- **La section « Franchissements » du bas de page est masquée.** Sa chronologie
+  posait un fait par rangée sans dire lequel méritait qu'on aille voir ; la section
+  « Alertes » prend sa place et répond à cette question-là. Rien n'est perdu : le
+  détail complet des franchissements reste exportable en CSV, et la section peut être
+  rendue telle quelle.
+- **La colonne « Hors rôle » du registre s'appelle « Autres passages ».** Elle
+  accueille désormais aussi les franchissements des lignes en « comptage seul », qui
+  ont un rôle — délibérément choisi — et que « hors rôle » ferait passer pour un
+  oubli.
+
 ### Corrigé
 
+- **Un preset rechargé retrouve enfin ses sens d'entrée et de sortie.** Enregistrer une
+  géométrie conservait le tracé, les noms et les couleurs, mais perdait en silence le
+  rôle de chaque sens — entrée ou sortie — et les libellés qui vont avec. Le preset se
+  rechargeait sans le moindre message, les lignes étaient au bon endroit, et pourtant
+  presque tout l'écran se taisait : « Passages en entrée » affichait « — », les cartes
+  par ligne perdaient leurs entrées et leurs sorties, la Statistique ne désignait plus
+  aucune ligne dans ses comparatifs, le Registre n'avait plus d'heure d'entrée ni de
+  sortie et faisait apparaître une colonne « Hors rôle », et la chronologie des
+  Franchissements retombait sur son libellé générique. Les comptages, eux, restaient
+  justes — ce qui rendait la panne d'autant plus difficile à nommer : le carrefour
+  semblait analysé pour rien. Les presets déjà enregistrés se rechargent toujours et
+  affichent « à préciser » sur leurs sens : redéclarez-les une fois, réenregistrez, et
+  le preset est à jour. Rien n'est deviné à votre place — supposer « entrée » aurait
+  produit un bilan faux sans le dire.
+- **Le curseur « Confiance véhicules » agit enfin sur toutes les analyses, pas
+  seulement sur la première.** Après le démarrage du serveur, la première analyse
+  utilisait bien le seuil demandé ; toutes les suivantes reprenaient le sien en
+  silence, quel que soit l'endroit où l'on posait le curseur. Rien ne le signalait :
+  l'écran, la requête et les journaux annonçaient tous la bonne valeur. Mesuré sur une
+  même vidéo, trois analyses de suite dans le même serveur — `20 % → 80 % → 20 %`
+  rendait **3, 3 puis 3** véhicules ; il rend désormais **3, 1 puis 3**. Le direct
+  était concerné aussi : une session caméra ouverte après une analyse héritait du seuil
+  de celle-ci.
 - **L'analyse avec repérage de plaques est 1,3× à 2× plus rapide.** Elle s'arrêtait
   net pendant une seconde entière, plusieurs fois par minute : sur une route calme, ces
   pauses représentaient les trois quarts du temps passé à repérer les plaques. Le

@@ -17,9 +17,13 @@ import shutil
 from typing import TYPE_CHECKING, Any
 
 from traffic_analysis.core.logging import get_logger
+from traffic_analysis.features.jobs.application.ports import SnapshotFace
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
+
+    from traffic_analysis.features.counting.application.dto import VehicleSnapshot
 
 logger = get_logger("traffic_analysis.results")
 
@@ -30,6 +34,12 @@ INPUT_STEM = "input"
 # résultat pour quelques pour cent de taille — un mauvais échange quand
 # l'utilisateur attend la fin de son analyse.
 COMPRESS_LEVEL = 6
+
+#: Sous-répertoire des captures de véhicules, dans le répertoire du job.
+#:
+#: Un sous-répertoire et non des fichiers à plat : `delete_input` les efface d'un
+#: `rmtree`, sans avoir à deviner un motif de nom au milieu des autres artefacts.
+SNAPSHOT_DIRNAME = "snapshots"
 
 
 class FileResultStore:
@@ -101,13 +111,84 @@ class FileResultStore:
             return None
         return next((path for path in sorted(directory.glob(f"{INPUT_STEM}.*"))), None)
 
+    def snapshot_directory_for(self, job_id: str) -> Path:
+        """Répertoire des captures du job, créé si besoin."""
+        directory = self.directory_for(job_id) / SNAPSHOT_DIRNAME
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def write_snapshots(self, job_id: str, snapshots: Mapping[int, VehicleSnapshot]) -> int:
+        """Écrit les captures d'une analyse. Rend le nombre de fichiers écrits.
+
+        **Appelée au fil de l'analyse depuis [ADR
+        0046](../../../../../docs/adr/0046-les-captures-s-ecrivent-pendant-l-analyse.md)**,
+        le plus souvent avec **une seule** capture : le rappel `on_snapshot` l'invoque
+        depuis le thread worker, là où l'encodeur vient de rendre les octets. Cette
+        docstring a affirmé le contraire — « en une passe et à la fin, jamais image par
+        image » — jusqu'au 2026-08-28.
+
+        Ce qui protège le chemin critique n'est donc pas le regroupement mais la règle
+        monotone d'ADR 0042 : on n'encode, et donc on n'écrit, que sur une amélioration
+        retenue. Mesuré, 1 800 images : **41 écritures, 98 ms, 0,056 %** du temps
+        d'analyse. L'appel final subsiste comme filet, et écrase les mêmes chemins.
+
+        Ne lève pas sur une capture isolée : un disque plein ou un nom refusé ne doit
+        pas faire échouer une analyse dont tous les chiffres sont justes. Ce qui n'a
+        pas pu être écrit se verra à l'écran comme une capture absente, ce que
+        l'interface sait déjà afficher.
+        """
+        if not snapshots:
+            return 0
+        directory = self.snapshot_directory_for(job_id)
+        written = 0
+        for global_id, snapshot in snapshots.items():
+            # **Une face ou deux.** Une capture retenue pour la ressemblance du
+            # véhicule n'a pas de plaque à écrire (ADR 0051), donc `written` ne se
+            # relit plus comme un multiple de deux.
+            #
+            # Aucun `unlink` en face : l'échelle de priorité des causes est monotone
+            # croissante, donc on ne passe jamais d'une capture avec plaque à une
+            # capture sans, et aucun `-plate.jpg` ne devient orphelin.
+            faces: tuple[tuple[SnapshotFace, bytes], ...] = (
+                ("vehicle", snapshot.vehicle_jpeg),
+                *(() if snapshot.plate_jpeg is None else (("plate", snapshot.plate_jpeg),)),
+            )
+            for kind, payload in faces:
+                try:
+                    (directory / _snapshot_name(global_id, kind)).write_bytes(payload)
+                except OSError:
+                    logger.warning(
+                        "capture non écrite", job_id=job_id, global_id=global_id, kind=kind
+                    )
+                    continue
+                written += 1
+        return written
+
+    def snapshot_path_for(self, job_id: str, global_id: int, kind: SnapshotFace) -> Path | None:
+        """Chemin d'une capture, ou `None` si elle n'existe pas ou plus.
+
+        `None` et non une exception : une capture purgée est le cas **normal** après
+        le TTL de la vidéo, pas une anomalie. C'est l'appelant qui décide du code
+        d'erreur, comme pour `input_path_for`.
+
+        Le nom de fichier est composé d'un `int` et d'un `Literal` : aucune chaîne du
+        client n'y entre, donc aucune surface de traversée de répertoire.
+        """
+        path = self._root / job_id / SNAPSHOT_DIRNAME / _snapshot_name(global_id, kind)
+        return path if path.is_file() else None
+
     def delete_input(self, job_id: str) -> bool:
-        """Supprime la vidéo déposée mais garde le résultat. **Idempotent**.
+        """Supprime la vidéo déposée **et les captures**, garde le résultat.
 
         La vidéo est la donnée la plus lourde **et la plus sensible** — une scène
         de trafic contient des plaques réelles et des visages — et elle n'est plus
         nécessaire une fois le résultat produit. Elle a donc son propre TTL, plus
         court, appliqué par `JobManager.purge_expired_inputs`.
+
+        **Les captures partent avec elle**, et c'est la seule politique cohérente :
+        un recadrage sur une voiture et sa plaque est exactement « des plaques réelles
+        et des visages », en plus concentré. Les laisser survivre à la vidéo dont ils
+        sont extraits inverserait la règle que ce TTL existe pour appliquer.
 
         Rend `True` si au moins un fichier a été supprimé. Le booléen sert à ne
         journaliser que les purges qui ont réellement effacé quelque chose : une
@@ -121,6 +202,10 @@ class FileResultStore:
         for candidate in directory.glob(f"{INPUT_STEM}.*"):
             candidate.unlink(missing_ok=True)
             removed = True
+        snapshots = directory / SNAPSHOT_DIRNAME
+        if snapshots.is_dir():
+            shutil.rmtree(snapshots, ignore_errors=True)
+            removed = True
         return removed
 
     def delete(self, job_id: str) -> None:
@@ -130,3 +215,8 @@ class FileResultStore:
         rejouer sans conséquence, sinon un incident partiel la bloque pour toujours.
         """
         shutil.rmtree(self._root / job_id, ignore_errors=True)
+
+
+def _snapshot_name(global_id: int, kind: SnapshotFace) -> str:
+    """`12-vehicle.jpg`. Un entier et un littéral, donc rien qui vienne du client."""
+    return f"{global_id}-{kind}.jpg"

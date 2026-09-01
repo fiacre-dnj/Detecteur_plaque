@@ -28,19 +28,32 @@
  * Un seul tiroir ouvert à la fois, et **fermé par défaut** : l'écran d'arrivée doit
  * montrer la vidéo, pas un formulaire.
  *
- * **La barre est collée sous l'entête** (`sticky`, décalée de `--app-header-h` que
- * `AppShell` mesure). Le bas de page s'est allongé — quatre sections de résultats
- * plus la chronologie — et les réglages, l'import et les compteurs techniques
- * partaient donc hors de l'écran dès qu'on lisait le registre. Elle porte son propre
- * fond opaque, débordé jusqu'aux gouttières de la page (`-mx-6 px-6`) : sans lui, la
- * vidéo défilerait visiblement *sous* les pilules.
+ * **La barre est collée en haut de la fenêtre** (`sticky`, décalée de
+ * `--app-header-h`). Le bas de page s'est allongé — quatre sections de résultats plus
+ * la chronologie — et les réglages, l'import et les compteurs techniques partaient
+ * donc hors de l'écran dès qu'on lisait le registre. Ce décalage vaut **zéro** depuis
+ * que la navigation est un rail vertical (`AppShell`) : la barre est le premier
+ * élément de la page, ce qui était tout l'objet du changement. Il redevient une
+ * hauteur sous 48rem, où le rail se replie en barre horizontale.
+ *
+ * Elle porte son propre fond opaque, débordé jusqu'aux gouttières de la page
+ * (`--app-gutter`, le même jeton que le contenu : une valeur écrite en dur ici
+ * finirait par diverger de celle de la page, et la barre peindrait son fond à côté de
+ * la gouttière qu'elle couvre) — sans lui, la vidéo défilerait visiblement *sous* les
+ * pilules.
  *
  * **Les tiroirs ne sont pas tous d'ici.** `panels` en accepte d'autres, fournis par
  * le studio — c'est ainsi que « Géométrie » rejoint la barre sans que cette feature
  * connaisse `geometry-editor`, même règle que `leading` et `trailing`.
+ *
+ * **La rangée est groupée, pas alignée.** Source, réglages, outils de scène : trois
+ * familles séparées par un filet, et deux teintes de repos. Sept pilules du même gris
+ * portant chacune un chevron ne disaient pas que trois d'entre elles changent les
+ * chiffres et que les autres changent ce qu'on voit — voir `PanelTab`, qui porte le
+ * reste du raisonnement.
  */
 
-import { ChevronDown } from "lucide-react";
+import { Eye, Sigma, SquareDashedMousePointer, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import { ModelPicker } from "@/features/model-picker";
@@ -50,6 +63,8 @@ import type {
   Diagnostics,
   VehicleModel,
 } from "@/shared/api/contracts";
+import { normalisePlate } from "@/shared/lib/plate";
+import { ToolbarButton } from "@/shared/ui/ToolbarButton";
 
 import { plateCapability } from "../model/plateCapability";
 import {
@@ -57,14 +72,26 @@ import {
   ANALYSIS_SPEEDS,
   BOUNDS,
   DEFAULT_CONFIDENCE,
+  DEFAULT_PLATE_TEXT_CONFIDENCE,
+  MAX_WATCHED_PLATES,
+  MAX_WATCHED_PLATE_LENGTH,
+  MIN_WATCHED_PLATE_CHARS,
   type AnalysisSettings,
 } from "../model/settings";
 
-/** Identifiants des tiroirs **de cette feature** — l'ordre est celui de la barre. */
+/**
+ * Identifiants des tiroirs **de cette feature** — l'ordre est celui de la barre.
+ *
+ * « Affichage » et non « Affichage & analyse » : le libellé le plus long de la rangée
+ * coûtait ~130 px à la seule chose qui doit tenir sur une ligne, et le tiroir dit ce
+ * qu'il contient dès qu'il est ouvert.
+ */
 const PANELS = [
-  { id: "detection", label: "Détection" },
-  { id: "comptage", label: "Comptage" },
-  { id: "affichage", label: "Affichage & analyse" },
+  // La **boîte englobante en pointillés** : ce que la détection produit. `Radar`
+  // annonçait un balayage, que rien ici ne fait.
+  { id: "detection", label: "Détection", Icon: SquareDashedMousePointer },
+  { id: "comptage", label: "Comptage", Icon: Sigma },
+  { id: "affichage", label: "Affichage", Icon: Eye },
 ] as const;
 
 type OwnPanelId = (typeof PANELS)[number]["id"];
@@ -81,6 +108,25 @@ export interface ExtraPanel {
   id: string;
   label: string;
   content: ReactNode;
+  /**
+   * L'icône de la pilule — **le seul contenu visible au repos**.
+   *
+   * Toutes les pilules de la barre sont en icône seule, et leur libellé se déplie au
+   * survol et au focus (`shared/ui/ToolbarButton`). L'icône est donc obligatoire en
+   * pratique : sans elle, la pilule fermée serait vide.
+   *
+   * Elle est **décorative** : passez-la en `aria-hidden`, comme toutes les icônes du
+   * projet. Le nom accessible vient du libellé, toujours posé en `aria-label` — il ne
+   * peut pas dépendre d'un survol.
+   */
+  icon?: ReactNode | undefined;
+  /**
+   * Une pastille rendue **après** le libellé ou l'icône — un compte, un état.
+   *
+   * Fournie par l'appelant plutôt que calculée ici : cette feature ne sait pas ce
+   * qu'un tiroir venu du studio compte, et n'a pas à l'apprendre.
+   */
+  badge?: ReactNode | undefined;
 }
 
 /** L'identifiant du tiroir ouvert : l'un des trois d'ici, ou celui d'un `ExtraPanel`. */
@@ -161,7 +207,33 @@ interface SettingsPanelsProps {
    * du contenu déjà rendu.
    */
   panels?: readonly ExtraPanel[];
+  /**
+   * Le tiroir ouvert, `null` = tout fermé. **Piloté de l'extérieur.**
+   *
+   * L'état vivait ici, et c'était vrai tant que la barre était le seul endroit qui
+   * ouvre un tiroir. Cliquer une ligne sur la vidéo doit maintenant déplier
+   * « Géométrie » — le geste et le réglage sont le même acte, et l'utilisateur
+   * cliquait un trait puis cherchait où le renommer. Le studio est le seul à voir
+   * les deux, donc c'est lui qui tient l'état.
+   */
+  openPanel: PanelId | null;
+  /** Demande d'ouverture ou de fermeture : re-clic, `Échap`, clic en dehors. */
+  onOpenPanel: (id: PanelId | null) => void;
 }
+
+/**
+ * Marqueur d'exemption du clic « en dehors », posé par l'appelant.
+ *
+ * Le tiroir flotte au-dessus de la page et se referme sur tout `pointerdown`
+ * extérieur — sauf sur une surface qui, elle, **pilote** le tiroir. La scène de
+ * tracé est ce cas : sans exemption, cliquer une ligne ouvrirait « Géométrie » puis
+ * le refermerait dans le même événement, le gestionnaire de document s'exécutant
+ * après celui de React.
+ *
+ * Un attribut plutôt qu'une liste de `ref` : cette feature n'a pas à connaître la
+ * scène, ni le studio à lui passer une référence dont il ne fait rien d'autre.
+ */
+export const KEEP_PANELS_OPEN_ATTR = "data-keep-panels-open";
 
 export function SettingsPanels({
   settings,
@@ -179,9 +251,9 @@ export function SettingsPanels({
   trailing,
   hasSource,
   panels: extraPanels = [],
+  openPanel: open,
+  onOpenPanel: setOpen,
 }: SettingsPanelsProps) {
-  /** `null` = tout fermé, l'état d'arrivée. */
-  const [open, setOpen] = useState<PanelId | null>(null);
   const base = useId();
   /** Racine du composant : borne le clic « en dehors » qui referme le tiroir. */
   const root = useRef<HTMLDivElement>(null);
@@ -190,8 +262,12 @@ export function SettingsPanels({
   // trois panneaux n'ont alors plus rien à régler, et un tiroir grisé resté
   // ouvert serait un formulaire qu'on ne peut plus toucher sans savoir pourquoi.
   useEffect(() => {
+    // Inconditionnel, et non gardé par `open !== null` : l'état vit chez l'appelant
+    // depuis que la scène ouvre « Géométrie », et un `setState` qui repose la même
+    // valeur ne provoque aucun rendu. Le garde n'économiserait rien et ferait lire
+    // `open` dans un effet qui ne dépend que de la source.
     if (!hasSource) setOpen(null);
-  }, [hasSource]);
+  }, [hasSource, setOpen]);
 
   // Le tiroir flotte **par-dessus** la page (`position: absolute`) : il n'est
   // plus contenu par un parent qu'on pourrait cliquer pour le refermer, ni par
@@ -202,9 +278,18 @@ export function SettingsPanels({
     if (open === null) return;
 
     const closeIfOutside = (event: PointerEvent): void => {
-      if (root.current !== null && !root.current.contains(event.target as Node)) {
-        setOpen(null);
+      const target = event.target as Node;
+      if (root.current === null || root.current.contains(target)) return;
+      // Une surface qui pilote elle-même le tiroir n'est pas un « en dehors » : la
+      // scène de tracé ouvre « Géométrie » sur un clic de ligne, et ce
+      // gestionnaire, qui s'exécute *après* celui de React, le refermerait aussitôt.
+      if (
+        target instanceof Element &&
+        target.closest(`[${KEEP_PANELS_OPEN_ATTR}]`) !== null
+      ) {
+        return;
       }
+      setOpen(null);
     };
     const closeOnEscape = (event: KeyboardEvent): void => {
       if (event.key === "Escape") setOpen(null);
@@ -216,7 +301,7 @@ export function SettingsPanels({
       document.removeEventListener("pointerdown", closeIfOutside);
       document.removeEventListener("keydown", closeOnEscape);
     };
-  }, [open]);
+  }, [open, setOpen]);
 
   // Les trois états de l'ANPR tranchés **une fois**, en dehors du rendu : la case
   // de détection, celle de lecture et leurs deux phrases décrivent le même serveur,
@@ -323,6 +408,70 @@ export function SettingsPanels({
           />
         )}
 
+        {/* Le pendant de « Confiance plaques », et **pas** son doublon : celui-ci
+            porte sur la localisation, celui-là sur la lecture. Une plaque peut être
+            parfaitement encadrée et illisible, ou l'inverse — c'est d'ailleurs
+            pourquoi le registre affiche les deux confiances côte à côte. Subordonné à
+            l'OCR pour la même raison que l'OCR l'est à l'ANPR : sans lecture, il n'y a
+            rien à filtrer. */}
+        {settings.detectPlates && settings.readPlateText && (
+          <Slider
+            label="Confiance lecture"
+            value={settings.plateTextConfidence ?? DEFAULT_PLATE_TEXT_CONFIDENCE}
+            bounds={BOUNDS.plateTextConfidence}
+            disabled={disabled || !plates.canRead}
+            format={(value) => (value <= 0 ? "aucune" : `${Math.round(value * 100)} %`)}
+            // Ce qu'il ne fait pas est aussi important que ce qu'il fait : il
+            // n'économise **aucune** inférence — la lecture a lieu, elle est ensuite
+            // refusée. Monter ce curseur pour accélérer l'analyse est le contresens
+            // que cette phrase existe pour éviter.
+            hint={
+              "Décide ce qui est cru, pas ce qui est lu : sous ce seuil, la chaîne " +
+              "ne vote pas et le véhicule reste sans plaque plutôt qu'avec une " +
+              "plaque douteuse. Ne fait gagner aucun temps de calcul. " +
+              (settings.plateTextConfidence === null
+                ? "Suit le défaut du serveur."
+                : "Valeur explicite : conservée d'une analyse à l'autre.")
+            }
+            onChange={(plateTextConfidence) => onChange({ plateTextConfidence })}
+            onReset={
+              settings.plateTextConfidence === null
+                ? undefined
+                : () => onChange({ plateTextConfidence: null })
+            }
+          />
+        )}
+
+        {/* La recherche de plaque, juste sous les réglages de lecture dont elle
+            dépend entièrement. Sur toute la largeur : les pastilles s'accumulent et
+            une demi-colonne les ferait passer à la ligne dès la deuxième. */}
+        {settings.detectPlates && settings.readPlateText && (
+          <PanelGridFullRow>
+            <PlateWatchlist
+              entries={settings.plateWatchlist}
+              disabled={disabled || !plates.canRead}
+              onChange={(plateWatchlist) => onChange({ plateWatchlist })}
+            />
+          </PanelGridFullRow>
+        )}
+
+        {/* **La panne silencieuse à empêcher** : une liste saisie puis laissée en
+            place après avoir décoché l'OCR chercherait dans un texte que personne ne
+            lit. Le champ, lui, disparaît avec l'OCR — sans cet avertissement, la
+            recherche disparaîtrait avec lui, sans un mot. */}
+        {settings.plateWatchlist.length > 0 &&
+          !(settings.detectPlates && settings.readPlateText) && (
+            <PanelGridFullRow>
+              <p role="status" className="text-small text-warning">
+                {settings.plateWatchlist.length} plaque
+                {settings.plateWatchlist.length > 1 ? "s" : ""} recherchée
+                {settings.plateWatchlist.length > 1 ? "s" : ""}, mais la lecture des
+                plaques est désactivée : aucune ne pourra être trouvée. Réactivez
+                « Lire le texte des plaques » pour que la recherche ait lieu.
+              </p>
+            </PanelGridFullRow>
+          )}
+
         {/* **Déplacé depuis « Affichage & analyse »**, où il n'avait rien à faire :
             ce réglage ne change pas ce qu'on voit, il change ce que le détecteur
             reçoit — donc les chiffres. Sa place est ici, à côté du seuil de confiance
@@ -396,12 +545,11 @@ export function SettingsPanels({
           <p className="rounded-input bg-base p-2 text-micro text-ink-dim">
             <strong className="text-ink-muted">Décidé pour vous.</strong> Une bande
             morte entoure chaque trait — un quart de demi-boîte du véhicule — pour
-            qu'un véhicule arrêté sur la ligne ne compte pas trois fois. Elle a un
-            prix : l'instant publié est celui de la <em>sortie</em> de bande, jusqu'à
-            deux secondes après le contact pour un gros véhicule qui aborde le trait
-            presque parallèlement. Une piste qui naît dans la bande est rattrapée,
-            donc un véhicule qui entre dans le champ juste au bord du trait est bien
-            compté.
+            qu'un véhicule arrêté sur la ligne ne compte pas trois fois. Le comptage
+            attend donc que le véhicule soit franchement d'un côté ; l'heure publiée,
+            elle, est celle du passage <em>sur le trait</em>. Une piste qui naît dans
+            la bande est rattrapée, donc un véhicule qui entre dans le champ juste au
+            bord du trait est bien compté.
           </p>
         </PanelGridFullRow>
 
@@ -480,22 +628,6 @@ export function SettingsPanels({
           onChange={(maxAnalysisFps) => onChange({ maxAnalysisFps })}
         />
 
-        <Slider
-          label="Échelle globale (px/m)"
-          value={settings.pixelsPerMeter ?? 0}
-          bounds={BOUNDS.pixelsPerMeter}
-          disabled={disabled}
-          format={(value) => (value === 0 ? "non définie" : `${value} px/m`)}
-          // Deux choses à dire, et la seconde est récente. **Sans échelle**, les
-          // vitesses restent en px/s plutôt que converties à tort : un km/h sans
-          // calibration est une invention que l'utilisateur prendrait au sérieux.
-          // **Avec une échelle unique**, elle ne peut pas être juste partout — une
-          // caméra de trafic regarde en biais, et 37 à 143 px/m ont été mesurés sur
-          // les quatre lignes d'une même vidéo, un facteur 3,9. D'où le renvoi vers
-          // la longueur par ligne, qui l'emporte localement quand elle est saisie.
-          hint="Repli pour toute l'image : sans elle, les vitesses restent en pixels par seconde. Une caméra qui regarde en biais ne peut pas avoir une échelle unique — donnez plutôt sa longueur réelle à chaque ligne dans le panneau Géométrie, la mesure locale l'emporte alors sur ce curseur."
-          onChange={(value) => onChange({ pixelsPerMeter: value === 0 ? null : value })}
-        />
       </PanelGrid>
     ),
   };
@@ -503,66 +635,85 @@ export function SettingsPanels({
   /**
    * Les tiroirs de la barre, les trois d'ici puis ceux qu'on lui donne.
    *
-   * Une seule liste : la pilule, l'exclusivité et le contenu se lisent au même
-   * endroit, et un tiroir venu du studio se comporte donc exactement comme les
-   * autres — `Échap`, clic en dehors, re-clic qui referme.
+   * Une seule liste **à plat** : elle porte l'exclusivité et la recherche du tiroir
+   * ouvert, qui ne connaissent pas les groupes. Seul le *rendu* est groupé.
    */
-  const tabs: readonly ExtraPanel[] = [
-    ...PANELS.map((panel) => ({
-      id: panel.id,
-      label: panel.label,
-      content: ownPanels[panel.id],
-    })),
-    ...extraPanels,
-  ];
+  const ownTabs: readonly ExtraPanel[] = PANELS.map(({ id, label, Icon }) => ({
+    id,
+    label,
+    icon: <Icon aria-hidden="true" className="size-4 shrink-0" />,
+    content: ownPanels[id],
+  }));
+  const tabs: readonly ExtraPanel[] = [...ownTabs, ...extraPanels];
   const current = tabs.find((tab) => tab.id === open) ?? null;
+
+  const tabProps = (panel: ExtraPanel) => ({
+    panel,
+    active: open === panel.id,
+    disabled: !hasSource,
+    controls: `${base}-${panel.id}`,
+    onToggle: () => setOpen(open === panel.id ? null : panel.id),
+  });
 
   return (
     /* `sticky` **et** un fond opaque débordé jusqu'aux gouttières : la barre reste
        atteignable quand on lit le bas de page, et la vidéo ne défile pas en
-       transparence derrière ses pilules. `z-30` la pose sous l'entête de
-       l'application (`z-40`) et au-dessus de tout le reste du studio. */
+       transparence derrière ses pilules. Elle se colle à `--app-header-h`, qui vaut
+       zéro tant que la navigation est un rail vertical (`AppShell`) et la hauteur du
+       rail replié en fenêtre étroite. `z-30` la pose sous le rail (`z-40`) et
+       au-dessus de tout le reste du studio. */
     <div
       ref={root}
       className={[
         "sticky top-[var(--app-header-h,0px)] z-30",
-        "-mx-6 border-b border-line/40 bg-base/95 px-6 py-2 backdrop-blur",
+        "mx-[calc(var(--app-gutter)*-1)] px-[var(--app-gutter)]",
+        "border-b border-line/40 bg-base/95 py-2 backdrop-blur",
       ].join(" ")}
     >
+      {/* Trois familles, et les filets sont ce qui les sépare : la **source** (en
+          accent, l'action primaire), les **réglages de l'analyse** (`bg-surface`), les
+          **outils de scène** fournis par le studio (`bg-surface-2`). Sept pilules du
+          même gris ne disaient pas que trois d'entre elles règlent le calcul et que
+          les autres agissent sur ce qu'on voit.
+
+          La couture du troisième groupe existe déjà dans le code — ce qui se règle ici
+          (`PANELS`) et ce qui vient de l'extérieur (`panels`) — donc aucun champ
+          supplémentaire sur `ExtraPanel` n'est nécessaire pour la dessiner.
+
+          `leading` reste **nu, hors de tout conteneur** : `SourcePicker` rend un
+          fragment dont le message de refus est un `<p className="w-full">` qui compte
+          sur le `flex-wrap` de CETTE rangée pour prendre sa ligne. L'envelopper le
+          résoudrait contre une boîte dimensionnée par son contenu, et le message
+          s'écraserait à côté du bouton — sans rien qui l'explique. */}
       <div className="flex flex-wrap items-center gap-2">
         {leading}
-        {tabs.map((panel) => {
-          const active = open === panel.id;
-          return (
-            <button
-              key={panel.id}
-              type="button"
-              disabled={!hasSource}
-              // `aria-expanded` + `aria-controls` : l'accordéon d'origine n'avait ni
-              // l'un ni l'autre, donc un lecteur d'écran annonçait un bouton sans
-              // dire qu'il ouvre quelque chose, ni quoi.
-              aria-expanded={active}
-              aria-controls={`${base}-${panel.id}`}
-              // Re-cliquer referme : c'est le geste attendu d'un tiroir, et cela
-              // évite d'avoir à chercher une croix de fermeture.
-              onClick={() => setOpen(active ? null : panel.id)}
-              className={[
-                "label-caps inline-flex h-10 items-center gap-2 rounded-pill px-4",
-                "transition-colors disabled:cursor-not-allowed disabled:opacity-45",
-                active
-                  ? "bg-elevated text-ink shadow-card"
-                  : "bg-surface text-ink-muted hover:enabled:bg-surface-2 hover:enabled:text-ink",
-              ].join(" ")}
-            >
-              {panel.label}
-              <ChevronDown
-                aria-hidden="true"
-                className={`size-4 text-ink-dim transition-transform ${active ? "rotate-180" : ""}`}
-              />
-            </button>
-          );
-        })}
-        {trailing !== undefined && (
+
+        <div
+          className={[
+            "flex items-center gap-2",
+            leading !== undefined ? "border-s border-line/40 ps-2" : "",
+          ].join(" ")}
+        >
+          {ownTabs.map((panel) => (
+            <PanelTab key={panel.id} tone="settings" {...tabProps(panel)} />
+          ))}
+        </div>
+
+        {/* Monté seulement s'il est peuplé : sinon un filet flotterait seul en fin de
+            rangée, à annoncer un groupe vide. */}
+        {extraPanels.length > 0 && (
+          <div className="flex items-center gap-2 border-s border-line/40 ps-2">
+            {extraPanels.map((panel) => (
+              <PanelTab key={panel.id} tone="tools" {...tabProps(panel)} />
+            ))}
+          </div>
+        )}
+
+        {/* Le contenu et non la prop : `trailing` vaut `null` avant la première
+            analyse **et** dès que les chiffres passent en tiroir, et un
+            `!== undefined` laissait dans les deux cas une boîte vide en `ms-auto`
+            à la fin de la rangée. */}
+        {trailing !== undefined && trailing !== null && (
           <div className="ms-auto flex min-w-0 items-center">{trailing}</div>
         )}
       </div>
@@ -570,12 +721,14 @@ export function SettingsPanels({
       {/* Flotte **par-dessus** la page : `absolute`, ancré sous la barre, jamais
           dans le flux. C'est ce qui évite qu'ouvrir un tiroir décale la vidéo et
           les résultats de plusieurs centaines de pixels — voir la docstring du
-          fichier. Il hérite du `z-30` de la barre, donc il passe sous l'entête
-          fixe de l'application (`z-40`, `AppShell`) et au-dessus du reste.
+          fichier. Il hérite du `z-30` de la barre, donc il passe sous le rail de
+          navigation (`z-40`, `AppShell`) et au-dessus du reste.
 
-          `start-6` et non `start-0` : la barre déborde désormais de six unités de
-          chaque côté pour peindre son fond jusqu'aux gouttières de la page, et un
-          tiroir aligné sur ce débord commencerait hors de la colonne de contenu. */}
+          Le décalage de départ et la largeur sont lus dans `--app-gutter` et non
+          écrits en dur : la barre déborde de cette même valeur de chaque côté pour
+          peindre son fond jusqu'aux gouttières, donc un tiroir aligné sur ce débord
+          commencerait hors de la colonne de contenu. Les deux étaient `6` et `3rem`,
+          d'accord avec le jeton par convention et par rien d'autre. */}
       {current !== null && (
         <section
           id={`${base}-${current.id}`}
@@ -584,7 +737,8 @@ export function SettingsPanels({
           role="region"
           aria-label={current.label}
           className={[
-            "absolute start-6 top-full mt-2 w-[min(36rem,calc(100%-3rem))] origin-top",
+            "absolute start-[var(--app-gutter)] top-full mt-2 origin-top",
+            "w-[min(36rem,calc(100%-var(--app-gutter)*2))]",
             "max-h-[70vh] overflow-y-auto rounded-panel bg-surface p-4 shadow-dialog",
           ].join(" ")}
         >
@@ -592,6 +746,62 @@ export function SettingsPanels({
         </section>
       )}
     </div>
+  );
+}
+
+/**
+ * Une pilule de tiroir : la forme vient de `ToolbarButton`, le comportement d'ici.
+ *
+ * Ce composant ne garde que ce qui est propre à un **tiroir** — `aria-expanded`,
+ * `aria-controls`, la bascule d'ouverture, et le fait que le libellé reste déplié tant
+ * que le tiroir est ouvert. Tout le reste (géométrie, teintes, animation du libellé,
+ * nom accessible) est partagé avec les commandes d'analyse, qui vivent dans une autre
+ * feature : deux copies de cette pilule finiraient par diverger sur l'état ouvert,
+ * c'est-à-dire sur le seul repère qui dit quel tiroir on est en train de lire.
+ *
+ * **Il n'y a plus de chevron.** Six `ChevronDown` alignés répétaient six fois la même
+ * phrase pour 24 px chacun. Ce qu'ils portaient est dit par `aria-expanded` pour
+ * l'assistance, et par le remplissage plus l'ombre pour l'œil — plus le tiroir
+ * lui-même, visiblement accroché sous la pilule.
+ *
+ * **L'état ouvert se dessine pareil dans les deux groupes** (`bg-elevated`) : c'est un
+ * état, pas une famille. Seul le repos porte la hiérarchie de groupe, sinon « ouvert »
+ * se lirait comme « appartient aux réglages ».
+ */
+function PanelTab({
+  panel,
+  tone,
+  active,
+  disabled,
+  controls,
+  onToggle,
+}: {
+  panel: ExtraPanel;
+  tone: "settings" | "tools";
+  active: boolean;
+  disabled: boolean;
+  controls: string;
+  onToggle: () => void;
+}) {
+  return (
+    <ToolbarButton
+      label={panel.label}
+      icon={panel.icon}
+      tone={tone}
+      open={active}
+      badge={panel.badge}
+      disabled={disabled}
+      // `aria-expanded` + `aria-controls` : l'accordéon d'origine n'avait ni l'un ni
+      // l'autre, donc un lecteur d'écran annonçait un bouton sans dire qu'il ouvre
+      // quelque chose, ni quoi.
+      aria-expanded={active}
+      aria-controls={controls}
+      // Re-cliquer referme : c'est le geste attendu d'un tiroir, et cela évite d'avoir
+      // à chercher une croix de fermeture.
+      onClick={onToggle}
+      // L'ouvert prime sur la teinte de groupe — même dessin dans les deux familles.
+      className={active ? "bg-elevated text-ink shadow-card" : ""}
+    />
   );
 }
 
@@ -992,6 +1202,115 @@ function Toggle({ label, checked, disabled, hint, onChange }: ToggleProps) {
         {label}
       </label>
       {hint !== undefined && <p className="mt-1 ps-6 text-micro text-ink-dim">{hint}</p>}
+    </div>
+  );
+}
+
+/**
+ * La liste des plaques recherchées.
+ *
+ * **Un champ d'ajout puis des pastilles supprimables**, et non une zone de texte à
+ * lignes : une liste doit se lire d'un coup d'œil et se corriger entrée par entrée.
+ * Une saisie libre obligerait à relire tout le bloc pour retirer une plaque, et
+ * laisserait passer des lignes vides que le serveur refuserait en 422.
+ *
+ * Trois bornes, toutes reprises du serveur (`settings.ts` en tient le miroir) : dix
+ * entrées, seize caractères, quatre caractères alphanumériques au minimum. La
+ * dernière est celle qui compte : en dessous, une entrée correspondrait à trop de
+ * plaques pour signaler quoi que ce soit — elle serait un générateur de fausses
+ * alertes plutôt qu'une recherche.
+ *
+ * **La normalisation n'a pas lieu ici.** La forme comparable est calculée à la
+ * comparaison, par `normalisePlate`, exactement comme pour la recherche du
+ * registre : une seule définition de « la même plaque » dans toute l'application.
+ * Ce composant ne s'en sert que pour repérer un doublon déjà présent, ce qui est
+ * une question d'ergonomie de saisie, pas une règle de correspondance.
+ */
+function PlateWatchlist({
+  entries,
+  disabled,
+  onChange,
+}: {
+  entries: readonly string[];
+  disabled: boolean;
+  onChange: (entries: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const full = entries.length >= MAX_WATCHED_PLATES;
+  const trimmed = draft.trim();
+  const significant = trimmed.replace(/[^0-9A-Za-z]/g, "").length;
+  const duplicate = entries.some((entry) => normalisePlate(entry) === normalisePlate(trimmed));
+  const addable = significant >= MIN_WATCHED_PLATE_CHARS && !duplicate && !full;
+
+  const add = (): void => {
+    if (!addable) return;
+    onChange([...entries, trimmed]);
+    setDraft("");
+  };
+
+  return (
+    <div>
+      <p className="label-micro mb-1">Plaques recherchées</p>
+
+      <div className="flex flex-wrap gap-1.5">
+        <input
+          type="search"
+          value={draft}
+          disabled={disabled || full}
+          maxLength={MAX_WATCHED_PLATE_LENGTH}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            // Entrée ajoute, et n'envoie **pas** le formulaire : le tiroir vit dans
+            // la page du studio, où une soumission rechargerait tout.
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            add();
+          }}
+          placeholder={full ? "Liste complète" : "ex. AB-123-CD"}
+          aria-label="Ajouter une plaque à rechercher"
+          className="w-44 rounded-input bg-elevated px-3 py-1.5 text-small text-ink placeholder:text-ink-dim disabled:opacity-50"
+        />
+        <button
+          type="button"
+          onClick={add}
+          disabled={disabled || !addable}
+          className="rounded-input px-2 py-1 text-small text-ink-muted transition-colors hover:bg-elevated hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Ajouter
+        </button>
+      </div>
+
+      {entries.length > 0 && (
+        <ul className="mt-1.5 flex flex-wrap gap-1">
+          {entries.map((entry) => (
+            <li key={entry}>
+              <button
+                type="button"
+                onClick={() => onChange(entries.filter((kept) => kept !== entry))}
+                disabled={disabled}
+                aria-label={`Retirer ${entry} de la recherche`}
+                title="Retirer de la recherche"
+                className="flex items-center gap-1 rounded-pill bg-elevated px-2 py-0.5 text-micro text-ink tabular transition-colors hover:bg-negative/15 hover:text-negative disabled:opacity-50"
+              >
+                {entry}
+                <X aria-hidden="true" className="size-3" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {/* L'aide dit ce que la recherche **fait**, et ce qu'elle ne fait pas : elle
+          ne change aucun chiffre, ne ralentit rien, et la liste n'est pas conservée
+          d'une session à l'autre — trois questions qu'on se pose en la remplissant. */}
+      <p className="mt-1 text-micro text-ink-dim">
+        {duplicate && trimmed !== ""
+          ? "Cette plaque est déjà dans la liste."
+          : trimmed !== "" && significant < MIN_WATCHED_PLATE_CHARS
+            ? `Au moins ${MIN_WATCHED_PLATE_CHARS} caractères : plus court, la recherche correspondrait à presque tout.`
+            : "Alerte dès qu'une plaque lue correspond, exactement ou à un caractère près. La casse et les séparateurs sont ignorés. La liste n'est pas conservée après fermeture."}
+      </p>
     </div>
   );
 }

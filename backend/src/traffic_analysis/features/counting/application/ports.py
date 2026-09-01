@@ -238,7 +238,10 @@ class PlateReader(Protocol):
     """
 
     def read(
-        self, image: npt.NDArray[np.uint8], boxes: Sequence[BoundingBox]
+        self,
+        image: npt.NDArray[np.uint8],
+        boxes: Sequence[BoundingBox],
+        min_score: float | None = None,
     ) -> tuple[PlateText | None, ...]:
         """Lit les plaques de `boxes`, en coordonnées de l'image **complète**.
 
@@ -246,6 +249,14 @@ class PlateReader(Protocol):
         l'appelant qui sait à quelle détection appartient quelle boîte, et lui rendre
         une liste plus courte l'obligerait à deviner. `None` signifie « rien de
         lisible ici » — un refus honnête, pas une erreur.
+
+        `min_score` est le plancher de confiance de **cette** course, `None` gardant
+        celui du déploiement (`plate_ocr_min_text_score`). Il voyage par appel et non
+        par construction, exactement comme le `confidence` de
+        `PlateDetector.detect_many`, et pour la même raison : c'est une question que
+        seul l'utilisateur peut trancher devant sa vidéo — « des plaques fausses, ou
+        pas de plaques ». Une lecture sous ce plancher n'atteint pas le vote, donc ne
+        peut rien publier.
 
         Ne lève **jamais** : une lecture ratée rend `(None, …)` et journalise. Un
         comptage ne doit pas échouer parce qu'une plaque était sale.
@@ -264,5 +275,166 @@ class PlateReader(Protocol):
 
         Une vérification de présence et non de chargement, comme
         `PlateDetector.available` : l'interface interroge `/health` en permanence.
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class VehicleSnapshot:
+    """La capture d'un véhicule : lui, et sa plaque.
+
+    **Deux JPEG et non une image composite.** La mise en page — la plaque sous la
+    voiture — est faite par l'interface, en CSS. Composer ici figerait une décision
+    d'affichage dans la donnée stockée, alors que la vignette de plaque a sa propre
+    vie : c'est elle qui valide une alerte de plaque recherchée, et on veut pouvoir
+    la montrer seule, plus grande, ou à côté du texte cherché.
+
+    Des octets déjà encodés et non des pixels : l'encodage a lieu dans la boucle
+    d'analyse, au moment où l'image est valide, et ce qui traverse ensuite est
+    ~15 Ko au lieu des mégaoctets d'un recadrage brut.
+    """
+
+    vehicle_jpeg: bytes
+    #: La vignette de plaque, ou `None` — **il n'y avait aucune plaque à recadrer**.
+    #:
+    #: `None` ne dit pas que l'encodage a échoué : il dit que cette capture a été
+    #: retenue pour la ressemblance du véhicule à une image de requête (ADR 0051), et
+    #: qu'aucune plaque n'y entre. Un échec de recadrage de plaque, quand une plaque
+    #: était demandée, refuse la capture **entière** — sans quoi une capture annoncée
+    #: « plaque lue » n'aurait pas de plaque à montrer.
+    #:
+    #: Pas de valeur par défaut : les deux faces sont passées nommément, pour qu'un
+    #: futur appelant ne produise pas une capture sans plaque en croyant le contraire.
+    plate_jpeg: bytes | None
+
+
+@runtime_checkable
+class VehicleSnapshotEncoder(Protocol):
+    """Recadre un véhicule et, s'il y en a une, sa plaque.
+
+    Un port et non un appel direct à OpenCV, pour la raison qui vaut pour tous les
+    autres ici : `cv2` est interdit dans `application/**` comme dans `domain/**`, et
+    la CI doit pouvoir tourner sans pixels. La doublure de test rend des octets
+    quelconques, et les tests de la règle de capture n'en demandent pas plus.
+    """
+
+    def encode(
+        self,
+        image: npt.NDArray[np.uint8],
+        vehicle: BoundingBox,
+        plate: BoundingBox | None,
+    ) -> VehicleSnapshot | None:
+        """Rend la capture, ou `None` s'il n'y a rien d'exploitable à recadrer.
+
+        Les boîtes sont en coordonnées de l'image **complète**, comme partout
+        ailleurs dans ces ports. `plate` à `None` demande une capture **sans vignette
+        de plaque** — c'est le cas d'une photo retenue pour la ressemblance du
+        véhicule, où aucune plaque n'a été localisée (ADR 0051). Ce n'est pas une
+        dégradation : quand une plaque est fournie et que son recadrage échoue, la
+        capture entière est refusée.
+
+        **Ne lève jamais.** Une capture ratée n'est pas une analyse ratée : le
+        véhicule reste compté, son texte reste publié, il n'a simplement pas de
+        photo. `None` est donc un refus honnête — recadrage vide, boîte hors image,
+        encodeur en panne — et l'appelant n'enregistre alors aucun score.
+        """
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class VehicleAppearance:
+    """L'apparence d'un véhicule, réduite à un vecteur comparable.
+
+    `vector` est **déjà normalisé L2** par l'adaptateur, et c'est ce qui rend la
+    similarité cosinus un simple produit scalaire. Normaliser à la production plutôt
+    qu'à la comparaison évite que deux consommateurs le fassent différemment — ou
+    qu'un seul l'oublie, ce qui rendrait des scores hors de [-1, 1] parfaitement
+    plausibles à l'œil.
+
+    **Il n'y a que le vecteur.** Une version antérieure portait ici une « qualité »
+    (largeur × netteté) censée servir de clé à la règle monotone. C'était une erreur de
+    conception : cette clé n'est connue qu'*après* le recadrage, alors que la règle doit
+    être interrogée **avant** de payer quoi que ce soit. Le rang se joue donc sur la
+    largeur de la boîte, que le domaine connaît seul, et la netteté reste un plancher
+    dans l'adaptateur. Un champ dont personne ne décide rien serait un champ de trop.
+    """
+
+    vector: npt.NDArray[np.float32]
+
+
+@runtime_checkable
+class VehicleEmbedder(Protocol):
+    """Encode l'apparence d'un véhicule en vecteur, pour une recherche par image.
+
+    **N'entre dans aucun compteur.** Cette frontière ne sert qu'à la recherche par
+    image de requête : ni `crossings`, ni `tracked_vehicles`, ni aucun `by_line` ne la
+    lisent, et une analyse sans encodeur rend exactement les mêmes chiffres. C'est ce
+    qui met cette fonctionnalité hors du champ d'ADR 0016, qui a supprimé la galerie
+    d'identités précisément parce qu'elle était branchée sur le comptage.
+    """
+
+    def embed(
+        self,
+        image: npt.NDArray[np.uint8],
+        boxes: Sequence[BoundingBox],
+    ) -> tuple[VehicleAppearance | None, ...]:
+        """Rend **exactement** un élément par boîte, dans le même ordre.
+
+        Le contrat d'alignement positionnel est le même que celui de `detect_many` et
+        de `read`, et pour la même raison : un recadrage trop petit ou trop flou laisse
+        un `None` **à sa place**, il ne décale pas les suivants. Un décalage d'un cran
+        attribuerait l'apparence d'un véhicule à son voisin — des scores plausibles et
+        faux, sans rien qui lève.
+
+        Les boîtes sont en coordonnées de l'image **complète**, comme partout ailleurs
+        dans ces ports.
+
+        **Ne lève jamais.** Un échec rend un tuple de `None` de la bonne longueur et
+        journalise. Sans encodeur utilisable, la recherche par image est indisponible ;
+        elle ne fait pas échouer l'analyse.
+        """
+        ...
+
+    @property
+    def available(self) -> bool:
+        """Les poids sont-ils **là** ? Présence du fichier, jamais chargement.
+
+        `/health` est interrogé en permanence : y charger 8,8 Mo d'ONNX en ferait un
+        point de contention. Même règle que `PlateDetector.available`, et même
+        complément — `probe()` répond à l'autre question.
+        """
+        ...
+
+    def probe(self) -> bool:
+        """Charge et fait **une** inférence à vide. Rend `False` sans jamais lever.
+
+        C'est ce qui sépare `reidAvailable` de `reidLoadable` : un `.pt` déposé sous un
+        nom en `.onnx`, un fichier tronqué, un graphe dont la sortie n'a pas la
+        dimension attendue — tout cela passe `available` et échoue ici. « Poids
+        présents, recherche muette, tout vert par ailleurs » est l'état qu'on refuse,
+        et ce projet a déjà passé un projet entier dedans avec l'ANPR.
+        """
+        ...
+
+    def embed_query(self, payload: bytes) -> VehicleAppearance | None:
+        """Encode l'image de requête, fournie **en octets** encodés (JPEG, PNG).
+
+        Des octets et non un tableau de pixels, et c'est structurel : `cv2` est
+        interdit dans `application/**`, donc le service ne peut pas décoder. Faire
+        voyager les octets jusqu'ici garde tout le travail sur les pixels dans
+        l'adaptateur, du décodage au redimensionnement.
+
+        **Aucun plancher de taille ne s'applique.** Les planchers de largeur et de
+        netteté existent pour ne pas payer une inférence sur un véhicule lointain de
+        la vidéo (ADR 0039) ; l'image de requête est fournie exprès, et la refuser
+        parce qu'elle est petite laisserait l'utilisateur devant une recherche qui ne
+        démarre pas sans savoir que c'est sa photo qui est en cause.
+
+        Le **cadrage**, en revanche, doit être le même des deux côtés de la
+        comparaison : c'est `vehicle_crop` qui définit « la vignette d'un véhicule ».
+        L'appelant est censé avoir déjà réduit l'image au véhicule cherché — le
+        client le fait avant l'envoi — donc l'adaptateur ne redécoupe pas.
+
+        `None` si les octets ne sont pas une image exploitable.
         """
         ...

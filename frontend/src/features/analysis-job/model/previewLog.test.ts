@@ -50,6 +50,32 @@ describe("appendCrossings", () => {
     expect(log.map((event) => event.globalId)).toEqual([3, 2, 1]);
   });
 
+  it("range un franchissement antidaté à sa place", () => {
+    // **Le cas d'ADR 0038.** La bande morte est proportionnelle à la boîte : un
+    // poids lourd la traverse bien plus lentement qu'une moto, donc son passage —
+    // pourtant antérieur — arrive dans une trame SSE **postérieure**. L'empiler
+    // tel quel donnerait un journal décroissant à un endroit et croissant à un
+    // autre, et `describeCrossings` en tirerait un temps de traversée négatif.
+    const log = appendCrossings([crossing(3, 3000), crossing(1, 1000)], [crossing(2, 2000)]);
+
+    expect(log.map((event) => event.globalId)).toEqual([3, 2, 1]);
+  });
+
+  it("garde le journal décroissant sur une salve désordonnée", () => {
+    const log = appendCrossings([], [crossing(1, 3000), crossing(2, 500), crossing(3, 1800)]);
+
+    expect(log.map((event) => event.timestampMs)).toEqual([3000, 1800, 500]);
+  });
+
+  it("laisse l'entrant devant à date égale", () => {
+    // Le serveur trie déjà à l'intérieur d'une trame, avec des clés secondaires
+    // déterministes. À date strictement égale, on ne réordonne pas : on respecte
+    // l'ordre qu'il a choisi.
+    const log = appendCrossings([crossing(1, 2000)], [crossing(2, 2000)]);
+
+    expect(log.map((event) => event.globalId)).toEqual([2, 1]);
+  });
+
   it("rend le journal inchangé quand rien n'arrive", () => {
     // Identité référentielle : la grande majorité des aperçus ne portent aucun
     // franchissement, et recréer le tableau à chaque fois rerendrait la liste

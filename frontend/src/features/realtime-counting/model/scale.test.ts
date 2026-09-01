@@ -36,7 +36,6 @@ const LINE: CountingLine = {
   negativeName: "",
   positiveRole: "neutral" as const,
   negativeRole: "neutral" as const,
-  lengthMeters: null,
   a: { x: 400, y: 200 },
   b: { x: 1200, y: 600 },
 };
@@ -55,6 +54,7 @@ const ZONE: Zone = {
 
 const REQUEST: AnalysisRequest = {
   modelId: "yolo11m",
+  plateWatchlist: [],
   confidenceThreshold: 0.35,
   iouThreshold: 0.45,
   minHits: 3,
@@ -64,8 +64,8 @@ const REQUEST: AnalysisRequest = {
   classIds: [2, 3, 5, 7],
   detectPlates: false,
   plateConfidence: null,
+  plateTextConfidence: null,
   readPlateText: false,
-  pixelsPerMeter: 20,
   // Sans dimension, donc rejouée telle quelle par la mise à l'échelle — et sans
   // effet en direct de toute façon : c'est le client qui cadence son envoi.
   analysisSpeed: null,
@@ -133,10 +133,6 @@ describe("scaleRequestGeometry — facteur 1", () => {
     expect(scaled.zones[0]?.points).toEqual(ZONE.points);
   });
 
-  test("est l'identité sur l'échelle métrique", () => {
-    expect(scaleRequestGeometry(REQUEST, 1).pixelsPerMeter).toBe(20);
-  });
-
   test("laisse la requête entière intacte", () => {
     expect(scaleRequestGeometry(REQUEST, 1)).toEqual(REQUEST);
   });
@@ -168,18 +164,6 @@ describe("scaleRequestGeometry — facteur 0,75", () => {
     expect(scaled.zones[0]?.points[1]?.y).toBe(0);
   });
 
-  test("met l'échelle métrique à l'échelle **aussi** — le piège dans le piège", () => {
-    // pixels/mètre est un rapport : sur une image réduite d'un quart, un mètre
-    // couvre un quart de pixels en moins. Laisser 20 surestimerait les vitesses
-    // d'un tiers, sur une grandeur que personne ne vérifie de tête.
-    expect(scaled.pixelsPerMeter).toBe(15);
-  });
-
-  test("laisse `null` à `null` — pas de 0, qui vaudrait « échelle connue et nulle »", () => {
-    const withoutScale = scaleRequestGeometry({ ...REQUEST, pixelsPerMeter: null }, 0.75);
-    expect(withoutScale.pixelsPerMeter).toBeNull();
-  });
-
   test("ne touche à aucun seuil : ils sont sans dimension", () => {
     expect(scaled.confidenceThreshold).toBe(REQUEST.confidenceThreshold);
     expect(scaled.iouThreshold).toBe(REQUEST.iouThreshold);
@@ -208,7 +192,6 @@ describe("scaleRequestGeometry — facteur 0,75", () => {
     // Le studio garde la géométrie source pour le dessin : la muter ferait sauter
     // les lignes à l'écran au démarrage du direct.
     expect(REQUEST.lines[0]?.a).toEqual({ x: 400, y: 200 });
-    expect(REQUEST.pixelsPerMeter).toBe(20);
   });
 });
 

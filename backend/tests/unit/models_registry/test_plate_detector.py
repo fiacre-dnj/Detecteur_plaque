@@ -28,12 +28,14 @@ import pytest
 from traffic_analysis.features.counting.application.dto import BoundingBox
 from traffic_analysis.features.models_registry.infrastructure.plate_detector import (
     DEFAULT_MOSAIC_SIDE,
+    DETECTION_BOX_COLUMNS,
     MAX_BATCH,
     MOSAIC_GUTTER_PX,
     NET_SIZE,
     PAD_VALUE,
     PlateGeometry,
     UltralyticsPlateDetector,
+    _boxes_data,
 )
 
 _MISSING = "modele-absent.onnx"
@@ -348,21 +350,39 @@ class TestSelection:
 
 
 class _FakeBoxes:
-    """Le strict nécessaire de `Results.boxes` : `xyxy`, `conf`, et une longueur."""
+    """Le strict nécessaire de `Results.boxes` : `data`, et une longueur.
 
-    def __init__(self, rows: list[tuple[float, float, float, float, float]]) -> None:
+    **`xyxy` et `conf` sont volontairement absents.** L'adaptateur les lisait
+    séparément — deux `.cpu()`, donc deux synchronisations CUDA par recadrage — et
+    la doublure les exposait, donc rien n'empêchait d'y revenir. Les retirer fait
+    échouer tout code qui reprendrait les accesseurs au lieu du tenseur groupé.
+
+    `data` porte **six** colonnes : `[x1, y1, x2, y2, conf, cls]`, la disposition
+    d'un chemin sans suivi (`Boxes.__init__` : `is_track = n == 7`). La classe vaut
+    toujours 0, le modèle de plaques n'en ayant qu'une.
+    """
+
+    def __init__(
+        self,
+        rows: list[tuple[float, float, float, float, float]],
+        *,
+        columns: int = 6,
+    ) -> None:
         self._rows = rows
+        self._columns = columns
 
     def __len__(self) -> int:
         return len(self._rows)
 
     @property
-    def xyxy(self) -> _FakeTensor:
-        return _FakeTensor(np.array([row[:4] for row in self._rows], dtype=np.float32))
-
-    @property
-    def conf(self) -> _FakeTensor:
-        return _FakeTensor(np.array([row[4] for row in self._rows], dtype=np.float32))
+    def data(self) -> _FakeTensor:
+        if self._columns == 7:
+            # Disposition « suivie » : le `track_id` s'insère en cinquième position
+            # et repousse la confiance, qui reste donc à l'indice -2.
+            rows = [(*row[:4], 1.0, row[4], 0.0) for row in self._rows]
+        else:
+            rows = [(*row[:4], row[4], 0.0) for row in self._rows]
+        return _FakeTensor(np.array(rows, dtype=np.float32)[:, : self._columns])
 
 
 class _FakeTensor:
@@ -379,8 +399,13 @@ class _FakeTensor:
 
 
 class _FakeResult:
-    def __init__(self, rows: list[tuple[float, float, float, float, float]]) -> None:
-        self.boxes = _FakeBoxes(rows)
+    def __init__(
+        self,
+        rows: list[tuple[float, float, float, float, float]],
+        *,
+        columns: int = 6,
+    ) -> None:
+        self.boxes = _FakeBoxes(rows, columns=columns)
 
 
 class _RecordingYolo:
@@ -600,3 +625,74 @@ class TestDegradationGracieuse:
         detector = _detector()
         image = np.zeros((720, 1280, 3), dtype=np.uint8)
         assert detector.detect(image, BoundingBox(x=0.0, y=0.0, width=8.0, height=8.0)) == ()
+
+
+class TestUnSeulRapatriementDepuisLeGpu:
+    """Les boîtes traversent le bus **une fois**, pas deux.
+
+    L'adaptateur lisait `boxes.xyxy` puis `boxes.conf` : deux `.cpu()` par
+    recadrage, donc deux synchronisations CUDA — et sur des tranches **non
+    contiguës** de `data`, ce qui impose en plus un noyau de compaction à chacune.
+    Le chemin des véhicules avait supprimé ce patron il y a longtemps
+    (`ultralytics_engine._to_observations`, « un seul rapatriement ») ; celui-ci
+    était le dernier endroit du dépôt à le contredire.
+
+    Mesuré sur cette machine : 0,184 ms en deux tranches contre 0,040 ms en un
+    tenseur groupé, soit **0,144 ms par recadrage porteur de boîtes**. Ce n'est pas
+    un gain de cadence — c'est 1,1 % sur une scène dense, sous le bruit de mesure —
+    et le test existe pour la cohérence, pas pour la vitesse.
+    """
+
+    def test_la_confiance_se_lit_au_meme_endroit_avec_ou_sans_suivi(self) -> None:
+        """L'indice `-2`, exactement comme `Boxes.conf` d'Ultralytics.
+
+        C'est ce qui rend la lecture juste que la colonne `track_id` soit là ou non,
+        sans avoir à compter les colonnes. Un `row[4]` codé en dur rendrait le
+        `track_id` comme confiance dès qu'un chemin suivi passerait ici.
+        """
+        rows = [(10.0, 30.0, 70.0, 50.0, 0.87)]
+
+        sans_suivi = _boxes_data(_FakeResult(rows, columns=6))
+        avec_suivi = _boxes_data(_FakeResult(rows, columns=7))
+
+        assert sans_suivi is not None
+        assert avec_suivi is not None
+        assert sans_suivi.shape[-1] == 6
+        assert avec_suivi.shape[-1] == 7
+        assert float(sans_suivi[0][-2]) == pytest.approx(0.87)
+        assert float(avec_suivi[0][-2]) == pytest.approx(0.87)
+
+    def test_un_nombre_de_colonnes_inattendu_leve(self) -> None:
+        """Lever plutôt que découper à l'aveugle.
+
+        Une colonne ajoutée en amont décalerait la confiance sans rien casser de
+        visible : on publierait des scores faux sur des plaques justes, et le seuil
+        de « Confiance plaques » cesserait de vouloir dire ce qu'il dit. Même
+        doctrine que `TRACKED_BOX_COLUMNS` côté véhicules.
+        """
+        with pytest.raises(RuntimeError, match="colonnes"):
+            _boxes_data(_FakeResult([(10.0, 30.0, 70.0, 50.0, 0.9)], columns=5))
+
+    def test_les_deux_dispositions_admises_sont_six_et_sept(self) -> None:
+        assert sorted(DETECTION_BOX_COLUMNS) == [6, 7]
+
+    def test_un_resultat_sans_boite_ne_rend_rien(self) -> None:
+        """`None` et non un tableau vide : les appelants ont un `continue` à faire."""
+        assert _boxes_data(_FakeResult([])) is None
+
+    def test_les_scores_traversent_le_lot_intact(self) -> None:
+        """Le contrôle qui vaut la mesure : mêmes boîtes, mêmes scores qu'avant.
+
+        Un regroupement de transferts qui changerait une valeur serait une
+        régression de justesse déguisée en optimisation.
+        """
+        model = _RecordingYolo(rows=[(10.0, 30.0, 70.0, 50.0, 0.91)])
+        detector = _detector()
+        detector._model = model
+        image = np.zeros((720, 1280, 3), dtype=np.uint8)
+        boxes = [BoundingBox(x=0.0, y=0.0, width=180.0, height=120.0)]
+
+        found = detector.detect_many(image, boxes)
+
+        assert found[0]
+        assert found[0][0].score == pytest.approx(0.91)

@@ -74,12 +74,6 @@ function scalePoint(point: Point, factor: number): Point {
 /**
  * Met une requête complète à l'échelle d'envoi.
  *
- * **`pixelsPerMeter` est mis à l'échelle lui aussi**, et c'est le piège dans le
- * piège. L'échelle est un rapport pixels/mètre : sur une image réduite de 25 %, un
- * mètre couvre 25 % de pixels en moins. Laisser la valeur source ferait des vitesses
- * surestimées d'un tiers — encore une fois sans aucune erreur, et sur une grandeur
- * que personne ne peut vérifier de tête.
- *
  * Ce qui n'est **pas** mis à l'échelle : les seuils (`confidenceThreshold`,
  * `iouThreshold`), qui sont sans dimension ; `minHits` et `maxLostMs`, qui comptent
  * des images et des millisecondes ; les identifiants, noms et couleurs, qui sont
@@ -92,8 +86,6 @@ function scalePoint(point: Point, factor: number): Point {
 export function scaleRequestGeometry(request: AnalysisRequest, factor: number): AnalysisRequest {
   return {
     ...request,
-    pixelsPerMeter:
-      request.pixelsPerMeter === null ? null : request.pixelsPerMeter * factor,
     lines: request.lines.map((line) => scaleLine(line, factor)),
     zones: request.zones.map((zone) => scaleZone(zone, factor)),
   };

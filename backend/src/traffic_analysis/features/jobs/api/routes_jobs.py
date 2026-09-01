@@ -79,6 +79,19 @@ async def create_job(
     response: Response,
     file: Annotated[UploadFile, File(description="La vidéo à analyser.")],
     request: Annotated[str, Form(description="`AnalysisRequestSchema` sérialisée en JSON.")],
+    query_image: Annotated[
+        UploadFile | None,
+        File(
+            description=(
+                "Image du véhicule à rechercher, **déjà cadrée par le client**. "
+                "Optionnelle. Elle ne voyage pas dans `request` parce qu'une image "
+                "n'a pas sa place dans du JSON, et elle n'est **jamais persistée** : "
+                "elle décrit une recherche en cours, pas une préférence, et une photo "
+                "de véhicule tombe sous le même cran de confidentialité qu'un numéro "
+                "de plaque."
+            )
+        ),
+    ] = None,
 ) -> JobCreatedSchema:
     config_schema = _parse_request(request)
     job_id = uuid4().hex
@@ -88,6 +101,11 @@ async def create_job(
     try:
         size = await _write_upload(file, destination, settings.max_upload_bytes)
         info = manager_probe(manager, destination)
+        # Lue **en mémoire** et non écrite sur disque : c'est une vignette de quelques
+        # dizaines de kilooctets, elle ne sert qu'une fois — pour un seul encodage
+        # avant la boucle — et ne rien écrire est la façon la plus simple de garantir
+        # qu'elle ne survit pas au job. Bornée comme le reste du corps.
+        query = await _read_query_image(query_image, settings.max_query_image_bytes)
     except Exception:
         # Tout échec avant l'acceptation ne doit laisser **aucun résidu** : ni
         # répertoire, ni fichier partiel. Un disque qui se remplit de vidéos
@@ -109,6 +127,7 @@ async def create_job(
         file_name=_sanitised_name(file.filename),
         file_size_bytes=size,
         config_json=config_schema.model_dump(by_alias=True, mode="json"),
+        query_image=query,
     )
     response.headers["Location"] = f"/api/v1/jobs/{job_id}"
     return JobCreatedSchema(job_id=job_id)
@@ -338,6 +357,32 @@ def _validated_suffix(filename: str | None) -> str:
             f"Format non supporté. Extensions acceptées : {allowed}.",
         )
     return suffix
+
+
+async def _read_query_image(upload: UploadFile | None, limit: int) -> bytes | None:
+    """Les octets de l'image de requête, ou `None`. Bornés, jamais écrits sur disque.
+
+    **Le suffixe n'est pas vérifié, et c'est délibéré** : contrairement à la vidéo, ce
+    fichier n'est pas passé à une bibliothèque qui choisit son décodeur d'après le nom.
+    `cv2.imdecode` regarde le **contenu**, et il rend `None` sur ce qu'il ne comprend
+    pas — ce que l'adaptateur journalise. Ajouter une liste blanche d'extensions
+    refuserait un PNG renommé qui marcherait parfaitement.
+
+    Un dépassement de taille **refuse le job** plutôt que d'ignorer l'image : une
+    recherche silencieusement abandonnée est pire qu'une recherche refusée, parce que
+    l'écran afficherait « aucune correspondance » pour une analyse qui n'a rien
+    cherché.
+    """
+    if upload is None:
+        return None
+    payload = await upload.read(limit + 1)
+    if not payload:
+        return None
+    if len(payload) > limit:
+        raise PayloadTooLargeError(
+            f"L'image du véhicule recherché dépasse {limit // 1024} Kio. Recadrez-la plus serré."
+        )
+    return payload
 
 
 def _sanitised_name(filename: str | None) -> str:

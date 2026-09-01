@@ -8,8 +8,10 @@ d'une frame (`plate_detector.py`), la lecture quelques dizaines de millisecondes
 tout un lot. L'OCR n'est pas le goulot ; `plate_policy.py` existe donc surtout
 pour protéger la **justesse** du vote — ne pas voter quarante fois sur le même
 recadrage figé — plutôt que la cadence. C'est aussi ce qui autorise à dépenser
-plusieurs *variantes* de prétraitement par plaque : trois fois presque rien reste
-presque rien, et une plaque penchée ne se lit pas autrement.
+plusieurs *variantes* de prétraitement par plaque : **jusqu'à cinq** depuis ADR 0029
+(base, redressée, encart, deux rognées à gauche), et cinq fois presque rien reste
+presque rien puisqu'elles voyagent dans le même lot. Une plaque penchée ne se lit
+pas autrement, et un idéogramme de province mange son voisin sans les rognages.
 
 **`onnxruntime` n'est jamais importé au niveau module**, exactement comme
 `plate_detector.py` importe `YOLO` dans `_ensure_loaded`. Ce n'est pas un détail de
@@ -437,19 +439,31 @@ class OnnxPlateReader:
         return self._path.is_file() and self._charset_path.is_file()
 
     def read(
-        self, image: npt.NDArray[np.uint8], boxes: Sequence[BoundingBox]
+        self,
+        image: npt.NDArray[np.uint8],
+        boxes: Sequence[BoundingBox],
+        min_score: float | None = None,
     ) -> tuple[PlateText | None, ...]:
         """Lit un lot de plaques. Ne lève **jamais**.
+
+        `min_score` est le plancher de **cette** course, `None` gardant celui du
+        déploiement. Il est appliqué ici et pas plus loin : une lecture sous le
+        plancher ne devient jamais un `PlateText`, donc elle ne vote pas, donc elle ne
+        peut pas être publiée. Filtrer plus tard dans la chaîne laisserait une
+        hésitation traverser le port — et une chaîne affichée est crue.
 
         Le tableau de résultats est pré-rempli de `None` : **c'est** l'implémentation
         du contrat d'alignement positionnel du port. Une vignette écartée par
         `_prepare` laisse un trou, elle ne décale pas les suivantes.
 
-        Chaque plaque produit une à trois *variantes* de prétraitement, toutes
-        envoyées dans le **même** lot. Le coût fixe d'une inférence domine sur un
-        tenseur de cette taille : trois variantes en un appel coûtent nettement moins
-        que trois appels, et la meilleure des trois lit des plaques que la seule
-        chaîne d'origine manquait.
+        Chaque plaque produit **une à cinq** variantes de prétraitement — base,
+        redressée, encart, plus une par fraction de `LEFT_INSET_FRACTIONS` depuis
+        ADR 0029 — toutes envoyées dans le **même** lot. Le coût fixe d'une inférence
+        domine sur un tenseur de cette taille : cinq variantes en un appel coûtent
+        nettement moins que cinq appels, et la meilleure d'entre elles lit des plaques
+        que la seule chaîne d'origine manquait.
+
+        (Cette docstring a longtemps annoncé « une à trois », resté d'avant ADR 0029.)
         """
         # `np.stack([])` lève : le cas vide se traite avant tout le reste.
         if not boxes:
@@ -487,8 +501,9 @@ class OnnxPlateReader:
                 if incumbent is None or reading.total > incumbent.total:
                     best[owner] = reading
 
+            floor = self._min_score if min_score is None else float(min_score)
             for owner, reading in best.items():
-                if reading.score >= self._min_score:
+                if reading.score >= floor:
                     results[owner] = PlateText(
                         text=reading.text,
                         score=reading.score,

@@ -127,6 +127,47 @@ class Settings(BaseSettings):
     #: L'échec est franc — une erreur CUDA de mémoire, pas une dégradation
     #: silencieuse — mais il fait échouer le job.
     inference_batch: int = Field(4, ge=1, le=32)
+    #: Lots d'inférence calculés **d'avance**, dans un fil séparé. `0` désactive et
+    #: rend le chemin séquentiel d'avant, à l'identique.
+    #:
+    #: Le jumeau de `DECODE_BUDGET_BYTES` un étage plus haut. Celui-là décharge le
+    #: décodage du chemin critique ; celui-ci décharge **l'aval du moteur** — la
+    #: détection de plaques, l'OCR, les captures, l'apparence. Le générateur du
+    #: moteur étant paresseux, `model.track()` n'avait lieu qu'une fois le service
+    #: sorti de l'image précédente : le GPU attendait le CPU, puis le CPU attendait
+    #: le GPU.
+    #:
+    #: **Le gain est petit, et la mesure dit pourquoi.** Courses alternées sur carte
+    #: chaude, 1080p, ANPR et OCR actives, 250 images :
+    #:
+    #: | fenêtre | `0` | `1` | rapport |
+    #: |---|---|---|---|
+    #: | OCR active (2 plaques publiées) | 23,2 img/s | 25,5 img/s | **1,10×** |
+    #: | plaques localisées, jamais lues | 29,3 img/s | 30,9 img/s | 1,05× |
+    #: | plaques sous le plancher, OCR muette | 42,2 img/s | 41,4 img/s | 1,00× |
+    #:
+    #: C'est **à la limite du bruit de 11 %** de cette machine ; ce qui rend le
+    #: résultat crédible n'est pas le rapport mais le **signe** : `1` gagne les cinq
+    #: paires alternées, et les comptages, franchissements et plaques publiées sont
+    #: identiques dans chacune.
+    #:
+    #: **Et ce n'était pas l'hypothèse de départ**, qui annonçait le double. Elle
+    #: supposait un aval fait de travail CPU à cacher derrière le GPU du moteur. Le
+    #: profil dit l'inverse : l'aval est **lui aussi** du GPU — détection de plaques
+    #: 22,0 ms par image dont 17,9 de passe avant — et deux flux CUDA sur une même
+    #: carte se sérialisent quoi qu'on fasse. Seules les moitiés CPU se recouvrent :
+    #: l'OCR (6,4 ms, onnxruntime), les recadrages, le domaine. D'où la troisième
+    #: ligne du tableau, où l'OCR ne se déclenche jamais et où il n'y a donc
+    #: rigoureusement rien à cacher.
+    #:
+    #: **Aucun chiffre ne change**, quelle que soit la valeur : ni l'ordre des appels
+    #: au modèle, ni l'état du tracker, ni l'ordre des images rendues. C'est ce qui
+    #: rend `0` utilisable comme témoin plutôt que comme repli de secours.
+    #:
+    #: `1` suffit — c'est le lot d'avance qui recouvre, pas la profondeur de la file.
+    #: Au-delà, on retient des images décodées **et** leurs résultats de suivi en
+    #: mémoire sans rien gagner.
+    inference_prefetch_batches: int = Field(1, ge=0, le=4)
     #: Budget de threads d'inférence **CPU**. `0` laisse chaque bibliothèque décider,
     #: c'est-à-dire prendre tous les cœurs.
     #:
@@ -157,6 +198,37 @@ class Settings(BaseSettings):
     #:
     #: Sans effet sur GPU, où l'inférence ne vit pas sur ces threads.
     inference_threads: int = Field(0, ge=0, le=64)
+    #: Threads du `parallel_for_` d'**OpenCV**. `0` ne fait rien.
+    #:
+    #: Un second robinet, parce qu'`inference_threads` n'atteint qu'OpenCV via torch
+    #: — c'est-à-dire jamais. Au repos, OpenCV prend *tous* les processeurs logiques
+    #: (12 mesurés ici) quand torch en prend 6, et rien ne les arbitrait. Or le
+    #: prétraitement d'Ultralytics est du pur OpenCV et tourne **dans le fil qui
+    #: attend le GPU**, pendant que le fil de décodage d'ADR 0031 en veut autant :
+    #: c'est nommément la contention qu'ADR 0031 désigne comme la cause de son gain
+    #: non réalisé en 720p et 1080p, restée sans réglage jusqu'ici.
+    #:
+    #: **`0` par défaut, et c'est mesuré, pas prudent.** Trois mesures, et la
+    #: troisième est celle qui décide :
+    #:
+    #: - micro-banc, machine libre, OpenCV à 3 fils au lieu de 12 : *perd* 3,4 % ;
+    #: - micro-banc avec un fil OpenCV concurrent : *gagne* 9,7 puis 10,2 % ;
+    #: - **pipeline réel** (`pipeline_bench --anpr --ocr`, courses alternées) :
+    #:   20,92 → 20,97 puis 21,20 → 21,10 img/s. **Aucun effet**, et l'écart change
+    #:   de signe d'une passe à l'autre.
+    #:
+    #: Le fil concurrent du micro-banc était un substitut ; dans le vrai pipeline, le
+    #: décodage vit dans son propre fil depuis ADR 0031 et le détecteur de plaques
+    #: domine le budget, donc la contention que ce réglage vise ne se produit pas sur
+    #: ce profil. Il reste utile là où elle se produit — un navigateur qui lit la
+    #: vidéo sur la même machine, plusieurs analyses concurrentes — et c'est
+    #: précisément pourquoi il est réglable et non posé. Même doctrine
+    #: qu'`inference_threads` : l'échange se mesure, il ne se suppose pas.
+    #:
+    #: Ne borne **pas** le pool du décodeur FFmpeg, qui se pose par capture. Le
+    #: décodage vivant dans son propre fil depuis ADR 0031, il est hors du chemin
+    #: critique, et son effet n'a pas été mesuré ici.
+    opencv_threads: int = Field(0, ge=0, le=64)
     #: Laisser cuDNN choisir ses algorithmes de convolution **par la mesure**.
     #:
     #: **`false` par défaut, et c'est un correctif, pas un renoncement.** ADR 0013
@@ -260,9 +332,16 @@ class Settings(BaseSettings):
     plate_net_size: int = Field(640, ge=64, le=1280)
 
     # ── Étranglement du détecteur de plaques (ADR 0010) ──────────────────────
-    # **Le vrai goulot, et de loin.** Mesuré sur cette machine (i5-8350U, sans GPU) :
-    # 702 ms par inférence de détection contre 66 ms par vignette d'OCR, soit un
-    # rapport de 10,7 à 1. Optimiser l'OCR ne rendrait donc rien de perceptible.
+    # **Le vrai goulot, et de loin.** Sur une vue de circulation réelle, l'étage de
+    # plaques pèse 73 % du budget par image (ADR 0032), à 17,5 ms par recadrage sur
+    # GPU — chaque véhicule payant une inférence entière.
+    #
+    # Le rapport « 702 ms contre 66 ms, soit 10,7 à 1 » qui vivait ici est **périmé**
+    # et ADR 0030 l'a explicitement déclaré faux : il datait d'une mesure CPU
+    # (i5-8350U) d'avant le passage du détecteur en `.pt` sur GPU (ADR 0015, 45,2 ms
+    # par inférence) et d'avant le lot d'ADR 0030. Sa conclusion — « optimiser l'OCR
+    # ne rend rien » — reste vraie sur une vue large où aucune plaque n'est lisible,
+    # et fausse dès que des plaques sont lues : mesuré ici, OCR 18,9 % du budget.
     #
     # Ces trois réglages existaient dans `PlateDetectOptions` sans que personne
     # puisse les atteindre : le conteneur ne passait que `every_n_frames`, repris de
@@ -272,7 +351,8 @@ class Settings(BaseSettings):
     #: était le comportement câblé en dur.
     plate_detect_every_n_frames: int | None = Field(None, ge=1, le=30)
     #: Sous cette largeur de **véhicule**, la plaque fera au mieux quelques pixels :
-    #: l'inférence coûterait 702 ms sans rien pouvoir trouver d'exploitable.
+    #: l'inférence coûterait une passe entière sans rien pouvoir trouver
+    #: d'exploitable — 17,5 ms par recadrage sur cette carte (ADR 0032).
     #:
     #: Distinct de `plate_ocr_min_width_px`, qui porte sur la plaque. Le rapport
     #: entre les deux dépend de la scène et **ne se déduit pas** : mesuré ici, une
@@ -300,6 +380,31 @@ class Settings(BaseSettings):
     #: chacune payant ~800 ms par image analysée sans jamais bénéficier de
     #: l'étranglement. Résultat : 1,42 image/s traitée, contre 11 sans ANPR.
     plate_detect_max_consecutive_misses: int = Field(3, ge=1, le=30)
+    #: Suspendre une piste dont les plaques mesurées restent sous le plancher de lecture.
+    #:
+    #: **Le plus gros levier de cadence de l'ANPR, et il ne coûte aucun texte.** Sur une
+    #: vue de circulation réelle (ADR 0032), la détection de plaques pèse 73 % du budget
+    #: et **aucune plaque n'y est publiable** — elles font moins de 48 px pour un plancher
+    #: de lecture à 64 (invariant 12). La porte compare la largeur **mesurée sur cette
+    #: piste-là** au *même* nombre que l'OCR utilise déjà pour refuser de lire : une
+    #: plaque écartée est une plaque qui aurait été refusée de toute façon.
+    #:
+    #: Ce qui est réellement payé, et c'est pourquoi le réglage existe : le **rectangle**
+    #: disparaît sur ces véhicules, après les `max_anchor_age` images de reprojection. Le
+    #: service dit déjà pourquoi par `plate_unread_reason = too_small`. Mettre `false`
+    #: rend tous les rectangles, au prix de la cadence.
+    #:
+    #: Sans OCR, la porte ne s'arme **jamais** : le service ne la pose que si un lecteur
+    #: tourne réellement.
+    plate_detect_readable_gate: bool = True
+    #: Mesures consécutives sous le plancher avant de suspendre la piste.
+    plate_detect_readable_min_samples: int = Field(2, ge=1, le=10)
+    #: Réarmement d'office toutes les N images analysées. `0` = jamais, le défaut.
+    #:
+    #: La porte se rouvre déjà **seule** quand le véhicule s'approche — c'est une mesure,
+    #: pas un délai. Ce quota n'existe que pour le cas, non observé à ce jour, d'une piste
+    #: réellement lisible qui ne grandirait pas.
+    plate_detect_readable_retry_every: int = Field(0, ge=0, le=300)
     #: Recadrages soumis au détecteur par image analysée, au plus. `0` = illimité.
     #:
     #: **Le seul plafond qui rende le coût de l'ANPR indépendant de la scène.** Sans
@@ -468,6 +573,133 @@ class Settings(BaseSettings):
     plate_ocr_charset_url: str | None = None
     plate_ocr_charset_sha256: str | None = None
 
+    # ── Ressemblance de véhicule (recherche par image) ───────────────────────
+    #: Encodeur d'apparence de véhicule. Vide = <weights_dir>/vehicle-reid.onnx.
+    #:
+    #: **Optionnel, et son absence ne dégrade rien** : sans lui, la recherche par
+    #: image est indisponible (`reidAvailable: false`) et pas un compteur ne change.
+    #: Même doctrine que les deux étages de plaques.
+    #:
+    #: `.onnx` et non `.pt` : le modèle retenu (OSNet-AIN entraîné sur VeRi-776) n'a
+    #: pas d'équivalent Ultralytics, et `onnxruntime` n'ayant pas de provider CUDA
+    #: ici, il tourne sur CPU — 21,8 ms mesurés par vignette, acceptable parce qu'on
+    #: encode **quelques fois dans la vie d'un véhicule** et non par image. C'est la
+    #: marge `reid_appearance_improvement` qui le garantit ; la règle monotone seule
+    #: ne le faisait pas. Voir ADR 0048, amendée par ADR 0050.
+    reid_model_path: Path | None = None
+    #: Similarité cosinus en dessous de laquelle un véhicule n'est pas publié.
+    #:
+    #: **Un plancher de déploiement, pas le seuil de l'utilisateur** : celui-ci vit
+    #: côté client, sur le score brut, et peut donc bouger sans réanalyser (ADR 0048).
+    #: Celui-ci ne sert qu'à ne pas transporter des scores dont on sait qu'ils ne
+    #: veulent rien dire.
+    reid_min_similarity: float = Field(0.0, ge=0.0, le=1.0)
+    #: Largeur de véhicule, en pixels, sous laquelle on n'encode pas.
+    #:
+    #: **Mesuré, pas supposé** (`scripts/reid_bench.py --truth-ladder`) : l'entrée du
+    #: réseau fait 208 px, et sous ce plancher un recadrage agrandi n'apporte aucune
+    #: information — l'embedding ressemble surtout au flou. Même famille de réglage
+    #: que `plate_ocr_min_width_px`, et même raison d'exister : ne pas payer une
+    #: inférence pour un résultat qu'on sait sans valeur (ADR 0039).
+    reid_min_vehicle_width_px: float = Field(96.0, ge=16.0, le=1024.0)
+    #: Marge de largeur exigée pour **réencoder** une piste déjà encodée.
+    #:
+    #: La règle monotone d'ADR 0048 (« plus large que la meilleure vue ») ne bornait
+    #: rien : sur un véhicule qui approche, la largeur croît de façon quasi monotone,
+    #: donc elle est vraie à *presque chaque image analysée*. On payait jusqu'à un
+    #: encodage par image — **21,8 ms de CPU mesurés par vignette** sur cette machine
+    #: — pour un étage dont la docstring annonçait « une fois par véhicule ».
+    #:
+    #: `1.15` autorise au plus `log_1,15(400 / 96) ≈ 11` encodages sur la vie d'une
+    #: piste, contre une centaine sans marge. Le bornage est **logarithmique**, d'où
+    #: une valeur modeste : pousser à `1,5` ne diviserait le compte que par deux de
+    #: plus tout en coûtant plus de séparation.
+    #:
+    #: Ce que ça coûte, chiffré : la séparation same/diff d'ADR 0048 décroît
+    #: régulièrement (+0,462 à 208 px, +0,310 à 48 px, sans falaise), donc 15 % de
+    #: largeur en moins valent ~0,015 de séparation — pour un seuil client à 0,55 et
+    #: des moyennes mesurées à 0,816 et 0,249. Personne ne bascule.
+    #:
+    #: `1.0` désactive la marge et reproduit ADR 0048 au bit près.
+    reid_appearance_improvement: float = Field(1.15, ge=1.0, le=4.0)
+    #: Plafond d'encodages d'apparence **par image**. `0` = illimité.
+    #:
+    #: Le jumeau de `plate_detect_max_per_frame`, et il borne autre chose que la marge
+    #: ci-dessus : celle-ci borne le total sur la vie d'une piste, celui-ci la
+    #: **rafale sur une image**. Sans lui, une image chargée peut soumettre jusqu'à
+    #: `MAX_BATCH` (16) vignettes à 21,8 ms pièce — ~350 ms de blocage CPU en un seul
+    #: appel, pendant lequel le GPU dort et l'aperçu ne sort pas.
+    #:
+    #: Ce n'est **pas** un gain de moyenne : c'est un plafond de pire cas, et ce que
+    #: l'utilisateur en voit est un aperçu qui cesse de hoqueter. Ce qui n'est pas
+    #: servi n'est pas perdu — la piste repasse candidate à l'image suivante.
+    reid_max_per_frame: int = Field(0, ge=0, le=32)
+    #: Threads intra-op d'onnxruntime pour l'encodeur d'apparence. `0` = repli sur
+    #: `inference_threads`. Voir `resolved_reid_intra_op_threads` pour la mesure.
+    reid_intra_op_threads: int = Field(0, ge=0, le=32)
+    #: Netteté minimale (variance du laplacien) d'un recadrage encodé.
+    #:
+    #: Un véhicule assez large mais flou de mouvement rend un embedding instable.
+    #: Même métrique et même doctrine que `plate_ocr_min_sharpness`.
+    reid_min_sharpness: float = Field(8.0, ge=0.0, le=1000.0)
+    # Utilisés par scripts/fetch_reid_model.py uniquement, même règle que les autres
+    # poids : le service ne télécharge jamais de lui-même.
+    reid_model_url: str | None = None
+    reid_model_sha256: str | None = None
+    #: Taille maximale de l'image de requête, en kibioctets.
+    #:
+    #: Petite exprès : le client cadre avant d'envoyer, donc ce qui arrive est une
+    #: vignette de véhicule. 2 Mio laissent passer un recadrage 4K non compressé et
+    #: refusent une photo de téléphone entière — laquelle serait de toute façon
+    #: étirée à 208 px par le réseau, donc n'apporterait rien.
+    max_query_image_kb: int = Field(2048, ge=16, le=32768)
+
+    # ── Captures de véhicules ────────────────────────────────────────────────
+    #
+    # Les deux causes de capture ajoutées par ADR 0051, plus la marge qui les borne.
+    # Aucun seuil de **confiance** ici, et c'est délibéré : la capture hérite de ceux
+    # de l'utilisateur — une plaque n'existe qu'au-dessus de « Confiance plaques », un
+    # texte qu'au-dessus de « Confiance lecture », une apparence qu'au-dessus des
+    # planchers de largeur et de netteté de la ReID.
+
+    #: Photographier un véhicule dont une plaque est **localisée** sans être lue.
+    #:
+    #: C'est le cas dominant sur une vue large : plaques sous le plancher de lecture
+    #: (~64 px), trop floues, ou lectures refusées. La photo y est la seule chose qui
+    #: permette de lire ce que le serveur a refusé d'affirmer.
+    #:
+    #: Ce que ça coûte : la population photographiée passe de « les véhicules dont une
+    #: plaque est lue » à « ceux dont une plaque est vue », soit un ordre de grandeur
+    #: sur une vue large.
+    snapshot_on_plate_box: bool = True
+    #: Photographier tout véhicule dont l'apparence est **encodée** pour une recherche
+    #: par image.
+    #:
+    #: Tout véhicule encodé, et non les seuls ressemblants : le seuil qui décide de ce
+    #: qui s'affiche vit côté client et se déplace sans réanalyser (ADR 0048/0041). Une
+    #: photo qui n'existerait qu'au-dessus d'un seuil serveur manquerait exactement au
+    #: moment où l'on descend le curseur pour la regarder.
+    #:
+    #: Ne coûte rien sans image de requête : l'étage entier est alors éteint.
+    snapshot_on_appearance: bool = True
+    #: Marge de largeur exigée pour **remplacer** une capture par une meilleure vue.
+    #:
+    #: Elle ne s'applique qu'aux deux causes dont le rang est une **largeur** — plaque
+    #: localisée, apparence — et jamais à la plaque lue, dont le rang est une
+    #: confiance. Sans elle, la règle monotone ne borne rien : « plus large » est vrai
+    #: à presque chaque image d'un véhicule qui approche. C'est ADR 0050 mot pour mot,
+    #: et l'étranglement du détecteur de plaques (une image sur trois) ne divise le
+    #: problème que par trois.
+    #:
+    #: `1.0` désactive la marge et rend une comparaison stricte.
+    snapshot_width_improvement: float = Field(1.15, ge=1.0, le=4.0)
+    #: Combien de véhicules une analyse peut photographier.
+    #:
+    #: Une borne **mémoire**, donc pas de `0 = illimité` — cette convention est celle
+    #: des plafonds *par image*. Elle est devenue atteignable avec les deux causes
+    #: ci-dessus, et elle n'évince pas : la première cause servie garde la place.
+    snapshot_max_vehicles: int = Field(500, ge=1, le=5000)
+
     # ── Bornes d'exécution ───────────────────────────────────────────────────
     # Un GPU = une analyse à la fois. Les suivantes attendent en file et sont
     # acceptées en 202 « queued », jamais refusées en 503.
@@ -605,6 +837,25 @@ class Settings(BaseSettings):
         return self.plate_ocr_intra_op_threads or self.inference_threads
 
     @property
+    def resolved_reid_intra_op_threads(self) -> int:
+        """Threads intra-op d'onnxruntime pour l'encodeur d'apparence.
+
+        **Le même trou que l'OCR avait comblé, resté ouvert dans un second
+        adaptateur.** `OnnxVehicleEmbedder` construisait ses `SessionOptions` sans
+        budget, donc `TRAFFIC_INFERENCE_THREADS` atteignait torch et l'OCR mais pas
+        lui — sur un étage qui coûte 21,8 ms de CPU par vignette pendant que le fil
+        de décodage et le prétraitement torch veulent les mêmes cœurs.
+
+        Mesuré ici : défaut (0) **17,0 ms**, 3 fils 17,5, 6 fils 18,5, **12 fils
+        31,9 ms**. Borner à 3 coûte 3 % sur l'étage et rend trois cœurs au reste ;
+        forcer 12 est **1,9× pire** — l'hyperthreading dessert ce graphe, et un
+        opérateur qui poserait 12 « pour tout donner » ferait exactement cela.
+
+        Même repli que l'OCR, et pour la même raison.
+        """
+        return self.reid_intra_op_threads or self.inference_threads
+
+    @property
     def resolved_plate_ocr_model_path(self) -> Path:
         """Chemin effectif du modèle de lecture. Même règle « vide ⇒ défaut »."""
         return self.plate_ocr_model_path or self.weights_dir / "license-plate-ocr.onnx"
@@ -619,6 +870,21 @@ class Settings(BaseSettings):
         ne correspondent pas.
         """
         return self.plate_ocr_charset_path or self.weights_dir / "license-plate-ocr.charset.txt"
+
+    @property
+    def max_query_image_bytes(self) -> int:
+        """La borne de l'image de requête en octets. Même patron que `max_upload_bytes`."""
+        return self.max_query_image_kb * 1024
+
+    @property
+    def resolved_reid_model_path(self) -> Path:
+        """Chemin effectif de l'encodeur de ressemblance. Même règle « vide ⇒ défaut ».
+
+        Le suffixe `.onnx` fait partie du contrat : l'adaptateur charge par
+        `onnxruntime`, qui ne lit que cela. Un `.pt` déposé sous ce nom rendrait
+        `reidAvailable: true` puis échouerait à l'auto-test — d'où `probe()`.
+        """
+        return self.reid_model_path or self.weights_dir / "vehicle-reid.onnx"
 
     # ── Validation ───────────────────────────────────────────────────────────
 
@@ -638,6 +904,9 @@ class Settings(BaseSettings):
         "plate_ocr_model_sha256",
         "plate_ocr_charset_url",
         "plate_ocr_charset_sha256",
+        "reid_model_path",
+        "reid_model_url",
+        "reid_model_sha256",
         mode="before",
     )
     @classmethod

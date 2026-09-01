@@ -4,7 +4,7 @@
  *
  * Cette colonne était **vide** entre l'import d'une vidéo et le premier résultat :
  * une bande de 24 rem sur toute la hauteur de la scène, à côté de l'écran où l'on
- * règle tout. Le squelette « Passages en entrée — » vivait, lui, tout en bas de la
+ * règle tout. Le squelette du chiffre de tête vivait, lui, tout en bas de la
  * page, sous la vidéo, là où personne ne le voyait avant d'avoir défilé.
  *
  * Ce qui remplit le vide n'est pas un décor : c'est le récapitulatif des réglages

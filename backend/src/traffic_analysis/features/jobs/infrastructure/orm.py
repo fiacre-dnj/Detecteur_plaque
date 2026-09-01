@@ -102,8 +102,6 @@ class JobVehicleModel(Base):
     #: objet suivi compte (ADR 0016), et compter les éléments d'un JSON ne
     #: s'indexe pas. Remplace `reid_count`, disparu avec la ré-identification.
     crossings_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    avg_speed_px_s: Mapped[float | None] = mapped_column(Float, nullable=True)
-    avg_speed_kmh: Mapped[float | None] = mapped_column(Float, nullable=True)
     best_plate_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     #: Texte voté, déjà normalisé par le domaine. `NULL` = aucune lecture concluante,
     #: distinct de `''`. 16 caractères : la normalisation plafonne à 10 alphanumériques

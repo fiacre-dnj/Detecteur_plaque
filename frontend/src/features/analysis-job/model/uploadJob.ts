@@ -80,6 +80,15 @@ export function uploadJob(
   file: File,
   request: AnalysisRequest,
   onProgress: (progress: UploadProgress) => void,
+  /**
+   * La vignette du véhicule recherché, déjà recadrée. `null` = aucune recherche.
+   *
+   * Un `Blob` et non un champ de `request` : une image n'a pas sa place dans du JSON,
+   * et surtout elle n'est **jamais persistée** côté serveur — elle ne traverse pas
+   * `config_json`, donc rouvrir le job ne la rend pas. C'est la même doctrine que
+   * `plateWatchlist` côté client, appliquée à une donnée plus sensible encore.
+   */
+  queryImage: Blob | null = null,
 ): UploadHandle {
   const xhr = new XMLHttpRequest();
 
@@ -152,6 +161,11 @@ export function uploadJob(
   // string ». Vérifié contre le serveur réel — c'est exactement l'erreur que
   // produisait la version précédente de cette ligne.
   body.append("request", JSON.stringify(request));
+  // **La vignette part en `Blob`, contrairement à la configuration juste au-dessus** :
+  // la route la déclare `UploadFile | None`, donc FastAPI attend bien un fichier ici.
+  // Le nom de partie doit être `query_image` — FastAPI nomme les parties d'après le
+  // paramètre Python, jamais d'après son alias.
+  if (queryImage !== null) body.append("query_image", queryImage, "query.jpg");
 
   xhr.open("POST", "/api/v1/jobs");
   // Aucun `setRequestHeader("Content-Type", …)` : le navigateur doit écrire la

@@ -23,8 +23,6 @@ function vehicle(globalId: number, plateText: string | null): VehicleRecord {
     lastSeenMs: 1000,
     crossedLines: [],
     zonesVisited: [],
-    avgSpeedPxS: null,
-    avgSpeedKmh: null,
     bestPlateScore: plateText === null ? null : 0.71,
     plateText,
     plateTextScore: plateText === null ? null : 0.88,

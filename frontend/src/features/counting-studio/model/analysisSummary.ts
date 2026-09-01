@@ -40,9 +40,13 @@ export interface AnalysisSummaryInput {
   classLabels: readonly string[];
   lineCount: number;
   zoneCount: number;
+  /** Lignes portant au moins un sens interdit ou une voie réservée. */
+  ruledLineCount: number;
   range: AnalysisRange;
   detectPlates: boolean;
   readPlateText: boolean;
+  /** Plaques recherchées — leur nombre suffit, le récapitulatif ne les liste pas. */
+  watchedPlateCount: number;
   /** Multiples du temps réel, `null` = aucune borne relative. */
   analysisSpeed: number | null;
   /** Plafond absolu en images par seconde réelle, `null` = aucun. */
@@ -54,9 +58,52 @@ export function analysisSummaryRows(input: AnalysisSummaryInput): AnalysisSummar
     { label: "Modèle", value: input.modelLabel },
     countedObjects(input.classLabels),
     geometrySummary(input.lineCount, input.zoneCount),
+    ...surveillance(input.ruledLineCount, input.watchedPlateCount, input.readPlateText),
     { label: "Portion analysée", value: rangeSummary(input.range) },
     { label: "Plaques", value: plateSummary(input.detectPlates, input.readPlateText) },
-    { label: "Cadence", value: paceSummary(input.analysisSpeed, input.maxAnalysisFps) },
+    paceRow(input.analysisSpeed, input.maxAnalysisFps),
+  ];
+}
+
+/**
+ * Ce que l'analyse va **signaler** — la ligne n'existe que s'il y a quelque chose.
+ *
+ * Une rangée « Surveillance : rien » sur une analyse ordinaire serait du bruit :
+ * l'immense majorité des tracés ne déclare aucune règle et ne cherche aucune plaque.
+ * D'où un tableau, vide ou à une entrée, plutôt qu'une rangée toujours présente.
+ *
+ * **L'avertissement est celui qui compte de toute cette page** : une liste de
+ * plaques saisie puis laissée en place après avoir décoché l'OCR chercherait dans un
+ * texte que personne ne lit. Rien ne planterait, aucune alerte ne sortirait, et
+ * l'utilisateur conclurait que la plaque n'est jamais passée.
+ */
+function surveillance(
+  ruledLineCount: number,
+  watchedPlateCount: number,
+  readPlateText: boolean,
+): AnalysisSummaryRow[] {
+  const parts: string[] = [];
+  if (ruledLineCount > 0) {
+    parts.push(
+      `${ruledLineCount} ${ruledLineCount === 1 ? "ligne à règle" : "lignes à règles"}`,
+    );
+  }
+  if (watchedPlateCount > 0) {
+    parts.push(
+      `${watchedPlateCount} ${watchedPlateCount === 1 ? "plaque recherchée" : "plaques recherchées"}`,
+    );
+  }
+  if (parts.length === 0) return [];
+
+  return [
+    {
+      label: "Surveillance",
+      value: parts.join(" · "),
+      warning:
+        watchedPlateCount > 0 && !readPlateText
+          ? "La lecture des plaques est désactivée : aucune plaque recherchée ne pourra être trouvée."
+          : undefined,
+    },
   ];
 }
 
@@ -141,4 +188,32 @@ function paceSummary(analysisSpeed: number | null, maxAnalysisFps: number | null
         ? "Temps réel"
         : `${analysisSpeed}× le temps réel`;
   return maxAnalysisFps === null ? relative : `${relative} · max ${maxAnalysisFps} img/s`;
+}
+
+/**
+ * La cadence, plus l'avertissement qui manquait — les deux bridages peuvent se
+ * contredire, et c'est **silencieux**.
+ *
+ * `ScenePacer` retient la période la **plus longue** des deux, donc le plafond
+ * absolu bat la cadence de scène dès que la source dépasse ce plafond. Un « Temps
+ * réel · max 30 img/s » sur une source 60 fps ne rend pas le temps réel : il rend
+ * la moitié, et rien ne le disait. C'est le défaut qu'ADR 0049 a retiré ; il reste
+ * atteignable à la main, d'où l'avertissement plutôt qu'un interdit.
+ *
+ * Pas de nombre d'images par seconde ici, et c'est délibéré : la cadence de la
+ * source n'est lisible que sur la balise `<video>` et ne vit dans aucun état
+ * réactif — même raison qui prive `describeRange` de la durée. La phrase est donc
+ * conditionnelle, ce qui la garde vraie sans connaître la source.
+ */
+function paceRow(analysisSpeed: number | null, maxAnalysisFps: number | null): AnalysisSummaryRow {
+  const value = paceSummary(analysisSpeed, maxAnalysisFps);
+  if (maxAnalysisFps === null || analysisSpeed === null) return { label: "Cadence", value };
+
+  return {
+    label: "Cadence",
+    value,
+    warning:
+      `Au-dessus de ${maxAnalysisFps} images par seconde, la source est analysée plus ` +
+      "lentement que le temps réel et l'aperçu défile au ralenti.",
+  };
 }

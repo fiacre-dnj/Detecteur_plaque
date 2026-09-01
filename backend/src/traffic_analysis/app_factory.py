@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from functools import partial
 from typing import TYPE_CHECKING
 
 import anyio.to_thread
@@ -386,9 +387,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # pool de threads déjà dimensionné se redimensionne mal. `0` ne fait rien, donc
     # aucun coût pour qui n'a pas posé le réglage — l'import de torch lui-même est
     # évité dans ce cas, ce qui préserve les tests à moteur factice.
-    if settings.inference_threads > 0:
+    #
+    # La garde porte sur **les deux** réglages. N'appeler que sur
+    # `inference_threads` laisserait `TRAFFIC_OPENCV_THREADS` annoncé et sans effet
+    # dès qu'il est posé seul — le pire état d'un réglage, et celui que ce dépôt a
+    # déjà payé plusieurs fois.
+    if settings.inference_threads > 0 or settings.opencv_threads > 0:
         await anyio.to_thread.run_sync(
-            container.model_registry.apply_thread_budget, settings.inference_threads
+            container.model_registry.apply_thread_budget,
+            settings.inference_threads,
+            settings.opencv_threads,
         )
 
     # Même fenêtre et même raison que le budget de threads : avant la première
@@ -470,6 +478,10 @@ async def _warmup(container: Container) -> None:
     # (un modèle nano contre le détecteur de véhicules) et c'est celui dont le verdict
     # est attendu par `/health`. Il ne lève jamais — `probe()` avale tout.
     await _probe_plates(container)
+    # Puis l'encodeur de ressemblance, pour la même raison et au même coût : une
+    # inférence sur une image noire. Après les plaques parce que son absence est le cas
+    # courant — la recherche par image est une option installée à part.
+    await _probe_reid(container)
 
     registry = container.model_registry
     if registry is None:
@@ -481,7 +493,19 @@ async def _warmup(container: Container) -> None:
         return
 
     try:
-        await anyio.to_thread.run_sync(registry.warmup, model_id)
+        # **Le lot et le côté d'entrée de la production**, pas les défauts
+        # d'Ultralytics : `done_warmup` est posé par cette passe et le prédicteur est
+        # réutilisé, donc chauffer une autre forme ne chauffe rien de ce qui sera
+        # analysé. Mesuré à ~63 ms par job, dont ~45 récupérables.
+        settings = container.settings
+        await anyio.to_thread.run_sync(
+            partial(
+                registry.warmup,
+                model_id,
+                batch=settings.inference_batch,
+                imgsz=settings.inference_imgsz,
+            )
+        )
     except Exception as exc:  # pragma: no cover — `warmup` avale déjà ses erreurs
         logger.warning("préchauffage en échec", model_id=model_id, error=str(exc))
 
@@ -507,6 +531,27 @@ async def _probe_plates(container: Container) -> None:
         # `error` et non `warning` : les poids sont là, l'utilisateur croit donc que
         # l'ANPR marche. C'est le seul état de ce démarrage qui mérite d'être criard.
         logger.error("auto-test du détecteur de plaques en échec — ANPR muette")
+
+
+async def _probe_reid(container: Container) -> None:
+    """Vérifie que l'encodeur de ressemblance se charge **vraiment**, une fois.
+
+    Même raison d'être que `_probe_plates`, et même mode de panne visé : `reidAvailable`
+    ne teste qu'une présence de fichier, et le suffixe `.onnx` fait partie du contrat —
+    `onnxruntime` ne lit que cela. Un `.pt` renommé, un fichier tronqué, un graphe dont
+    la sortie n'a pas 512 dimensions : tout cela passe `available` et ne rend jamais un
+    vecteur.
+    """
+    service = container.model_service
+    if service is None:
+        return
+    verdict = await service.probe_reid()
+    if verdict is False:
+        # `error` et non `warning`, même arbitrage que pour les plaques : les poids sont
+        # là, donc l'utilisateur croit que la recherche par image marche.
+        logger.error(
+            "auto-test de l'encodeur de ressemblance en échec — recherche par image muette"
+        )
 
 
 async def _cleanup_loop(app: FastAPI) -> None:

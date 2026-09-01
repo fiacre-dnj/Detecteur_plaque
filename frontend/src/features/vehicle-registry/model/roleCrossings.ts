@@ -62,9 +62,15 @@ export function crossingsWithRole(
  * - le sens est resté `neutral`, c'est-à-dire un tracé antérieur au 2026-08-16, où
  *   le rôle est devenu obligatoire (ADR 0021).
  *
- * Le complément exact d'`entry` ∪ `exit` : ce que ces trois fonctions rendent,
- * mises bout à bout, est `vehicle.crossedLines` — ce qui est ce qui empêche le
+ * Le complément exact des rôles que les colonnes portent : ce que ces fonctions
+ * rendent, mises bout à bout, est `vehicle.crossedLines` — c'est ce qui empêche le
  * registre de perdre un passage en le rangeant par rôle.
+ *
+ * **Elle est écrite comme un complément et non comme une liste de cas**, et c'est
+ * la seule forme correcte : `=== "neutral"` avait été écrite quand `neutral` était
+ * le seul rôle sans colonne, et l'arrivée de « Interdit » et « Passage » aurait
+ * fait disparaître ces franchissements des deux côtés — ni rangés sous un rôle, ni
+ * comptés hors rôle. Un passage perdu, sans que rien ne plante.
  */
 export function crossingsWithoutRole(
   vehicle: VehicleRecord,
@@ -73,6 +79,21 @@ export function crossingsWithoutRole(
   return vehicle.crossedLines.filter((crossing) => {
     const line = lines.find((candidate) => candidate.id === crossing.lineId);
     if (line === undefined) return true;
-    return directionRole(line, signOf(crossing.direction)) === "neutral";
+    return !COLUMN_ROLES.includes(directionRole(line, signOf(crossing.direction)));
   });
 }
+
+/**
+ * Les rôles qui ont **leur propre colonne** dans le registre.
+ *
+ * `forbidden` en fait partie via la colonne « Infraction », qui porte ses
+ * franchissements : les ranger *aussi* dans « Autres passages » les compterait deux
+ * fois dans une partition qui doit rester exacte.
+ *
+ * `transit` n'en fait **pas** partie, et c'est délibéré : il n'a pas de colonne, et
+ * lui en inventer une pour une ligne de comptage seul — dont tout l'intérêt est de
+ * ne rien classer — ajouterait une colonne vide sur tous les autres tracés. Ses
+ * franchissements tombent donc dans « Autres passages », ce que ce nom dit
+ * exactement.
+ */
+const COLUMN_ROLES: readonly DirectionRole[] = ["entry", "exit", "forbidden"];

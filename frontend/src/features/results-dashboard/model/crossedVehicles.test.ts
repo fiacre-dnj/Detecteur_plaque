@@ -31,7 +31,6 @@ function line(id: string, overrides: Partial<CountingLine> = {}): CountingLine {
     negativeName: "",
     positiveRole: "entry",
     negativeRole: "exit",
-    lengthMeters: null,
     ...overrides,
   };
 }
@@ -47,8 +46,6 @@ function vehicle(
     lastSeenMs: 1_000,
     crossedLines,
     zonesVisited: [],
-    avgSpeedPxS: null,
-    avgSpeedKmh: null,
     bestPlateScore: null,
     plateText: null,
     plateTextScore: null,
@@ -115,7 +112,7 @@ describe("hasEnteredCrossroad", () => {
 describe("enteringVehicleCount", () => {
   it("compte des véhicules distincts, jamais des passages", () => {
     // **L'invariant 3 rendu visible.** Ce véhicule entre deux fois — deux lignes
-    // d'entrée franchies. « Passages en entrée » en compterait 2 ; ici, c'est
+    // d'entrée franchies. Les passages en entrée en compteraient 2 ; ici, c'est
     // un seul véhicule, et les deux chiffres ne se divisent jamais l'un par
     // l'autre.
     const deuxFois = vehicle(1, [ENTERS, { lineId: "est", direction: 1, timestampMs: 900 }]);

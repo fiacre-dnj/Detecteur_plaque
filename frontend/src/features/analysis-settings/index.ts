@@ -20,4 +20,4 @@ export {
   plateCapability,
 } from "./model/plateCapability";
 
-export { SettingsPanels, type ExtraPanel } from "./ui/SettingsPanels";
+export { KEEP_PANELS_OPEN_ATTR, SettingsPanels, type ExtraPanel } from "./ui/SettingsPanels";

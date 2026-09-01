@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from traffic_analysis.features.counting.domain.line_counter import LineCrossingCounter
 from traffic_analysis.features.counting.domain.models import (
+    SNAPSHOT_CAUSE_PRIORITY,
     AnalysisStats,
     CountingLineDef,
     CrossingEvent,
@@ -34,6 +35,7 @@ from traffic_analysis.features.counting.domain.models import (
     LineTally,
     PlateDetection,
     SessionTrack,
+    SnapshotCause,
     TrackObservation,
     VehicleRecord,
     ZoneDef,
@@ -42,8 +44,6 @@ from traffic_analysis.features.counting.domain.models import (
 from traffic_analysis.features.counting.domain.plate_geometry import unread_reason
 from traffic_analysis.features.counting.domain.plate_text import normalise_plate_reading
 from traffic_analysis.features.counting.domain.plate_vote import PlateTextVote
-from traffic_analysis.features.counting.domain.scale_field import ScaleField
-from traffic_analysis.features.counting.domain.speed import SpeedEstimator, to_kmh
 from traffic_analysis.features.counting.domain.track_numbering import TrackNumbering
 from traffic_analysis.features.counting.domain.zone_counter import ZonePresenceCounter
 from traffic_analysis.features.counting.domain.zone_geometry import point_is_in_any_zone
@@ -96,7 +96,6 @@ class SessionConfig:
     #: distinction que le panneau de diagnostic affiche, et qui était impossible à
     #: établir sans cette valeur. Le défaut est celui du schéma de requête.
     confidence_threshold: float = 0.35
-    pixels_per_meter: float | None = None
     #: La lecture du texte de plaque tourne-t-elle réellement ?
     #:
     #: Ce que le service a **résolu**, et non ce que la requête a demandé : le
@@ -160,12 +159,62 @@ class _VehicleAggregate:
     #: dégage. Sans ce drapeau, les deux se confondraient en « pas de texte », et
     #: les deux appellent pourtant des gestes opposés.
     plate_read_attempted: bool = False
+    #: Confiance de lecture de la **capture** retenue, ou `None`.
+    #:
+    #: Le pendant exact de `best_plate_score` pour l'image plutôt que pour la boîte,
+    #: et la règle est la même : strictement croissante. Une lecture moins sûre que
+    #: la précédente ne remplace rien.
+    #:
+    #: **`None` n'est plus « aucune capture »** depuis ADR 0051 : les causes
+    #: `plate_box` et `appearance` n'ont aucune lecture à porter. Ce champ est
+    #: **dérivé** de `snapshot_rank` par `record_snapshot`, et n'existe que pour
+    #: publier une confiance sans obliger l'écran à savoir quel tier porte quoi.
+    snapshot_score: float | None = None
+    #: Instant de scène de cette capture. `None` ssi `snapshot_cause` l'est.
+    snapshot_ms: float | None = None
+    #: Pourquoi la capture retenue existe, ou `None` — il n'y en a aucune.
+    #:
+    #: **C'est le drapeau de présence**, avec `snapshot_ms` : voir `SnapshotCause`.
+    snapshot_cause: SnapshotCause | None = None
+    #: Valeur de rang de la capture retenue, **dans son tier et jamais au-delà**.
+    #:
+    #: `plate_text` → une confiance de lecture, dans [0, 1]. `plate_box` → la largeur
+    #: de la boîte de plaque, en pixels. `appearance` → la largeur de la boîte du
+    #: véhicule, en pixels. Les fondre en un seul nombre comparable ferait comparer
+    #: des pixels à une probabilité : la comparaison serait vraie **par accident**, et
+    #: une plaque lue à 0,95 perdrait contre n'importe quelle boîte de 40 px.
+    snapshot_rank: float | None = None
+    #: Largeur, en pixels, de la vue dont l'apparence a été encodée. `None` = jamais.
+    #:
+    #: Même rôle que `snapshot_score` pour la capture, et même règle : strictement
+    #: croissante. Ce n'est **pas** une ressemblance — c'est la valeur de la *vue*, et
+    #: les confondre ferait réencoder chaque fois que la ressemblance change, donc sans
+    #: rapport avec la qualité de l'image courante (le piège qu'ADR 0042 documente sur
+    #: le score du vote de plaque).
+    #:
+    #: **La largeur de boîte et non « largeur × netteté »**, contrairement à ce que le
+    #: choix de l'OCR aurait suggéré, et pour une raison structurelle : la netteté
+    #: demande les pixels, donc un recadrage. Le service doit pouvoir demander « est-ce
+    #: que ça vaut une inférence » **avant** de payer quoi que ce soit, et il ne connaît
+    #: à ce moment que la boîte. Une clé que le domaine ne peut pas évaluer force un
+    #: pré-filtre approximatif — et la première version de ce code en est morte : elle
+    #: interrogeait la règle avec `0.0`, ce qui excluait définitivement tout véhicule
+    #: déjà encodé et rendait impossible le remplacement d'une vue par une meilleure.
+    #: La netteté reste un **plancher** dans l'adaptateur, jamais un critère de rang.
+    appearance_width_px: float | None = None
+    #: Ressemblance à l'image de requête, dans [-1, 1], ou `None`.
+    #:
+    #: **Aucun compteur ne la lit.** Elle ne sert qu'à la recherche par image, et
+    #: c'est ce qui met cette fonctionnalité hors du champ d'ADR 0016 : un véhicule
+    #: ressemblant n'est pas un véhicule compté deux fois.
+    match_score: float | None = None
 
 
 class AnalysisSession:
     """Compte les véhicules d'un flux de détections suivies, frame par frame."""
 
     __slots__ = (
+        "_active_count",
         "_aggregates",
         "_config",
         "_contained_out",
@@ -177,7 +226,6 @@ class AnalysisSession:
         "_masked_out",
         "_numbering",
         "_rescued_by_low_score",
-        "_speed",
         "_tracks",
         "_zones",
     )
@@ -194,15 +242,15 @@ class AnalysisSession:
         self._counter = LineCrossingCounter(config.lines, config.zones, config.min_hits)
         self._zones = ZonePresenceCounter(config.zones, config.min_hits)
         self._numbering = TrackNumbering()
-        # Le champ d'échelle est construit une fois : les lignes ne bougent pas
-        # pendant une analyse. Sans ligne calibrée il retombe sur l'échelle
-        # globale, donc une configuration existante est inchangée.
-        self._speed = SpeedEstimator(
-            ScaleField(config.lines, global_px_per_meter=config.pixels_per_meter)
-        )
         # Toutes les pistes connues, pas seulement les actives : `_release_lost`
         # doit pouvoir abandonner une piste qui a cessé d'être rapportée.
         self._tracks: dict[int, SessionTrack] = {}
+        # Pistes rapportées sur la **dernière** frame : le chiffre qu'affiche
+        # « Objets suivis », donc exactement le nombre de boîtes dessinées.
+        # `len(self._tracks)` ne peut pas jouer ce rôle — il compte aussi les pistes
+        # perdues encore retenues pour `max_lost_ms`, et redescendait donc deux
+        # secondes et demie après les boîtes.
+        self._active_count = 0
         # Numéro de véhicule → son histoire. **Jamais purgé** : le registre s'en
         # sert à la fin, et un véhicule sorti du champ à la dixième seconde doit
         # encore y figurer.
@@ -263,11 +311,11 @@ class AnalysisSession:
         counted = self._counter.counted_identities()
         for track in active:
             track.counted = track.global_id != 0 and track.global_id in counted
-            track.speed_px_s = self._speed.observe(track.global_id, track.centroid, timestamp_ms)
 
         self._aggregate(active, crossings, timestamp_ms)
 
         self._frame_index = frame_index
+        self._active_count = len(active)
         if self._first_timestamp_ms is None:
             self._first_timestamp_ms = timestamp_ms
         self._last_timestamp_ms = timestamp_ms
@@ -595,6 +643,170 @@ class AnalysisSession:
         aggregate = self._aggregates.get(global_id)
         return aggregate is not None and aggregate.plate_vote.is_confident
 
+    def should_capture(
+        self,
+        global_id: int,
+        cause: SnapshotCause,
+        rank: float,
+        improvement: float = 1.0,
+    ) -> bool:
+        """Cette vue bat-elle la capture déjà retenue pour ce véhicule ?
+
+        **Deux questions dans l'ordre, et l'ordre est la décision d'ADR 0051.**
+        D'abord la cause : une plaque lue prouve plus qu'une plaque vue, qui prouve
+        plus qu'une ressemblance, donc un tier plus haut passe **toujours** et un tier
+        plus bas ne passe **jamais**. Ensuite, et seulement à tier égal, le rang.
+
+        Comparer les rangs entre tiers serait une erreur d'unité invisible : l'un est
+        une probabilité, les deux autres des pixels. `0,95` de confiance perdrait
+        contre une boîte de 40 px, et le chiffre resterait plausible.
+
+        À tier égal, **la règle que l'utilisateur a décrite pour la lecture** : à 0,80
+        on capture, à 0,90 on remplace, à 0,85 ensuite on ne touche plus à rien. Une
+        comparaison stricte, donc monotone croissante — une capture ne peut jamais
+        être remplacée par moins bien.
+
+        **`improvement` est la marge, et elle est obligatoire sur les deux tiers dont
+        le rang est une largeur.** « Strictement plus large » est vrai à presque chaque
+        image d'un véhicule qui approche : c'est exactement ce qu'ADR 0050 a payé sur
+        l'encodage d'apparence, et la largeur d'une boîte de plaque croît de la même
+        façon — l'étranglement du détecteur (une image sur trois) ne divise le problème
+        que par trois. Sur `plate_text`, la marge doit rester à `1.0` : son rang est une
+        probabilité, il ne croît pas avec l'approche, et une marge y affamerait la
+        meilleure preuve pour rien.
+
+        `1.0` reproduit l'ancien comportement au bit près (`r > best * 1.0` ≡
+        `r > best`), ce qui rend le tier `plate_text` inchangé.
+
+        Une **question pure**, séparée de `record_snapshot` : l'appelant doit
+        pouvoir demander « est-ce que ça vaut le coup » *avant* de dépenser un
+        encodage, et n'enregistrer qu'une fois les octets réellement produits. Les
+        fondre en un seul appel laisserait, sur un encodage raté, un véhicule qui
+        annonce une capture sans fichier.
+
+        Rend `False` sur une identité inconnue — `0` en est une, et le service la
+        rencontre — comme `plate_text_is_confident` juste au-dessus.
+        """
+        aggregate = self._aggregates.get(global_id)
+        if aggregate is None:
+            return False
+        current = aggregate.snapshot_cause
+        if current is None:
+            return True
+        if SNAPSHOT_CAUSE_PRIORITY[cause] != SNAPSHOT_CAUSE_PRIORITY[current]:
+            return SNAPSHOT_CAUSE_PRIORITY[cause] > SNAPSHOT_CAUSE_PRIORITY[current]
+        return rank > (aggregate.snapshot_rank or 0.0) * max(1.0, improvement)
+
+    def record_snapshot(
+        self,
+        global_id: int,
+        cause: SnapshotCause,
+        rank: float,
+        timestamp_ms: float,
+    ) -> None:
+        """Retient la capture qui vient d'être produite. À appeler **après** succès.
+
+        Ne revérifie pas `should_capture` : le service a déjà posé la question, et
+        la reposer ici ferait exister deux endroits qui décident de la même chose.
+
+        **La confiance publiée est dérivée ici**, et non passée en cinquième
+        paramètre : c'est ce qui interdit à un appelant d'annoncer `plate_box` en
+        posant une confiance de lecture, donc de publier un `snapshot_score` que rien
+        n'a lu. L'invariant « non-nul implique `plate_text` » tient par construction
+        et pas par discipline.
+        """
+        aggregate = self._aggregates.get(global_id)
+        if aggregate is None:
+            return
+        aggregate.snapshot_cause = cause
+        aggregate.snapshot_rank = rank
+        aggregate.snapshot_ms = timestamp_ms
+        aggregate.snapshot_score = rank if cause == "plate_text" else None
+
+    def should_embed(self, global_id: int, width_px: float, improvement: float = 1.0) -> bool:
+        """Cette vue bat-elle **franchement** celle dont l'apparence est déjà encodée ?
+
+        **Le jumeau exact de `should_capture`**, et pour la même raison d'être : sans
+        règle monotone, on encoderait à chaque image de chaque véhicule, ce qui est
+        précisément le profil de coût qu'ADR 0032 a démonté sur le détecteur de
+        plaques. Avec elle, on encode quelques fois dans la vie d'un véhicule.
+
+        `width_px` est la largeur de la **boîte du véhicule**, et le choix de cette
+        unité est ce qui rend la question posable avant toute dépense : la netteté
+        demanderait un recadrage, donc des pixels que le domaine n'a pas. Ce n'est
+        **pas** la ressemblance : classer les vues sur la ressemblance ferait réencoder
+        quand une *autre* image change le score, sans rapport avec la qualité de
+        celle-ci.
+
+        Une **question pure**, séparée de `record_embedding` : l'appelant demande
+        « est-ce que ça vaut une inférence » avant de la payer.
+
+        Rend `False` sur une identité inconnue — `0` en est une.
+
+        **`improvement` est la marge, et sans elle la règle monotone ne bornait
+        rien.** « Strictement plus large » est vrai à *presque chaque image* d'un
+        véhicule qui approche, puisque sa largeur croît de façon quasi monotone : on
+        payait donc jusqu'à un encodage par image analysée — 21,8 ms de CPU mesurés
+        par vignette — pour un étage que la docstring de l'adaptateur annonçait
+        comme « une fois par véhicule ». Ce que la mesure d'ADR 0048 comptait (« 8
+        suivis, 2 encodés ») était un nombre de *véhicules*, pas d'*encodages*.
+
+        La marge borne le **total sur la vie d'une piste**, et c'est ce qui la
+        distingue d'une cadence : elle autorise au plus `log_k(W_max / W_min)`
+        encodages, soit onze à `1,15` entre le plancher de 96 px et 400 px, quelle
+        que soit la cadence de la vidéo. Une cadence `every_n_frames = 3` en
+        laisserait passer une cinquantaine sur un passage de six secondes.
+
+        **Le mode de panne d'ADR 0029 ne se rejoue pas ici**, et la raison est
+        structurelle : le consommateur de l'OCR est *statistique* — `PlateTextVote`
+        exige plusieurs lectures concordantes, donc raréfier les lectures empêche un
+        texte d'exister. Celui de la ReID est un *remplacement* : `record_embedding`
+        écrase `match_score` au lieu de l'accumuler. Il n'y a aucun vote à affamer,
+        et la première vue reste inconditionnelle (`appearance_width_px is None`),
+        donc **aucun véhicule candidat ne perd son score** — la marge ne peut
+        refuser qu'une amélioration.
+
+        `1.0` reproduit l'ancien comportement au bit près (`w > best * 1.0` ≡
+        `w > best`), ce qui rend le réglage strictement additif.
+        """
+        aggregate = self._aggregates.get(global_id)
+        if aggregate is None:
+            return False
+        best = aggregate.appearance_width_px
+        return best is None or width_px > best * max(1.0, improvement)
+
+    def has_appearance(self, global_id: int) -> bool:
+        """Cette piste a-t-elle **déjà** été encodée, une fois au moins ?
+
+        Sert le classement du plafond par image : une piste jamais encodée passe
+        devant, sans quoi un véhicule apparu au milieu d'un embouteillage pourrait
+        traverser tout le champ sans jamais recevoir de score de ressemblance.
+
+        **Ce n'est pas `match_score is not None`**, et la nuance décide du
+        comportement : le score reste `None` après un encodage réussi quand il tombe
+        sous `reid_min_similarity`, ou quand il n'y a pas d'image de requête. Le
+        prendre pour prédicat ferait réencoder indéfiniment tous les véhicules qui ne
+        ressemblent pas à la requête — c'est-à-dire l'immense majorité.
+        """
+        aggregate = self._aggregates.get(global_id)
+        return aggregate is not None and aggregate.appearance_width_px is not None
+
+    def record_embedding(self, global_id: int, width_px: float, match_score: float | None) -> None:
+        """Retient la vue encodée et la ressemblance mesurée dessus.
+
+        Ne revérifie pas `should_embed` : le service a déjà posé la question, et la
+        reposer ici ferait exister deux endroits qui décident de la même chose.
+
+        `match_score` à `None` est un état **normal** : il n'y a pas d'image de
+        requête. L'apparence est alors encodée pour rien — c'est pourquoi le service
+        n'appelle cet étage qu'en présence d'une requête.
+        """
+        aggregate = self._aggregates.get(global_id)
+        if aggregate is None:
+            return
+        aggregate.appearance_width_px = width_px
+        aggregate.match_score = match_score
+
     # ── Sorties ──────────────────────────────────────────────────────────────
 
     def stats(self) -> AnalysisStats:
@@ -651,7 +863,13 @@ class AnalysisSession:
                 zone_id: _copy_zone_tally(tally) for zone_id, tally in self._zones.by_zone.items()
             },
             vehicles_per_minute=vehicles_per_minute,
-            active_tracks=len(self._tracks),
+            # Les pistes de la **dernière frame**, pas toutes les pistes retenues :
+            # c'est ce que l'écran dessine, et c'est la même définition que
+            # `activeTracks` de la relecture côté client (`tracks.length`). Compter
+            # `self._tracks` faisait traîner le chiffre jusqu'à `max_lost_ms` après
+            # la sortie du champ des véhicules — un retard visible, sur un chiffre
+            # dont tout l'intérêt est d'être un instantané.
+            active_tracks=self._active_count,
             # Côté serveur, le temps « écoulé » **est** le temps de scène analysé :
             # il n'y a pas d'attente d'utilisateur à mesurer. Le champ reste dans
             # le contrat parce que l'interface affiche les deux.
@@ -710,13 +928,12 @@ class AnalysisSession:
             if not self._numbering.is_confirmed(global_id):
                 continue
             aggregate = self._aggregates[global_id]
-            # **Avant** le vote de plaque et la moyenne de vitesse, pas après : sur
+            # **Avant** le vote de plaque, pas après : sur
             # une scène réelle deux tiers des objets suivis n'ont franchi aucune
             # ligne, et construire leurs enregistrements pour les jeter aussitôt
             # taxerait chaque aperçu au profit de personne.
             if crossed_only and not aggregate.crossings:
                 continue
-            average = self._speed.average_px_s(global_id)
             reason = (
                 None
                 if aggregate.plate_vote.text
@@ -741,15 +958,6 @@ class AnalysisSession:
                     last_seen_ms=aggregate.last_seen_ms,
                     crossed_lines=tuple(aggregate.crossings),
                     zones_visited=self._zones.zones_visited(global_id),
-                    avg_speed_px_s=average,
-                    # **La mesure locale d'abord, l'échelle globale en repli.**
-                    # `average_kmh` n'existe que si des mètres ont réellement été
-                    # cumulés à l'échelle de chaque bout de trajet ; sinon on
-                    # retombe exactement sur le calcul d'avant la calibration par
-                    # ligne, ce qui garde les configurations existantes
-                    # inchangées.
-                    avg_speed_kmh=self._speed.average_kmh(global_id)
-                    or to_kmh(average, self._config.pixels_per_meter),
                     best_plate_score=aggregate.best_plate_score,
                     # Le texte du **vote**, comme `label` est le libellé du vote :
                     # jamais la dernière lecture, qui est souvent la plus oblique.
@@ -762,6 +970,10 @@ class AnalysisSession:
                     plate_best_width_px=aggregate.best_plate_width_px,
                     plate_best_guess=best_guess[0] if best_guess else None,
                     plate_best_guess_score=best_guess[1] if best_guess else None,
+                    snapshot_score=aggregate.snapshot_score,
+                    snapshot_ms=aggregate.snapshot_ms,
+                    snapshot_kind=aggregate.snapshot_cause,
+                    match_score=aggregate.match_score,
                 )
             )
         return tuple(records)

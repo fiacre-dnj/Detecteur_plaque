@@ -19,10 +19,25 @@ fuse_score: true
 
 track_buffer: 75
 
-# ReID d'apparence : gratuite ici puisque le modèle produit déjà les
-# caractéristiques nécessaires. Elle maintient l'identité à travers les
-# occlusions **courtes** ; au-delà, c'est la galerie du domaine qui prend le
-# relais avec ses propres descripteurs.
+# ReID d'apparence. Elle maintient l'identité à travers les occlusions
+# **courtes** — au-delà, plus rien ne la rattrape : la galerie d'identités du
+# domaine a été supprimée par ADR 0016, et un véhicule occulté plus longtemps que
+# `track_buffer` compte pour un véhicule de plus, contrepartie assumée et
+# verrouillée par un test.
+#
+# **Elle n'est gratuite que sur une tête de détection avec NMS**, et cette
+# condition n'est pas écrite ici parce qu'elle ne peut pas l'être : elle dépend du
+# modèle que l'utilisateur choisit. `model: auto` veut dire « prends les
+# caractéristiques que le détecteur produit déjà » — vrai pour v8, 11 et 12. Sur
+# une tête `end2end` (famille 26), Ultralytics remplace silencieusement `auto` par
+# un `yolo26n-cls.pt` qu'il **télécharge**, puis exécute ce réseau de
+# classification sur chaque recadrage de chaque image : mesuré, `yolo26n` passe de
+# 61,81 à 15,09 img/s pour des franchissements identiques.
+#
+# Le moteur coupe donc `with_reid` pour cette famille, par un fichier dérivé, en
+# interrogeant le graphe et non le nom du fichier. Voir `head_is_end2end` et
+# ADR 0047. Ne pas « simplifier » en posant `false` ici : les trois autres familles
+# y perdraient une continuité d'identité qui leur coûte 0,91×.
 with_reid: true
 model: auto
 proximity_thresh: 0.5

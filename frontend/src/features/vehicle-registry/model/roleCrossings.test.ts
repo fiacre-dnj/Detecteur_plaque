@@ -26,7 +26,6 @@ function line(id: string, overrides: Partial<CountingLine> = {}): CountingLine {
     negativeName: "",
     positiveRole: "entry",
     negativeRole: "exit",
-    lengthMeters: null,
     ...overrides,
   };
 }
@@ -39,8 +38,6 @@ function vehicle(crossedLines: VehicleRecord["crossedLines"] = []): VehicleRecor
     lastSeenMs: 10_000,
     crossedLines,
     zonesVisited: [],
-    avgSpeedPxS: null,
-    avgSpeedKmh: null,
     bestPlateScore: null,
     plateText: null,
     plateTextScore: null,
@@ -158,5 +155,59 @@ describe("crossingsWithoutRole", () => {
 
     expect(parts).toHaveLength(record.crossedLines.length);
     expect(new Set(parts)).toEqual(new Set(record.crossedLines));
+  });
+});
+
+describe("la partition reste exacte avec les nouveaux rôles", () => {
+  /**
+   * **Le test qui protège le registre d'un passage perdu.**
+   *
+   * `crossingsWithoutRole` a longtemps été écrite `=== "neutral"`, quand `neutral`
+   * était le seul rôle sans colonne. L'arrivée de « Interdit » et « Passage » aurait
+   * fait disparaître ces franchissements des deux côtés — ni rangés sous un rôle, ni
+   * comptés hors rôle — et la colonne « Passages », qui les compte, aurait cessé de
+   * s'expliquer. Rien n'aurait planté.
+   */
+  it("entrée + sortie + interdit + autres = tous les franchissements", () => {
+    const lines = [
+      line("nord", { positiveRole: "entry", negativeRole: "forbidden" }),
+      line("est", { positiveRole: "transit", negativeRole: "transit" }),
+      line("sud", { positiveRole: "entry", negativeRole: "exit" }),
+    ];
+    const subject = vehicle([
+      { lineId: "nord", direction: 1, timestampMs: 1_000 },
+      { lineId: "nord", direction: -1, timestampMs: 2_000 },
+      { lineId: "est", direction: 1, timestampMs: 3_000 },
+      { lineId: "sud", direction: -1, timestampMs: 4_000 },
+      { lineId: "disparue", direction: 1, timestampMs: 5_000 },
+    ]);
+
+    const counted =
+      crossingsWithRole(subject, lines, "entry").length +
+      crossingsWithRole(subject, lines, "exit").length +
+      crossingsWithRole(subject, lines, "forbidden").length +
+      crossingsWithoutRole(subject, lines).length;
+
+    expect(counted).toBe(subject.crossedLines.length);
+  });
+
+  it("range un passage de comptage seul dans « Autres passages »", () => {
+    // `transit` n'a pas de colonne à lui : lui en inventer une ajouterait une
+    // colonne vide sur tous les autres tracés. « Autres passages » dit exactement ce
+    // qu'il est.
+    const lines = [line("est", { positiveRole: "transit", negativeRole: "transit" })];
+    const subject = vehicle([{ lineId: "est", direction: 1, timestampMs: 1_000 }]);
+
+    expect(crossingsWithoutRole(subject, lines)).toHaveLength(1);
+  });
+
+  it("ne range pas une infraction dans « Autres passages »", () => {
+    // Elle a sa colonne : l'y ranger aussi la compterait deux fois dans une
+    // partition qui doit rester exacte.
+    const lines = [line("nord", { positiveRole: "entry", negativeRole: "forbidden" })];
+    const subject = vehicle([{ lineId: "nord", direction: -1, timestampMs: 1_000 }]);
+
+    expect(crossingsWithoutRole(subject, lines)).toHaveLength(0);
+    expect(crossingsWithRole(subject, lines, "forbidden")).toHaveLength(1);
   });
 });

@@ -223,6 +223,15 @@ function FilterBar({
     { role: "entry", label: "Entrées", count: facets.byRole.entry },
     { role: "exit", label: "Sorties", count: facets.byRole.exit },
   ];
+  // Mêmes règles d'apparition que « Sans rôle » ci-dessous : un onglet permanent à
+  // zéro sur un tracé qui ne déclare aucune de ces deux natures serait un choix de
+  // plus à lire pour rien.
+  if (facets.byRole.forbidden > 0) {
+    roles.push({ role: "forbidden", label: "Interdits", count: facets.byRole.forbidden });
+  }
+  if (facets.byRole.transit > 0) {
+    roles.push({ role: "transit", label: "Passages", count: facets.byRole.transit });
+  }
   // « Sans rôle » n'apparaît que s'il y en a : sur un tracé conforme à ADR 0021, cet
   // onglet serait un troisième choix permanent à zéro.
   if (facets.byRole.neutral > 0) {
@@ -482,6 +491,11 @@ function Passage({ entry, latest }: { entry: CrossingEntry; latest: boolean }) {
 const ROLE_STYLE: Readonly<Record<DirectionRole, string>> = {
   entry: "bg-ink/15 text-ink ring-ink/25",
   exit: "bg-ink/5 text-ink-muted ring-line/60",
+  // La seule exception à la règle ci-dessus, et elle la confirme : le rouge n'encode
+  // pas *quel* sens, il encode qu'il ne fallait pas passer. C'est une gravité, pas
+  // une catégorie — la ligne et la classe gardent leurs teintes intactes à côté.
+  forbidden: "bg-negative/15 text-negative ring-negative/40",
+  transit: "bg-ink/5 text-ink-muted ring-line/60",
   neutral: "bg-elevated text-ink-dim ring-transparent",
 };
 

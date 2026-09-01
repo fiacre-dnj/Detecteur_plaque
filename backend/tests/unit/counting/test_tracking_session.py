@@ -96,18 +96,6 @@ class TestVehiculeQuiTraverse:
         assert record.last_seen_ms == pytest.approx(9 * FRAME_MS)
         assert len(record.crossed_lines) == 1
         assert record.crossed_lines[0].line_id == "l1"
-        # Sans échelle px/m fournie, la vitesse reste en px/s.
-        assert record.avg_speed_px_s is not None
-        assert record.avg_speed_kmh is None
-
-    def test_avec_une_echelle_la_vitesse_est_convertie(self) -> None:
-        session = AnalysisSession(_config(pixels_per_meter=10.0), FRAME_WIDTH, FRAME_HEIGHT)
-        path = [(900.0, 300.0 + step * 50.0) for step in range(10)]
-
-        for index, observation in enumerate(track_path(1, CAR, path)):
-            session.feed(index, index * FRAME_MS, (observation,))
-
-        assert session.vehicles()[0].avg_speed_kmh is not None
 
 
 class TestNumerotationDesVehicules:
@@ -465,6 +453,30 @@ class TestVoteDeClasse:
 
 
 class TestStatistiques:
+    def test_les_pistes_actives_sont_celles_de_la_derniere_frame(self) -> None:
+        """« Objets suivis » est un instantané, pas la mémoire de la session.
+
+        Une piste perdue survit jusqu'à `max_lost_ms` pour que le tracker puisse la
+        réactiver avec son identifiant. La compter dans `active_tracks` faisait
+        redescendre le chiffre deux secondes et demie **après** les boîtes de
+        l'écran, et le rendait incomparable à celui de la relecture, que le client
+        calcule sur les pistes de la frame.
+        """
+        session = AnalysisSession(_config(max_lost_ms=2500.0), FRAME_WIDTH, FRAME_HEIGHT)
+
+        for index, observation in enumerate(
+            track_path(1, CAR, [(900.0, 300.0 + step * 50.0) for step in range(6)])
+        ):
+            session.feed(index, index * FRAME_MS, (observation,))
+        assert session.stats().active_tracks == 1
+
+        # La piste cesse d'être rapportée, mais reste retenue : la session ne l'a pas
+        # oubliée (elle garde son numéro), l'écran ne la dessine plus.
+        session.feed(6, 6 * FRAME_MS, ())
+        stats = session.stats()
+        assert stats.active_tracks == 0
+        assert stats.tracked_vehicles == 1
+
     def test_les_franchissements_sont_derives_du_detail_par_ligne(self) -> None:
         session = AnalysisSession(
             _config(
@@ -853,6 +865,112 @@ class TestTexteDePlaque:
         session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
         assert session.plate_text_is_confident(0) is False
         assert session.plate_text_is_confident(999) is False
+
+
+class TestRegleDeCapture:
+    """`should_capture` et `record_snapshot`, testés directement. ADR 0051.
+
+    Ils n'avaient aucun test de domaine : tout passait par le service, où la cause et
+    le rang sont choisis par du code d'application. Ici on interroge la règle
+    elle-même, et c'est le seul endroit où l'échelle de priorité est visible d'un
+    coup d'œil.
+    """
+
+    @staticmethod
+    def _session_with_track() -> tuple[AnalysisSession, int]:
+        """Deux images : la piste doit être **confirmée** pour entrer dans `vehicles()`."""
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+        session.feed(0, 0.0, (track_path(1, CAR, [(900.0, 300.0)])[0],))
+        outcome = session.feed(1, FRAME_MS, (track_path(1, CAR, [(900.0, 350.0)])[0],))
+        return session, outcome.tracks[0].global_id
+
+    def test_la_premiere_capture_passe_quelle_que_soit_la_cause(self) -> None:
+        session, global_id = self._session_with_track()
+
+        assert session.should_capture(global_id, "appearance", 60.0) is True
+
+    def test_une_cause_plus_prioritaire_passe_toujours(self) -> None:
+        """Même avec un rang numériquement bien plus petit.
+
+        C'est le cas qu'une comparaison de rangs entre tiers raterait : 0,80 de
+        confiance de lecture contre 300 px de largeur.
+        """
+        session, global_id = self._session_with_track()
+        session.record_snapshot(global_id, "appearance", 300.0, 0.0)
+
+        assert session.should_capture(global_id, "plate_box", 40.0) is True
+        assert session.should_capture(global_id, "plate_text", 0.80) is True
+
+    def test_une_cause_moins_prioritaire_est_refusee_meme_avec_un_meilleur_rang(self) -> None:
+        session, global_id = self._session_with_track()
+        session.record_snapshot(global_id, "plate_text", 0.80, 0.0)
+
+        assert session.should_capture(global_id, "plate_box", 999.0) is False
+        assert session.should_capture(global_id, "appearance", 999.0) is False
+
+    def test_a_cause_egale_seule_une_meilleure_vue_passe(self) -> None:
+        session, global_id = self._session_with_track()
+        session.record_snapshot(global_id, "plate_text", 0.90, 0.0)
+
+        assert session.should_capture(global_id, "plate_text", 0.85) is False
+        assert session.should_capture(global_id, "plate_text", 0.95) is True
+
+    def test_la_marge_refuse_une_amelioration_trop_faible(self) -> None:
+        """Le garde-fou d'ADR 0050, porté sur les tiers dont le rang est une largeur.
+
+        À 1,15, une vue 10 % plus large ne suffit pas : sans cela, « plus large » est
+        vrai à presque chaque image d'un véhicule qui approche.
+        """
+        session, global_id = self._session_with_track()
+        session.record_snapshot(global_id, "appearance", 100.0, 0.0)
+
+        assert session.should_capture(global_id, "appearance", 110.0, 1.15) is False
+        assert session.should_capture(global_id, "appearance", 120.0, 1.15) is True
+
+    def test_une_marge_sous_un_est_ramenee_a_un(self) -> None:
+        """Comme `should_embed` : une marge inférieure à 1 rendrait la règle
+        décroissante, donc remplaçable par moins bien."""
+        session, global_id = self._session_with_track()
+        session.record_snapshot(global_id, "plate_text", 0.90, 0.0)
+
+        assert session.should_capture(global_id, "plate_text", 0.89, 0.5) is False
+
+    def test_une_identite_inconnue_refuse_sans_lever(self) -> None:
+        """`0` en est une, et le service la rencontre."""
+        session, _ = self._session_with_track()
+
+        assert session.should_capture(0, "plate_text", 0.99) is False
+        # Et l'enregistrement se tait de la même façon.
+        session.record_snapshot(0, "plate_text", 0.99, 0.0)
+
+    def test_le_score_publie_n_existe_que_sur_le_tier_lu(self) -> None:
+        """L'invariant que `record_snapshot` tient **par construction**.
+
+        La confiance est dérivée de la cause et non passée à part : c'est ce qui
+        interdit à un appelant d'annoncer `plate_box` en posant une confiance de
+        lecture, donc de publier un `snapshotScore` que rien n'a lu.
+        """
+        session, global_id = self._session_with_track()
+
+        session.record_snapshot(global_id, "plate_box", 82.0, 40.0)
+        vehicle = session.vehicles()[0]
+        assert vehicle.snapshot_kind == "plate_box"
+        assert vehicle.snapshot_score is None
+        assert vehicle.snapshot_ms == pytest.approx(40.0)
+
+        session.record_snapshot(global_id, "plate_text", 0.77, 80.0)
+        vehicle = session.vehicles()[0]
+        assert vehicle.snapshot_kind == "plate_text"
+        assert vehicle.snapshot_score == pytest.approx(0.77)
+
+    def test_sans_capture_les_trois_champs_sont_nuls(self) -> None:
+        """Le drapeau est `snapshot_ms` doublé de `snapshot_kind`, et ils vont ensemble."""
+        session, _ = self._session_with_track()
+        vehicle = session.vehicles()[0]
+
+        assert vehicle.snapshot_kind is None
+        assert vehicle.snapshot_ms is None
+        assert vehicle.snapshot_score is None
 
 
 class TestZones:

@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from traffic_analysis.features.counting.domain.geometry import Point, distance
+from traffic_analysis.features.counting.domain.geometry import Point
 
 #: Pourquoi aucune plaque n'est publiée pour un véhicule — **cinq causes, cinq
 #: gestes différents**.
@@ -40,6 +40,34 @@ type PlateUnreadReason = Literal[
     "too_blurry",
     "no_consensus",
 ]
+
+#: Pourquoi un véhicule a reçu une photo — **trois causes, une seule photo**.
+#:
+#: - `plate_text` : une plaque a été **lue** sur l'image retenue. C'est la cause
+#:   d'origine (ADR 0042), et la seule qui porte une confiance de lecture.
+#: - `plate_box` : une plaque y a été **localisée** sans qu'aucun texte soit publié —
+#:   trop petite, trop floue, lecture refusée, OCR éteint. La photo est alors la seule
+#:   chose qui permette de lire ce que le serveur a refusé d'affirmer, et ce cas est
+#:   le plus fréquent sur une vue large (voir `too_small` ci-dessus).
+#: - `appearance` : l'apparence du véhicule a été encodée pour une recherche par
+#:   image. **Aucune plaque n'entre dans cette capture**, et elle ne dépend ni de
+#:   l'ANPR ni de l'OCR.
+#:
+#: Ce n'est pas la *face* d'un fichier (`vehicle` / `plate`, `SnapshotFace` dans la
+#: feature `jobs`) : c'est la raison d'être de la capture entière.
+type SnapshotCause = Literal["plate_text", "plate_box", "appearance"]
+
+#: L'échelle de priorité des causes, et le seul endroit qui la déclare.
+#:
+#: Une photo d'un tier plus haut remplace toujours celle d'un tier plus bas, et
+#: jamais l'inverse : une plaque lue prouve plus qu'une plaque vue, qui prouve plus
+#: qu'une ressemblance. Comparer les *rangs* entre tiers n'aurait aucun sens — l'un
+#: est une probabilité, les deux autres des pixels (voir `should_capture`).
+SNAPSHOT_CAUSE_PRIORITY: dict[SnapshotCause, int] = {
+    "appearance": 1,
+    "plate_box": 2,
+    "plate_text": 3,
+}
 
 # Les quatre classes COCO comptées, traitées à l'identique.
 #
@@ -67,9 +95,20 @@ type CountCategory = Literal["vehicle", "person"]
 #: domaine de comptage est délibéré — c'est une étiquette de lecture, et lui donner
 #: un effet sur les totaux ferait dépendre un chiffre d'un mot.
 #:
-#: `neutral` est le défaut, et il est fréquent : une ligne posée en travers d'une
-#: voie de transit ne fait entrer ni sortir de nulle part.
-type DirectionRole = Literal["entry", "exit", "neutral"]
+#: Cinq valeurs, parce qu'il y a cinq significations distinctes :
+#:
+#: - `entry` / `exit` — le bilan du carrefour ;
+#: - `forbidden` — le sens est interdit. **Le franchissement est compté quand
+#:   même** : une infraction est un passage qualifié, pas un passage retiré, et
+#:   l'invariant `crossings == Σ by_line[*].total` en dépend ;
+#: - `transit` — compté, délibérément hors bilan (une route qui n'est pas un
+#:   carrefour) ;
+#: - `neutral` — **hérité uniquement** : « personne ne l'a dit ». L'éditeur ne le
+#:   produit plus depuis ADR 0021, mais un preset ou un `config_json` antérieur
+#:   peut encore le porter. Le distinguer de `transit` est ce qui permet à
+#:   l'interface de continuer à séparer « aucun rôle déclaré » d'un choix
+#:   explicite.
+type DirectionRole = Literal["entry", "exit", "forbidden", "transit", "neutral"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,11 +253,11 @@ class CountingLineDef:
     précise d'un carrefour sans compter la voie voisine que la même ligne
     traverse.
 
-    Les quatre champs de sens sont **de la description, pas du comptage** : le
-    compteur ne les lit jamais. Ils traversent le domaine pour être persistés dans
-    la configuration du job et rendus à l'interface, qui seule sait ce que veut
-    dire « entrée ». Un chiffre ne doit pas dépendre d'un mot que l'utilisateur
-    peut corriger après coup.
+    Les champs de sens et `allowed_class_ids` sont **de la description, pas du
+    comptage** : le compteur ne les lit jamais. Ils traversent le domaine pour être
+    persistés dans la configuration du job et rendus à l'interface, qui seule sait
+    ce que veut dire « entrée » ou « interdit ». Un chiffre ne doit pas dépendre
+    d'un mot que l'utilisateur peut corriger après coup.
     """
 
     id: str
@@ -235,35 +274,14 @@ class CountingLineDef:
     negative_name: str = ""
     positive_role: DirectionRole = "neutral"
     negative_role: DirectionRole = "neutral"
-    #: Longueur **réelle** du trait, en mètres. `None` = non calibrée.
+    #: Classes autorisées à franchir cette ligne, par identifiant COCO — `None`
+    #: signifie « aucune restriction », ce que porte toute ligne existante.
     #:
-    #: C'est la seule mesure de terrain que l'utilisateur puisse donner sans
-    #: matériel : la largeur d'une chaussée, l'écart entre deux passages piétons.
-    #: Elle donne une échelle **locale** — `longueur en pixels / longueur en
-    #: mètres` — là où le trait est posé, donc à la profondeur où les véhicules le
-    #: franchissent.
-    #:
-    #: Une échelle unique pour toute l'image ne peut pas être juste sur une caméra
-    #: inclinée : le mètre y vaut quelques pixels au loin et quelques dizaines au
-    #: premier plan. Plusieurs lignes calibrées à des profondeurs différentes
-    #: décrivent ce gradient sans qu'on ait à modéliser la perspective.
-    length_m: float | None = None
-
-    def pixel_length(self) -> float:
-        """Longueur du trait **en pixels source**."""
-        return distance(self.a, self.b)
-
-    def px_per_meter(self) -> float | None:
-        """Échelle locale de ce trait, ou `None` s'il n'est pas calibré.
-
-        `None` aussi pour une longueur nulle ou négative, et pour un trait
-        dégénéré : diviser par zéro donnerait `inf`, et une vitesse infinie
-        s'affiche comme un chiffre, pas comme une erreur.
-        """
-        if self.length_m is None or self.length_m <= 0.0:
-            return None
-        pixels = self.pixel_length()
-        return pixels / self.length_m if pixels > 0.0 else None
+    #: **De la description, comme les rôles** : le compteur ne la lit pas, et une
+    #: classe non autorisée est comptée exactement comme les autres. C'est
+    #: l'interface qui qualifie le franchissement d'infraction, ce qui rend la règle
+    #: corrigeable après coup sans réanalyser.
+    allowed_class_ids: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,7 +473,6 @@ class SessionTrack:
     identity_label: str = ""  # vote majoritaire — c'est LUI qui sert au comptage
     counted: bool = False  # écrit par la session depuis le tally, jamais deviné
     last_seen_ms: float = 0.0
-    speed_px_s: float | None = None
     plates: list[PlateDetection] = field(default_factory=list)
     #: Texte **voté** de l'identité, recopié depuis son agrégat par
     #: `AnalysisSession._mirror_plate_text`. Pas la lecture de la frame : c'est
@@ -499,7 +516,6 @@ class SessionTrack:
             identity_label=self.identity_label,
             counted=self.counted,
             last_seen_ms=self.last_seen_ms,
-            speed_px_s=self.speed_px_s,
             plates=list(self.plates),
             plate_text=self.plate_text,
             plate_text_score=self.plate_text_score,
@@ -534,12 +550,21 @@ class DirectionTally:
     last_ms: float | None = None
 
     def record(self, label: str, timestamp_ms: float) -> None:
-        """Enregistre un passage. **Le seul endroit qui incrémente un sens.**"""
+        """Enregistre un passage. **Le seul endroit qui incrémente un sens.**
+
+        `min` / `max` et non « première écriture » / « dernière écriture », depuis
+        qu'un franchissement porte la date de son intersection avec le trait
+        (ADR 0038) et non celle de sa sortie de bande morte. La bande a une
+        épaisseur proportionnelle à la boîte du véhicule : un poids lourd la
+        traverse bien plus lentement qu'une moto, donc **deux véhicules peuvent
+        être comptabilisés dans l'ordre inverse de leur passage réel**. Ordonner
+        par l'ordre d'arrivée rendrait alors `first_ms > last_ms`, ce qui est
+        indéfendable pour deux champs nommés ainsi.
+        """
         self.total += 1
         self.by_class[label] = self.by_class.get(label, 0) + 1
-        if self.first_ms is None:
-            self.first_ms = timestamp_ms
-        self.last_ms = timestamp_ms
+        self.first_ms = timestamp_ms if self.first_ms is None else min(self.first_ms, timestamp_ms)
+        self.last_ms = timestamp_ms if self.last_ms is None else max(self.last_ms, timestamp_ms)
 
 
 @dataclass(slots=True)
@@ -611,8 +636,6 @@ class VehicleRecord:
     last_seen_ms: float
     crossed_lines: tuple[LineCrossing, ...]
     zones_visited: tuple[str, ...]
-    avg_speed_px_s: float | None
-    avg_speed_kmh: float | None
     #: Meilleure confiance de **détection** de plaque sur toute la vie du véhicule.
     best_plate_score: float | None
     #: Texte **voté** sur toute la vie du véhicule — l'autorité de l'interface, au
@@ -657,6 +680,54 @@ class VehicleRecord:
     plate_best_guess: str | None = None
     #: Confiance moyenne du candidat ci-dessus. `None` ssi `plate_best_guess` l'est.
     plate_best_guess_score: float | None = None
+    #: Confiance de **lecture** de la capture retenue pour ce véhicule, ou `None`.
+    #:
+    #: **Ce n'est plus le drapeau « il existe une capture »** (ADR 0051) : deux des
+    #: trois causes de capture n'ont aucune lecture à publier, donc ce champ y vaut
+    #: `None` alors que la photo existe. Le drapeau est `snapshot_ms`, doublé de
+    #: `snapshot_kind` qui dit *pourquoi*. Dans l'autre sens la garantie tient
+    #: toujours : non-nul **implique** `snapshot_kind == "plate_text"`.
+    #:
+    #: Pas d'URL ici, et c'est inchangé — le serveur ne fabrique pas les adresses du
+    #: client, qui les construit lui-même depuis l'identifiant du job et le numéro
+    #: du véhicule (même convention que la vidéo déposée).
+    #:
+    #: C'est la confiance de l'**image retenue**, jamais celle du vote : le vote est
+    #: une moyenne sur toute la vie du véhicule, donc il bouge quand une *autre*
+    #: image est lue. Classer les images sur lui ferait recapturer pour une raison
+    #: qui n'a rien à voir avec la qualité de l'image courante.
+    snapshot_score: float | None = None
+    #: Instant de **scène** de cette capture (invariant 1). `None` ssi
+    #: `snapshot_kind` l'est — **c'est le drapeau de présence**.
+    #:
+    #: Il dit *quand* regarder dans la vidéo, et c'est ce qui rend la capture
+    #: vérifiable plutôt que seulement consultable.
+    snapshot_ms: float | None = None
+    #: **Pourquoi** cette photo existe, ou `None` — il n'y en a pas.
+    #:
+    #: Trois causes, une échelle de priorité, une seule photo : voir `SnapshotCause`.
+    #: Trois propriétés que le domaine garantit et que des tests verrouillent :
+    #: `snapshot_ms is not None` ⟺ `snapshot_kind is not None` ; `snapshot_score is
+    #: not None` ⟹ `snapshot_kind == "plate_text"` ; la cause ne redescend jamais
+    #: l'échelle sur la vie d'un véhicule.
+    #:
+    #: `None` sur un résultat archivé qui porte pourtant `snapshot_ms` ne veut pas
+    #: dire « pas de photo » : cela veut dire « analyse antérieure à ADR 0051 », donc
+    #: `plate_text` de fait — c'était alors la seule cause possible.
+    snapshot_kind: SnapshotCause | None = None
+    #: Ressemblance à l'image de requête, dans [-1, 1], ou `None`.
+    #:
+    #: `None` a **deux** causes qu'il ne faut pas confondre à l'écran : aucune image
+    #: de requête n'a été fournie, ou ce véhicule n'a jamais été assez grand ni assez
+    #: net pour être encodé. La seconde est un état normal — la majorité des
+    #: véhicules d'une vue large n'atteignent pas l'entrée du réseau.
+    #:
+    #: **Le score brut, jamais un booléen.** Le seuil d'affichage vit côté client :
+    #: c'est ce qui permet de baisser le curseur de ressemblance sans réanalyser, et
+    #: c'est indispensable ici parce que la mesure a montré que les distributions
+    #: same/diff se recouvrent — aucun seuil global n'est à la fois sûr et utile
+    #: (ADR 0048).
+    match_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -757,6 +828,16 @@ class AnalysisStats:
     by_line: dict[str, LineTally]
     by_zone: dict[str, ZoneTally]
     vehicles_per_minute: float
+    #: Pistes **rapportées sur cette frame**, c'est-à-dire exactement les boîtes que
+    #: l'écran dessine — et non toutes les pistes que la session garde en mémoire.
+    #:
+    #: La distinction n'est pas cosmétique : une piste perdue survit jusqu'à
+    #: `max_lost_ms` (≈ 2,5 s) pour que le tracker puisse la réactiver avec son
+    #: identifiant, donc `len(self._tracks)` restait élevé plusieurs secondes après
+    #: la sortie du champ des véhicules. Le chiffre affiché redescendait alors *après*
+    #: les boîtes, ce qui se lit comme un retard de synchronisation — et il ne
+    #: pouvait pas se confronter à `activeTracks` de la relecture, que le client
+    #: calcule, lui, sur les pistes de la frame (`tracks.length`).
     active_tracks: int
     elapsed_ms: float
     analysed_scene_ms: float

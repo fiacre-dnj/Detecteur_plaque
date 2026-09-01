@@ -13,17 +13,27 @@
  * regarde pendant et après. Puis, le bas de page s'étant allongé, **tout ce qui
  * reste utile en défilant a été rassemblé à deux endroits** :
  *
- * - la **barre**, désormais collée sous l'entête de l'application, porte l'import,
- *   les quatre tiroirs — Détection, Comptage, Affichage & analyse, **Géométrie** —
- *   et, à son extrémité, les trois chiffres de machine (`TechnicalMetrics`). La
- *   géométrie y remplace un panneau permanent de la colonne de droite : elle se
+ * - la **barre**, désormais collée en haut de la fenêtre — la navigation d'application
+ *   ayant quitté cette place pour un rail vertical —, porte l'import, **les commandes
+ *   de l'analyse**, les tiroirs groupés par famille — Détection, Comptage, Affichage,
+ *   puis **Géométrie**, Recherche et Alertes — et, à son extrémité, les cinq chiffres
+ *   de machine (`TechnicalMetrics`), qui se replient eux-mêmes en tiroir sous 1280 px.
+ *   La géométrie y remplace un panneau permanent de la colonne de droite : elle se
  *   règle comme les autres, une fois, avant de lancer ;
  * - le **lecteur** porte les deux rails — position, intervalle d'analyse, de même
- *   longueur —, la vitesse, puis « Lancer l'analyse » et « Fermer ». On choisit sa
+ *   longueur —, la vitesse de lecture, puis « Lancer l'analyse » et « Fermer ». On choisit sa
  *   portion de vidéo, puis on lance, sans traverser l'écran ;
  * - la **colonne de droite** ne porte plus que des chiffres : le bilan du carrefour,
  *   la Répartition par type qui le découpe, et les messages qui expliquent une
  *   absence de chiffre ;
+ * - **une troisième colonne apparaît quand l'analyse a quelque chose à signaler**
+ *   (une règle posée sur le tracé, ou une plaque recherchée) : les alertes y vivent,
+ *   à hauteur d'œil et à côté de la scène. Elles étaient à deux endroits, tous deux
+ *   mauvais — une pile flottante **posée sur la vidéo**, illisible sur du bitume et
+ *   qui masquait l'image qu'elle faisait regarder, et une section en bas de page où
+ *   personne n'était pendant l'analyse. Les gouttières de la page se sont resserrées
+ *   dans le même mouvement (`--app-gutter`) : la colonne est prise sur la marge,
+ *   pas sur la scène ;
  * - la **chronologie** reste en bas, et reste affichée **après** l'analyse — c'est
  *   la seule vue qui dise *quand* et *dans quel sens*.
  *
@@ -63,13 +73,25 @@ import {
   type AnalysisRange,
 } from "@/entities/analysis-range";
 import {
+  AlertBellBadge,
+  AlertBellIcon,
+  AlertsPanel,
+  alertsFromResult,
+  matchPlate,
+  useAlertLog,
+} from "@/features/alerts";
+import {
+  AnalysisControls,
+  AnalysisProgress,
   CrossingTimeline,
   JobProgressBar,
   LaunchDialog,
+  analysisProgress,
   inputVideoUrl,
-  useFollowAnalysis,
+  useSyncedPreview,
 } from "@/features/analysis-job";
 import {
+  KEEP_PANELS_OPEN_ATTR,
   SettingsPanels,
   downloadNotice,
   loadSettings,
@@ -96,17 +118,32 @@ import {
   LineFlowDashboard,
   ResultsDashboard,
   TechnicalMetrics,
+  crossedByClass,
   crossingVehicles,
-  entriesByClass,
+  visibleClasses,
 } from "@/features/results-dashboard";
 import { crossingsUpTo, useReplay, vehiclesAt } from "@/features/timeline-replay";
 import { VehicleRegistry } from "@/features/vehicle-registry";
+import {
+  cropToJpeg,
+  isArmed as queryIsArmed,
+  NO_QUERY,
+  VehicleSearchPanel,
+  type VehicleQuery,
+} from "@/features/vehicle-search";
 import { PlaybackFpsBadge, TransportBar } from "@/features/video-transport";
-import type { CrossingEvent, Point, Preset } from "@/shared/api/contracts";
+import type { CrossingEvent, Point, Preset, TrackSnapshot } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
-import { VEHICLE_CLASSES } from "@/shared/lib/classes";
+import { platePhotoUrl, vehicleSnapshotUrl } from "@/shared/api/jobUrls";
+import { VEHICLE_CLASSES, classLabel } from "@/shared/lib/classes";
+import { lineRules } from "@/shared/lib/lineRules";
+import { hasAnyRule } from "@/shared/lib/lineViolations";
+import { violationCounts } from "@/shared/lib/violationTally";
+import { formatSceneTimePrecise } from "@/shared/lib/sceneTime";
+import { useMediaQuery } from "@/shared/lib/useMediaQuery";
+import { Activity, ScanSearch, Waypoints } from "lucide-react";
 import { Button } from "@/shared/ui/Button";
-import { MetricCard } from "@/shared/ui/MetricCard";
+import { SnapshotDialog } from "@/shared/ui/SnapshotDialog";
 
 import { analysisSummaryRows } from "../model/analysisSummary";
 import { useAnalysisSession } from "../model/useAnalysisSession";
@@ -147,11 +184,104 @@ interface SceneSize {
 
 const NO_TRAILS: ReadonlyMap<number, readonly Point[]> = new Map();
 /** Référence figée : un tableau vide recréé à chaque rendu relancerait les flashs. */
+/**
+ * La chronologie des franchissements est **masquée**, pas supprimée.
+ *
+ * `CrossingTimeline`, son modèle (`analysis-job/model/crossingTimeline.ts`) et
+ * leurs tests sont intacts : remettre ce drapeau à `true` la rend telle quelle. Elle
+ * a laissé sa place à la section « Alertes », qui répond à la question voisine et
+ * plus urgente — non pas « qu'est-il passé » mais « qu'est-ce qui mérite qu'on aille
+ * voir ».
+ *
+ * Typé `boolean` et non laissé au littéral : sans cette annotation, TypeScript
+ * réduit le type à `false` et l'analyse de lint signale une condition inutile — sur
+ * une constante dont l'intérêt est justement de pouvoir changer d'un mot.
+ */
+const SHOW_CROSSING_TIMELINE: boolean = false;
+
 const NO_CROSSINGS: readonly CrossingEvent[] = [];
+
+/**
+ * Le même figé pour les pistes, et pour la même raison référentielle : un tableau
+ * neuf à chaque rendu relancerait les effets qui accumulent les alertes.
+ */
+const NO_TRACKS: readonly TrackSnapshot[] = [];
+
+/**
+ * L'identifiant du tiroir « Géométrie », **nommé une fois**.
+ *
+ * Il sert à deux endroits qui doivent rester d'accord : la déclaration du tiroir
+ * passée à `SettingsPanels`, et l'ouverture automatique déclenchée par un clic sur
+ * la scène. Deux chaînes littérales finiraient par diverger, et la panne serait
+ * muette — un clic sur une ligne qui n'ouvre rien.
+ */
+const GEOMETRY_PANEL_ID = "geometrie";
+
+/**
+ * L'identifiant du tiroir « Alertes ».
+ *
+ * Nommé pour la même raison que celui de la géométrie, même si un seul endroit
+ * l'ouvre aujourd'hui : c'est la clé d'exclusivité de `SettingsPanels`, et une
+ * chaîne littérale posée dans un `panels` est exactement ce qu'on recopie ailleurs
+ * six mois plus tard.
+ */
+const ALERTS_PANEL_ID = "alertes";
+
+/**
+ * L'identifiant du tiroir de recherche par image.
+ *
+ * Nommé une fois, comme les deux autres : deux littéraux `"recherche"` finiraient par
+ * diverger, et la panne serait muette — une pilule qui n'ouvre plus rien.
+ */
+const SEARCH_PANEL_ID = "recherche";
+
+/**
+ * Le tiroir de repli des chiffres techniques, sous 1280 px de large.
+ *
+ * Ils vivent à l'extrémité de la barre (`trailing`), et c'est leur place : on les
+ * surveille du coin de l'œil pendant que ça tourne. Mais la rangée doit tenir sur
+ * **une** ligne, et sous cette largeur elle ne le peut plus. Un `flex-wrap` les
+ * laissait alors décrocher en rangée orpheline sous les boutons.
+ *
+ * Un tiroir plutôt qu'un calque flottant écrit pour l'occasion : celui de
+ * `SettingsPanels` porte déjà l'exclusivité, le clic en dehors, `Échap` et les
+ * attributs `aria-expanded` / `aria-controls`.
+ */
+const METRICS_PANEL_ID = "etat";
+
+/**
+ * Au-dessus, les chiffres sont dans la barre ; en dessous, dans leur tiroir.
+ *
+ * **1280 px est mesuré, pas choisi.** Toutes les pilules étant passées en icône seule,
+ * la rangée au repos pèse **1072 px** — import 219, commande 48, réglages 169, outils
+ * 113, chiffres 491, plus les gouttières. Il lui faut donc 1176 px de fenêtre une fois
+ * retirés le rail et les deux marges, et 1226 quand un libellé se déplie au survol.
+ * Mesuré en page : la rangée tient sur une ligne à 1300 px et casse à 1200. 1280 laisse
+ * 54 px de marge sur le pire cas du survol.
+ *
+ * **Pendant une analyse, l'anneau et son détail ne rentrent qu'à partir de ~1500 px**,
+ * et c'est assumé : entre 1280 et 1500, le détail se **tronque** au lieu de faire
+ * passer la rangée sur deux lignes. Déplacer les chiffres dans le tiroir à ce
+ * moment-là aurait été pire — la barre changerait de forme au lancement, c'est-à-dire
+ * à l'endroit exact où l'on regarde.
+ *
+ * Un seul des deux montages existe à la fois — jamais les deux, qui donneraient deux
+ * `<dl>` des mêmes chiffres dans le même document, donc deux annonces au lecteur
+ * d'écran.
+ */
+const METRICS_INLINE_QUERY = "(width >= 1280px)";
 
 export function StudioPage() {
   const { data: health } = useHealth();
   const serverReady = health != null;
+  /**
+   * L'encodeur d'apparence est-il installé côté serveur ?
+   *
+   * De `/health` et non d'un réglage : sans ce fichier le tiroir « Recherche » n'est
+   * pas monté du tout, exactement comme la cloche d'alertes sans règle posée. Une
+   * pilule qui ouvre un panneau annonçant sa propre indisponibilité est du bruit.
+   */
+  const reidAvailable = health?.reidAvailable ?? false;
 
   const { data: catalogue } = useModels();
   const { data: detectableClasses } = useDetectableClasses();
@@ -369,6 +499,37 @@ export function StudioPage() {
   );
 
   /**
+   * Terminer une zone, et **cocher « Ignorer hors zone » avec la première**.
+   *
+   * Tracer une zone est un geste qui dit « ce qui m'intéresse est là-dedans ». Sans
+   * ce défaut, il n'avait pourtant aucun effet sur les chiffres tant qu'une case
+   * restée décochée dans un autre tiroir n'était pas trouvée : l'utilisateur voyait
+   * son polygone dessiné, comptait toujours ce qui passait dehors, et n'avait
+   * aucune raison d'aller chercher la cause dans « Détection ».
+   *
+   * Trois bornes, et elles sont ce qui distingue un défaut d'une contrainte :
+   *
+   * - **la première zone seulement.** Décocher puis tracer une deuxième zone
+   *   recocherait la case : ce serait combattre un choix explicite, pas en proposer
+   *   un. Le passage de « aucune zone » à « une zone » est le seul moment où la
+   *   question n'a jamais été posée ;
+   * - **le tracé, pas le chargement.** Un preset porte son propre
+   *   `maskOutsideZones` (`handleApplyPreset`) et l'impose : c'est la géométrie
+   *   enregistrée qui décide, pas ce défaut-ci. Passer par un effet sur
+   *   `zones.length` les ferait entrer en collision — le preset poserait `false`,
+   *   l'effet le verrait passer à une zone et le remettrait à `true` ;
+   * - **rien n'est verrouillé.** La case reste décochable dans « Détection », et
+   *   `toRequest` retombe de toute façon à `false` s'il ne reste aucune zone.
+   */
+  const handleCompleteZone = useCallback(
+    (points: Point[]) => {
+      dispatch({ type: "addZone", points });
+      if (geometry.zones.length === 0) updateSettings({ maskOutsideZones: true });
+    },
+    [geometry.zones.length, updateSettings],
+  );
+
+  /**
    * Changer de source remet tout à zéro : la géométrie est en pixels de la source.
    *
    * **Le direct est coupé ici**, et c'est obligatoire : les dimensions d'envoi sont
@@ -378,6 +539,21 @@ export function StudioPage() {
    * l'atteindre. C'est aussi ce qui rend la place de session côté serveur, sans quoi
    * la suivante serait refusée en 1013 sans explication.
    */
+  /**
+   * La recherche par véhicule en cours.
+   *
+   * Ici et non dans `settings`, pour la même raison que l'intervalle d'analyse vit
+   * dans `entities/analysis-range` : elle décrit *cette vidéo-ci* et *cette
+   * recherche-ci*, pas une préférence. Et surtout `AnalysisSettings` est persisté —
+   * une photo de véhicule y tomberait sous le cran de confidentialité que
+   * `plateWatchlist` se fait déjà retirer avant l'écriture.
+   */
+  const [query, setQuery] = useState<VehicleQuery>(NO_QUERY);
+  const patchQuery = useCallback(
+    (patch: Partial<VehicleQuery>) => setQuery((previous) => ({ ...previous, ...patch })),
+    [],
+  );
+
   const resetForNewSource = useCallback(() => {
     live.stop();
     dispatch({ type: "clear" });
@@ -388,8 +564,21 @@ export function StudioPage() {
     // choisi — et une borne au-delà de sa durée le ferait refuser en 422, sur un
     // écran dont toutes les valeurs paraissent valides.
     setRange(FULL_RANGE);
+    // Les plaques recherchées suivent l'intervalle, et pour la même raison : elles
+    // décrivent une **recherche en cours**, pas une préférence. Héritées d'un
+    // fichier précédent, elles feraient clignoter des alertes sur une vidéo où
+    // personne ne cherchait rien — et l'utilisateur n'aurait aucune raison d'aller
+    // voir dans le tiroir Détection pourquoi.
+    updateSettings({ plateWatchlist: [] });
+    // La recherche par image part avec la vidéo, même raison que la liste de plaques :
+    // elle décrit une recherche en cours. `revokeObjectURL` est obligatoire — une
+    // adresse non révoquée retient l'image entière pour la vie de l'onglet.
+    setQuery((previous) => {
+      if (previous.previewUrl !== null) URL.revokeObjectURL(previous.previewUrl);
+      return { ...NO_QUERY, threshold: previous.threshold };
+    });
     session.reset();
-  }, [session, live]);
+  }, [session, live, updateSettings]);
 
   const handleFile = useCallback(
     (file: File) => {
@@ -431,16 +620,24 @@ export function StudioPage() {
 
     setLaunchOpen(false);
     setEnded(false);
-    void session.start(
-      file,
-      // `toRequest` est le seul endroit qui traduit les réglages en requête : il
-      // résout `confidenceThreshold: null` en défaut, met l'échelle nulle à `null`,
-      // et désactive le masque quand aucune zone n'existe.
-      toRequest(settings, geometry.lines, geometry.zones, range),
-      geometry.lines,
-      geometry.zones,
-    );
-  }, [media.source, serverReady, settings, geometry, session, range]);
+    // La vignette est découpée **au lancement** et non au cadrage : c'est le seul
+    // moment où elle sert, et l'obtenir demande un `toBlob` asynchrone qu'il serait
+    // absurde de rejouer à chaque déplacement de la souris. Un échec de découpage
+    // n'empêche pas l'analyse — elle part alors sans recherche, ce que le tiroir dit.
+    void (async () => {
+      const thumb = await queryThumbnail(query);
+      void session.start(
+        file,
+        // `toRequest` est le seul endroit qui traduit les réglages en requête : il
+        // résout `confidenceThreshold: null` en défaut, met l'échelle nulle à `null`,
+        // et désactive le masque quand aucune zone n'existe.
+        toRequest(settings, geometry.lines, geometry.zones, range),
+        geometry.lines,
+        geometry.zones,
+        thumb,
+      );
+    })();
+  }, [media.source, serverReady, settings, geometry, session, range, query]);
 
   /**
    * Ouvre la modale, en y **figeant la position de lecture** du moment.
@@ -520,22 +717,43 @@ export function StudioPage() {
   }, [session.result, session.preview?.vehicles, replay.timeMs]);
 
   /**
-   * La classe personne a-t-elle été cochée pour cette analyse ?
+   * Les classes cochées dans « Objets à compter », par **nom COCO**.
    *
    * Décidé ici, pas dans `results-dashboard` : cette feature ne connaît que
    * `AnalysisStats`/`CountingLine[]`, jamais le catalogue de classes ni les
    * réglages — même règle que `ClassPicker` dans `analysis-settings`, dont ce
-   * calcul reprend le filtre par catégorie.
+   * calcul reprend la source.
+   *
+   * **Le nom COCO et pas l'identifiant** : `cocoName` est la clé des `byClass` du
+   * résultat, l'identifiant ne l'est nulle part. La traduction se fait ici, une
+   * fois, contre le catalogue qui valide la requête — jamais contre une table
+   * recopiée, qui divergerait en silence.
+   *
+   * Repli sur les quatre véhicules tant que le catalogue n'a pas répondu : sans
+   * lui, aucune carte ne s'afficherait sur un résultat pourtant complet, et un
+   * serveur momentanément muet effacerait l'écran de résultats.
    */
-  const hasPersonClass = useMemo(
-    () =>
-      (detectableClasses ?? []).some(
-        (entry) => entry.category === "person" && settings.classIds.includes(entry.id),
-      ),
-    [detectableClasses, settings.classIds],
-  );
+  const selectedClasses = useMemo<readonly string[]>(() => {
+    const known = detectableClasses ?? [];
+    if (known.length === 0) return VEHICLE_CLASSES;
+    return known
+      .filter((entry) => settings.classIds.includes(entry.id))
+      .map((entry) => entry.cocoName);
+  }, [detectableClasses, settings.classIds]);
 
   const selectedId = geometry.selection.kind === "none" ? null : geometry.selection.id;
+
+  /**
+   * Le tiroir de réglages ouvert, tenu **ici** et non dans `SettingsPanels`.
+   *
+   * Parce que deux endroits l'ouvrent désormais, et qu'un seul des deux est la
+   * barre : cliquer une ligne sur la vidéo déplie « Géométrie ». Le geste et le
+   * réglage sont le même acte — on clique un trait pour le nommer, lui donner ses
+   * rôles de sens ou sa longueur réelle — et le studio est le seul à voir la scène
+   * *et* la barre.
+   */
+  const [openPanel, setOpenPanel] = useState<string | null>(null);
+  const metricsInline = useMediaQuery(METRICS_INLINE_QUERY);
   const isCamera = media.source?.kind === "camera";
   const analysing = session.job !== null && !isTerminal(session.job.status);
   const busy = analysing || session.starting || live.active;
@@ -573,6 +791,34 @@ export function StudioPage() {
   );
 
   /**
+   * Où en est l'analyse — **calculé une fois** et lu par les trois surfaces.
+   *
+   * Les commandes de la barre, l'anneau de progression et le bloc sous la vidéo
+   * décrivent le même job. Les laisser décider séparément de ce qu'est « en cours »
+   * les ferait diverger sur un état de passage — proposer « Suspendre » sur une
+   * analyse déjà terminée, ou afficher deux pourcentages du même job.
+   */
+  const progress = analysisProgress(session.upload, session.job, selectedModelLabel);
+
+  /**
+   * Les règles du tracé — sens interdits et voies réservées — lues sur la géométrie
+   * **courante**.
+   *
+   * Calculées ici et non dans les features qui les consomment : elles demandent le
+   * catalogue de classes du serveur, que ni `results-dashboard`, ni
+   * `vehicle-registry`, ni `alerts` ne connaissent. Le studio est le seul à voir les
+   * deux, comme pour `selectedClasses` juste au-dessus.
+   *
+   * Sur la géométrie courante, donc : déclarer un sens interdit **après** une
+   * analyse fait apparaître ses alertes, son KPI et sa colonne de registre sans rien
+   * réanalyser — exactement comme basculer un sens entrée ↔ sortie.
+   */
+  const alertRules = useMemo(
+    () => lineRules(geometry.lines, detectableClasses ?? []),
+    [geometry.lines, detectableClasses],
+  );
+
+  /**
    * Les rangées du récapitulatif d'avant-analyse.
    *
    * Assemblées ici et pas dans le composant, pour la raison qui vaut partout dans
@@ -591,9 +837,14 @@ export function StudioPage() {
           .map((entry) => entry.label),
         lineCount: geometry.lines.length,
         zoneCount: geometry.zones.length,
+        // Compté sur les règles **résolues** et non sur les champs bruts : une voie
+        // réservée dont aucune classe n'est reconnue par le catalogue ne restreint
+        // rien, et l'annoncer ferait attendre des alertes qui ne viendraient pas.
+        ruledLineCount: [...alertRules.values()].filter((rule) => rule.restricted).length,
         range,
         detectPlates: settings.detectPlates,
-        readPlateText: settings.readPlateText,
+        readPlateText: settings.detectPlates && settings.readPlateText,
+        watchedPlateCount: settings.plateWatchlist.length,
         analysisSpeed: settings.analysisSpeed,
         maxAnalysisFps: settings.maxAnalysisFps,
       }),
@@ -603,8 +854,10 @@ export function StudioPage() {
       settings.classIds,
       settings.detectPlates,
       settings.readPlateText,
+      settings.plateWatchlist.length,
       settings.analysisSpeed,
       settings.maxAnalysisFps,
+      alertRules,
       geometry.lines.length,
       geometry.zones.length,
       range,
@@ -644,13 +897,23 @@ export function StudioPage() {
   const preview = previewMismatch || live.active ? null : session.preview;
 
   /**
-   * La vidéo se cale sur l'image que le serveur analyse.
+   * La vidéo se cale sur l'image que le serveur analyse, **et les boîtes attendent
+   * que cette image soit là**.
    *
    * Uniquement sur une source **fichier** : la vidéo locale est alors le même
    * fichier que celui envoyé, donc le temps de scène désigne exactement la même
-   * image des deux côtés. Une caméra n'a pas de temps de scène commun.
+   * image des deux côtés. Une caméra n'a pas de temps de scène commun, et le hook
+   * y est un passe-plat.
+   *
+   * La **référence** et non `video.current` : remplir un `ref` ne déclenche aucun
+   * rendu, donc le lire ici faisait dépendre l'abonnement d'un rendu ultérieur que
+   * rien ne garantit — les premiers aperçus d'une analyse pouvaient être perdus.
    */
-  useFollowAnalysis(video.current, preview?.timestampMs ?? null, media.source?.file !== undefined);
+  const { preview: shownPreview, displayLagMs } = useSyncedPreview(
+    video,
+    preview,
+    media.source?.file !== undefined,
+  );
 
   /**
    * Les pistes à dessiner : le direct s'il tourne, sinon l'aperçu de l'analyse en
@@ -660,12 +923,20 @@ export function StudioPage() {
    * seul repère. Faire la conversion ici et non dans le canvas évite une branche
    * « si direct » dans le code de dessin, qui finirait par diverger. L'aperçu, lui,
    * est déjà en pixels source : le serveur analyse la vidéo telle qu'elle est.
+   *
+   * **`shownPreview` et non `preview`, et c'est toute la règle de cet écran :
+   * les boîtes suivent l'image, les compteurs suivent le serveur.** `preview` est
+   * l'aperçu que le serveur vient d'envoyer ; `shownPreview` est celui dont l'image
+   * est réellement à l'écran. Dessiner le premier faisait courir l'overlay devant
+   * la vidéo de tout le temps de décodage — « on dirait que le tracker est en
+   * avance ». Les compteurs, eux, restent branchés sur `preview` : eux n'ont pas
+   * d'image à attendre, et les ralentir pour rien rendrait le comptage tardif.
    */
   const canvasTracks = useMemo(() => {
     if (live.active) return unscaleTracks(live.tracks, live.factor);
-    if (preview !== null) return preview.tracks;
+    if (shownPreview !== null) return shownPreview.tracks;
     return replay.tracks;
-  }, [live.active, live.tracks, live.factor, preview, replay.tracks]);
+  }, [live.active, live.tracks, live.factor, shownPreview, replay.tracks]);
 
   /**
    * Les statistiques à afficher : direct, puis aperçu, puis tête de lecture.
@@ -724,6 +995,23 @@ export function StudioPage() {
     session.result !== null ? replay.stats : (session.preview?.stats ?? null);
 
   /**
+   * La ventilation par type du camembert, calculée **une fois**.
+   *
+   * Le camembert la reçoit en prop, et `visibleClasses` la relit pour décider
+   * quelles parts tracer : deux appels à `crossedByClass` sur les mêmes véhicules
+   * seraient un parcours de plus à chaque image d'aperçu.
+   *
+   * **Elle vient des véhicules et non de `stats` depuis ADR 0045** : le camembert
+   * découpe « Passages globaux », donc il compte les mêmes véhicules distincts.
+   * `countedVehicles` est déjà la population du registre — la source unique de ce
+   * chiffre à l'écran comme dans le tableau.
+   */
+  const dashboardEntries = useMemo(
+    () => crossedByClass(countedVehicles),
+    [countedVehicles],
+  );
+
+  /**
    * Le journal que la chronologie affiche — **pendant l'analyse comme après**.
    *
    * La section des franchissements disparaissait à l'instant où l'analyse
@@ -754,9 +1042,155 @@ export function StudioPage() {
    * Les franchissements qui viennent d'être comptés — ceux qui font clignoter leur
    * ligne. La **dernière salve**, jamais le cumul : rallumer toutes les lignes à
    * chaque image ferait d'un signal un bruit de fond.
+   *
+   * **`preview` et non `shownPreview`, à l'inverse des boîtes**, et la raison tient
+   * à la nature de la donnée : une boîte est un *état*, qu'on peut sauter sans rien
+   * perdre — l'image suivante le redonne. Un franchissement est un *événement* :
+   * l'aperçu qui le porte est le seul à le porter. Le tampon d'affichage écrase sa
+   * cible en attente quand le décodeur prend du retard, donc y faire passer les
+   * flashs les ferait purement et simplement disparaître. Même raison que
+   * `session.events`, qui accumule le journal sur l'aperçu vivant.
    */
   const flashCrossings = live.active ? live.lastCrossings : (preview?.crossings ?? NO_CROSSINGS);
   const lineFlashes = useLineFlashes(flashCrossings);
+
+  /**
+   * Le journal d'alertes **vivant**, alimenté par l'aperçu.
+   *
+   * Il sert les deux modes : les infractions se dérivent des franchissements, que le
+   * différé comme le direct publient. Les plaques, non — le direct n'a pas d'ANPR,
+   * donc ses pistes arrivent sans texte et aucune alerte de plaque n'en sort.
+   */
+  const liveAlerts = useAlertLog({
+    crossings: flashCrossings,
+    // L'aperçu **vivant** : une alerte est un événement, elle suit le serveur, là où
+    // une boîte suit l'image (voir `flashCrossings` juste au-dessus).
+    tracks: preview?.tracks ?? NO_TRACKS,
+    timestampMs: preview?.timestampMs ?? 0,
+    rules: alertRules,
+    watchlist: settings.plateWatchlist,
+    // Les véhicules de l'aperçu **vivant** : c'est là que vit `matchScore`, les
+    // pistes d'une image ne le portant pas. `null` quand rien n'est cherché.
+    vehicles: session.preview?.vehicles ?? null,
+    matchThreshold: queryIsArmed(query) ? query.threshold : null,
+    // Le job identifie la course ; `"live"` couvre la caméra, qui n'a pas de job.
+    // Un changement vide le journal, sinon les alertes de l'analyse précédente
+    // s'afficheraient au-dessus des nouvelles avec des horodatages qui ne désignent
+    // plus rien.
+    runId: session.job?.jobId ?? (live.active ? "live" : null),
+  });
+
+  /**
+   * Les alertes d'un résultat **terminé**, relues à la tête de lecture.
+   *
+   * Elles remplacent le journal vivant plutôt que de s'y ajouter : le journal est
+   * borné, le résultat ne l'est pas, et les règles y sont relues sur le tracé
+   * courant. `null` tant qu'aucun résultat n'existe.
+   */
+  const replayAlerts = useMemo(() => {
+    if (session.result === null) return null;
+    return alertsFromResult({
+      crossings: session.result.crossings,
+      // **Tous** les véhicules apparus, pas seulement ceux qui ont franchi une
+      // ligne : une plaque recherchée peut appartenir à un véhicule à l'arrêt, et le
+      // restreindre ferait manquer exactement le cas qu'on cherche.
+      vehicles: vehiclesAt(session.result, replay.timeMs),
+      timeMs: replay.timeMs,
+      rules: alertRules,
+      watchlist: settings.plateWatchlist,
+      // `null` quand aucune recherche n'est armée, et **pas** `0` : le second
+      // signalerait tout véhicule encodé, donc la totalité du trafic.
+      matchThreshold: queryIsArmed(query) ? query.threshold : null,
+    });
+    // `query` entier et non ses deux champs : `queryIsArmed` lit `file` et le seuil
+    // vient de `threshold`, mais l'objet est remplacé à chaque `patchQuery`, donc le
+    // décomposer ne gagnerait aucun rendu et ferait mentir la liste de dépendances.
+  }, [session.result, replay.timeMs, alertRules, settings.plateWatchlist, query]);
+
+  const alerts = replayAlerts ?? liveAlerts;
+
+  /**
+   * Y a-t-il quelque chose à signaler ?
+   *
+   * Sans règle posée ni plaque recherchée, ni la cloche ni son tiroir n'existent :
+   * une cloche muette inviterait à ouvrir un panneau vide, et un panneau « Alertes »
+   * vide se lit « rien à signaler » alors que la vérité est « on n'a rien demandé de
+   * signaler ».
+   */
+  const alertsArmed =
+    hasAnyRule(alertRules) || settings.plateWatchlist.length > 0 || queryIsArmed(query);
+
+  /**
+   * Les totaux d'infraction du résumé, **du même juge que le KPI des Résultats**.
+   *
+   * Calculés ici et passés au tiroir plutôt que recalculés dedans : `features/alerts`
+   * n'a pas le droit d'importer `features/results-dashboard`, et surtout le résumé
+   * doit afficher **exactement** le chiffre que « Franchissements interdits » montre
+   * à côté. Deux définitions du même total, sur deux surfaces lues à quelques
+   * secondes d'intervalle, finiraient par en donner deux.
+   *
+   * `null` avant toute statistique : le résumé se tait plutôt que d'annoncer zéro
+   * infraction sur une analyse qui n'a pas commencé.
+   */
+  const alertViolations = useMemo(
+    () =>
+      dashboardStats === null
+        ? null
+        : violationCounts(dashboardStats, geometry.lines, alertRules),
+    [dashboardStats, geometry.lines, alertRules],
+  );
+
+  /**
+   * La capture ouverte en grand depuis une **alerte**.
+   *
+   * Tenue ici et non dans `alerts` : la modale a besoin du texte lu, donc du
+   * registre complet, que seule cette page possède. Le registre a la sienne, et les
+   * deux sont indépendantes — ce sont deux surfaces, pas un état partagé.
+   */
+  const [alertSnapshot, setAlertSnapshot] = useState<number | null>(null);
+  /**
+   * Le job dont on peut demander une capture — **en cours ou terminé**.
+   *
+   * Nommé une fois : le registre, le tiroir d'alertes et la modale doivent viser le
+   * même job, et trois expressions identiques recopiées finiraient par diverger le
+   * jour où l'une des trois change.
+   */
+  const snapshotJobId = session.result?.jobId ?? session.job?.jobId ?? null;
+  /**
+   * Le véhicule de la capture ouverte, cherché **dans la source courante**.
+   *
+   * Le résultat complet après l'analyse ; le registre de l'aperçu pendant, sans
+   * quoi une alerte cliquée en cours d'analyse n'ouvrirait rien — c'est pourtant
+   * là que la preuve est le plus attendue, une plaque recherchée se validant à
+   * l'œil au moment où elle tombe.
+   */
+  const alertSnapshotVehicle =
+    alertSnapshot === null
+      ? null
+      : ((session.result?.vehicles ?? countedVehicles).find(
+          (entry) => entry.globalId === alertSnapshot,
+        ) ?? null);
+
+  /**
+   * Amène la vidéo à l'instant d'une alerte.
+   *
+   * Le seul endroit de cet écran où un clic déplace la lecture, et c'est assumé :
+   * l'ancienne chronologie cliquable a été retirée parce qu'on y **parcourait** le
+   * temps, ce que la barre de lecture fait déjà. Ici on saute à un fait précis, dont
+   * l'instant est justement ce qu'on vient de lire — et une alerte invérifiable ne
+   * vaut rien.
+   *
+   * Inutilisable pendant une analyse ou un direct : la vidéo y est pilotée par
+   * l'aperçu, et la déplacer se battrait avec le calage image par image.
+   */
+  const seekToAlert = useCallback(
+    (timestampMs: number) => {
+      const element = video.current;
+      if (element === null) return;
+      element.currentTime = Math.max(0, timestampMs / 1000);
+    },
+    [],
+  );
 
   /**
    * Charge un preset **déjà mis à l'échelle par le serveur**.
@@ -794,11 +1228,42 @@ export function StudioPage() {
           connaître celle de la source, c'est le studio qui les met côte à côte. */}
       <SettingsPanels
         leading={
-          <SourcePicker
-            activeLabel={media.source?.label ?? null}
-            disabled={busy}
-            onFile={handleFile}
-          />
+          <>
+            <SourcePicker
+              activeLabel={media.source?.label ?? null}
+              disabled={busy}
+              onFile={handleFile}
+            />
+            {/* **Les commandes de l'analyse, à côté de la source.** Elles vivaient dans
+                le lecteur pour le lancement et sous la vidéo pour la pause et
+                l'annulation : trois zones qu'on ne voit pas d'un même coup d'œil pour
+                piloter une seule chose. En caméra, il n'y a pas de job à lancer — le
+                direct a ses propres commandes dans `RealtimePanel`. */}
+            {!isCamera && (
+              <AnalysisControls
+                progress={progress}
+                onLaunch={openLaunch}
+                canLaunch={canAnalyse}
+                launchHint={analyseTooltip(
+                  serverReady,
+                  media.source?.file !== undefined,
+                  geometry,
+                  busy,
+                )}
+                onPause={session.pause}
+                onResume={session.resume}
+                onCancel={session.cancel}
+              />
+            )}
+            {/* **La progression suit ses commandes**, et non les chiffres. Elle a
+                d'abord été posée à l'autre bout de la barre, avec la métrologie : deux
+                blocs qui parlent pourtant de choses différentes — celui-ci dit *où en
+                est le job*, les autres *comment il se comporte*. Surtout, l'anneau
+                répond au bouton qu'on vient de cliquer, et les séparer obligeait à
+                traverser toute la barre du regard pour vérifier qu'un lancement avait
+                pris. */}
+            {!isCamera && <AnalysisProgress progress={progress} />}
+          </>
         }
         // Tout à droite de la barre (`ms-auto` dans `SettingsPanels`) : les quatre
         // chiffres **d'instant**, objets suivis compris. Ils tenaient quatre des six
@@ -806,11 +1271,21 @@ export function StudioPage() {
         // bilan du comptage — les deux tiers du meilleur emplacement de l'écran pour
         // de la métrologie qu'on surveille du coin de l'œil. Le nom du fichier, qui
         // occupait cette place, est passé sur la vidéo qu'il nomme.
+        //
+        // Sous 1280 px (`METRICS_INLINE_QUERY`), ils passent dans un tiroir
+        // (`METRICS_PANEL_ID`) : la rangée n'a plus la largeur de les porter, et les
+        // laisser décrocher en seconde ligne reprenait la hauteur que le rail de
+        // navigation venait de rendre.
+        //
+        // **Montés dès qu'une vidéo est chargée**, tirets compris : la barre ne change
+        // plus de forme au moment où l'on lance, c'est-à-dire à l'endroit exact où
+        // l'on regarde. La progression, elle, est à gauche avec ses commandes.
         trailing={
-          resultStats !== null ? (
+          media.source !== null && metricsInline ? (
             <TechnicalMetrics
-              processingFps={resultStats.processingFps}
-              stats={resultStats.stats}
+              processingFps={resultStats?.processingFps ?? null}
+              stats={resultStats?.stats ?? null}
+              displayLagMs={displayLagMs}
             />
           ) : null
         }
@@ -840,16 +1315,29 @@ export function StudioPage() {
         // s'appliquer sans source : les trois tiroirs restent grisés jusque-là.
         hasSource={media.source !== null}
         onChange={updateSettings}
+        openPanel={openPanel}
+        onOpenPanel={setOpenPanel}
         // **Géométrie devient le quatrième tiroir**, au même niveau que Détection,
         // Comptage et Affichage. Il occupait un panneau permanent de la colonne de
         // droite alors qu'il se règle comme les autres — une fois, avant de lancer —
         // et il repoussait les chiffres qu'on vient lire sous la ligne de flottaison.
         // Passé par `panels` et non importé là-bas : `analysis-settings` ne connaît
         // pas `geometry-editor`, c'est le studio qui câble les deux.
+        //
+        // **Et les alertes en cinquième**, pour la même raison de câblage et une
+        // raison d'écran : elles tenaient une colonne de 18 rem prise sur la vidéo,
+        // en permanence, pour une liste qu'on consulte par à-coups. Repliées derrière
+        // une cloche elles ne coûtent rien tant qu'on ne les ouvre pas, et la
+        // pastille dit l'essentiel sans qu'on ouvre — combien, et est-ce grave
+        // (ADR 0044).
         panels={[
           {
-            id: "geometrie",
+            id: GEOMETRY_PANEL_ID,
             label: "Géométrie",
+            // Des points reliés : des lignes et des zones **tracées**. `Spline` dessine
+            // une courbe à poignées, alors qu'on ne trace ici que des segments et des
+            // polygones.
+            icon: <Waypoints aria-hidden="true" className="size-4 shrink-0" />,
             content: (
               <GeometryPanel
                 lines={geometry.lines}
@@ -867,19 +1355,114 @@ export function StudioPage() {
                 onSelect={(selection) => dispatch({ type: "select", selection })}
                 onRenameLine={(id, name) => dispatch({ type: "renameLine", id, name })}
                 onRenameZone={(id, name) => dispatch({ type: "renameZone", id, name })}
-                onSetDirectionRole={(id, sign, role) =>
-                  dispatch({ type: "setDirectionRole", id, sign, role })
+                // Le catalogue vient du serveur et traverse le studio : la feature
+                // `geometry-editor` ne connaît ni `analysis-settings` ni la route qui
+                // le publie — même câblage que `onOpenPresets` juste dessous.
+                classes={detectableClasses ?? []}
+                onSetLineKind={(id, kind) => dispatch({ type: "setLineKind", id, kind })}
+                onSwapDirections={(id) => dispatch({ type: "swapLineDirections", id })}
+                onSetLineClasses={(id, classIds) =>
+                  dispatch({ type: "setLineClasses", id, classIds })
                 }
                 onSetLineZone={(id, zoneId) => dispatch({ type: "setLineZone", id, zoneId })}
-                onSetLineLength={(id, lengthMeters) =>
-                  dispatch({ type: "setLineLength", id, lengthMeters })
-                }
                 onRemoveLine={(id) => dispatch({ type: "removeLine", id })}
                 onRemoveZone={(id) => dispatch({ type: "removeZone", id })}
                 onOpenPresets={() => setPresetsOpen(true)}
               />
             ),
           },
+          // **Le tiroir n'est monté que s'il y a de quoi le remplir**, exactement
+          // comme la colonne qu'il remplace : sans règle posée ni plaque
+          // recherchée, une cloche muette inviterait à ouvrir un panneau vide.
+          // `AlertsPanel` connaît déjà ce garde (`armed`), et le refaire ici est ce
+          // qui retire aussi la **pilule** — un panneau qui rend `null` laisserait
+          // sinon un bouton qui n'ouvre rien.
+          ...(reidAvailable
+            ? [
+                {
+                  id: SEARCH_PANEL_ID,
+                  label: "Recherche",
+                  // Chercher **dans une image** — ce qu'est la recherche par image
+                  // (ADR 0048), là où `Search` annonce une recherche textuelle.
+                  icon: <ScanSearch aria-hidden="true" className="size-4 shrink-0" />,
+                  content: (
+                    <VehicleSearchPanel
+                      query={query}
+                      onChange={patchQuery}
+                      disabled={busy}
+                      available={reidAvailable}
+                      loadable={health?.reidLoadable ?? null}
+                    />
+                  ),
+                },
+              ]
+            : []),
+          ...(alertsArmed
+            ? [
+                {
+                  id: ALERTS_PANEL_ID,
+                  label: "Alertes",
+                  icon: <AlertBellIcon alerts={alerts} />,
+                  badge: <AlertBellBadge alerts={alerts} live={analysing || live.active} />,
+                  content: (
+                    <AlertsPanel
+                      alerts={alerts}
+                      lines={geometry.lines}
+                      armed={alertsArmed}
+                      // Le **même** juge que le KPI « Franchissements interdits »
+                      // des Résultats, calculé une fois ici : deux appels sur les
+                      // mêmes chiffres passeraient encore, deux *définitions* du
+                      // total non.
+                      violations={alertViolations}
+                      live={analysing || live.active}
+                      // Le job **en cours ou terminé** : les captures sont écrites
+                      // au fil de l'eau depuis ADR 0046, donc une vignette demandée
+                      // pendant l'analyse arrive. C'est le moment où une alerte a le
+                      // plus besoin de sa preuve.
+                      jobId={snapshotJobId}
+                      onOpenSnapshot={setAlertSnapshot}
+                      // Aucun déplacement de la vidéo pendant qu'elle est pilotée
+                      // par l'aperçu : le calage image par image reprendrait la main
+                      // aussitôt, et le clic paraîtrait sans effet.
+                      onSeek={
+                        session.result !== null && !analysing && !live.active
+                          ? seekToAlert
+                          : undefined
+                      }
+                    />
+                  ),
+                },
+              ]
+            : []),
+          // **Les chiffres d'instant, quand la barre est trop étroite pour eux.**
+          // Exactement la même condition que `trailing`, à l'inverse : un seul des
+          // deux montages existe, sinon le document porterait deux `<dl>` des mêmes
+          // chiffres — et un lecteur d'écran les annoncerait deux fois.
+          //
+          // **L'anneau de progression n'y est pas** : il vit à gauche avec ses
+          // commandes, qui ne se replient jamais, elles. L'y remettre donnerait deux
+          // `role="progressbar"` pour le même job.
+          //
+          // En dernier de la rangée parce que c'est un état qu'on consulte, pas un
+          // réglage qu'on pose : il suit les outils de scène plutôt que de s'insérer
+          // entre eux.
+          ...(media.source !== null && !metricsInline
+            ? [
+                {
+                  id: METRICS_PANEL_ID,
+                  label: "État",
+                  icon: <Activity aria-hidden="true" className="size-4 shrink-0" />,
+                  content: (
+                    <TechnicalMetrics
+                      processingFps={resultStats?.processingFps ?? null}
+                      stats={resultStats?.stats ?? null}
+                      displayLagMs={displayLagMs}
+                      layout="grid"
+                    />
+                  ),
+                },
+              ]
+            : []),
         ]}
       />
 
@@ -909,9 +1492,22 @@ export function StudioPage() {
 
       {/* La colonne de droite porte désormais les **résultats**, pas les réglages :
           les chiffres se lisent à côté de la scène qui les produit, au lieu d'être
-          repoussés sous elle. 24 rem plutôt que 20 : neuf cartes en deux colonnes y
-          tiennent sans que les libellés se coupent. */}
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_24rem]">
+          repoussés sous elle. 23 rem plutôt que 20 : neuf cartes en deux colonnes y
+          tiennent sans que les libellés se coupent, et les cartes par ligne — nom
+          tronqué, entrées, sorties, solde, barre — y gardent exactement leur
+          rendu.
+
+          **Deux pistes, et plus trois.** Les alertes ont occupé une troisième
+          colonne de 18 rem, prise sur la scène et sur les résultats (23 → 20 rem).
+          Elle réglait tout ce qu'on lui demandait et coûtait sa largeur **en
+          permanence** à la vidéo, pour une liste qu'on consulte par à-coups : la
+          vidéo est ce qu'on regarde, les alertes sont ce qu'on va chercher. Elles
+          sont désormais derrière une cloche dans la barre du studio, où elles ne
+          coûtent rien tant qu'on ne les ouvre pas — voir `panels` plus haut et
+          ADR 0044. La grille redevient donc inconditionnelle, ce qui supprime du
+          même coup la classe calculée et le point de rupture `2xl` qu'elle
+          imposait. */}
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_23rem]">
         <div className="space-y-3">
           <DropZone disabled={busy} onFile={handleFile}>
           <VideoScene
@@ -921,7 +1517,18 @@ export function StudioPage() {
             onFile={handleFile}
             disabled={busy}
           >
+            {/* `display: contents` : l'enveloppe ne porte que l'attribut, et ne
+                génère aucune boîte — le canvas reste positionné par rapport à la
+                scène, son bloc conteneur.
+
+                Ce que l'attribut dit : la surface de tracé **pilote** le tiroir de
+                réglages (un double-clic de ligne ouvre « Géométrie »), donc elle n'est pas
+                un « en dehors » qui le referme. Sans lui, ouverture et fermeture
+                tomberaient dans le même événement — le gestionnaire de document de
+                `SettingsPanels` s'exécute après celui de React, donc la fermeture
+                gagnerait. */}
             {scene !== null && (
+              <div className="contents" {...{ [KEEP_PANELS_OPEN_ATTR]: "" }}>
               <GeometryCanvas
                 sourceWidth={scene.width}
                 sourceHeight={scene.height}
@@ -952,17 +1559,39 @@ export function StudioPage() {
                 // Les pointillés « pas encore confirmée » suivent le réglage réel,
                 // donc ce que le canvas montre correspond à ce que l'analyse fera.
                 minHits={settings.minHits}
-                onSelect={(selection) =>
+                // Un clic **sélectionne et rien de plus** : c'est le geste qui
+                // amorce le glisser, et déplier « Géométrie » par-dessus la vidéo
+                // qu'on est en train de tracer était du bruit sur le geste le plus
+                // fréquent de cet écran.
+                onSelect={(selection) => {
                   dispatch({
                     type: "select",
                     selection: (selection ?? { kind: "none" }) as Selection,
-                  })
-                }
+                  });
+                }}
+                // **Le double-clic déplie « Géométrie »** : ouvrir le réglage d'une
+                // forme est un geste distinct de sa manipulation, et l'utilisateur
+                // cliquait auparavant puis cherchait dans la barre où la renommer ou
+                // lui donner ses rôles de sens.
+                //
+                // Deux bornes. Rien pendant une analyse ou un direct (`busy`) : le
+                // panneau est alors grisé, et ouvrir un formulaire intouchable
+                // par-dessus la vidéo qu'on regarde tourner serait du bruit. Et rien
+                // dans le vide, où le canvas n'appelle pas ce rappel du tout — un
+                // double-clic sur le fond **désélectionne**, c'est la conclusion d'un
+                // réglage et pas son début. Ce que le geste ne fait pas non plus :
+                // refermer le tiroir, laissé à `Échap`, au re-clic sur la pilule et
+                // au clic hors de la scène.
+                onActivate={(selection) => {
+                  dispatch({ type: "select", selection: selection as Selection });
+                  if (!busy) setOpenPanel(GEOMETRY_PANEL_ID);
+                }}
                 onMoveLine={(id, a, b) => dispatch({ type: "moveLine", id, a, b })}
                 onMoveZone={(id, points) => dispatch({ type: "moveZone", id, points })}
-                onCompleteZone={(points) => dispatch({ type: "addZone", points })}
+                onCompleteZone={handleCompleteZone}
                 onCancelZone={() => dispatch({ type: "setDrawingZone", drawing: false })}
               />
+              </div>
             )}
 
             {/* Le nom du fichier **sur la scène**, coin haut-gauche, dans le même
@@ -1003,6 +1632,12 @@ export function StudioPage() {
                 )}
               </div>
             )}
+            {/* **Rien d'autre sur la scène.** La pile d'alertes flottante vivait ici,
+                en bas à droite de l'image : trois cartes sur du bitume, illisibles
+                dès que le fond est clair, et qui couvraient la voie de droite —
+                c'est-à-dire souvent le véhicule même qu'elles signalaient. Les
+                alertes sont maintenant dans la troisième colonne, à côté de la
+                scène : visibles pendant l'analyse sans rien recouvrir. */}
           </VideoScene>
           </DropZone>
 
@@ -1035,26 +1670,14 @@ export function StudioPage() {
               // au même endroit. L'intervalle retenu se lit deux rangées au-dessus,
               // ce qui remplace le rappel « Portion retenue » écrit sous l'ancien
               // bouton.
+              // « Lancer l'analyse » a quitté cette place pour la barre, où sont
+              // désormais **toutes** les commandes du job — lancer, suspendre,
+              // reprendre, annuler. Le lecteur ne garde que ce qui concerne la source
+              // elle-même.
               actions={
-                <>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    disabled={!canAnalyse}
-                    onClick={openLaunch}
-                    title={analyseTooltip(
-                      serverReady,
-                      media.source?.file !== undefined,
-                      geometry,
-                      busy,
-                    )}
-                  >
-                    Lancer l'analyse
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={handleClose} disabled={busy}>
-                    Fermer
-                  </Button>
-                </>
+                <Button variant="ghost" size="sm" onClick={handleClose} disabled={busy}>
+                  Fermer
+                </Button>
               }
             />
           )}
@@ -1062,23 +1685,27 @@ export function StudioPage() {
           {/* Le gel expliqué, à l'endroit exact où il se constate. Sans cette
               phrase, « la vidéo ne bouge plus et les boutons sont gris » se lit
               comme un plantage — c'est la lecture qui a produit le rapport
-              « j'augmente la vitesse avant d'analyser et l'écran se fige ». */}
+              « j'augmente la vitesse avant d'analyser et l'écran se fige ».
+
+              **Elle commence par la phase**, et ce n'est pas cosmétique : depuis que
+              la progression tient dans un anneau de 22 px en haut de l'écran, cette
+              phrase est le texte le plus visible sous la vidéo. Écrite « Lecture
+              suspendue : … », elle devenait le seul commentaire d'un écran figé et se
+              lisait comme l'échec du lancement — rapporté tel quel, « je n'arrive pas
+              à lancer », sur une analyse qui tournait à 20 img/s. Le même texte
+              introduit par « Analyse en cours » confirme au lieu d'alarmer. */}
           {analysing && media.source?.file !== undefined && (
             <p role="status" className="text-caption text-ink-muted">
-              Lecture suspendue : la vidéo se cale sur l'image analysée.
+              {progress.label} — la lecture se cale sur l'image analysée.
             </p>
           )}
 
-          {(busy || failed) && (
-            <JobProgressBar
-              upload={session.upload}
-              job={session.job}
-              modelLabel={selectedModelLabel}
-              onCancel={session.cancel}
-              onPause={session.pause}
-              onResume={session.resume}
-            />
-          )}
+          {/* **Ce que la barre ne peut pas porter**, et rien d'autre : l'envoi du
+              fichier avec ses octets, la préparation avec le nom du modèle qui se
+              charge, l'erreur, et la phrase qui explique ce qu'une pause coûte. Le
+              pourcentage, le compteur d'images et les trois boutons sont dans la
+              barre — ils y sont visibles pendant qu'on lit le bas de page. */}
+          {(busy || failed) && <JobProgressBar progress={progress} job={session.job} />}
 
           {/* Le désaccord de dimensions : dit, jamais tu. Sans ce message, l'écran
               montrerait une analyse qui progresse et un canvas vide, ce qui se lit
@@ -1099,7 +1726,27 @@ export function StudioPage() {
           )}
         </div>
 
-        <aside aria-label="Résultats" className="space-y-4">
+        {/* Les deux colonnes de droite portent **les mêmes** classes de calage, et
+            c'est ce qui fait qu'elles se lisent comme une paire : collées sous la
+            barre, alignées en haut de la rangée (`self-start`, sans quoi un enfant
+            de grille s'étire et `sticky` n'a plus rien à faire), et chacune avec son
+            propre défilement borné à la hauteur de la fenêtre.
+
+            Sans le défilement propre, la colonne la plus longue — dix lignes tracées
+            d'un côté, deux cents alertes de l'autre — imposerait sa hauteur à la
+            rangée, donc à la scène : la vidéo se retrouverait en haut d'un bloc de
+            trois écrans de vide. */}
+        <aside
+          aria-label="Résultats"
+          className={[
+            "min-w-0 space-y-4 panel-scroll",
+            "2xl:sticky 2xl:top-[calc(var(--app-header-h,0px)+3.75rem)] 2xl:self-start",
+            // `panel-scroll` : la barre du système fait 17 px opaques sur Windows,
+            // soit 5 % d'une colonne de 20 rem, et `scrollbar-gutter: stable` évite
+            // que les cartes sautent au moment où la barre apparaît.
+            "2xl:max-h-[calc(100dvh-var(--app-header-h,0px)-5rem)] 2xl:overflow-y-auto",
+          ].join(" ")}
+        >
           {/* Les chiffres **en tête de colonne**, à hauteur de la scène. C'est ce
               que l'utilisateur vient lire, et c'était en bas de page.
 
@@ -1114,35 +1761,25 @@ export function StudioPage() {
               l'autre. */}
           {resultStats !== null && (
             <ResultsDashboard
+              rules={alertRules}
               stats={resultStats.stats}
               lines={geometry.lines}
-              includePerson={hasPersonClass}
+              // **La même liste qu'au registre, et c'est le point.** « Passages
+              // globaux » vaut le nombre de rangées du tableau ; les faire lire
+              // deux sources différentes les ferait diverger d'un véhicule sans
+              // que rien ne plante, et c'est exactement le contrôle que
+              // l'utilisateur fait en les comparant.
+              vehicles={countedVehicles}
+              selectedClasses={selectedClasses}
+              // Le même repère « en direct » que la colonne des alertes, et pour la
+              // même raison : ces cartes sont **identiques** pendant l'analyse et
+              // après, un seul jeu de composants pour deux sources de même forme. Ce
+              // qu'aucun chiffre ne dit, c'est laquelle on regarde.
+              live={analysing || live.active}
             />
           )}
 
-          {/* Avant le premier chiffre, la même section **au même endroit** — elle
-              vivait tout en bas de la page, sous la vidéo, pendant que cette
-              colonne restait vide sur toute la hauteur de la scène. Un écran vide
-              qui promet des chiffres qu'on ne verra jamais est pire que pas
-              d'écran vide du tout : d'où le même libellé, la même taille et la
-              même place que le tableau réel. Une seule carte, parce que le tableau
-              réel n'a plus qu'une tête de lecture — « Objets suivis » est passé
-              dans la barre, où rien ne s'affiche avant la première analyse. */}
-          {resultStats === null && media.source !== null && (
-            <section aria-labelledby="results-title">
-              <h3 id="results-title" className="label-micro mb-3">
-                Résultats
-              </h3>
-              <MetricCard
-                size="lg"
-                label="Passages en entrée"
-                value="—"
-                hint="Total des passages sur les sens marqués « entrée », toutes lignes"
-              />
-            </section>
-          )}
-
-          {/* Ce qui remplit le reste de la colonne : les réglages qui partiront au
+          {/* Ce qui remplit la colonne avant la première analyse : les réglages qui partiront au
               serveur, relus d'un coup. Ils vivent dans quatre tiroirs de la barre,
               et les vérifier demandait d'ouvrir les quatre — pendant que la place
               pour les lire tous ensemble restait inoccupée juste à côté.
@@ -1215,7 +1852,7 @@ export function StudioPage() {
 
           **La Répartition n'est plus ici** : ses quatre cartes ont rejoint les
           Résultats, dans la colonne de droite. Elle découpe le chiffre de tête
-          « Passages en entrée » — leur somme lui est égale par construction — et
+          « Passages globaux » — leur somme lui est égale par construction — et
           un écran de défilement entre les deux obligeait à retenir un nombre pour
           vérifier l'autre. Le bilan par ligne y a suivi le même chemin, en
           cartes ; ce qui reste ici est ce qu'une colonne de 24 rem ne porte pas —
@@ -1229,21 +1866,30 @@ export function StudioPage() {
           />
 
           {/* Deux camemberts côte à côte : la même question, « quelle part »,
-              posée sur deux axes différents — par ligne, par type de
-              véhicule. */}
+              posée sur deux axes différents — par ligne, par type de véhicule.
+
+              **`lg` et non `sm` pour les mettre côte à côte** : chaque camembert est
+              un dessin de 7 rem plus une légende dont la largeur utile est de 11 rem,
+              et à 640 px de large en deux colonnes la légende passait sous le dessin
+              — deux blocs étroits et hauts au lieu de deux graphiques. Au-delà, les
+              deux légendes se mettent d'elles-mêmes en deux colonnes (`auto-fill`),
+              ce qui est exactement ce qu'il faut quand le tracé porte dix lignes. */}
           <Suspense
             fallback={
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3 lg:grid-cols-2">
                 <div className="h-48 rounded-card bg-surface" />
                 <div className="h-48 rounded-card bg-surface" />
               </div>
             }
           >
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid items-stretch gap-3 lg:grid-cols-2">
               <LineFlowChart stats={dashboardStats} lines={geometry.lines} />
               <ClassEntriesChart
-                entries={entriesByClass(dashboardStats, geometry.lines)}
-                classes={hasPersonClass ? [...VEHICLE_CLASSES, "person"] : VEHICLE_CLASSES}
+                entries={dashboardEntries}
+                // Mêmes classes que les cartes de `ResultsDashboard`, par le
+                // même juge : deux listes divergeraient sur un décochage, et le
+                // camembert montrerait une part que les KPI ne montrent pas.
+                classes={visibleClasses(selectedClasses, dashboardEntries)}
               />
             </div>
           </Suspense>
@@ -1255,9 +1901,20 @@ export function StudioPage() {
             result={session.result}
             vehicles={countedVehicles}
             lines={geometry.lines}
-            // Suit le réglage réel : la note expliquant les px/s ne doit
-            // apparaître que quand l'échelle manque **effectivement**.
-            hasScale={settings.pixelsPerMeter !== null && settings.pixelsPerMeter > 0}
+            rules={alertRules}
+            // Le job **en cours ou terminé** depuis ADR 0046 : les captures sont
+            // écrites au moment où elles sont retenues, donc la colonne se remplit
+            // pendant que le tableau se remplit. Elle apparaît d'elle-même — sans
+            // ANPR ni OCR aucun véhicule ne porte de `snapshotScore`, donc
+            // `hasSnapshots` reste faux et la colonne n'existe pas.
+            jobId={snapshotJobId}
+            // Le **même** seuil que celui du tiroir d'alertes, passé plutôt que
+            // recalculé : `vehicle-registry` n'importe pas `vehicle-search`, et un
+            // véhicule signalé dans les alertes doit être teinté ici. `null` retire
+            // la colonne — pas de recherche, rien à classer.
+            matchThreshold={queryIsArmed(query) ? query.threshold : null}
+            // Autorise le seul réessai de vignette. Aucun chiffre, aucune colonne.
+            live={analysing}
           />
         </>
       )}
@@ -1280,8 +1937,45 @@ export function StudioPage() {
           se lit comme un comptage en panne. Le direct n'a pas de journal, et c'est ce
           qu'il faut dire en n'affichant rien plutôt qu'un vide qui ne se remplira
           jamais. */}
-      {timelineEvents !== null && !live.active && (
+      {SHOW_CROSSING_TIMELINE && timelineEvents !== null && !live.active && (
         <CrossingTimeline events={timelineEvents} lines={geometry.lines} live={analysing} />
+      )}
+
+      {/* La capture ouverte depuis une alerte. Montée seulement une fois ouverte :
+          un `<dialog>` fermé ne rend rien, et ses deux images ne doivent pas se
+          charger tant que personne ne les regarde.
+
+          **Elle s'ouvre aussi pendant l'analyse** depuis ADR 0046 : la condition
+          était `session.result !== null`, ce qui rendait la vignette d'une alerte
+          cliquable et sans effet au moment précis où l'on veut vérifier une plaque
+          recherchée. Le garde est maintenant l'existence d'un job, quel que soit son
+          état. */}
+      {snapshotJobId !== null && alertSnapshotVehicle !== null && (
+        <SnapshotDialog
+          open
+          onClose={() => setAlertSnapshot(null)}
+          title={`${classLabel(alertSnapshotVehicle.label)} #${alertSnapshotVehicle.globalId}`}
+          subtitle={
+            alertSnapshotVehicle.snapshotMs == null
+              ? undefined
+              : `capturée à ${formatSceneTimePrecise(alertSnapshotVehicle.snapshotMs)}`
+          }
+          vehicleSrc={vehicleSnapshotUrl(
+            snapshotJobId,
+            alertSnapshotVehicle.globalId,
+            alertSnapshotVehicle.snapshotMs,
+          )}
+          plateSrc={platePhotoUrl(
+            snapshotJobId,
+            alertSnapshotVehicle.globalId,
+            alertSnapshotVehicle.snapshotMs,
+          )}
+          plateText={alertSnapshotVehicle.plateText}
+          // La plaque **recherchée** sous la plaque **lue** : c'est là que
+          // l'opérateur tranche, en regardant la vignette. Une correspondance
+          // annoncée « probable » ne se valide pas autrement.
+          watched={matchPlate(alertSnapshotVehicle.plateText, settings.plateWatchlist)?.watched}
+        />
       )}
 
       {/* Monté seulement une fois ouvert : le `<dialog>` est un composant lourd
@@ -1394,6 +2088,28 @@ function PreloadRetry({
  * laisser polluerait l'objet persisté en `localStorage` avec une géométrie qui
  * n'appartient pas à la vidéo courante.
  */
+/**
+ * La vignette à envoyer, ou `null` — pas de recherche, ou image inexploitable.
+ *
+ * Hors du composant : elle ne lit aucun état React et n'a pas à être recréée à chaque
+ * rendu. Elle charge l'image **une fois de plus** depuis son `previewUrl`, parce qu'un
+ * `HTMLImageElement` déjà décodé par le navigateur pour l'aperçu n'est pas accessible
+ * d'ici — et que le coût est un décodage local sur une photo de quelques centaines de
+ * kilooctets, au moment d'un clic.
+ */
+async function queryThumbnail(query: VehicleQuery): Promise<Blob | null> {
+  if (query.file === null || query.previewUrl === null) return null;
+  const image = new Image();
+  const url = query.previewUrl;
+  const loaded = await new Promise<boolean>((resolve) => {
+    image.addEventListener("load", () => resolve(true), { once: true });
+    image.addEventListener("error", () => resolve(false), { once: true });
+    image.src = url;
+  });
+  if (!loaded) return null;
+  return cropToJpeg(image, query.crop);
+}
+
 function stripGeometry(
   config: Record<string, unknown>,
 ): Partial<AnalysisSettings> {

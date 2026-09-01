@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from tests.support.builders import CAR, TRUCK, compose, straight_line, track_path
+from traffic_analysis.features.jobs.infrastructure.result_store import SNAPSHOT_DIRNAME
 
 if TYPE_CHECKING:
     from httpx import AsyncClient
@@ -616,6 +617,92 @@ class TestConfigurationDUnJob:
         assert lines[0]["a"] == {"x": 0.0, "y": 500.0}
         assert lines[0]["b"] == {"x": 1920.0, "y": 500.0}
 
+    async def test_les_regles_de_ligne_font_l_aller_retour_sans_etre_interpretees(
+        self, client: AsyncClient
+    ) -> None:
+        """Sens interdit et voie réservée : **acceptés, persistés, rendus tels quels**.
+
+        Le serveur ne les lit jamais (voir `unit/counting/test_regles_de_ligne.py`) ;
+        ils voyagent pour que l'interface puisse qualifier un franchissement
+        d'infraction et pour qu'un résultat rouvert retrouve les règles qui étaient
+        posées. Les perdre en route n'aurait fait échouer aucun compteur — c'est
+        exactement la panne silencieuse que le correctif des presets a payée.
+        """
+        created = await _post_job(
+            client,
+            lines=[
+                {
+                    **LINE,
+                    "positiveRole": "entry",
+                    "negativeRole": "forbidden",
+                    "allowedClassIds": [5, 7],
+                }
+            ],
+        )
+        job_id = created["body"]["jobId"]
+
+        line = (await client.get(f"/api/v1/jobs/{job_id}/config")).json()["configJson"]["lines"][0]
+
+        assert line["positiveRole"] == "entry"
+        assert line["negativeRole"] == "forbidden"
+        assert line["allowedClassIds"] == [5, 7]
+
+    async def test_les_plaques_recherchees_sont_rendues_telles_qu_elles_ont_ete_saisies(
+        self, client: AsyncClient
+    ) -> None:
+        """Ni canonisées ni comparées : la correspondance vit côté client.
+
+        Canoniser ici installerait une **seconde** définition de « la même plaque »,
+        et la canonique du domaine n'est pas celle du client — elle conserve le
+        tiret. Deux règles pour une seule question finissent par diverger.
+        """
+        created = await _post_job(
+            client,
+            detectPlates=True,
+            readPlateText=True,
+            plateWatchlist=["AB-123-CD", " ef 456 gh "],
+        )
+        job_id = created["body"]["jobId"]
+
+        config = (await client.get(f"/api/v1/jobs/{job_id}/config")).json()["configJson"]
+
+        assert config["plateWatchlist"] == ["AB-123-CD", "ef 456 gh"]
+
+    async def test_une_plaque_trop_courte_est_refusee(self, client: AsyncClient) -> None:
+        """Sous quatre caractères, une entrée correspondrait à presque tout.
+
+        Elle serait un générateur de fausses alertes, pas une recherche — et une
+        alerte fausse coûte plus cher qu'une alerte manquée.
+        """
+        created = await _post_job(client, plateWatchlist=["AB1"])
+
+        assert created["status_code"] == 422
+
+    async def test_une_liste_de_classes_autorisees_vide_est_refusee(
+        self, client: AsyncClient
+    ) -> None:
+        """`[]` dirait « aucune classe ne passe », ce que `forbidden` exprime déjà.
+
+        Les confondre rendrait toute ligne infranchissable en silence, sur une
+        géométrie dont l'écran affiche une voie réservée ordinaire.
+        """
+        created = await _post_job(client, lines=[{**LINE, "allowedClassIds": []}])
+
+        assert created["status_code"] == 422
+
+    async def test_une_classe_autorisee_hors_catalogue_est_refusee(
+        self, client: AsyncClient
+    ) -> None:
+        """Même refus que `classIds`, et pour le même mode de panne muet.
+
+        Une classe hors COCO ne correspondrait à aucun `by_class` : la voie réservée
+        n'accepterait jamais rien, et **tout** franchissement deviendrait une
+        infraction.
+        """
+        created = await _post_job(client, lines=[{**LINE, "allowedClassIds": [4242]}])
+
+        assert created["status_code"] == 422
+
     async def test_la_route_porte_aussi_l_etat_du_job(self, client: AsyncClient) -> None:
         """Elle étend `JobSchema` : un seul appel suffit à l'historique."""
         created = await _post_job(client)
@@ -716,3 +803,141 @@ class TestConfigurationDUnJob:
         )
 
         assert response.status_code == 422
+
+
+class TestCapturesDeVehicules:
+    """Les deux routes d'image, et ce qu'elles refusent.
+
+    Le moteur factice ne lit aucune plaque par défaut, donc aucune capture n'existe :
+    ces tests portent sur les **refus**, qui sont le cas courant à l'écran. Ce qui est
+    capturé et pourquoi est testé sur la règle elle-même
+    (`unit/counting/test_capture_de_vehicule.py`), sans pixels ni HTTP.
+    """
+
+    async def test_une_capture_absente_rend_409_et_non_404(self, client: AsyncClient) -> None:
+        """409 et non 404 : le véhicule existe, sa photo non.
+
+        Un 404 enverrait chercher un identifiant faux. Le code distingue en plus ce
+        refus de celui de la vidéo (`input_missing`) : il n'y a rien à redéposer, ce
+        véhicule n'a simplement pas de plaque lue.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+        await _wait_until_done(client, job_id)
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/vehicles/1/snapshot.jpg")
+
+        assert response.status_code == 409
+        assert response.json()["code"] == "snapshot_missing"
+
+    async def test_la_vignette_de_plaque_refuse_de_la_meme_facon(self, client: AsyncClient) -> None:
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+        await _wait_until_done(client, job_id)
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/vehicles/1/plate.jpg")
+
+        assert response.status_code == 409
+        assert response.json()["code"] == "snapshot_missing"
+
+    async def test_un_job_inconnu_rend_404(self, client: AsyncClient) -> None:
+        response = await client.get("/api/v1/jobs/inexistant/vehicles/1/snapshot.jpg")
+
+        assert response.status_code == 404
+
+    async def test_une_capture_est_servie_pendant_l_analyse(
+        self, client: AsyncClient, settings: Settings
+    ) -> None:
+        """**Le refus « job non terminé » n'existe plus** (ADR 0046).
+
+        Il énonçait une vérité d'implémentation — « les captures sont écrites à la
+        fin » — qui n'en est plus une : elles le sont au fil de l'eau, et le garder
+        aurait refusé par un 409 des fichiers réellement présents sur le disque, au
+        moment précis où le registre les demande.
+
+        Le fichier est posé à la main, comme dans le test voisin : ce test porte sur
+        la **route**, pas sur la chaîne ANPR.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+
+        directory = settings.data_dir / "jobs" / job_id / SNAPSHOT_DIRNAME
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "1-vehicle.jpg").write_bytes(b"jpeg-en-cours")
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/vehicles/1/snapshot.jpg")
+
+        # Le statut du job n'entre plus dans la décision : soit le fichier est là,
+        # soit il ne l'est pas.
+        assert response.status_code == 200
+        assert response.content == b"jpeg-en-cours"
+
+    async def test_la_vignette_de_plaque_d_une_photo_de_ressemblance_refuse_en_409(
+        self, client: AsyncClient, settings: Settings
+    ) -> None:
+        """Une capture retenue pour la ressemblance n'a qu'une face, et c'est normal.
+
+        Aucun code d'erreur nouveau : `snapshot_missing` couvre déjà « il n'y a pas ce
+        fichier », et le client sait par `snapshotKind` qu'il n'a pas à le demander.
+        Inventer un `plate_face_missing` ferait un code que personne ne branche.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+
+        directory = settings.data_dir / "jobs" / job_id / SNAPSHOT_DIRNAME
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "1-vehicle.jpg").write_bytes(b"jpeg-ressemblance")
+
+        vehicle = await client.get(f"/api/v1/jobs/{job_id}/vehicles/1/snapshot.jpg")
+        plate = await client.get(f"/api/v1/jobs/{job_id}/vehicles/1/plate.jpg")
+
+        assert vehicle.status_code == 200
+        assert plate.status_code == 409
+        assert plate.json()["code"] == "snapshot_missing"
+
+    async def test_une_capture_pas_encore_ecrite_reste_un_409_missing(
+        self, client: AsyncClient
+    ) -> None:
+        """Et **jamais** `job_not_finished` : le code doit dire ce qui manque.
+
+        Pendant une analyse, une capture absente est le cas normal — le véhicule
+        n'a pas encore de plaque lue. C'est exactement ce que `snapshot_missing`
+        décrit, et c'est ce qui autorise le client à réessayer une fois plutôt qu'à
+        conclure que la route est fermée.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/vehicles/999/snapshot.jpg")
+
+        assert response.status_code == 409
+        assert response.json()["code"] == "snapshot_missing"
+
+    async def test_une_capture_est_servie_en_jpeg_et_immuable(
+        self, client: AsyncClient, settings: Settings
+    ) -> None:
+        """Le fichier est posé sur le volume du job, comme le service l'écrirait.
+
+        Écrire directement plutôt que faire lire une plaque au moteur factice : ce
+        test porte sur la **route**, et lui faire dépendre de la chaîne ANPR entière
+        le ferait échouer pour des raisons sans rapport.
+
+        `immutable` et `private` : la capture d'un couple job + véhicule ne change
+        jamais, et elle porte une plaque et un visage — un cache partagé n'a pas à la
+        garder.
+        """
+        created = await _post_job(client)
+        job_id = created["body"]["jobId"]
+        await _wait_until_done(client, job_id)
+
+        directory = settings.data_dir / "jobs" / job_id / SNAPSHOT_DIRNAME
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "1-vehicle.jpg").write_bytes(b"\xff\xd8\xff-voiture")
+
+        response = await client.get(f"/api/v1/jobs/{job_id}/vehicles/1/snapshot.jpg")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/jpeg"
+        assert "immutable" in response.headers["cache-control"]
+        assert "private" in response.headers["cache-control"]
+        assert response.content == b"\xff\xd8\xff-voiture"

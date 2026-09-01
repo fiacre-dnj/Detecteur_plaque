@@ -38,7 +38,20 @@ export {
   type PreviousPassage,
   type RoleFilter,
 } from "./model/crossingTimeline";
-export { SEEK_TOLERANCE_MS, shouldSeek, useFollowAnalysis } from "./model/useFollowAnalysis";
+export {
+  SEEK_TOLERANCE_MS,
+  STALL_PROMOTE_MS,
+  shouldSeek,
+  useSyncedPreview,
+  type SyncedPreview,
+} from "./model/useFollowAnalysis";
+export {
+  analysisProgress,
+  type AnalysisPhase,
+  type AnalysisProgress as AnalysisProgressState,
+} from "./model/analysisProgress";
 export { CrossingTimeline } from "./ui/CrossingTimeline";
+export { AnalysisControls } from "./ui/AnalysisControls";
+export { AnalysisProgress } from "./ui/AnalysisProgress";
 export { JobProgressBar } from "./ui/JobProgressBar";
 export { LaunchDialog } from "./ui/LaunchDialog";

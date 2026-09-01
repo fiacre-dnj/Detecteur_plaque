@@ -1,5 +1,5 @@
 /**
- * La bascule sombre / clair, dans l'entête.
+ * La bascule sombre / clair, en bas du rail de navigation.
  *
  * Un seul bouton plutôt qu'un sélecteur à trois états (sombre / clair /
  * système) : le projet a un thème par défaut assumé — le sombre — et le clair
@@ -34,7 +34,7 @@ export function ThemeToggle() {
       const target = nextTheme(current);
       // Posé tout de suite, hors du cycle de rendu : le thème vit sur `<html>`,
       // que React ne gouverne pas. `switchTheme` et non `applyTheme` : il coupe
-      // les transitions le temps de la bascule, sans quoi une partie de l'entête
+      // les transitions le temps de la bascule, sans quoi une partie du rail
       // reste peinte dans l'ancien thème.
       switchTheme(target);
       saveTheme(target);
@@ -50,7 +50,7 @@ export function ThemeToggle() {
       onClick={toggle}
       title={label}
       aria-label={label}
-      className="grid size-9 place-items-center rounded-pill text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
+      className="grid size-10 shrink-0 place-items-center rounded-pill text-ink-dim transition-colors hover:bg-surface-2 hover:text-ink"
     >
       {theme === "dark" ? (
         <Sun aria-hidden="true" className="size-4" />

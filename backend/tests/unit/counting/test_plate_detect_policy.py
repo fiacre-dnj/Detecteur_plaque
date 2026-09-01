@@ -12,12 +12,14 @@ de la vitesse de la machine ne prouve rien.
 
 from __future__ import annotations
 
+from traffic_analysis.features.counting.domain.inference_budget import (
+    InferenceCandidate,
+    select_within_budget,
+)
 from traffic_analysis.features.counting.domain.models import BoundingBox
 from traffic_analysis.features.counting.domain.plate_policy import (
-    DetectionCandidate,
     PlateDetectOptions,
     PlateDetectPolicy,
-    select_within_budget,
 )
 
 #: Un véhicule largement au-dessus de `min_vehicle_width_px`.
@@ -233,8 +235,8 @@ class TestPlafondParImage:
     """
 
     @staticmethod
-    def _candidate(global_id: int, width: float, *, never: bool = False) -> DetectionCandidate:
-        return DetectionCandidate(global_id=global_id, width=width, never_detected=never)
+    def _candidate(global_id: int, width: float, *, never: bool = False) -> InferenceCandidate:
+        return InferenceCandidate(global_id=global_id, width=width, never_served=never)
 
     def test_sans_plafond_rien_n_est_ecarte(self) -> None:
         """`0` = illimité, le comportement historique. Le plafond doit rester
@@ -292,3 +294,140 @@ class TestPlafondParImage:
         """Plafonner écarte des mesures, donc des plaques possibles : l'arbitrage ne
         se prend pas à la place de l'exploitant."""
         assert PlateDetectOptions().max_per_frame == 0
+
+
+class TestLisibiliteProjetee:
+    """La porte qui refuse de payer pour une plaque prouvée illisible — ADR 0039.
+
+    Sur une vue de circulation réelle, la détection de plaques pèse 73 % du budget
+    et **aucune plaque n'y est publiable** : elles font moins de 48 px pour un
+    plancher de lecture à 64 (invariant 12). Cette porte rend ce temps-là, et
+    seulement celui-là.
+
+    Le plancher utilisé est **exactement** celui dont l'OCR se sert pour refuser de
+    lire, donc aucun texte publiable ne peut être perdu — par construction, pas en
+    moyenne. Ce qui est payé est le rectangle.
+    """
+
+    #: Un véhicule de 200 px dont la plaque mesure 20 px : rapport 0,1, et il
+    #: faudrait 640 px de véhicule pour atteindre un plancher de 64.
+    PLATE_WIDTH = 20.0
+    FLOOR = 64.0
+
+    def _suspended(self, **overrides: object) -> PlateDetectPolicy:
+        """Une politique dont la piste 7 vient d'être suspendue pour illisibilité."""
+        policy = _policy(readable_min_plate_width_px=self.FLOOR, **overrides)
+        for ordinal in range(2):
+            policy.record(7, ordinal=ordinal)
+            policy.observe_plate(7, VEHICLE.width, self.PLATE_WIDTH)
+        return policy
+
+    def test_une_piste_dont_la_plaque_reste_trop_petite_est_suspendue(self) -> None:
+        policy = self._suspended()
+
+        assert not policy.should_detect(
+            7, ordinal=9, vehicle=VEHICLE, vote_is_confident=False, has_anchor=False
+        )
+
+    def test_la_porte_se_rouvre_seule_quand_le_vehicule_s_approche(self) -> None:
+        """**Le test qui distingue une suspension d'un abandon.**
+
+        Sans lui, la porte perdrait la plaque qu'une piste publiera dans trois
+        secondes, à dix mètres d'ici — l'objection décisive contre un simple
+        compteur d'abandon. Le réarmement ne demande aucun réglage : c'est une
+        mesure, `largeur_véhicule × rapport ≥ plancher`.
+        """
+        policy = self._suspended()
+        # Rapport mesuré 0,1 : il faut 640 px de véhicule pour une plaque de 64.
+        approaching = BoundingBox(x=0.0, y=0.0, width=700.0, height=520.0)
+
+        assert policy.should_detect(
+            7, ordinal=9, vehicle=approaching, vote_is_confident=False, has_anchor=False
+        )
+
+    def test_une_seule_mesure_basse_ne_suspend_pas(self) -> None:
+        """Deux mesures décrivent une situation, une seule décrit un instant.
+
+        Une plaque à moitié occultée ou vue de biais rend une largeur courte qui ne
+        décrit pas la piste.
+        """
+        policy = _policy(readable_min_plate_width_px=self.FLOOR)
+        policy.record(7, ordinal=0)
+        policy.observe_plate(7, VEHICLE.width, self.PLATE_WIDTH)
+
+        assert policy.should_detect(
+            7, ordinal=1, vehicle=VEHICLE, vote_is_confident=False, has_anchor=False
+        )
+
+    def test_une_mesure_lisible_reouvre_la_porte(self) -> None:
+        """Les échecs comptés sont **consécutifs**, comme `misses`."""
+        policy = self._suspended()
+        policy.observe_plate(7, VEHICLE.width, self.FLOOR + 10.0)
+
+        assert policy.should_detect(
+            7, ordinal=9, vehicle=VEHICLE, vote_is_confident=False, has_anchor=False
+        )
+
+    def test_la_porte_passe_avant_la_garde_sans_ancre(self) -> None:
+        """**Le détail qui peut faire échouer tout le mécanisme en silence.**
+
+        Une piste suspendue ne mesure plus, donc son ancre vieillit et disparaît à
+        `max_anchor_age`. La garde « pas d'ancre » rend `True` sans condition : si
+        la porte était placée après elle, la piste serait relancée à *chaque* image
+        et la porte n'économiserait rien du tout — sans que rien ne le signale.
+        """
+        policy = self._suspended()
+
+        assert not policy.should_detect(
+            7, ordinal=9, vehicle=VEHICLE, vote_is_confident=False, has_anchor=False
+        )
+
+    def test_un_plancher_nul_ne_change_rien(self) -> None:
+        """**Le témoin d'additivité** : porte désarmée, comportement d'avant.
+
+        C'est aussi le cas de production sans OCR — le service ne pose jamais le
+        plancher quand aucun lecteur ne tourne.
+        """
+        policy = _policy()
+        for ordinal in range(4):
+            policy.record(7, ordinal=ordinal)
+            policy.observe_plate(7, VEHICLE.width, self.PLATE_WIDTH)
+
+        assert policy.should_detect(
+            7, ordinal=4, vehicle=VEHICLE, vote_is_confident=False, has_anchor=False
+        )
+
+    def test_le_rapport_retenu_est_le_meilleur_jamais_vu(self) -> None:
+        """Un maximum, jamais la dernière valeur : il rouvre la porte plus qu'il ne la ferme.
+
+        Une piste dont la plaque a été vue large une fois *peut* l'être ; laisser
+        une vue de biais écraser ce rapport fermerait la porte pour de bon sur un
+        véhicule pourtant lisible.
+        """
+        policy = _policy(readable_min_plate_width_px=self.FLOOR)
+        policy.observe_plate(7, VEHICLE.width, 80.0)  # rapport 0,4
+        for ordinal in range(2):
+            policy.record(7, ordinal=ordinal)
+            policy.observe_plate(7, VEHICLE.width, self.PLATE_WIDTH)  # rapport 0,1
+
+        # Avec le meilleur rapport (0,4), 200 px de véhicule donnent 80 px de plaque.
+        assert policy.should_detect(
+            7, ordinal=9, vehicle=VEHICLE, vote_is_confident=False, has_anchor=False
+        )
+
+    def test_le_quota_d_exploration_rouvre_la_porte_une_image(self) -> None:
+        """Désactivé par défaut, et il ne rouvre que le temps d'une image."""
+        policy = self._suspended(readable_retry_every=5)
+
+        # Premier refus : il pose la date de suspension.
+        assert not policy.should_detect(
+            7, ordinal=10, vehicle=VEHICLE, vote_is_confident=False, has_anchor=False
+        )
+        # Avant l'échéance, toujours refusé.
+        assert not policy.should_detect(
+            7, ordinal=13, vehicle=VEHICLE, vote_is_confident=False, has_anchor=False
+        )
+        # À l'échéance, une tentative est accordée.
+        assert policy.should_detect(
+            7, ordinal=15, vehicle=VEHICLE, vote_is_confident=False, has_anchor=False
+        )

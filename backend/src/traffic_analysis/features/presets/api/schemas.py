@@ -123,6 +123,18 @@ class PresetSchema(CamelModel):
 
 
 def _line_to_domain(line: LineSchema) -> PresetLine:
+    """La ligne du client, telle qu'elle sera persistée.
+
+    **Les champs de sens et les classes autorisées en font partie**, et les oublier
+    était le défaut : `LineSchema` les acceptait déjà — le client les envoyait donc —
+    mais cette fonction les laissait tomber en silence. Le preset s'enregistrait sans
+    erreur, se rechargeait sans erreur, et rendait des lignes dont tous les sens
+    étaient `neutral`. Voir `PresetLine` pour ce que cela éteint en aval.
+
+    **Toute règle ajoutée à `LineSchema` doit être recopiée ici.** C'est le seul
+    endroit du dépôt où l'oubli ne lève rien, ne journalise rien et ne fausse aucun
+    compteur : il éteint seulement l'aval.
+    """
     return PresetLine(
         id=line.id,
         name=line.name,
@@ -130,6 +142,13 @@ def _line_to_domain(line: LineSchema) -> PresetLine:
         zone_id=line.zone_id,
         a=_point_to_domain(line.a),
         b=_point_to_domain(line.b),
+        positive_name=line.positive_name,
+        negative_name=line.negative_name,
+        positive_role=line.positive_role,
+        negative_role=line.negative_role,
+        allowed_class_ids=(
+            None if line.allowed_class_ids is None else tuple(line.allowed_class_ids)
+        ),
     )
 
 

@@ -32,11 +32,41 @@ from traffic_analysis.features.models_registry.domain.catalogue import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
 logger = get_logger("traffic_analysis.models")
 
 WARMUP_SIDE = 640
+
+#: Forme du fond soumis au préchauffage : **celle d'une vidéo**, pas un carré.
+#:
+#: Le préchauffage soumettait un carré `640×640` sans `imgsz`, quand la production
+#: soumet un letterbox rectangulaire — une source 16:9 entre en `384×640`, et par lot.
+#: Or `BasePredictor.stream_inference` pose `done_warmup = True` après cette passe et
+#: le prédicteur est réutilisé : **la forme réellement analysée ne bénéficiait donc
+#: d'aucune chauffe du backend**.
+#:
+#: Mesuré en courses **alternées, processus neuf à chaque fois**, lot de 4 en 1080p :
+#:
+#: | préchauffage | 1ᵉʳ lot | régime |
+#: |---|---|---|
+#: | carré 640, lot 1 (avant) | 85,5 puis 76,6 ms | ~41,5 ms |
+#: | forme de production (après) | **65,3 puis 65,8 ms** | ~41,7 ms |
+#:
+#: Soit **~15 ms par job**, une seule fois — et non les 45 qu'une lecture optimiste
+#: du premier micro-banc laissait espérer. Le gain le plus net n'est d'ailleurs pas
+#: la moyenne mais la **reproductibilité** : ±0,5 ms contre ±9 avant.
+#:
+#: Il reste ~24 ms d'hésitation qu'aucun préchauffage au démarrage ne peut retirer :
+#: 16:9 est un choix par défaut — le rapport d'aspect de la vidéo n'est pas connu à
+#: ce moment-là — et le **dernier lot** de chaque vidéo, plus court donc de forme
+#: neuve, n'est de toute façon jamais chauffable.
+#:
+#: L'enjeu n'est pas le budget total (0,01 % d'une analyse de trois minutes) mais
+#: l'endroit où l'hésitation tombe : sur la **première image d'aperçu**, celle qu'on
+#: regarde pour savoir si ça a démarré.
+WARMUP_HEIGHT = 1080
+WARMUP_WIDTH = 1920
 
 
 @dataclass(slots=True)
@@ -267,35 +297,72 @@ class ModelRegistry:
         self._device_reason = reason
         self._half = None
 
-    def apply_thread_budget(self, threads: int) -> None:
-        """Borne le nombre de threads d'inférence CPU de torch. `0` ne fait rien.
+    def apply_thread_budget(self, threads: int, opencv_threads: int = 0) -> None:
+        """Borne les threads CPU de torch **et** ceux d'OpenCV. `0` ne fait rien.
 
         **Appelée une fois au démarrage, avant toute inférence.** `set_num_threads`
         redimensionne un pool déjà créé, mais le faire en cours d'analyse changerait
         la cadence au milieu d'une mesure.
 
-        Sans effet sur GPU : l'inférence n'y vit pas sur ces threads. On l'applique
-        quand même sans condition, parce que le pré et le post-traitement, eux,
-        restent sur CPU.
+        Sans effet sur GPU pour torch : l'inférence n'y vit pas sur ces threads. On
+        l'applique quand même sans condition, parce que le pré et le post-traitement,
+        eux, restent sur CPU.
+
+        **`opencv_threads` est un second robinet, et il en fallait un.** Au repos,
+        OpenCV prend *tous* les processeurs logiques (12 mesurés ici) quand torch en
+        prend 6, et rien ne les arbitrait : `threads` ne touche que torch. Or le
+        prétraitement d'Ultralytics est du pur OpenCV et tourne dans le fil qui
+        attend le GPU, pendant que `decode_ahead` décode dans un autre — la
+        contention qu'ADR 0031 nomme comme la cause de son gain non réalisé en 720p
+        et 1080p, sans qu'aucun réglage ne la borne.
+
+        **Ce que ce robinet ne couvre pas, et c'est délibéré.**
+        `cv2.setNumThreads` borne le `parallel_for_` — `resize`, `copyMakeBorder`,
+        `cvtColor`, `Laplacian`, `imencode` — c'est-à-dire le prétraitement, qui est
+        sur le chemin critique. Il ne borne **pas** le pool du décodeur FFmpeg, qui
+        se pose par capture (`CAP_PROP_N_THREADS` ; ce build n'expose aucune variable
+        d'environnement pour lui). Ce second robinet n'est pas posé : le décodage vit
+        dans son propre fil depuis ADR 0031, donc hors du chemin critique, et son
+        effet n'a pas été mesuré ici. Poser un réglage dont on n'a pas mesuré l'effet
+        est exactement ce que ce dépôt refuse.
+
+        **Défaut `0`, et c'est mesuré, pas prudent** : machine libre, OpenCV à 3 fils
+        au lieu de 12 fait *perdre* 3,4 % au chemin d'inférence ; avec un fil OpenCV
+        concurrent, il en fait *gagner* 9,7 puis 10,2 %. L'échange change de signe
+        selon la charge et le nombre de cœurs — un défaut non nul serait juste ici et
+        faux ailleurs. Même doctrine que `inference_threads`.
 
         Ne lève jamais. Un budget de threads est un confort d'exécution ; un service
         qui refuserait de démarrer parce qu'il n'a pas pu le poser échangerait une
         gêne contre une panne.
         """
-        if threads <= 0:
-            return
-        try:
-            import torch
+        if threads > 0:
+            try:
+                import torch
 
-            torch.set_num_threads(threads)
-            # Le pool inter-op ne se redimensionne pas après la première inférence,
-            # et lève alors plutôt que d'ignorer. Toléré séparément : borner
-            # l'intra-op est l'essentiel du gain.
-            with suppress(Exception):
-                torch.set_num_interop_threads(max(1, threads // 2))
-            logger.info("budget de threads d'inférence posé", threads=threads)
-        except Exception as exc:
-            logger.warning("budget de threads non appliqué", error=str(exc))
+                torch.set_num_threads(threads)
+                # Le pool inter-op ne se redimensionne pas après la première inférence,
+                # et lève alors plutôt que d'ignorer. Toléré séparément : borner
+                # l'intra-op est l'essentiel du gain.
+                with suppress(Exception):
+                    torch.set_num_interop_threads(max(1, threads // 2))
+                logger.info("budget de threads d'inférence posé", threads=threads)
+            except Exception as exc:
+                logger.warning("budget de threads non appliqué", error=str(exc))
+
+        if opencv_threads > 0:
+            try:
+                import cv2
+
+                before = cv2.getNumThreads()
+                cv2.setNumThreads(opencv_threads)
+                logger.info(
+                    "budget de threads OpenCV posé",
+                    threads=opencv_threads,
+                    avant=before,
+                )
+            except Exception as exc:
+                logger.warning("budget de threads OpenCV non appliqué", error=str(exc))
 
     def enable_cudnn_autotune(self) -> None:
         """Laisse cuDNN choisir ses algorithmes de convolution par la mesure.
@@ -429,16 +496,25 @@ class ModelRegistry:
 
             fresh = _Resident(model=model, busy=True, leases=1)
             self._residents[model_id] = fresh
-            self._evict_if_needed()
-            return fresh
+            freed = self._evict_if_needed()
 
-    def _evict_if_needed(self) -> None:
-        """Évince les plus anciennes instances **non occupées**.
+        # **Hors du verrou du registre, délibérément.** `cudaFree` synchronise
+        # l'appareil : le faire sous verrou bloquerait toute demande de bail pendant
+        # ce temps, y compris celles qui n'ont rien à voir avec l'éviction.
+        self._release_vram(freed)
+        return fresh
+
+    def _evict_if_needed(self) -> list[str]:
+        """Évince les plus anciennes instances **non occupées**, et dit lesquelles.
 
         Appelée sous verrou. Si toutes les instances résidentes sont occupées, on
         dépasse temporairement le plafond plutôt que d'arracher un modèle à une
         analyse en cours — dépasser est récupérable, pas l'autre.
+
+        Rend la liste des évincées pour que l'appelant rende leur VRAM **après**
+        avoir relâché le verrou : voir `_release_vram`.
         """
+        freed: list[str] = []
         while len(self._residents) > self._max_loaded:
             victim = next(
                 (name for name, resident in self._residents.items() if not resident.busy), None
@@ -449,9 +525,61 @@ class ModelRegistry:
                     loaded=len(self._residents),
                     limit=self._max_loaded,
                 )
-                return
+                return freed
             del self._residents[victim]
+            freed.append(victim)
             logger.info("modèle évincé", model_id=victim, limit=self._max_loaded)
+        return freed
+
+    def _release_vram(self, freed: Sequence[str]) -> None:
+        """Rend au pilote la VRAM d'instances qu'on vient de laisser tomber.
+
+        **`del` ne suffit pas, et la raison ne se devine pas.** Ultralytics crée un
+        cycle de références en enregistrant le crochet du tracker :
+        `predictor._hook = predictor.model.model.model[-1].register_forward_pre_hook(...)`
+        où la fermeture capture `predictor`. Le module retient le crochet, le crochet
+        retient le prédicteur, le prédicteur retient le modèle : le compteur de
+        références ne tombe **jamais** à zéro, et les poids restent en VRAM jusqu'à un
+        passage générationnel du ramasse-miettes, c'est-à-dire à un moment que
+        personne ne contrôle.
+
+        D'où `gc.collect()` **avant** `empty_cache()`, et pas à la place :
+        `empty_cache` ne rend que des blocs **déjà libres** dans l'allocateur mis en
+        cache de torch. Tant que le cycle tient l'objet, les blocs ne sont pas libres
+        et l'appel ne rend rien — on aurait un correctif qui journalise un succès sans
+        effet, exactement la famille de panne que ce dépôt collectionne.
+
+        **Quand c'est utile, et quand c'est du folklore coûteux.** Utile ici, parce
+        qu'une éviction change le profil de tailles d'allocation (on passe d'un palier
+        à un autre) et que la carte de cette machine n'a que 4 Go, partagés avec le
+        compositeur du bureau. Folklore coûteux **par image ou par lot** — l'allocateur
+        réutiliserait ses blocs gratuitement, et les rendre force un `cudaMalloc` neuf
+        qui sérialise avec l'appareil — et **en fin de bail**, où rien n'a été libéré
+        puisque le modèle reste résident.
+
+        Ne rend pas les poids à l'hôte par `.to("cpu")` : l'objet est jeté juste après,
+        donc ce serait copier 137 Mo pour les détruire.
+
+        Ne lève jamais : rendre de la mémoire est un confort, pas une garantie.
+        """
+        if not freed or self.device() == "cpu":
+            return
+        try:
+            import gc
+
+            import torch
+
+            before = torch.cuda.memory_reserved()
+            gc.collect()
+            torch.cuda.empty_cache()
+            logger.info(
+                "VRAM rendue après éviction",
+                modeles=list(freed),
+                reserve_avant_mio=before // 2**20,
+                reserve_apres_mio=torch.cuda.memory_reserved() // 2**20,
+            )
+        except Exception as exc:
+            logger.warning("libération VRAM impossible", error=str(exc))
 
     def _load(self, model_id: str) -> Any:  # noqa: ANN401
         descriptor = self.describe(model_id)
@@ -502,7 +630,7 @@ class ModelRegistry:
 
     # ── Préchauffage et déchargement ─────────────────────────────────────────
 
-    def warmup(self, model_id: str) -> None:
+    def warmup(self, model_id: str, *, batch: int = 1, imgsz: int = WARMUP_SIDE) -> None:
         """Une inférence à vide, pour que la première requête réelle ne paie pas.
 
         Le premier appel d'un modèle inclut son chargement **et** sa fusion de
@@ -521,14 +649,34 @@ class ModelRegistry:
 
         Un échec est **journalisé, pas fatal** : mieux vaut un service qui démarre
         et qui sera lent une fois qu'un service qui refuse de démarrer.
+
+        **`batch` et `imgsz` servent à chauffer la forme de production**, et pas une
+        autre : voir `WARMUP_HEIGHT`. Le fond est une image de vidéo, pas un carré,
+        parce que le letterbox d'Ultralytics en tire la forme réelle du tenseur.
+
+        **Jamais par `track()`, et c'est le piège de ce correctif.**
+        `on_predict_start` sort immédiatement quand `predictor.trackers` existe et que
+        `persist` est vrai : chauffer par `track` construirait un tracker au démarrage,
+        depuis le fichier de **base**, et le premier job réel ne relirait jamais son
+        fichier dérivé. `reset_trackers` repose `REQUEST_TRACKER_KEYS` mais **pas**
+        `with_reid`, consommé à la construction — ce serait ADR 0047 défait en
+        silence, soit 4× de cadence perdue sur une tête `end2end`. `predict` ne
+        construit aucun tracker et n'avance pas `BaseTrack._count` (invariant 7).
         """
         try:
             import numpy as np
 
-            blank = np.zeros((WARMUP_SIDE, WARMUP_SIDE, 3), dtype=np.uint8)
+            blank = np.zeros((WARMUP_HEIGHT, WARMUP_WIDTH, 3), dtype=np.uint8)
+            source = [blank] * max(1, batch)
             try:
                 with self.lease(model_id) as model:
-                    model.predict(blank, verbose=False, device=self.device(), half=self.half())
+                    model.predict(
+                        source,
+                        imgsz=imgsz,
+                        verbose=False,
+                        device=self.device(),
+                        half=self.half(),
+                    )
             except Exception as exc:
                 # Un device explicitement demandé (`device != "auto"`) reste tel
                 # quel : l'opérateur a fait ce choix, et le retourner en silence
@@ -542,8 +690,17 @@ class ModelRegistry:
                     error=str(exc),
                 )
                 self._fall_back_to_cpu("échec d'inférence GPU au préchauffage, repli CPU")
+                # Mêmes arguments que la première tentative : un repli qui chaufferait
+                # une autre forme laisserait la production payer son hésitation quand
+                # même, et le repli passerait pour un correctif sans en être un.
                 with self.lease(model_id) as model:
-                    model.predict(blank, verbose=False, device=self.device(), half=self.half())
+                    model.predict(
+                        source,
+                        imgsz=imgsz,
+                        verbose=False,
+                        device=self.device(),
+                        half=self.half(),
+                    )
             logger.info(
                 "modèle préchauffé",
                 model_id=model_id,
@@ -564,4 +721,6 @@ class ModelRegistry:
                 return False
             del self._residents[model_id]
         logger.info("modèle déchargé", model_id=model_id)
+        # Même raison qu'à l'éviction, et même position : hors du verrou.
+        self._release_vram([model_id])
         return True

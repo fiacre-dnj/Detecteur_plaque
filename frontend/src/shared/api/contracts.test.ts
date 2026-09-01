@@ -95,7 +95,6 @@ describe("contrat d'une piste", () => {
       "plateTextScore",
       "plates",
       "score",
-      "speedPxS",
       "trackId",
     ]);
   });
@@ -360,14 +359,18 @@ describe("contrat du registre des véhicules", () => {
     if (vehicle === undefined) return;
 
     expect(Object.keys(vehicle).sort()).toEqual([
-      "avgSpeedKmh",
-      "avgSpeedPxS",
       "bestPlateScore",
       "crossedLines",
       "firstSeenMs",
       "globalId",
       "label",
       "lastSeenMs",
+      // La ressemblance à l'image de requête : **le score brut, jamais un verdict**.
+      // Le seuil vit côté client, ce qui permet de le déplacer sans réanalyser — et
+      // la mesure montre que les distributions se recouvrent, donc aucun seuil global
+      // n'est à la fois sûr et utile. `null` = pas de requête, ou véhicule jamais
+      // assez grand pour être encodé.
+      "matchScore",
       // Le candidat rapporté sans y souscrire, sous `no_consensus` seulement — un
       // indice, jamais un vote : afficher ce candidat à la place de `plateText`
       // republierait la lecture la plus favorable.
@@ -380,8 +383,45 @@ describe("contrat du registre des véhicules", () => {
       "plateText",
       "plateTextScore",
       "plateUnreadReason",
+      // La capture retenue : une cause, un instant, parfois une confiance, **jamais
+      // une URL**. Le serveur ne fabrique pas les adresses du client, qui les
+      // construit depuis l'identifiant du job et le numéro du véhicule — même
+      // convention que la vidéo déposée. Le drapeau « il existe une photo » est
+      // `snapshotMs`, doublé de `snapshotKind` qui dit pourquoi (ADR 0051).
+      "snapshotKind",
+      "snapshotMs",
+      "snapshotScore",
       "zonesVisited",
     ]);
+  });
+
+  it("une capture porte toujours sa cause et son instant", () => {
+    // Les deux champs sont un seul fait : une cause sans instant ne dirait pas où
+    // regarder dans la vidéo, et un instant sans cause ne dirait pas pourquoi cette
+    // image-là a été gardée.
+    for (const vehicle of result.vehicles) {
+      expect((vehicle.snapshotKind ?? null) === null).toBe(vehicle.snapshotMs === null);
+    }
+  });
+
+  it("une confiance de lecture implique une capture de plaque lue", () => {
+    // L'invariant qu'ADR 0051 tient par construction : `snapshotScore` est dérivé de
+    // la cause côté domaine, jamais posé à part. Un lecteur qui prendrait ce champ
+    // pour le drapeau de présence manquerait silencieusement les deux autres causes —
+    // c'est-à-dire les plaques repérées non lues et les véhicules ressemblants.
+    for (const vehicle of result.vehicles) {
+      if (vehicle.snapshotScore != null) expect(vehicle.snapshotKind).toBe("plate_text");
+    }
+  });
+
+  it("la fixture exerce vraiment plusieurs causes de capture", () => {
+    // Une fixture qui ne fait pas varier un champ ne protège rien du renommage de ses
+    // valeurs — c'est la doctrine de `build_fixtures.py`. `appearance` demanderait un
+    // quatrième véhicule dans la scène, donc de changer tous ses compteurs : il est
+    // couvert par `snapshotKind.test.ts` et `snapshots.test.ts`.
+    const kinds = new Set(result.vehicles.map((vehicle) => vehicle.snapshotKind ?? null));
+    expect(kinds).toContain("plate_text");
+    expect(kinds).toContain("plate_box");
   });
 
   it("un texte lu implique toujours une plaque détectée", () => {
@@ -574,17 +614,6 @@ describe("contrat de l'aperçu d'une analyse en cours", () => {
 });
 
 describe("contrat du registre des véhicules", () => {
-  it("rend `null` et non 0 pour une vitesse inconnue", () => {
-    // `0` voudrait dire « à l'arrêt ». La distinction compte : sans échelle
-    // px/m, `avgSpeedKmh` doit être `null` plutôt qu'un chiffre inventé.
-    for (const vehicle of result.vehicles) {
-      if (vehicle.avgSpeedKmh !== null) {
-        expect(vehicle.avgSpeedKmh).toBeGreaterThan(0);
-      }
-      expect(vehicle.avgSpeedPxS === null || vehicle.avgSpeedPxS > 0).toBe(true);
-    }
-  });
-
   it("liste les lignes franchies par chaque véhicule", () => {
     const vehicle = result.vehicles.find((candidate) => candidate.crossedLines.length > 0);
     expect(vehicle).toBeDefined();

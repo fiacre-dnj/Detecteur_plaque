@@ -124,6 +124,8 @@ async def health(settings: SettingsDep, container: ContainerDep) -> HealthSchema
         plate_available=service.plate_available() if service else False,
         plate_loadable=service.plate_loadable() if service else None,
         plate_ocr_available=service.plate_ocr_available() if service else False,
+        reid_available=service.reid_available() if service else False,
+        reid_loadable=service.reid_loadable() if service else None,
         default_model_id=settings.default_model_id,
         # Le chemin **résolu**, jamais celui de la configuration : c'est
         # exactement l'écart entre les deux qui rendait l'ANPR silencieusement

@@ -39,6 +39,27 @@ export interface LineFlow {
   entries: number | null;
   /** Pendant de `entries` pour les sens marqués « sortie ». */
   exits: number | null;
+  /**
+   * Passages sur les sens marqués « interdit », ou `null` si aucun sens de cette
+   * ligne ne l'est.
+   *
+   * Même convention que `entries` et `exits`, et elle compte davantage ici : un
+   * « 0 interdit » sur une ligne ordinaire dirait « personne n'a enfreint », alors
+   * que la vérité est « il n'y a rien à enfreindre ». C'est cette valeur qui décide
+   * si la carte de la ligne parle d'infraction.
+   *
+   * **Les passages restent dans `total`.** Une infraction est un passage qualifié,
+   * pas un passage retiré (invariant 3).
+   */
+  forbidden: number | null;
+  /**
+   * Passages sur les sens marqués « passage », ou `null`. Comptés, hors bilan.
+   *
+   * Rendus séparément de `entries`/`exits` pour que la carte d'une ligne en
+   * « comptage seul » affiche sa fréquentation sans prétendre à un bilan que
+   * personne n'a déclaré.
+   */
+  transit: number | null;
   /** `entries - exits`. Positif = la zone se remplit, négatif = elle se vide. */
   net: number;
   /** Part de cette ligne dans tous les passages, `null` s'il n'y en a aucun. */
@@ -66,6 +87,8 @@ export function lineFlows(
       total: 0,
       entries: null,
       exits: null,
+      forbidden: null,
+      transit: null,
       net: 0,
       shareOfTotal: null,
     });
@@ -81,6 +104,14 @@ export function lineFlows(
     } else if (row.role === "exit") {
       flow.exits = (flow.exits ?? 0) + row.tally.total;
       flow.net -= row.tally.total;
+    } else if (row.role === "forbidden") {
+      // Aucun effet sur `net` : un sens interdit ne fait ni entrer ni sortir du
+      // carrefour au sens du bilan — il dit qu'on n'aurait pas dû passer. Le
+      // mélanger au solde rendrait un bilan négatif sur une ligne à sens unique
+      // simplement parce qu'on l'a enfreinte.
+      flow.forbidden = (flow.forbidden ?? 0) + row.tally.total;
+    } else if (row.role === "transit") {
+      flow.transit = (flow.transit ?? 0) + row.tally.total;
     }
   }
 

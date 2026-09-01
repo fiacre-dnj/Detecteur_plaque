@@ -149,6 +149,58 @@
   --shadow-inset: inset 0 0 0 1px #cfd5de;
 }
 
+/* ── Gouttière de la page ──────────────────────────────────────────────────
+   Une seule valeur pour le retrait horizontal de l'entête, du contenu **et** du
+   fond débordé de la barre du studio (`SettingsPanels`) : les trois doivent
+   rester d'accord au pixel, sinon la barre collante peint son fond à côté des
+   gouttières qu'elle est censée couvrir. C'est la seule raison d'être de ce
+   jeton — il n'a jamais servi à gagner de la place.
+
+   **1,5 rem, la valeur d'origine, et elle ne descend pas.** Elle a valu 0,75 /
+   1 rem le temps d'un essai : la page y gagnait 16 px de contenu et perdait sa
+   respiration — texte contre le bord de l'écran, cartes collées à la gouttière.
+   La place de la troisième colonne se prend sur la largeur maximale du cadre
+   (`max-w`), qui est du vide sur un grand écran, jamais sur les marges, qui sont
+   ce qui rend la page lisible. */
+:root {
+  --app-gutter: 1.5rem;
+}
+
+/* ── Ce que la coquille occupe EN HAUT de la page ──────────────────────────
+   Zéro tant que la navigation est un **rail vertical** : rien ne coiffe le
+   contenu, et la barre du studio se colle à `top: 0`.
+
+   Elle a valu une hauteur **mesurée** (un `ResizeObserver` dans `AppShell`) du
+   temps de l'entête horizontale, pour deux raisons qui ont disparu avec elle :
+   l'entête s'enroulait sur deux lignes en fenêtre étroite, et le badge serveur
+   grandissait d'un message d'erreur. Le rail, lui, a une hauteur **de
+   construction** — une rangée de boutons de 40 px qui ne s'enroule pas, et dont
+   aucun état ne change la taille. Une constante y est plus honnête qu'une mesure
+   qui republierait éternellement la même valeur.
+
+   **`0px` et jamais `0`.** Ses trois lecteurs s'en servent dans des `calc()`
+   (`calc(100dvh - var(--app-header-h) - 5rem)`), où un zéro sans unité est un
+   *nombre* et non une longueur : la déclaration entière serait jetée en silence,
+   et la colonne des résultats perdrait son plafond de hauteur sans rien dire.
+
+   **La requête ci-dessous est le complément exact du préfixe `md:` du rail**
+   (48rem, le défaut de Tailwind v4). Les deux doivent bouger ensemble : un rail
+   qui se replierait à `lg:` sans qu'on touche à cette requête laisserait la barre
+   du studio se coller à 0, donc passer DERRIÈRE lui — en fenêtre étroite
+   seulement, c'est-à-dire jamais pendant le développement. Aucun jeton
+   `--app-rail-h` en face : la même déclaration donne sa hauteur au rail replié
+   (`h-[var(--app-header-h)]`) et son décalage à la barre, donc ils ne peuvent pas
+   diverger. */
+:root {
+  --app-header-h: 0px;
+}
+
+@media (width < 48rem) {
+  :root {
+    --app-header-h: 3.5rem;
+  }
+}
+
 /* Pendant la bascule de thème : aucune transition.
    Sans cela, les éléments qui animent leurs couleurs restent bloqués sur
    l'ancienne teinte — voir `shared/lib/theme.ts`. Et visuellement, un thème
@@ -224,6 +276,55 @@
     font-weight: 700;
     letter-spacing: 0.1em;
     text-transform: uppercase;
+  }
+
+  /* ── Le défilement d'une colonne du studio ─────────────────────────────────
+     Les deux colonnes de droite — Résultats, Alertes — défilent chacune pour
+     elle-même, et la barre du système est trop lourde pour une bande de 20 rem :
+     sur Windows elle fait 17 px opaques, soit 5 % de la colonne, avec un fond
+     gris qui n'appartient à aucune surface du thème.
+
+     Trois choix, et aucun n'est décoratif :
+
+     - **`scrollbar-gutter: stable`** : sans lui, l'apparition de la barre décale
+       tout le contenu de la colonne au moment où une carte de trop arrive — les
+       cartes sautent de 8 px pendant qu'on les lit ;
+     - **le curseur est un jeton, la piste est transparente.** La colonne est
+       posée sur `--color-base` comme le reste de la page ; une piste peinte y
+       dessinerait un rail visible en permanence, y compris quand rien ne dépasse ;
+     - **les deux syntaxes.** `scrollbar-width`/`scrollbar-color` sert Firefox, les
+       pseudo-éléments servent WebKit et Chromium : aucun des deux ne comprend la
+       syntaxe de l'autre, et il n'y a pas de repli commun. */
+  .panel-scroll {
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line) transparent;
+  }
+
+  .panel-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .panel-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .panel-scroll::-webkit-scrollbar-thumb {
+    background-color: var(--color-line);
+    border-radius: var(--radius-pill);
+    /* La bordure transparente amincit le curseur sans réduire la zone
+       cliquable : un rail de 4 px se manque à la souris. */
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  .panel-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-line-muted);
+  }
+
+  .panel-scroll::-webkit-scrollbar-corner {
+    background: transparent;
   }
 
   .label-micro {

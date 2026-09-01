@@ -17,9 +17,6 @@
  * - `plates[].box` — une longueur aussi, et c'est l'oubli classique : les plaques
  *   sont un tableau imbriqué, et une copie superficielle de la piste les laisserait
  *   à l'échelle d'envoi, donc dessinées trop petites et décalées vers le coin ;
- * - `speedPxS` — **converti**, parce que c'est une vitesse en pixels : sur une image
- *   réduite de 25 %, un véhicule parcourt 25 % de pixels en moins par seconde. Le
- *   laisser tel quel afficherait des vitesses sous-estimées d'un tiers ;
  * - `score`, `hits`, les identifiants et les libellés — sans dimension.
  */
 
@@ -40,7 +37,6 @@ export function unscaleTrack(track: TrackSnapshot, factor: number): TrackSnapsho
   return {
     ...track,
     box: unscaleBox(track.box, factor),
-    speedPxS: track.speedPxS === null ? null : track.speedPxS / factor,
     plates: track.plates.map((plate) => ({ ...plate, box: unscaleBox(plate.box, factor) })),
   };
 }

@@ -25,7 +25,10 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
@@ -42,6 +45,9 @@ from traffic_analysis.features.models_registry.infrastructure.ultralytics_engine
     TRACKER_CONFIG,
     UltralyticsEngine,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _SPEC = importlib.util.spec_from_file_location(
     "pipeline_bench",
@@ -90,17 +96,41 @@ def _write_video(path: Path, *, width: int, height: int, frames: int, fps: float
         writer.release()
 
 
+class _RegistryStub:
+    """Registre minimal : `lease` est tout ce que `_tracker_settings` demande.
+
+    Pas de poids, pas de GPU — c'est la condition pour que ce test tourne en CI, et
+    c'est aussi pourquoi il ne peut pas vérifier la *mesure*, seulement le contrat.
+    """
+
+    def __init__(self, *, end2end: bool) -> None:
+        head = SimpleNamespace(end2end=end2end)
+        # `model.model.model[-1]` : l'emboîtement d'Ultralytics, reproduit tel quel.
+        # Le reproduire plutôt que le contourner est le seul moyen que ce test
+        # échoue si `head_is_end2end` cesse de regarder au bon endroit.
+        self._model = SimpleNamespace(model=SimpleNamespace(model=[head]))
+
+    @contextmanager
+    def lease(self, model_id: str) -> Iterator[object]:  # noqa: ARG002
+        yield self._model
+
+
 class TestLeBancDemarre:
     def test_le_fichier_de_tracker_est_lu_avec_le_seuil_de_la_course(self) -> None:
         """**La régression qui tenait le banc hors service.**
 
-        Deux arguments et non un : le seuil de la requête descend jusqu'au tracker
-        depuis ADR 0024. Le test vérifie aussi que le rapport porte ce que le fichier
-        dit, parce qu'un rapport qui annoncerait autre chose que ce qui a tourné
-        serait pire qu'un rapport sans cette ligne.
+        Quatre arguments et non un : le seuil de la requête descend jusqu'au tracker
+        depuis ADR 0024, et le registre plus l'identifiant de modèle s'y ajoutent
+        depuis ADR 0047 — le fichier de suivi dépend de la forme de la tête du modèle
+        chargé. Le test vérifie aussi que le rapport porte ce que le fichier dit,
+        parce qu'un rapport qui annoncerait autre chose que ce qui a tourné serait
+        pire qu'un rapport sans cette ligne.
         """
         reported = pipeline_bench._tracker_settings(
-            str(_BASE["gmc_method"]), float(_BASE["track_high_thresh"])
+            str(_BASE["gmc_method"]),
+            float(_BASE["track_high_thresh"]),
+            cast("ModelRegistry", _RegistryStub(end2end=False)),
+            "yolov8n",
         )
 
         assert reported["gmc"] == _BASE["gmc_method"]
@@ -108,6 +138,28 @@ class TestLeBancDemarre:
         assert reported["withReid"] == _BASE["with_reid"]
         # Le couple du fichier versionné ne dérive rien : c'est bien lui qui tourne.
         assert reported["trackerFile"] == TRACKER_CONFIG.name
+
+    def test_une_tete_end2end_fait_annoncer_une_apparence_coupee(self) -> None:
+        """**Le rapport doit dire ce qui a tourné, y compris pour l'apparence.**
+
+        Sur une tête `end2end`, Ultralytics remplace `model: auto` par un
+        `yolo26n-cls.pt` téléchargé et l'exécute par recadrage : mesuré, `yolo26n`
+        passe de 61,81 à 15,09 img/s. Le banc annonçait pourtant `withReid: true`
+        dans les deux cas, parce qu'il lisait le fichier versionné sans savoir quel
+        modèle tournait — donc un écart de cadence de 4× ne se rattachait à rien de
+        visible dans le rapport. ADR 0047.
+        """
+        reported = pipeline_bench._tracker_settings(
+            str(_BASE["gmc_method"]),
+            float(_BASE["track_high_thresh"]),
+            cast("ModelRegistry", _RegistryStub(end2end=True)),
+            "yolo26n",
+        )
+
+        assert reported["withReid"] is False
+        # Un fichier dérivé, donc pas celui du dépôt : c'est ce qui distingue
+        # « annoncé » de « appliqué ».
+        assert reported["trackerFile"] != TRACKER_CONFIG.name
 
     def test_le_seuil_par_defaut_vient_du_contrat_et_non_du_banc(self) -> None:
         """Recopier « 0,35 » ici se serait désynchronisé au premier changement."""
@@ -396,3 +448,113 @@ class TestQueueDeDistribution:
         assert per_call["plateDetect"]["p50"] == pytest.approx(465.0)
         assert per_call["plateDetect"]["max"] == pytest.approx(900.0)
         assert per_call["ocr"]["max"] == 0.0
+
+
+class TestSondeGpu:
+    """L'agrégation du relevé, **sans jamais parler à un pilote**.
+
+    C'est pourquoi `summarise_samples` est une fonction pure séparée du fil : ce
+    qu'on veut vérifier est l'agrégation, pas la capacité de la CI à trouver une
+    carte NVIDIA.
+    """
+
+    def test_une_serie_vide_rend_des_zeros_plutot_que_de_lever(self) -> None:
+        """Sonde démarrée mais aucune lecture réussie : le rapport doit sortir."""
+        assert pipeline_bench.summarise_samples([]) == {
+            "p50": 0.0,
+            "p90": 0.0,
+            "max": 0.0,
+            "samples": 0,
+        }
+
+    def test_les_quantiles_sont_ceux_qu_on_attend(self) -> None:
+        summary = pipeline_bench.summarise_samples([10.0, 20.0, 30.0, 40.0, 100.0])
+
+        assert summary["p50"] == pytest.approx(30.0)
+        assert summary["max"] == pytest.approx(100.0)
+        assert summary["samples"] == 5
+
+    def test_l_ordre_d_arrivee_ne_change_rien(self) -> None:
+        """Les échantillons arrivent dans le temps, pas triés."""
+        assert pipeline_bench.summarise_samples(
+            [100.0, 10.0, 30.0, 20.0, 40.0]
+        ) == pipeline_bench.summarise_samples([10.0, 20.0, 30.0, 40.0, 100.0])
+
+    def test_la_sonde_eteinte_ne_pose_rien_dans_le_rapport(self) -> None:
+        """`--gpu-probe` est opt-in : sans lui, aucun champ ne doit apparaître rempli."""
+        timings = pipeline_bench.Timings()
+        with pipeline_bench._gpu_probe(timings, enabled=False):
+            pass
+
+        assert timings.gpu is None
+        assert timings.vram_peak_mib is None
+
+
+class TestPosteContenuDansUnAutre:
+    """`plateInference` est **dans** `plateDetect` : il ne s'y ajoute pas."""
+
+    def test_l_inference_de_plaques_n_entre_pas_dans_la_somme_des_postes(self) -> None:
+        """L'invariant que `TestUnitesDuPartage` protège déjà : la somme des postes
+        chronométrés ne peut pas excéder le total mesuré au poignet. Un poste contenu
+        dans un autre qui s'y ajouterait ferait dépasser ce total, et un partage dont
+        la somme excède le tout se lit comme une erreur de mesure — c'en serait une.
+        """
+        timings = pipeline_bench.Timings()
+        timings.plate_detect.add(20.0)
+        timings.plate_inference.add(15.0)
+
+        assert timings.measured_ms() == pytest.approx(20.0)
+
+    def test_il_est_publie_quand_meme_et_annonce_comme_contenu(self) -> None:
+        """Exclu de la somme, mais **pas** du rapport : c'est lui qui sépare, dans
+        les 45 à 73 % de l'étage de plaques, le calcul CUDA du recadrage numpy."""
+        timings = pipeline_bench.Timings()
+        timings.frames = 10
+        timings.plate_inference.add(15.0)
+
+        assert timings.as_json()["stages"]["plateInference"] == pytest.approx(1.5)
+        assert "plateInference" in pipeline_bench._CONTAINED_IN
+        assert "gmc" in pipeline_bench._CONTAINED_IN
+
+
+class TestComparaisonRefusee:
+    """Comparer deux courses qui n'ont pas mesuré la même chose n'apprend rien.
+
+    Et une alerte qui n'apprend rien est une alerte qu'on apprend à ignorer — le
+    pire sort possible pour un garde-fou de justesse.
+    """
+
+    @staticmethod
+    def _report(**settings: object) -> dict[str, object]:
+        base = {"modelId": "yolov8n", "frames": 600, "start": 11.0, "anpr": True}
+        return {"context": {"settings": {**base, **settings}}, "sources": []}
+
+    def test_deux_courses_identiques_sont_comparables(self) -> None:
+        assert pipeline_bench.incomparable_settings(self._report(), self._report()) == []
+
+    def test_une_fenetre_differente_interdit_la_comparaison(self) -> None:
+        """Le cas réel : `--frames 400` contre `--frames 600` sur la même vidéo porte
+        le même nom de source, donc l'appariement se faisait en silence."""
+        differing = pipeline_bench.incomparable_settings(
+            self._report(frames=400), self._report(frames=600)
+        )
+
+        assert differing == ["frames"]
+
+    def test_un_depart_different_interdit_la_comparaison(self) -> None:
+        """`--start` était absent du contexte : deux scènes différentes du même
+        fichier se comparaient sans que rien ne le dise."""
+        assert pipeline_bench.incomparable_settings(
+            self._report(start=30.0), self._report(start=11.0)
+        ) == ["start"]
+
+    def test_le_lot_et_l_autotune_restent_comparables(self) -> None:
+        """Ils changent le débit, **jamais les boîtes** — et ce sont précisément les
+        deux réglages qu'on veut pouvoir comparer."""
+        assert (
+            pipeline_bench.incomparable_settings(
+                self._report(batch=8, cudnnAutotune=True),
+                self._report(batch=4, cudnnAutotune=False),
+            )
+            == []
+        )

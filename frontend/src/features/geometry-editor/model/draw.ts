@@ -25,7 +25,7 @@ import type {
   Zone,
 } from "@/shared/api/contracts";
 import { CANVAS, TRAJECTORY_ALPHA, classColor } from "@/shared/config/palettes";
-import { directionName, directionRole } from "@/shared/lib/directions";
+import { directionName, directionRole, showsDirections } from "@/shared/lib/directions";
 import { midpoint, positiveNormal } from "@/shared/lib/geometry";
 import { bestReadPlate, plateLabel } from "@/shared/lib/plate";
 
@@ -175,12 +175,19 @@ function drawZone(
 
 /**
  * Une ligne de comptage : le trait, ses poignées A/B, son étiquette, et la
- * **flèche du sens positif**.
+ * **flèche du sens positif** — sauf en « Comptage seul ».
  *
  * La flèche vient de `positiveNormal`, dont le signe est vérifié par un test
  * contre `sideOfLine` : c'est elle qui dit à l'utilisateur quel sens le serveur
  * appellera `+1`. Une flèche inversée ferait lire des sens faux sous des totaux
  * justes — le pire mode de défaillance, parce qu'il est silencieux.
+ *
+ * **Elle disparaît sur une ligne « Comptage seul »** (`showsDirections`). Savoir
+ * quel côté le serveur appelle `+1` n'a d'intérêt que si les deux côtés se
+ * distinguent quelque part : là, ils portent le même rôle, comptent pareil et
+ * s'affichent pareil. La flèche ne répondait donc à aucune question qu'on puisse
+ * encore se poser, et elle en suggérait une fausse — qu'un sens compterait et pas
+ * l'autre.
  *
  * `flash` marque le moment où **cette** ligne compte : un halo dans sa propre
  * couleur, et le sens écrit à côté. Pas de teinte nouvelle — la couleur d'une
@@ -218,9 +225,15 @@ function drawLine(
   ctx.stroke();
 
   // Flèche au milieu, orientée vers le côté positif.
-  const centre = midpoint(a, b);
+  //
+  // Deux raisons distinctes de ne pas la peindre, gardées distinctes : la ligne ne
+  // déclare aucun sens à distinguer (« Comptage seul »), ou le segment est
+  // dégénéré et n'a aucune orientation. Les fondre en un vecteur nul marcherait et
+  // ferait lire « pas de sens » là où il faut lire « pas de géométrie ».
   const normal = positiveNormal(a, b);
-  if (normal.x !== 0 || normal.y !== 0) {
+  const orientable = normal.x !== 0 || normal.y !== 0;
+  if (showsDirections(line) && orientable) {
+    const centre = midpoint(a, b);
     const tip = { x: centre.x + normal.x * 18, y: centre.y + normal.y * 18 };
     ctx.beginPath();
     ctx.moveTo(centre.x, centre.y);
@@ -288,17 +301,41 @@ function drawLineLabels(
   }
 
   for (const line of lines) {
+    // **« Comptage seul » ne peint aucun sens.** Ses deux étiquettes diraient
+    // « Passage » deux fois, de part et d'autre du trait, avec deux flèches
+    // opposées qui ne distinguent rien : deux boîtes de texte posées sur la vidéo
+    // pour zéro information, et deux candidates de plus à la résolution de
+    // collisions — donc du déplacement imposé aux étiquettes qui, elles, en
+    // portent une.
+    //
+    // Le nom de la ligne reste : il n'indique pas un sens.
+    //
+    // **Le flash ne se perd pas.** `drawLine` peint son propre halo autour du
+    // trait quand la ligne compte (voir sa docstring) ; l'emphase sur l'étiquette
+    // n'en était qu'un renfort. Une ligne de comptage seul signale donc toujours
+    // le moment où elle compte, sans avoir de sens à mettre en valeur.
+    if (!showsDirections(line)) continue;
+
     const a = toCanvas(view, line.a);
     const b = toCanvas(view, line.b);
     const normal = positiveNormal(a, b);
     const negatedNormal = { x: -normal.x, y: -normal.y };
     const positive = directionText(line, "positive");
     const negative = directionText(line, "negative");
+    const positiveRole = directionRole(line, "positive");
+    const negativeRole = directionRole(line, "negative");
     // La flèche n'occupe la place qu'elle prend réellement (`ARROW_RESERVED_WIDTH`)
-    // sur un sens marqué entrée ou sortie : `neutral` n'en affiche pas, il n'y a
-    // rien à orienter.
-    const positiveArrow = directionRole(line, "positive") === "neutral" ? null : normal;
-    const negativeArrow = directionRole(line, "negative") === "neutral" ? null : negatedNormal;
+    // sur un sens qui déclare quelque chose : seul `neutral` n'en affiche pas, il
+    // n'y a rien à orienter. Un sens **interdit** garde la sienne — c'est bien un
+    // sens, et savoir de quel côté il est interdit est toute l'information.
+    const positiveArrow = positiveRole === "neutral" ? null : normal;
+    const negativeArrow = negativeRole === "neutral" ? null : negatedNormal;
+    // Le rouge ne dit pas *quelle* ligne — le trait le dit déjà, dans sa propre
+    // teinte, juste à côté. Il dit qu'on n'aurait pas dû passer là. C'est la seule
+    // couleur du canvas qui encode une valeur plutôt qu'une identité, et elle est
+    // volontairement bornée au mot « Interdit ».
+    const positiveColor = positiveRole === "forbidden" ? CANVAS.forbidden : line.color;
+    const negativeColor = negativeRole === "forbidden" ? CANVAS.forbidden : line.color;
     const sizes = {
       positive: withArrowWidth(measureLabel(ctx, positive), positiveArrow),
       negative: withArrowWidth(measureLabel(ctx, negative), negativeArrow),
@@ -315,7 +352,7 @@ function drawLineLabels(
     wanted.push({
       key: `${line.id}:positive`,
       text: positive,
-      color: line.color,
+      color: positiveColor,
       centre: anchors.positive,
       escape: normal,
       size: sizes.positive,
@@ -328,7 +365,7 @@ function drawLineLabels(
     wanted.push({
       key: `${line.id}:negative`,
       text: negative,
-      color: line.color,
+      color: negativeColor,
       centre: anchors.negative,
       escape: negatedNormal,
       size: sizes.negative,
@@ -350,8 +387,14 @@ function drawLineLabels(
  * pivote qu'à 45° près, ce qui la rendait *presque* perpendiculaire au trait,
  * jamais exactement. `drawLabelBox` la peint désormais en vecteur, à l'angle
  * réel du normal (`LabelPlacement.arrow`), avant le texte.
+ *
+ * **Exportée pour être testable**, et pas par commodité : c'est le seul endroit qui
+ * dise ce que le canevas écrit réellement sur un trait. Le canevas étant un bitmap,
+ * aucun test d'écran ne peut le relire — donc si cette fonction cessait de passer par
+ * `directionName` pour lire un nom de sens en direct, les traits porteraient des mots
+ * que plus aucun autre écran n'affiche, et rien ne le signalerait.
  */
-function directionText(line: CountingLine, sign: DirectionSign): string {
+export function directionText(line: CountingLine, sign: DirectionSign): string {
   return truncateDirection(directionName(line, sign));
 }
 

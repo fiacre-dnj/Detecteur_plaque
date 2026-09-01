@@ -72,6 +72,21 @@ export interface Health {
    * que de proposer une case qui ne fait rien.
    */
   plateOcrAvailable: boolean;
+  /**
+   * L'encodeur d'apparence de véhicule est présent. Faux ⇒ la recherche par image
+   * est désactivée, et le service fonctionne normalement — pas un compteur ne change.
+   * Un artefact de plus, récupéré par son propre script, donc l'état d'un déploiement
+   * neuf.
+   */
+  reidAvailable: boolean;
+  /**
+   * L'encodeur a-t-il passé son auto-test au démarrage ? `null` = pas encore testé.
+   *
+   * **`false` avec `reidAvailable: true` est l'état à surveiller** : les poids sont là
+   * et ne se chargent pas, donc la recherche est muette alors que tout paraît vert.
+   * Même trio d'états que `plateLoadable`, et pour le même mode de panne.
+   */
+  reidLoadable: boolean | null;
   defaultModelId: string;
   /**
    * Répertoire **résolu** où le serveur cherche ses poids, en absolu.
@@ -226,11 +241,24 @@ export interface Point {
  *
  * Purement descriptif côté serveur : **aucun total n'en dépend**. C'est le
  * frontend, et lui seul, qui s'en sert pour agréger « combien de véhicules entrent
- * dans cette rue ». Deux conséquences voulues : corriger un rôle est instantané et
- * ne demande pas de relancer l'analyse, et la règle de classement n'existe pas en
- * double.
+ * dans cette rue » et pour décider qu'un passage est une infraction. Deux
+ * conséquences voulues : corriger un rôle est instantané et ne demande pas de
+ * relancer l'analyse, et la règle de classement n'existe pas en double.
+ *
+ * Cinq valeurs, parce qu'il y a cinq significations distinctes :
+ *
+ * - `entry` / `exit` — le bilan du carrefour ;
+ * - `forbidden` — le sens est interdit. **Le franchissement est compté quand
+ *   même** : une infraction est un passage qualifié, pas un passage retiré, et
+ *   l'invariant `crossings === Σ byLine[*].total` en dépend ;
+ * - `transit` — compté, délibérément hors bilan : une route qui n'est pas un
+ *   carrefour, où le bilan entrées / sorties n'a rien à dire ;
+ * - `neutral` — **hérité uniquement** : « personne ne l'a dit ». L'éditeur ne le
+ *   produit plus depuis ADR 0021, mais un preset ou un `configJson` archivé peut
+ *   encore le porter. Le distinguer de `transit` est ce qui permet à
+ *   `flowBalance.declared` de continuer à séparer un oubli d'un choix explicite.
  */
-export type DirectionRole = 'entry' | 'exit' | 'neutral';
+export type DirectionRole = 'entry' | 'exit' | 'forbidden' | 'transit' | 'neutral';
 
 /** Les deux sens d'une ligne, dans la convention du serveur. */
 export type DirectionSign = 'positive' | 'negative';
@@ -268,22 +296,23 @@ export interface CountingLine {
   positiveRole: DirectionRole;
   negativeRole: DirectionRole;
   /**
-   * Longueur **réelle** du trait, en mètres. `null` = non calibrée.
+   * Classes autorisées à franchir cette ligne, par identifiant COCO — une voie de
+   * bus, une piste cyclable. `null` = aucune restriction, ce que porte toute ligne
+   * qui n'en déclare pas.
    *
-   * **Le seul champ de ligne que le serveur interprète vraiment.** Les noms et
-   * les rôles ne font que traverser ; celui-ci donne l'échelle pixels/mètre
-   * locale — `longueur en pixels / longueur en mètres` — à la profondeur où la
-   * ligne est posée, et c'est elle qui convertit les vitesses en km/h.
+   * **Jamais interprété par le serveur** : une classe non autorisée est comptée
+   * exactement comme les autres, et c'est l'interface qui qualifie le
+   * franchissement d'infraction. Même doctrine que les rôles, et la même
+   * conséquence — corriger la règle ne demande pas de réanalyser.
    *
-   * Une échelle unique pour toute l'image ne peut pas être juste sur une caméra
-   * inclinée : le mètre y vaut quelques pixels au loin et quelques dizaines au
-   * premier plan. Plusieurs lignes calibrées à des profondeurs différentes
-   * décrivent ce gradient sans modéliser la perspective.
+   * Des **identifiants** et non des noms COCO : c'est la monnaie d'`AnalysisRequest.classIds`
+   * et du catalogue `GET /models/classes`. La traduction vers les noms — les clés
+   * de `byClass` — se fait une seule fois, contre ce catalogue.
    *
-   * Conséquence à connaître : corriger une longueur **demande une réanalyse**,
-   * là où corriger un rôle est instantané.
+   * Optionnel à la lecture : un `configJson` ou un preset archivé avant ce champ
+   * n'en porte pas, et son absence se lit « aucune restriction ».
    */
-  lengthMeters: number | null;
+  allowedClassIds?: number[] | null;
 }
 
 export interface Zone {
@@ -312,6 +341,19 @@ export interface AnalysisRequest {
   detectPlates: boolean;
   plateConfidence: number | null;
   /**
+   * Plancher de confiance d'une **lecture** de plaque — « Confiance lecture ».
+   *
+   * À ne pas confondre avec `plateConfidence`, qui est celui de la **localisation** :
+   * une plaque peut être parfaitement encadrée et illisible, et l'inverse. Celui-ci
+   * décide de ce qui atteint le vote : sous ce seuil, la chaîne lue n'existe pas pour
+   * la suite de la chaîne, donc elle ne peut rien publier.
+   *
+   * `null` — le défaut — garde le plancher du déploiement (0,50). `0` accepte toutes
+   * les lectures ; le serveur s'arrête à 0,95, parce qu'à 1,0 plus rien ne passerait
+   * jamais. Ignoré si `readPlateText` est faux.
+   */
+  plateTextConfidence: number | null;
+  /**
    * Lire le **texte** des plaques localisées, en plus de les encadrer.
    *
    * Subordonné à `detectPlates` — sans boîte, il n'y a rien à lire — et ignoré si
@@ -320,8 +362,6 @@ export interface AnalysisRequest {
    * confidentialité qui mérite un consentement explicite.
    */
   readPlateText: boolean;
-  /** `null` ⇒ les vitesses restent en px/s au lieu d'être converties à tort. */
-  pixelsPerMeter: number | null;
   /**
    * Classes à détecter **et** à compter, par identifiant COCO.
    *
@@ -381,6 +421,22 @@ export interface AnalysisRequest {
    * passe à leur jointure.
    */
   endMs: number | null;
+  /**
+   * Plaques recherchées pendant l'analyse — la liste de surveillance.
+   *
+   * **Le serveur les accepte et les rend telles quelles, il ne compare rien.** La
+   * correspondance est calculée par l'interface, sur le texte *voté* de chaque
+   * véhicule (invariant 4), avec la même normalisation que la recherche du
+   * registre. Deux conséquences voulues, les mêmes que pour les rôles : corriger la
+   * liste ne demande pas de relancer l'analyse, et la règle de correspondance
+   * n'existe qu'à un seul endroit — donc elle ne peut pas diverger entre l'aperçu
+   * vivant et un résultat rouvert.
+   *
+   * Elles voyagent ici pour être persistées avec la configuration du job : rouvrir
+   * un résultat doit savoir ce qu'on cherchait. Vide si `readPlateText` est faux —
+   * sans lecture, il n'y a aucun texte à comparer.
+   */
+  plateWatchlist: string[];
   lines: CountingLine[];
   zones: Zone[];
 }
@@ -491,7 +547,6 @@ export interface TrackSnapshot {
   /** Images accumulées. En dessous de `minHits`, la boîte est en pointillés. */
   hits: number;
   counted: boolean;
-  speedPxS: number | null;
   plates: PlateDetection[];
   /**
    * Texte de plaque **voté** sur la vie du véhicule, ou `null`.
@@ -566,9 +621,6 @@ export interface VehicleRecord {
    */
   crossedLines: { lineId: string; direction: number; timestampMs: number }[];
   zonesVisited: string[];
-  avgSpeedPxS: number | null;
-  /** `null` sans échelle px/m — et non 0, qui voudrait dire « à l'arrêt ». */
-  avgSpeedKmh: number | null;
   /** Meilleure confiance de **détection** de plaque sur la vie du véhicule. */
   bestPlateScore: number | null;
   /**
@@ -607,6 +659,65 @@ export interface VehicleRecord {
   plateBestGuess: string | null;
   /** Confiance moyenne de `plateBestGuess`. `null` ssi lui-même l'est. */
   plateBestGuessScore: number | null;
+  /**
+   * Confiance de **lecture** de la capture retenue pour ce véhicule.
+   *
+   * **Ce n'est plus le drapeau « il existe une photo »** (ADR 0051) : deux des trois
+   * causes de capture n'ont aucune lecture à publier, donc ce champ y vaut `null`
+   * alors que la photo existe. Le drapeau est `snapshotMs`, doublé de `snapshotKind`.
+   * Dans l'autre sens la garantie tient : non-nul **implique**
+   * `snapshotKind === "plate_text"`.
+   *
+   * Pas d'URL ici, et c'est inchangé — le serveur ne fabrique pas les adresses du
+   * client, qui les construit lui-même (`vehicleSnapshotUrl`), exactement comme pour
+   * la vidéo déposée.
+   *
+   * C'est la confiance de l'**image retenue** et non celle du vote : le vote est une
+   * moyenne sur toute la vie du véhicule, il bouge quand une *autre* image est lue.
+   * Les deux se lisent côte à côte au registre, et ils ne disent pas la même chose.
+   *
+   * Optionnel : un résultat archivé avant cette fonctionnalité n'en porte pas.
+   */
+  snapshotScore?: number | null;
+  /**
+   * Instant de **scène** de cette capture. `null` ssi `snapshotKind` l'est.
+   *
+   * **C'est le drapeau de présence** — voir `snapshotExists` dans
+   * `shared/lib/snapshotKind.ts`, seul juge lu par les trois surfaces qui montrent
+   * une vignette.
+   *
+   * Il dit *quand* regarder dans la vidéo — c'est ce qui rend la photo vérifiable
+   * plutôt que seulement consultable — et il **versionne** l'adresse de l'image
+   * (`?v=`), qui est servie `immutable`.
+   */
+  snapshotMs?: number | null;
+  /**
+   * **Pourquoi** cette photo existe, ou `null` — il n'y en a pas.
+   *
+   * Trois causes et une échelle de priorité, une seule photo par véhicule : plaque
+   * lue > plaque seulement localisée > ressemblance à l'image recherchée. C'est ce
+   * champ qui dit s'il faut demander la vignette de plaque — une capture retenue pour
+   * la ressemblance n'en a pas, et sa route répond alors 409.
+   *
+   * `null` avec un `snapshotMs` non nul ne veut **pas** dire « pas de photo » : cela
+   * veut dire « analyse antérieure à ADR 0051 », donc `plate_text` de fait, puisque
+   * c'était alors la seule cause possible.
+   */
+  snapshotKind?: SnapshotKind | null;
+  /**
+   * Ressemblance à l'image de requête, dans [-1, 1], ou `null`.
+   *
+   * **Le score brut et non un verdict.** Le seuil d'affichage vit ici, côté client :
+   * c'est ce qui permet de déplacer le curseur de ressemblance sans réanalyser, et
+   * c'est indispensable — mesuré, les distributions se recouvrent (deux vues du même
+   * véhicule descendent à 0,387, deux véhicules différents montent à 0,891), donc
+   * aucun seuil global n'est à la fois sûr et utile. On classe, on ne tranche pas.
+   *
+   * `null` couvre **deux** causes que l'écran n'a pas à distinguer : aucune image de
+   * requête fournie, ou véhicule jamais assez grand ni assez net pour être encodé —
+   * ce second cas est le plus courant sur une vue large.
+   */
+  matchScore?: number | null;
 }
 
 /**
@@ -625,6 +736,24 @@ export type PlateUnreadReason =
   | "too_small"
   | "too_blurry"
   | "no_consensus";
+
+/**
+ * Pourquoi un véhicule a une photo — miroir exact du `Literal` pydantic.
+ *
+ * - `plate_text` : une plaque a été **lue** sur l'image retenue. La seule cause qui
+ *   porte une confiance de lecture (`snapshotScore`), et la seule qui existait avant
+ *   ADR 0051.
+ * - `plate_box` : une plaque y a été **localisée** sans qu'aucun texte soit publié —
+ *   trop petite, trop floue, lecture refusée, OCR éteint. C'est là que la photo sert
+ *   le plus : elle permet de lire ce que le serveur a refusé d'affirmer.
+ * - `appearance` : l'apparence du véhicule a été encodée pour une recherche par
+ *   image. **Aucune vignette de plaque** n'accompagne cette photo.
+ *
+ * Une échelle de priorité dans cet ordre, donc une seule photo par véhicule. Ce n'est
+ * pas la *face* d'un fichier (`snapshot.jpg` / `plate.jpg`) mais la raison d'être de
+ * la capture entière.
+ */
+export type SnapshotKind = "plate_text" | "plate_box" | "appearance";
 
 export interface VideoInfo {
   width: number;

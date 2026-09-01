@@ -1,5 +1,7 @@
 # Démarrer le projet
 
+(Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned) ; (& c:\Users\User\Documents\dev\Detecteur_plaque\backend\.venv\Scripts\Activate.ps1)
+
 Les commandes à coller, dans l'ordre. Pour le *pourquoi* de chaque choix, voir
 [`README.md`](README.md) ; ce fichier-ci ne fait que dérouler.
 

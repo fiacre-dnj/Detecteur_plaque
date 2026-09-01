@@ -1,14 +1,21 @@
 /**
- * Les quatre chiffres **d'instant**, posés à l'extrémité de la barre du studio.
+ * Les cinq chiffres **d'instant**, posés à l'extrémité de la barre du studio.
  *
- * Pistes vivantes, cadence serveur, latence par image, durée de vidéo déjà
- * traitée : ils disent comment l'analyse se passe **en ce moment**, jamais ce
- * qu'elle a trouvé. Ils occupaient quatre des six cartes de tête de la colonne de
- * résultats, au même poids visuel que le bilan du comptage — donc les deux tiers
- * de l'espace le mieux placé de l'écran pour de la métrologie qu'on surveille du
- * coin de l'œil.
+ * Pistes vivantes, cadence serveur, latence par image, écart d'affichage, durée de
+ * vidéo déjà traitée : ils disent comment l'analyse se passe **en ce moment**,
+ * jamais ce qu'elle a trouvé. Quatre d'entre eux occupaient quatre des six cartes
+ * de tête de la colonne de résultats, au même poids visuel que le bilan du
+ * comptage — donc les deux tiers de l'espace le mieux placé de l'écran pour de la
+ * métrologie qu'on surveille du coin de l'œil.
  *
- * **« Objets suivis » ouvre la rangée**, et c'est le seul des quatre qui parle de
+ * **« Écart image » est le cinquième**, et il est d'une autre nature que les
+ * quatre autres : ceux-là décrivent le serveur, celui-ci décrit **l'accord entre
+ * le serveur et l'écran**. Il existe parce que « on dirait que le tracker est en
+ * avance » était irréfutable et invérifiable à la fois, exactement comme « cette
+ * voiture est passée et elle n'est pas comptée » — et pour la même raison, il se
+ * règle en donnant un chiffre plutôt qu'en discutant une impression.
+ *
+ * **« Objets suivis » ouvre la rangée**, et c'est le seul qui parle de
  * la scène plutôt que de la machine : c'est le nombre de pistes vivantes à *cette*
  * image, un chiffre qui monte et redescend, jamais un résultat qui s'accumule —
  * d'où sa place ici et non parmi les cartes du comptage. Sa contrepartie est
@@ -20,6 +27,14 @@
  * **Volontairement sobre** : une rangée de libellé-plus-chiffre, séparateurs fins,
  * aucune carte, aucune ombre. Une `MetricCard` ici les remettrait au niveau des
  * chiffres du comptage, ce qui est exactement ce qu'on vient de défaire.
+ *
+ * **La rangée est montée dès qu'une vidéo est chargée**, et affiche des tirets tant
+ * qu'aucune analyse n'a tourné. Elle n'apparaissait auparavant qu'avec le premier
+ * résultat, ce qui faisait changer la barre de forme au moment précis où l'on venait
+ * de lancer — et à l'endroit où l'on regardait. Des tirets annoncent la forme de ce
+ * qui vient ; c'est le même raisonnement que le squelette de la colonne de résultats.
+ * Ils ne sont en revanche **pas** montés sans source : cinq tirets au-dessus d'une
+ * scène vide n'annoncent rien.
  *
  * Les libellés gardent leur précision d'origine, qui n'est pas cosmétique :
  * « Cadence serveur » et non « Cadence » — la cadence de **lecture** de la vidéo
@@ -33,38 +48,95 @@ import type { AnalysisStats } from "@/shared/api/contracts";
 import { formatFrameLatency, formatSceneTime } from "../model/labels";
 
 interface TechnicalMetricsProps {
-  /** Cadence de traitement du **serveur**, distincte de la lecture vidéo. */
-  processingFps: number;
-  stats: AnalysisStats;
+  /**
+   * Cadence de traitement du **serveur**, distincte de la lecture vidéo.
+   *
+   * `null` tant qu'aucune analyse n'a tourné — la rangée est montée dès l'import de la
+   * vidéo et affiche alors des tirets.
+   */
+  processingFps: number | null;
+  /**
+   * Les chiffres de l'analyse, `null` avant la première.
+   *
+   * **Toute lecture doit être gardée.** La rangée est montée dès qu'une vidéo est
+   * chargée : un `stats.activeTracks` non gardé ferait planter la barre entière, donc
+   * l'écran, avant même qu'on ait lancé quoi que ce soit.
+   */
+  stats: AnalysisStats | null;
+  /**
+   * Écart entre l'image **affichée** et l'image **analysée**, en millisecondes.
+   *
+   * `null` quand il n'a pas été mesuré : navigateur sans `requestVideoFrameCallback`,
+   * suivi désactivé, ou rien encore présenté. On affiche alors « — » plutôt qu'un
+   * zéro, qui affirmerait une synchronisation qu'on n'a pas vérifiée.
+   */
+  displayLagMs?: number | null;
+  /**
+   * Comment les cinq chiffres se rangent.
+   *
+   * `"row"` — la rangée de la barre du studio, séparée par des filets.
+   * `"grid"` — deux colonnes, quand la barre est trop étroite pour les porter et
+   * qu'ils passent dans un tiroir. Les filets `border-s` d'une rangée n'y veulent
+   * plus rien dire : ils séparent des voisins horizontaux.
+   *
+   * Une prop et non deux composants : ce sont les mêmes chiffres, avec les mêmes
+   * libellés et les mêmes infobulles, et deux copies finiraient par ne plus dire la
+   * même chose du même nombre.
+   */
+  layout?: "row" | "grid";
 }
 
-export function TechnicalMetrics({ processingFps, stats }: TechnicalMetricsProps) {
+export function TechnicalMetrics({
+  processingFps,
+  stats,
+  displayLagMs = null,
+  layout = "row",
+}: TechnicalMetricsProps) {
+  const grid = layout === "grid";
   return (
-    <dl className="flex items-center gap-3">
+    <dl className={grid ? "grid grid-cols-2 gap-x-5 gap-y-2.5" : "flex items-center gap-2.5"}>
       <Metric
+        grid={grid}
         label="Objets suivis"
-        value={stats.activeTracks.toString()}
+        value={stats === null ? "—" : stats.activeTracks.toString()}
         // **Un instantané, pas un total** : le nombre de pistes vivantes à cette
         // image. Il redescend quand les véhicules sortent du champ, et le lire
         // comme un cumul ferait croire à un comptage qui perd des véhicules.
         hint="Pistes vivantes à cet instant — pas un total"
       />
       <Metric
+        grid={grid}
         label="Cadence serveur"
-        value={processingFps > 0 ? processingFps.toFixed(1) : "—"}
-        unit="img/s"
+        value={processingFps !== null && processingFps > 0 ? processingFps.toFixed(1) : "—"}
+        unit={processingFps !== null && processingFps > 0 ? "img/s" : undefined}
         hint="Images analysées par seconde par le serveur — pas la cadence de lecture de la vidéo"
       />
       <Metric
+        grid={grid}
         label="Latence"
-        value={formatFrameLatency(processingFps)}
+        value={processingFps === null ? "—" : formatFrameLatency(processingFps)}
         // Dit ce que le chiffre mesure : le traitement d'une image côté serveur,
         // et non un aller-retour réseau — en différé, il n'y en a pas par image.
         hint="Temps de traitement d'une image côté serveur"
       />
       <Metric
+        grid={grid}
+        label="Écart image"
+        value={displayLagMs === null ? "—" : displayLagMs.toFixed(0)}
+        unit={displayLagMs === null ? undefined : "ms"}
+        // **Le seul chiffre qui dise si l'overlay est calé.** Les boîtes attendent
+        // désormais que leur image soit affichée ; celui-ci mesure ce qu'il restait
+        // d'écart au moment où elle l'a été. Il doit osciller autour de zéro. S'il
+        // **dérive** avec la position dans la vidéo, la cause n'est pas le calage
+        // mais la cadence déclarée du conteneur (VFR, 29,97 arrondi, rotation en
+        // métadonnées) : le serveur date `index / fps`, le navigateur cherche par
+        // PTS, et les deux s'éloignent. Aucun autre affichage ne sépare ces cas.
+        hint="Écart entre l'image affichée et l'image analysée — proche de zéro quand l'overlay est calé"
+      />
+      <Metric
+        grid={grid}
         label="Flux analysé"
-        value={formatSceneTime(stats.analysedSceneMs)}
+        value={stats === null ? "—" : formatSceneTime(stats.analysedSceneMs)}
         // Temps de **scène**, pas temps mural : c'est la durée de vidéo déjà
         // traitée, pas le temps que le serveur a mis pour la traiter.
         hint="Durée de vidéo déjà traitée par le serveur"
@@ -86,18 +158,35 @@ function Metric({
   value,
   unit,
   hint,
+  grid,
 }: {
   label: string;
   value: string;
-  unit?: string;
+  unit?: string | undefined;
   hint: string;
+  grid: boolean;
 }) {
   return (
-    <div className="flex flex-col border-s border-line/60 ps-3 first:border-0 first:ps-0" title={hint}>
+    // Le filet est porté par l'élément lui-même et jamais par un `<div>` intercalé,
+    // qu'un lecteur d'écran annoncerait comme un terme vide de cette `<dl>`. En
+    // grille il disparaît : il sépare des voisins horizontaux, et il n'y en a plus.
+    <div
+      className={
+        grid
+          ? "flex flex-col"
+          : "flex flex-col border-s border-line/60 ps-2.5 first:border-0 first:ps-0"
+      }
+      title={hint}
+    >
       <dt className="label-micro">{label}</dt>
-      <dd className="text-caption font-bold leading-tight text-ink tabular">
+      {/* `text-small` (12 px) et non `text-caption` (14) : cette rangée est de la
+          métrologie qu'on surveille du coin de l'œil, pas un résultat. À 14 px elle
+          pesait 507 px de barre — davantage que les six pilules réunies. */}
+      <dd className="text-small font-bold leading-tight text-ink tabular">
         {value}
-        {unit !== undefined && <span className="ms-1 text-micro font-normal text-ink-dim">{unit}</span>}
+        {unit !== undefined && (
+          <span className="ms-1 text-micro font-normal text-ink-dim">{unit}</span>
+        )}
       </dd>
     </div>
   );

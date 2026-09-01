@@ -150,6 +150,18 @@ l'application, ou une contrainte d'environnement qui a fait perdre du temps.
     rien confirmé. Ce n'est pas une erreur.
 34. **Ne jamais déduire une caractéristique d'un modèle de son nom de fichier.**
     Le palier vit dans le catalogue.
+67. **Le fichier de suivi n'est lu qu'une fois par instance de modèle.**
+    `on_predict_start` d'Ultralytics **sort immédiatement** quand `predictor.trackers`
+    existe et que `persist` est vrai : le `tracker=…` passé à chaque appel est alors
+    ignoré. Comme le registre garde l'instance d'un job à l'autre, **toutes les
+    analyses d'un processus tournaient au seuil de la première** — « Confiance
+    véhicules » était sans effet dès la deuxième, et le direct héritait du seuil de
+    l'analyse précédente. Rien ne lève, et la première analyse après un démarrage — la
+    seule qu'on regarde en développement — obéit parfaitement.
+    `reset_trackers(model, tracker_config)` **repose** les clés de requête sur les
+    trackers vivants ; ne pas « simplifier » en supprimant `predictor.trackers`, ce qui
+    ferait ré-enregistrer les rappels par-dessus les anciens et appellerait
+    `tracker.update()` deux fois par image (ADR 0035).
 
 ## G. Environnement, navigateur, outillage
 
@@ -288,3 +300,21 @@ l'application, ou une contrainte d'environnement qui a fait perdre du temps.
     second défaut, les libellés qui finissaient sous le trait de la ligne suivante. Une
     étiquette écartée fuit **le long de son propre normal**, jamais au travers : de
     l'autre côté, elle nommerait le mauvais sens.
+67. **La ReID d'apparence du tracker n'est gratuite que sur une tête de détection
+    avec NMS.** `with_reid: true` + `model: auto` veut dire « prends les
+    caractéristiques que le détecteur produit déjà » — vrai pour v8, 11 et 12, et
+    c'est la mesure d'ADR 0013 (0,3 à 3,5 ms par image). Sur une tête **`end2end`**
+    (famille 26, `end2end: True` dans son yaml de modèle), `trackers/track.py` ne pose
+    pas son crochet et remplace `auto` par `yolo26n-cls.pt` : un réseau de
+    classification complet, **téléchargé au runtime**, exécuté sur chaque recadrage de
+    chaque image. Mesuré sur 1080p : `yolo26n` passe de 61,81 à **15,09 img/s**, le
+    poste `tracker` de 1,33 à **45,19 ms** — 19× celui de `yolov8n` à ReID active —
+    pour des **franchissements identiques**. Rien ne lève, rien n'est journalisé, et
+    deux `yolo26n-cls.pt` de 5,8 Mo s'étaient déposés dans l'arborescence sans que
+    personne ne le remarque. Le moteur coupe donc l'apparence pour cette famille, en
+    interrogeant le **graphe** (`head_is_end2end`) et jamais le nom du fichier — la
+    clé vit dans le yaml de modèle, donc un poids réexporté peut la porter sans
+    s'appeler « yolo26 », et l'inverse. Leçon générale : **une famille de modèles
+    ajoutée au catalogue peut invalider l'hypothèse de coût d'un mécanisme réglé pour
+    la précédente**, et le banc lui-même mentait ici — il lisait `with_reid` dans le
+    fichier versionné sans savoir quel modèle tournait. ADR 0047.

@@ -58,6 +58,16 @@ export interface GeometryCanvasProps {
    */
   analysing?: boolean;
   onSelect: (selection: { kind: "line" | "zone"; id: string } | null) => void;
+  /**
+   * **Double-clic** sur une forme — le geste qui *ouvre le réglage*, là où le
+   * simple clic ne fait que sélectionner et amorcer le glisser.
+   *
+   * Les deux étaient confondus : cliquer un trait pour le déplacer dépliait le
+   * tiroir « Géométrie » par-dessus la vidéo qu'on est en train de tracer. Le
+   * clic reste donc le geste de manipulation, le double-clic celui de l'édition.
+   * Jamais appelé en mode tracé de zone, où le double-clic **ferme** le polygone.
+   */
+  onActivate?: (selection: { kind: "line" | "zone"; id: string }) => void;
   onMoveLine: (id: string, a: Point, b: Point) => void;
   onMoveZone: (id: string, points: Point[]) => void;
   onCompleteZone: (points: Point[]) => void;
@@ -347,6 +357,27 @@ export function GeometryCanvas(props: GeometryCanvasProps) {
     }
   }, []);
 
+  const handleDoubleClick = useCallback(
+    (event: React.MouseEvent<HTMLCanvasElement>) => {
+      // Le second geste de fermeture. Le `ref` garantit qu'on lit ici les sommets
+      // à jour, y compris celui que le `pointerdown` de ce même double-clic vient
+      // d'ajouter.
+      if (drawingZone) {
+        completeDraft();
+        return;
+      }
+
+      // Hors tracé, le double-clic **ouvre** la forme visée. On refait le test de
+      // collision au lieu de lire la sélection courante : le premier `pointerdown`
+      // du double-clic a pu déplacer la forme de quelques pixels, mais surtout la
+      // sélection du rendu précédent serait périmée dans ce même cycle (piège 42).
+      const hit = hitTest(toSource(event), props.lines, props.zones, sourcePerCssPixel());
+      const selection = selectionOf(hit);
+      if (selection !== null) props.onActivate?.(selection);
+    },
+    [drawingZone, completeDraft, toSource, sourcePerCssPixel, props],
+  );
+
   return (
     <canvas
       ref={canvas}
@@ -363,9 +394,7 @@ export function GeometryCanvas(props: GeometryCanvasProps) {
       // Le second geste de fermeture. Le `ref` garantit qu'on lit ici les sommets
       // à jour, y compris celui que le `pointerdown` de ce même double-clic vient
       // d'ajouter.
-      onDoubleClick={() => {
-        if (drawingZone) completeDraft();
-      }}
+      onDoubleClick={handleDoubleClick}
     />
   );
 }

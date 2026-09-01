@@ -80,3 +80,74 @@ async def test_le_reglage_ouvre_la_porte(
     await _start(settings.model_copy(update={"inference_cudnn_autotune": True}), fake_engine)
 
     assert autotune_calls == [None]
+
+
+@pytest.fixture
+def thread_budget_calls(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    """Note `(threads, opencv_threads)` de chaque appel, sans toucher au matériel.
+
+    Comme pour l'autotune : la vraie méthode ne fait rien quand les deux budgets
+    valent zéro, donc l'observer par son effet serait impossible. On observe l'appel,
+    qui est ce que la porte contrôle.
+    """
+    calls: list[tuple[int, int]] = []
+
+    def record(_self: Any, threads: int, opencv_threads: int = 0) -> None:  # noqa: ANN401
+        calls.append((threads, opencv_threads))
+
+    monkeypatch.setattr(ModelRegistry, "apply_thread_budget", record)
+    return calls
+
+
+async def test_aucun_budget_pose_n_ouvre_pas_la_porte(
+    settings: Settings,
+    fake_engine: DetectionTrackingEngine,
+    thread_budget_calls: list[tuple[int, int]],
+) -> None:
+    """Qui n'a rien posé ne paie pas l'import de torch, ni celui d'OpenCV."""
+    assert settings.inference_threads == 0
+    assert settings.opencv_threads == 0
+
+    await _start(settings, fake_engine)
+
+    assert thread_budget_calls == []
+
+
+async def test_le_budget_torque_seul_ouvre_la_porte(
+    settings: Settings,
+    fake_engine: DetectionTrackingEngine,
+    thread_budget_calls: list[tuple[int, int]],
+) -> None:
+    await _start(settings.model_copy(update={"inference_threads": 4}), fake_engine)
+
+    assert thread_budget_calls == [(4, 0)]
+
+
+async def test_le_budget_opencv_seul_ouvre_la_porte(
+    settings: Settings,
+    fake_engine: DetectionTrackingEngine,
+    thread_budget_calls: list[tuple[int, int]],
+) -> None:
+    """**La panne silencieuse que ce test existe pour empêcher.**
+
+    La garde ne portait que sur `inference_threads`. Poser `TRAFFIC_OPENCV_THREADS`
+    seul laissait donc un réglage annoncé, documenté et **sans aucun effet** — le pire
+    état d'un réglage, et celui qu'ADR 0007 a déjà payé avec `plate_confidence`.
+    """
+    await _start(settings.model_copy(update={"opencv_threads": 3}), fake_engine)
+
+    assert thread_budget_calls == [(0, 3)]
+
+
+async def test_les_deux_budgets_traversent_ensemble(
+    settings: Settings,
+    fake_engine: DetectionTrackingEngine,
+    thread_budget_calls: list[tuple[int, int]],
+) -> None:
+    """Deux robinets distincts : celui de torch ne doit pas écraser celui d'OpenCV."""
+    await _start(
+        settings.model_copy(update={"inference_threads": 6, "opencv_threads": 3}),
+        fake_engine,
+    )
+
+    assert thread_budget_calls == [(6, 3)]

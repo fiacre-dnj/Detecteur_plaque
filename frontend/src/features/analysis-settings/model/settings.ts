@@ -28,7 +28,17 @@ import type { AnalysisRequest, CountingLine, Zone } from "@/shared/api/contracts
  * relue sous un sens différent est bien pire qu'une valeur perdue : elle produit une
  * analyse dont les réglages ne sont pas ceux que l'écran affiche.
  */
-export const SETTINGS_SCHEMA_VERSION = 1;
+export const SETTINGS_SCHEMA_VERSION = 2;
+
+/**
+ * Le seul plafond absolu que la version 1 posait sans que personne le choisisse.
+ *
+ * ADR 0049 le retire du défaut ; une valeur **déjà persistée** y survivrait pourtant,
+ * `mergeSettings` ne réécrivant jamais un choix — donc le correctif n'atteindrait
+ * aucun poste existant. La migration ne relâche que **cette** valeur-là : un `60`
+ * ou un `null` en base est un choix explicite, et le défaire serait pire que le bug.
+ */
+const V1_DEFAULT_FPS_CAP = 30;
 
 const STORAGE_KEY = "traffic-analysis.settings.v1";
 
@@ -44,6 +54,19 @@ export interface AnalysisSettings {
   detectPlates: boolean;
   plateConfidence: number | null;
   /**
+   * Plancher de confiance d'une **lecture** — `null` = suivre le défaut du serveur.
+   *
+   * Même convention que `confidenceThreshold`, et pour la même raison : `null`
+   * signifie « suivre le défaut du déploiement » et une valeur explicite « je sais ce
+   * que je fais ». Le bouton « Défaut » est le chemin de retour.
+   *
+   * Il ne décide pas ce qui est **lu** mais ce qui est **cru** : une lecture sous ce
+   * seuil ne vote pas, donc ne peut rien publier, et le véhicule reste sans plaque
+   * avec la raison « lecture incertaine ». Il ne fait donc économiser aucune
+   * inférence — c'est un réglage de justesse, jamais de vitesse.
+   */
+  plateTextConfidence: number | null;
+  /**
    * Lire le **texte** des plaques, en plus de les encadrer.
    *
    * Subordonné à `detectPlates` — sans boîte, il n'y a rien à lire — et gardé par
@@ -55,8 +78,26 @@ export interface AnalysisSettings {
    * ancienne produirait une analyse différente de ce que l'écran affiche.
    */
   readPlateText: boolean;
-  /** `null` = échelle non définie : les vitesses restent en px/s. */
-  pixelsPerMeter: number | null;
+  /**
+   * Plaques recherchées pendant l'analyse — la liste de surveillance.
+   *
+   * **Le seul réglage qui n'est pas persisté**, et c'est délibéré à deux titres.
+   * Il décrit une *recherche en cours* et non une préférence — comme l'intervalle
+   * d'analyse, qui vit pour la même raison dans `entities/analysis-range`. Et
+   * écrire un numéro de plaque dans le `localStorage` du poste franchit le cran de
+   * confidentialité que ce projet impose déjà en laissant l'OCR décoché par
+   * défaut : on ne persiste pas silencieusement ce qu'on a demandé un
+   * consentement explicite pour lire.
+   *
+   * `mergeSettings` ne la relit donc pas et `saveSettings` ne l'écrit pas — le
+   * champ vit dans l'état du studio, remis à neuf à chaque nouvelle source.
+   *
+   * Les entrées sont stockées **telles que l'utilisateur les tape**. La forme
+   * comparable est calculée à la comparaison, par `normalisePlate` — la même
+   * fonction que la recherche du registre. Une seule définition de « la même
+   * plaque » dans toute l'application.
+   */
+  plateWatchlist: string[];
   /**
    * Classes à détecter et à compter, par identifiant COCO.
    *
@@ -112,10 +153,11 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   frameStride: 1,
   detectPlates: false,
   plateConfidence: null,
+  plateTextConfidence: null,
   // Faux par défaut : l'OCR est un surcoût, et persister un texte de plaque franchit
   // un cran de confidentialité qui doit être choisi, pas hérité.
   readPlateText: false,
-  pixelsPerMeter: null,
+  plateWatchlist: [],
   // Les quatre véhicules de COCO : voiture, moto, bus, camion. C'est le
   // comportement historique de l'application, donc qui ne touche à rien retrouve
   // exactement ses chiffres d'avant. Les personnes se cochent quand on les veut.
@@ -126,12 +168,19 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   // surprend plutôt qu'un choix. `1` fait durer l'analyse la durée de la vidéo ;
   // « Illimitée » reste un choix explicite pour qui veut ses chiffres au plus vite.
   analysisSpeed: 1,
-  // 30 img/s par défaut, depuis ADR 0022 : la cadence vidéo la plus courante,
-  // qui borne le débit du serveur sans jamais le limiter en pratique sur une
-  // source à cette cadence ou en dessous. « Illimité » et « 60 img/s » restent
-  // des choix explicites pour qui filme plus vite ou veut ses chiffres au plus
-  // vite sans égard pour le partage de la machine.
-  maxAnalysisFps: 30,
+  // **Illimité par défaut depuis ADR 0049**, qui abroge le `30` d'ADR 0022. Ce
+  // `30` était justifié par « la cadence vidéo la plus courante, qui ne borne
+  // rien en pratique » — et c'est faux dès qu'on filme à 60. `ScenePacer` retient
+  // la période la **plus longue** des deux bridages : sur une source 60 fps,
+  // `analysisSpeed: 1` demande 16,7 ms et ce plafond en impose 33,3, donc le
+  // plafond gagne et l'aperçu défile à **0,5×** — exactement l'inverse de ce
+  // qu'`analysisSpeed: 1` existe pour garantir (ADR 0019).
+  //
+  // La cadence de scène reste le bridage pertinent et elle est toujours à `1` :
+  // le partage de la machine n'est donc pas relâché, c'est le second plafond qui
+  // redevient ce qu'ADR 0020 décrivait — un choix explicite pour brider une
+  // machine partagée, pas un défaut qui contredit l'autre réglage.
+  maxAnalysisFps: null,
   showTrails: true,
 };
 
@@ -189,6 +238,59 @@ export function sanitiseClassIds(
 /** Confiance effective quand l'utilisateur suit le défaut. */
 export const DEFAULT_CONFIDENCE = 0.35;
 
+/* ── La liste de plaques recherchées : les bornes du serveur, recopiées ─────────
+   Les dépasser vaudrait un 422 sur un écran dont toutes les valeurs paraissent
+   valides — le mode de panne que ce module existe pour éviter. Miroir de
+   `MAX_WATCHED_PLATES`, `MAX_WATCHED_PLATE_LENGTH` et `MIN_WATCHED_PLATE_CHARS`
+   dans `counting/application/request_schema.py`. */
+
+/** Au-delà, ce n'est plus une surveillance mais un fichier. */
+export const MAX_WATCHED_PLATES = 10;
+
+/** Longueur maximale d'une entrée, séparateurs compris. */
+export const MAX_WATCHED_PLATE_LENGTH = 16;
+
+/**
+ * En dessous, une entrée correspondrait à trop de plaques pour signaler quoi que ce
+ * soit : elle serait un générateur de fausses alertes, pas une recherche.
+ */
+export const MIN_WATCHED_PLATE_CHARS = 4;
+
+/**
+ * Les entrées que le serveur acceptera, dans l'ordre de saisie.
+ *
+ * **Un filtre et non une correction** : une entrée trop courte ou trop longue est
+ * écartée, jamais tronquée ni complétée. Corriger une plaque à la place de
+ * l'utilisateur produirait une recherche qu'il n'a pas demandée, et qui trouverait
+ * peut-être quelque chose — le pire des deux résultats.
+ *
+ * Le champ de saisie refuse déjà ces cas ; ce garde couvre le chemin qui l'aurait
+ * évité, exactement comme `analysisWindow` pour les bornes de la fenêtre.
+ */
+export function watchlistForRequest(entries: readonly string[]): string[] {
+  const kept: string[] = [];
+  for (const raw of entries) {
+    const entry = raw.trim();
+    if (entry.length > MAX_WATCHED_PLATE_LENGTH) continue;
+    if (countAlphanumeric(entry) < MIN_WATCHED_PLATE_CHARS) continue;
+    if (!kept.includes(entry)) kept.push(entry);
+  }
+  return kept.slice(0, MAX_WATCHED_PLATES);
+}
+
+function countAlphanumeric(entry: string): number {
+  return entry.replace(/[^0-9A-Za-z]/g, "").length;
+}
+
+/**
+ * Plancher de lecture effectif quand l'utilisateur suit le défaut.
+ *
+ * Miroir de `plate_ocr_min_text_score` côté serveur. Recopié ici pour que le curseur
+ * parte de la valeur qui s'appliquera réellement : le montrer à zéro laisserait croire
+ * qu'aucune lecture n'est refusée, alors que le serveur en refuse depuis toujours.
+ */
+export const DEFAULT_PLATE_TEXT_CONFIDENCE = 0.5;
+
 /** Bornes acceptées par le serveur — les dépasser produirait un 422. */
 export const BOUNDS = {
   confidenceThreshold: { min: 0.01, max: 0.99, step: 0.01 },
@@ -197,7 +299,12 @@ export const BOUNDS = {
   maxLostMs: { min: 200, max: 15_000, step: 100 },
   frameStride: { min: 1, max: 5, step: 1 },
   plateConfidence: { min: 0.05, max: 0.95, step: 0.05 },
-  pixelsPerMeter: { min: 0, max: 500, step: 0.5 },
+  // Descend jusqu'à `0` — « accepte toutes les lectures » — là où le seuil de
+  // localisation part de 0,05 : un détecteur à confiance nulle rendrait des
+  // rectangles partout, alors qu'une lecture, elle, est déjà filtrée par la
+  // normalisation du domaine et par le vote. La borne haute s'arrête à 0,95 parce
+  // qu'à 1,0 plus aucune lecture ne passerait jamais.
+  plateTextConfidence: { min: 0, max: 0.95, step: 0.05 },
 } as const;
 
 /**
@@ -206,10 +313,6 @@ export const BOUNDS = {
  * C'est **le seul endroit** où `confidenceThreshold: null` devient un nombre : le
  * serveur n'accepte pas `null`, et résoudre le défaut plus tôt ferait perdre
  * l'information « je suis le défaut ».
- *
- * `pixelsPerMeter: 0` est traduit en `null` : le curseur utilise 0 pour « non
- * définie », mais le serveur refuse `0` (`gt=0`) — et il a raison, une échelle nulle
- * n'a pas de sens.
  */
 export function toRequest(
   settings: AnalysisSettings,
@@ -227,14 +330,25 @@ export function toRequest(
     frameStride: settings.frameStride,
     detectPlates: settings.detectPlates,
     plateConfidence: settings.detectPlates ? settings.plateConfidence : null,
+    // Subordonné à la **lecture** et non à la seule détection : c'est un plancher
+    // sur ce que l'OCR rend, et sans OCR il n'y a rien à filtrer. L'envoyer quand
+    // même demanderait au serveur d'arbitrer une incohérence que le client pouvait
+    // éviter — même règle que `readPlateText` juste dessous.
+    plateTextConfidence:
+      settings.detectPlates && settings.readPlateText ? settings.plateTextConfidence : null,
     // Subordonné à `detectPlates`, comme côté serveur : lire sans détecter n'a pas de
     // sens, et laisser passer `true` seul demanderait au serveur d'arbitrer une
     // incohérence que le client pouvait éviter.
     readPlateText: settings.detectPlates && settings.readPlateText,
-    pixelsPerMeter:
-      settings.pixelsPerMeter !== null && settings.pixelsPerMeter > 0
-        ? settings.pixelsPerMeter
-        : null,
+    // Subordonnée à la **lecture**, comme le plancher de confiance juste au-dessus :
+    // sans texte lu, il n'y a rien à comparer, et envoyer quand même la liste
+    // afficherait dans « Configuration système » une recherche que rien ne peut
+    // satisfaire. Le tiroir Détection avertit séparément si une liste survit à un
+    // décochage de l'OCR — c'est la panne silencieuse à éviter, pas le tri fait ici.
+    plateWatchlist:
+      settings.detectPlates && settings.readPlateText
+        ? watchlistForRequest(settings.plateWatchlist)
+        : [],
     // Jamais vide : le serveur refuse une liste vide, et il a raison. Le repli sur
     // les quatre véhicules est le même que celui de `sanitiseClassIds` — l'écran
     // reste utilisable quand l'utilisateur a tout décoché.
@@ -340,13 +454,34 @@ export function loadSettings(storage: Pick<Storage, "getItem"> | null = safeStor
 
   // Version différente = forme inconnue. On ne devine pas : une valeur relue sous
   // un sens différent produirait une analyse dont les réglages ne sont pas ceux
-  // que l'écran affiche.
-  if (record.version !== SETTINGS_SCHEMA_VERSION) return { ...DEFAULT_SETTINGS };
+  // que l'écran affiche. La version 1 est la **seule** exception, parce qu'on sait
+  // exactement ce qui a changé entre elle et la 2 — voir `migrateV1`.
+  if (record.version !== SETTINGS_SCHEMA_VERSION && record.version !== 1) {
+    return { ...DEFAULT_SETTINGS };
+  }
 
   const settings = record.settings;
   if (typeof settings !== "object" || settings === null) return { ...DEFAULT_SETTINGS };
 
-  return mergeSettings(settings as Record<string, unknown>);
+  const source = record.settings as Record<string, unknown>;
+  return mergeSettings(record.version === 1 ? migrateV1(source) : source);
+}
+
+/**
+ * Version 1 → 2 : relâche le plafond de cadence que personne n'avait choisi.
+ *
+ * **Une migration ciblée plutôt qu'une remise à zéro.** Faire tomber la version 1
+ * sur les défauts marcherait, et coûterait à l'utilisateur son modèle, ses classes,
+ * ses seuils de plaques et sa liste de recherche — pour un seul champ à corriger.
+ *
+ * Le champ est **retiré** et non réécrit à `null` : `mergeSettings` traite un champ
+ * absent comme « prend son défaut », donc le jour où le défaut rebougera, un poste
+ * migré suivra au lieu de rester figé sur la valeur d'aujourd'hui.
+ */
+function migrateV1(source: Record<string, unknown>): Record<string, unknown> {
+  if (source.maxAnalysisFps !== V1_DEFAULT_FPS_CAP) return source;
+  const { maxAnalysisFps: _relache, ...reste } = source;
+  return reste;
 }
 
 /** Fusion typée, champ par champ. */
@@ -362,6 +497,10 @@ function mergeSettings(source: Record<string, unknown>): AnalysisSettings {
   merged.maxLostMs = boundedNumber(source.maxLostMs, merged.maxLostMs, BOUNDS.maxLostMs);
   merged.frameStride = boundedNumber(source.frameStride, merged.frameStride, BOUNDS.frameStride);
   merged.plateConfidence = nullableNumber(source.plateConfidence, merged.plateConfidence);
+  merged.plateTextConfidence = nullableNumber(
+    source.plateTextConfidence,
+    merged.plateTextConfidence,
+  );
   // Écarté plutôt que borné, contrairement aux curseurs : une cadence hors bornes
   // n'est pas un intervalle qui a changé entre deux versions, c'est une valeur qui
   // ne correspond à aucun des trois choix de l'écran. La ramener à 8× afficherait
@@ -370,7 +509,6 @@ function mergeSettings(source: Record<string, unknown>): AnalysisSettings {
   merged.analysisSpeed = isSupportedSpeed(speed) ? speed : merged.analysisSpeed;
   const fpsCap = nullableNumber(source.maxAnalysisFps, merged.maxAnalysisFps);
   merged.maxAnalysisFps = isSupportedFpsCap(fpsCap) ? fpsCap : merged.maxAnalysisFps;
-  merged.pixelsPerMeter = nullableNumber(source.pixelsPerMeter, merged.pixelsPerMeter);
 
   // Les identifiants non numériques sont écartés un par un plutôt que de faire
   // tomber toute la liste : un `localStorage` bricolé à la main ne doit pas coûter
@@ -409,16 +547,29 @@ function nullableNumber(value: unknown, fallback: number | null): number | null 
   return value;
 }
 
-/** Écrit les réglages. Silencieux en cas d'échec : ce n'est pas critique. */
+/**
+ * Écrit les réglages. Silencieux en cas d'échec : ce n'est pas critique.
+ *
+ * **`plateWatchlist` est retirée avant l'écriture**, et c'est le seul champ dans ce
+ * cas. Elle décrit une recherche en cours et non une préférence ; et surtout, écrire
+ * un numéro de plaque dans le `localStorage` du poste franchirait le cran de
+ * confidentialité que ce projet impose déjà en laissant l'OCR décoché par défaut.
+ * Ce qu'on demande un consentement explicite pour **lire** ne se persiste pas par
+ * effet de bord.
+ *
+ * Le retrait est fait ici et pas seulement à la relecture : un champ absent du
+ * stockage ne peut pas y rester après une mise à jour qui changerait `mergeSettings`.
+ */
 export function saveSettings(
   settings: AnalysisSettings,
   storage: Pick<Storage, "setItem"> | null = safeStorage(),
 ): void {
   if (storage === null) return;
+  const { plateWatchlist: _unsaved, ...persisted } = settings;
   try {
     storage.setItem(
       STORAGE_KEY,
-      JSON.stringify({ version: SETTINGS_SCHEMA_VERSION, settings }),
+      JSON.stringify({ version: SETTINGS_SCHEMA_VERSION, settings: persisted }),
     );
   } catch {
     // Quota dépassé ou navigation privée : perdre une préférence n'est pas une
