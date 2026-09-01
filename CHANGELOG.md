@@ -9,6 +9,26 @@ plus deux fois dans le même sens » si.
 
 ## [Non publié]
 
+### Corrigé
+
+- **La re-détection retenait la mauvaise mesure.** Un véhicule qui franchit deux
+  lignes est comparé deux fois, sous deux angles différents — et c'est la **dernière**
+  comparaison qui était publiée, même quand elle était bien moins bonne, même quand
+  elle désignait un autre véhicule. Mesuré sur une vidéo doublée bout à bout, où la
+  réponse juste est forcément 100 % : trois véhicules sur sept annonçaient 42 %, 60 %
+  et 27 %, et le dernier montrait la mauvaise voiture. C'est désormais la **meilleure**
+  comparaison qui est retenue, et chaque véhicule dépose plusieurs vues au lieu d'une
+  seule — de sorte qu'il y ait toujours une vue comparable en face.
+- **Le registre n'affirme plus une identité à laquelle il ne croit pas.** La colonne
+  « Déjà vu » affichait en gris le véhicule le plus ressemblant même à 2 %, y compris
+  pour des véhicules qui n'ont par construction aucun antécédent — on lisait une page
+  de correspondances fausses. Sous le seuil, la case affiche « — » ; le pourcentage
+  exact reste dans l'infobulle et dans l'export CSV. La colonne elle-même n'apparaît
+  plus que si au moins un véhicule a réellement été reconnu.
+- **Les alertes de véhicule affichent enfin leur pourcentage.** « Véhicule recherché »
+  et « Véhicule déjà vu » annonçaient une ressemblance sans jamais dire à quel point :
+  le chiffre était calculé, testé, et n'atteignait pas l'écran.
+
 ### Ajouté
 
 - **L'analyse dit quand un véhicule est déjà passé.** Une case « Signaler les

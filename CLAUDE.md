@@ -1888,6 +1888,20 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       déposer d'abord ferait remonter, au franchissement **suivant du même
       véhicule**, sa propre vue précédente à un score proche de 1 — un aller-retour
       se signalerait lui-même ;
+    - **la meilleure mesure gagne, et la galerie est multi-vues** (correctif du
+      2026-09-01). Un véhicule franchit plusieurs lignes, donc interroge la galerie
+      plusieurs fois, **avec une vue différente à chaque fois** — et deux vues d'un
+      même véhicule ne se ressemblent pas autant qu'on croit (0,387 au plus bas,
+      ADR 0048 ; le prétraitement étire la vignette au carré, donc la déformation
+      suit le rapport d'aspect de la boîte). `record_rematch` écrasait sans comparer
+      et la galerie ne gardait qu'une vue : mesuré sur une vidéo doublée bout à bout,
+      où la bonne réponse vaut **1,00 par construction**, trois jumeaux sur sept
+      publiaient 0,42, 0,60 et 0,27, et le dernier désignait **un autre véhicule**.
+      Le numéro suit le score, jamais l'inverse ;
+    - **`record_embedding` ne rabaisse plus `appearance_width_px`.** La galerie
+      comparait, lui non : un encodage forcé au franchissement sur une boîte étroite
+      remettait la règle monotone d'ADR 0050 en arrière et rouvrait des ré-encodages
+      déjà payés ;
     - **la garde temporelle** : un déposant n'est éligible que s'il avait **disparu**
       avant que le candidat n'apparaisse. Deux véhicules simultanément visibles ne
       peuvent pas être le même objet physique, et c'est le faux positif le plus
@@ -1907,6 +1921,15 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       coûte plus cher ; et surtout on compare à **tous** les précédents, donc le
       meilleur score d'un lot de cent est mécaniquement plus haut que celui d'un lot
       de deux — un seuil partagé dériverait avec la durée de la vidéo ;
+    - **le registre applique le seuil, comme le tiroir d'alertes le faisait déjà.**
+      Le serveur publie le meilleur voisin de **chaque** franchisseur quel qu'en soit
+      le score : sur une vidéo doublée, les sept véhicules de la première moitié — qui
+      n'ont par construction aucun jumeau — affichaient tous un numéro à 2 ou 31 %, en
+      gris. Le motif d'origine (« voir qu'on est passé à côté de peu ») ne survit pas à
+      l'usage : une identité affirmée à 2 % n'est pas une information nuancée, c'est
+      une affirmation fausse. Le score brut reste dans l'infobulle et dans le CSV, qui
+      est de la donnée et non une vue. `isRematched` / `hasRematch`
+      (`vehicle-registry/model/rematchPair.ts`) en sont les seuls juges ;
     - **la colonne « Déjà vu » du registre est cliquable et ouvre les deux véhicules
       côte à côte.** Sans elle, l'écran affirmait une ressemblance sans donner le
       moyen de la vérifier : comparer deux captures demandait d'ouvrir la première,

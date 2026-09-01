@@ -162,6 +162,81 @@ propriété vraie par coïncidence, qui cesse de l'être sans bruit.
 - **Un résultat archivé avant cette ADR se relit** : les deux champs sont optionnels
   et absents valent « pas de re-détection ».
 
+## Ce que la première version a raté — corrigé le 2026-09-01
+
+Première mesure sur du métrage réel : une vidéo **doublée bout à bout**, 7 véhicules
+franchisseurs par copie, décalage de 111,0 s. La bonne réponse vaut **1,00 par
+construction** — les pixels sont identiques. Le registre a rendu :
+
+| Attendu | Publié |
+|---|---|
+| #12 → #1 | `#1 — 100 %` ✅ |
+| #13 → #2 | `#2 — 60 %` |
+| #14 → #3 | `#3 — 100 %` ✅ |
+| #17 → #6 | `#6 — 100 %` ✅ |
+| #18 → #7 | `#7 — 42 %` |
+| #19 → #8 | `#8 — 83 %` |
+| #22 → #11 | **`#7 — 27 %`** ❌ mauvais véhicule |
+
+Six appariements sur sept étaient déjà justes ; trois scores sur sept seulement
+valaient 1,00. **L'encodeur n'y était pour rien** : provider CPU épinglé, aucun aléa,
+et les trois 100 % le prouvent — des pixels identiques rendent un vecteur identique.
+
+### La cause, unique, et elle explique chaque chiffre
+
+Chaque véhicule franchit **deux** lignes, donc interroge la galerie **deux** fois,
+avec deux vues **différentes** de lui-même. Or :
+
+- `record_rematch` **écrasait sans comparer** : la dernière mesure gagnait ;
+- la galerie ne gardait qu'**une** vue par véhicule, la plus large.
+
+Donc, pour un jumeau B d'un antécédent A dont la galerie avait retenu la vue de son
+*premier* franchissement : au 1ᵉʳ franchissement de B, on compare deux vues
+correspondantes → **1,00**, enregistré ; au 2ᵉ, on compare sa vue 2 à la vue 1 de A →
+0,60, qui **écrase** le 1,00. Quand la galerie avait retenu la vue du *second*
+franchissement de A, l'écrasement final tombait juste — d'où les trois 100 %. Pour
+#22, la seconde mesure trouvait même **mieux ailleurs** (#7 à 0,27), d'où
+l'appariement faux.
+
+### Les deux correctifs
+
+1. **`record_rematch` retient le maximum**, numéro compris — jamais le meilleur score
+   d'un antécédent avec le numéro d'un autre. À lui seul il suffit sur ce cas : la vue
+   retenue pour A vient d'un de ses franchissements, et le franchissement correspondant
+   de B produit la même image, donc 1,00.
+2. **La galerie devient multi-vues** (`MAX_VIEWS_PER_VEHICLE = 4`, la plus étroite cède),
+   et `lookup` prend le maximum sur les vues d'un déposant. Retire la dépendance à
+   « quelle vue unique a été stockée » : sans cela, un jumeau dont un franchissement est
+   refusé par les planchers de l'adaptateur rate son antécédent, refus dont il n'y a
+   **aucune seconde chance** — un franchissement est un instant. Coût :
+   `déposants × vues` produits scalaires, contre 21,8 ms pour un seul encodage.
+
+Corrigé au passage, même famille : **`record_embedding` rabaissait
+`appearance_width_px`** sans comparer, alors que la galerie, elle, comparait. Un
+encodage forcé au franchissement sur une boîte étroite remettait donc la règle
+monotone d'ADR 0050 en arrière et rouvrait des ré-encodages déjà payés.
+
+### Et le bruit sous le seuil
+
+Les sept véhicules de la **première** copie n'ont, par construction, aucun jumeau
+antérieur — et la colonne leur affichait quand même leur meilleur voisin, à 2 %, 27 %,
+31 %, en gris. Le motif d'origine (« voir qu'on est passé à côté de peu ») ne survit
+pas à l'usage : l'écran se lisait comme « le système se trompe partout ». Une identité
+affirmée à 2 % n'est pas une information nuancée, c'est une affirmation fausse.
+
+Le registre applique donc le seuil, comme le tiroir d'alertes le faisait déjà — les
+deux surfaces disaient deux choses différentes des mêmes données. Le score brut reste
+dans l'infobulle, où il sert au réglage sans rien prétendre, et le CSV continue de
+l'exporter : c'est de la donnée, pas une vue.
+
+### Enfin, une fonctionnalité qui n'avait jamais tourné
+
+`AlertsPanel` accepte une prop `scores` et `alertScore` était testé — mais
+`StudioPage` ne l'a **jamais** passée (`git log -S "scores={"` : aucun résultat). Les
+alertes de plaque s'en sortaient par leur score gelé ; « Véhicule recherché » et
+« Véhicule déjà vu » n'affichaient donc **aucun** pourcentage. La carte est désormais
+construite et passée.
+
 ## Ce que cette ADR ne prétend pas
 
 **Le seuil n'est pas mesuré.** 0,75 est un point de départ raisonné, pas un chiffre
