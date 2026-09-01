@@ -1122,6 +1122,46 @@ export function StudioPage() {
   const alerts = replayAlerts ?? liveAlerts;
 
   /**
+   * Les scores **vivants** de chaque véhicule, pour que les cartes d'alerte les portent.
+   *
+   * **Cette carte n'était jamais construite**, et `AlertsPanel` recevait donc
+   * `undefined` : `alertScore` retombait sur le score gelé de l'alerte, que seules
+   * les plaques possèdent. Les cartes « Véhicule recherché » et « Véhicule déjà vu »
+   * n'affichaient **aucun** pourcentage, alors que la fonctionnalité tout entière
+   * existe pour qu'une hypothèse porte son chiffre.
+   *
+   * Une carte plutôt qu'un champ de l'`Alert`, et c'est structurel : `mergeAlerts`
+   * garde la **première** occurrence d'une clé, donc un score porté par l'alerte
+   * serait gelé à sa première publication — alors que ressemblance et confiance de
+   * lecture montent toutes deux en cours d'analyse (ADR 0050, invariant 4). Une carte
+   * figée à « 57 % » sous un registre qui affiche « 84 % » pour le même véhicule se
+   * lirait comme un désaccord entre deux écrans.
+   *
+   * **Tous** les véhicules et non les seuls franchisseurs : une plaque recherchée
+   * peut appartenir à un véhicule à l'arrêt, exactement comme pour `alertsFromResult`.
+   */
+  const alertScores = useMemo(() => {
+    const source =
+      session.result !== null
+        ? vehiclesAt(session.result, replay.timeMs)
+        : (session.preview?.vehicles ?? []);
+    return new Map(
+      source.map((vehicle) => [
+        vehicle.globalId,
+        // `?? null` et non le champ brut : les trois sont **optionnels** au contrat
+        // — un résultat archivé n'a pas de `rematchScore` —, et `undefined` n'est pas
+        // une valeur admise sous `exactOptionalPropertyTypes`. `null` dit la même
+        // chose au lecteur : rien à chiffrer.
+        {
+          matchScore: vehicle.matchScore ?? null,
+          rematchScore: vehicle.rematchScore ?? null,
+          plateTextScore: vehicle.plateTextScore,
+        },
+      ]),
+    );
+  }, [session.result, session.preview?.vehicles, replay.timeMs]);
+
+  /**
    * Y a-t-il quelque chose à signaler ?
    *
    * Sans règle posée ni plaque recherchée, ni la cloche ni son tiroir n'existent :
@@ -1428,6 +1468,9 @@ export function StudioPage() {
                       // mêmes chiffres passeraient encore, deux *définitions* du
                       // total non.
                       violations={alertViolations}
+                      // Le pourcentage de chaque carte. Sans lui, une ressemblance
+                      // s'annonce sans jamais dire à quel point.
+                      scores={alertScores}
                       live={analysing || live.active}
                       // Le job **en cours ou terminé** : les captures sont écrites
                       // au fil de l'eau depuis ADR 0046, donc une vignette demandée
