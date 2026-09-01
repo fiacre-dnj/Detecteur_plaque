@@ -1,152 +1,175 @@
 /**
- * Coquille de l'application : entête compacte, navigation, contenu.
+ * Coquille de l'application : un **rail** de navigation, puis le contenu.
  *
- * Une entête compacte et non un bandeau : c'est un outil de travail, et chaque
- * pixel pris en haut est un pixel de moins pour la scène vidéo.
+ * La navigation a été une entête horizontale, et elle coûtait ~76 px de hauteur
+ * au-dessus de la barre du studio, qui en prend ~64 : ~140 px de chrome avant la
+ * première image de vidéo, sous deux bordures et deux fonds translucides presque
+ * identiques dont rien ne disait lequel était le principal. Or **la hauteur est la
+ * ressource rare de cet écran** — une scène vidéo, un lecteur, une colonne de
+ * résultats — et la largeur ne l'est pas : le cadre est borné à 1600 px et tout
+ * écran plus large affiche déjà du vide sur les côtés. Le rail prend donc 56 px là
+ * où il y en a, et rend les ~84 px de l'entête là où il en manque.
  *
- * **Fixée en haut** (`sticky top-0`) : sur le studio, la barre de réglages et la
- * vidéo défilent sous elle dès que la chronologie et les onglets allongent la
- * page — la navigation et l'état du serveur restent atteignables sans remonter.
- * `sticky` plutôt qu'un vrai `fixed` : le rendu est identique une fois la page
- * chargée, mais `sticky` reste dans le flux du document — un `fixed` aurait
- * exigé un espaceur pour que `<main>` ne parte pas sous l'entête, une source
- * de décalage à chaque changement de hauteur de l'entête (ex. un message
- * d'erreur du badge serveur qui passe sur deux lignes).
+ * ## L'invariant : le document défile sur `window`
  *
- * **Ses gouttières viennent d'un jeton, pas d'une classe** : `--app-gutter`
- * (index.css) est lu ici, par le contenu et par le fond débordé de la barre du
- * studio. Écrite trois fois en dur, la valeur finissait par diverger — et le
- * symptôme est une barre collante qui peint son fond à côté des gouttières
- * qu'elle couvre.
+ * **Aucun `overflow` sur cette coquille, ni sur l'enveloppe du contenu.** Trois
+ * mécanismes lisent le défilement du document, et **aucun ne casse bruyamment** si
+ * on le déplace dans un conteneur :
  *
- * **Ni la gouttière ni `max-w` ne servent à gagner de la place**, et les deux ont
- * été essayés : 0,75 rem de gouttière puis un cadre à 2100 px, tous deux annulés le
- * jour même. Les marges de la page sont ce qui l'empêche d'étouffer ; la place d'une
- * colonne se prend sur la **largeur des colonnes elles-mêmes**, dans `StudioPage`.
+ * - `useScrollMemory` (`KeepAlivePages`) relève `window.scrollY` et rend la position
+ *   de chaque page. Dans un conteneur défilant, il enregistrerait `0` pour les trois
+ *   et ne restituerait jamais rien — le symptôme est un studio qui remonte en haut en
+ *   revenant de l'historique, ce qui se lit comme un caprice, pas comme un bug ;
+ * - la barre du studio (`sticky`) se cale sur son plus proche ancêtre **défilant** :
+ *   elle se collerait au mauvais repère et cesserait de suivre la page ;
+ * - `100dvh` de la colonne des résultats suppose que la fenêtre **est** la zone utile.
  *
- * Sa hauteur **mesurée** est publiée dans `--app-header-h` (`useHeaderHeight`) :
- * la barre de réglages du studio s'y colle à son tour, et une entête qui s'enroule
- * ou qui grandit d'un message d'erreur déplacerait sinon la barre derrière elle.
+ * D'où `sticky top-0 h-dvh` sur le rail et non `position: fixed` : `sticky` reste
+ * dans le flux, donc le contenu n'a aucune compensation à porter — c'est le même
+ * arbitrage que l'ancienne entête faisait déjà, pour la même raison.
+ *
+ * ## Ce qui ne se devine pas
+ *
+ * - **`<header>` et non `<aside>`.** Le point de repère `banner` est conservé ; un
+ *   `<aside>` deviendrait `complementary`, et l'application n'aurait plus de bannière
+ *   du tout. Invisible en développement, réel au lecteur d'écran ;
+ * - **`h-dvh` est ce qui rend `sticky` utile.** Sur un enfant de flex, `align-self:
+ *   stretch` ne s'applique qu'à une hauteur `auto` : sans hauteur explicite, le rail
+ *   serait étiré à la hauteur du document et n'aurait plus aucune course à parcourir ;
+ * - **56 / 40 / 44 px** : le rail est dimensionné par l'anneau de focus.
+ *   `:focus-visible` dessine 2 px de contour à 2 px d'écart, soit 44 px autour d'un
+ *   bouton de 40 — six de marge de chaque côté dans 56. À 48 px de rail, l'anneau
+ *   toucherait les bords ;
+ * - **le rail reste en icônes, toujours.** Il n'a ni déploiement au survol ni bouton
+ *   d'épinglage : trois destinations tiennent dans trois glyphes, le libellé vit dans
+ *   `aria-label` et l'infobulle, et tout élargissement — même flottant — poserait un
+ *   panneau au-dessus de la scène de tracé, que le curseur longe en permanence ;
+ * - **`min-w-0` sur `<main>` est obligatoire.** Sans lui, la largeur minimale du
+ *   contenu du studio (canvas, registre) déborde l'élément flex et pousse le rail hors
+ *   de l'écran, ou fait apparaître un défilement horizontal du document ;
+ * - **le rail n'est ancêtre d'aucun calque positionné.** Le tiroir `absolute` du
+ *   studio garde pour bloc conteneur la barre `sticky` de `SettingsPanels` : rien à y
+ *   changer. `max-w-[1600px]` se centre dans l'espace **restant**, ce qui est voulu.
+ *
+ * ## Le repli
+ *
+ * Sous 48rem le rail redevient une barre horizontale, de hauteur `--app-header-h`
+ * (index.css) — c'est **la même déclaration** qui lui donne sa hauteur et qui décale
+ * la barre du studio, donc les deux ne peuvent pas diverger. Le point de rupture
+ * `md:` et la requête média du jeton sont en revanche deux écritures de 48rem qui
+ * doivent bouger ensemble ; le commentaire du jeton le dit aussi.
+ *
+ * Le `<h1>` est `sr-only` et non supprimé : les trois pages n'ont que des `<h2>`, qui
+ * pendraient sous rien. Le sous-titre qui l'accompagnait, lui, a disparu pour de bon —
+ * il annonçait une « ré-identification » retirée par ADR 0016.
  */
 
-import { useLayoutEffect, useRef } from "react";
+import { Gauge, History, ScanLine, type LucideIcon } from "lucide-react";
 import { NavLink } from "react-router";
 
 import { BackendStatusBadge } from "./BackendStatusBadge";
 import { KeepAlivePages } from "./KeepAlivePages";
+import { NAV_ITEMS } from "./navigation";
 import { ThemeToggle } from "./ThemeToggle";
+import type { PageId } from "./keepAlive";
 
-const LINKS = [
-  { to: "/", label: "Studio" },
-  { to: "/historique", label: "Historique" },
-  { to: "/benchmark", label: "Benchmark" },
-] as const;
+/**
+ * Le glyphe de chaque page. `Record` exhaustif : une page ajoutée sans icône ne
+ * compile pas, ce qu'aucun test ne peut vérifier.
+ *
+ * - `ScanLine` — un cadre traversé d'une ligne : littéralement ce que le studio fait,
+ *   là où `Video` ou `Film` diraient « vidéo », que l'historique montre aussi ;
+ * - `History` — l'horloge à flèche arrière, glyphe usuel des exécutions passées.
+ *   `Clock` dirait une durée ;
+ * - `Gauge` — la page mesure la vitesse de la machine. `ChartColumn` dirait
+ *   « graphiques », qui est déjà le sens de la Statistique du studio.
+ */
+const NAV_ICONS: Readonly<Record<PageId, LucideIcon>> = {
+  studio: ScanLine,
+  history: History,
+  benchmark: Gauge,
+};
 
 export function AppShell() {
-  const header = useHeaderHeight();
-
   return (
-    <div className="min-h-dvh bg-base">
-      <header
-        ref={header}
-        className="sticky top-0 z-40 border-b border-line/40 bg-base/95 backdrop-blur"
-      >
-        <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-x-8 gap-y-3 px-[var(--app-gutter)] py-4">
-          <div className="min-w-0">
-            <h1 className="text-heading font-bold leading-tight text-ink">
-              Comptage de véhicules
-            </h1>
-            <p className="mt-0.5 text-small text-ink-dim">
-              Détection, suivi, ré-identification et franchissement de lignes
-            </p>
-          </div>
+    <div className="flex min-h-dvh flex-col bg-base md:flex-row">
+      <h1 className="sr-only">Comptage de véhicules</h1>
 
-          <nav aria-label="Navigation principale" className="flex items-center gap-1">
-            {LINKS.map((link) => (
+      <header
+        className={[
+          // Replié : barre horizontale translucide — le contenu défile dessous, donc
+          // le flou et le fond à 95 % ont un sens.
+          "sticky top-0 z-40 flex shrink-0 items-center gap-1",
+          "h-[var(--app-header-h)] w-full flex-row border-b border-line/40 bg-base/95 px-2 backdrop-blur",
+          // Déployé : colonne pleine hauteur, **opaque et sans flou**. Rien ne passe
+          // sous une colonne qui est dans le flux, et un calque flouté de la hauteur
+          // de l'écran se repeindrait à chaque frame, au-dessus d'une page qui joue
+          // une vidéo. `bg-surface` plutôt que `bg-base` : le rail est une surface, la
+          // bordure seule ne le détacherait pas du contenu.
+          "md:h-dvh md:w-14 md:flex-col md:border-b-0 md:border-e md:bg-surface md:px-0 md:py-3 md:backdrop-blur-none",
+        ].join(" ")}
+      >
+        {/* La marque du produit, la même que l'onglet du navigateur. `alt=""` :
+            décorative, le nom de l'application est dans le `<h1>` ci-dessus. La marge
+            basse la sépare du groupe de navigation — elle dessine une ligne, comme
+            l'icône du studio, et collées les deux se liraient comme une paire. */}
+        <img src="/favicon.svg" alt="" className="size-7 shrink-0 rounded-card md:mb-2" />
+
+        <nav aria-label="Navigation principale" className="flex items-center gap-1 md:flex-col">
+          {NAV_ITEMS.map(({ id, to, label }) => {
+            const Icon = NAV_ICONS[id];
+            return (
               <NavLink
-                key={link.to}
-                to={link.to}
-                end={link.to === "/"}
+                key={id}
+                to={to}
+                // `end` sur les trois et non sur « / » seul : c'est exactement la
+                // comparaison de `activePageId`, donc le lien surligné et la page
+                // affichée ne peuvent pas diverger.
+                end
+                // Le libellé porte le nom accessible ; `title` ne fait que doubler,
+                // il n'existe ni au clavier ni au toucher. `aria-current="page"` est
+                // posé par `NavLink` lui-même : ne pas le passer à la main, ce serait
+                // écraser son calcul.
+                aria-label={label}
+                title={label}
                 className={({ isActive }) =>
                   [
-                    "label-caps rounded-pill px-4 py-2 transition-colors",
-                    // Actif = accent, inactif = gris : la couleur porte l'état,
-                    // et c'est un usage fonctionnel de l'accent.
+                    "grid size-10 shrink-0 place-items-center rounded-pill transition-colors",
+                    // L'actif est **rempli** et pas seulement teinté : un écart de
+                    // luminance se lit sans distinguer les couleurs. Le survol prend
+                    // le cran en dessous, pour que « survolé » et « actif » ne se
+                    // confondent pas.
                     isActive
-                      ? "bg-surface-2 text-accent"
-                      : "text-ink-dim hover:bg-surface hover:text-ink",
+                      ? "bg-elevated text-accent"
+                      : "text-ink-dim hover:bg-surface-2 hover:text-ink",
                   ].join(" ")
                 }
               >
-                {link.label}
+                <Icon aria-hidden="true" className="size-5" />
               </NavLink>
-            ))}
-          </nav>
+            );
+          })}
+        </nav>
 
-          {/* Le coin haut-droit de l'entête : l'état du serveur, puis la bascule
-              de thème. Dans cet ordre — l'état du serveur est une information
-              qu'on surveille, le thème un réglage qu'on pose une fois. */}
-          <div className="ms-auto flex items-center gap-2">
-            <BackendStatusBadge />
-            <ThemeToggle />
-          </div>
+        {/* Poussé à l'autre extrémité : à droite quand la barre est horizontale, en
+            bas quand elle est verticale. Dans cet ordre — l'état du serveur est une
+            information qu'on surveille, le thème un réglage qu'on pose une fois. */}
+        <div className="ms-auto flex items-center gap-1 md:ms-0 md:mt-auto md:flex-col">
+          <BackendStatusBadge />
+          <ThemeToggle />
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1600px] px-[var(--app-gutter)] py-6">
-        {/* Les trois pages restent **montées**, seule la visible est affichée :
-            changer d'onglet ne doit pas coûter la vidéo importée, le tracé et le
-            résultat en cours. Chacune porte sa propre frontière de suspense, donc
-            une page qu'on ouvre pour la première fois n'efface ni l'entête, ni la
-            navigation, ni les pages déjà chargées. */}
-        <KeepAlivePages />
+      <main className="min-w-0 flex-1">
+        <div className="mx-auto max-w-[1600px] px-[var(--app-gutter)] py-6">
+          {/* Les trois pages restent **montées**, seule la visible est affichée :
+              changer d'onglet ne doit pas coûter la vidéo importée, le tracé et le
+              résultat en cours. Chacune porte sa propre frontière de suspense, donc
+              une page qu'on ouvre pour la première fois n'efface ni le rail, ni les
+              pages déjà chargées. */}
+          <KeepAlivePages />
+        </div>
       </main>
     </div>
   );
-}
-
-/**
- * Publie la hauteur **mesurée** de l'entête dans `--app-header-h`.
- *
- * La barre du studio se colle sous elle (`sticky top-[var(--app-header-h)]`), et
- * il n'existe aucune façon honnête de deviner ce décalage : l'entête s'enroule sur
- * deux lignes en fenêtre étroite, et le badge serveur grandit quand il porte un
- * message d'erreur. Une valeur écrite en dur laisserait la barre flotter dans le
- * vide ou disparaître derrière l'entête — sans rien qui l'explique, puisque les
- * deux sont opaques.
- *
- * `useLayoutEffect` et non `useEffect` : la valeur est lue par la mise en page du
- * rendu qui suit, et la poser après la peinture ferait sauter la barre d'une
- * frame à chaque chargement.
- */
-function useHeaderHeight(): React.RefObject<HTMLElement | null> {
-  const element = useRef<HTMLElement>(null);
-
-  useLayoutEffect(() => {
-    const header = element.current;
-    if (header === null) return;
-
-    const publish = (): void => {
-      document.documentElement.style.setProperty(
-        "--app-header-h",
-        `${Math.round(header.getBoundingClientRect().height)}px`,
-      );
-    };
-
-    publish();
-    // **Un second relevé à la frame suivante**, et il n'est pas redondant : le
-    // `ResizeObserver` ne se déclenche qu'au *changement*, donc une première mesure
-    // prise avant que la mise en page se stabilise ne serait jamais corrigée — la
-    // barre resterait décalée de la hauteur d'un entête qui n'a jamais existé. Vu
-    // en dev sur un arbre rechargé à chaud (344 px relevés pour un entête de 76).
-    const settled = requestAnimationFrame(publish);
-    const observer = new ResizeObserver(publish);
-    observer.observe(header);
-    return () => {
-      cancelAnimationFrame(settled);
-      observer.disconnect();
-    };
-  }, []);
-
-  return element;
 }

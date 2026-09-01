@@ -166,6 +166,41 @@
   --app-gutter: 1.5rem;
 }
 
+/* ── Ce que la coquille occupe EN HAUT de la page ──────────────────────────
+   Zéro tant que la navigation est un **rail vertical** : rien ne coiffe le
+   contenu, et la barre du studio se colle à `top: 0`.
+
+   Elle a valu une hauteur **mesurée** (un `ResizeObserver` dans `AppShell`) du
+   temps de l'entête horizontale, pour deux raisons qui ont disparu avec elle :
+   l'entête s'enroulait sur deux lignes en fenêtre étroite, et le badge serveur
+   grandissait d'un message d'erreur. Le rail, lui, a une hauteur **de
+   construction** — une rangée de boutons de 40 px qui ne s'enroule pas, et dont
+   aucun état ne change la taille. Une constante y est plus honnête qu'une mesure
+   qui republierait éternellement la même valeur.
+
+   **`0px` et jamais `0`.** Ses trois lecteurs s'en servent dans des `calc()`
+   (`calc(100dvh - var(--app-header-h) - 5rem)`), où un zéro sans unité est un
+   *nombre* et non une longueur : la déclaration entière serait jetée en silence,
+   et la colonne des résultats perdrait son plafond de hauteur sans rien dire.
+
+   **La requête ci-dessous est le complément exact du préfixe `md:` du rail**
+   (48rem, le défaut de Tailwind v4). Les deux doivent bouger ensemble : un rail
+   qui se replierait à `lg:` sans qu'on touche à cette requête laisserait la barre
+   du studio se coller à 0, donc passer DERRIÈRE lui — en fenêtre étroite
+   seulement, c'est-à-dire jamais pendant le développement. Aucun jeton
+   `--app-rail-h` en face : la même déclaration donne sa hauteur au rail replié
+   (`h-[var(--app-header-h)]`) et son décalage à la barre, donc ils ne peuvent pas
+   diverger. */
+:root {
+  --app-header-h: 0px;
+}
+
+@media (width < 48rem) {
+  :root {
+    --app-header-h: 3.5rem;
+  }
+}
+
 /* Pendant la bascule de thème : aucune transition.
    Sans cela, les éléments qui animent leurs couleurs restent bloqués sur
    l'ancienne teinte — voir `shared/lib/theme.ts`. Et visuellement, un thème

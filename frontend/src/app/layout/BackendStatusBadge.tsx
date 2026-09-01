@@ -1,9 +1,36 @@
 /**
- * État du backend, visible en permanence.
+ * État du backend, visible en permanence, **en bas du rail**.
  *
  * Quand le serveur est absent, l'interface **le dit** et désactive l'analyse :
  * ni page blanche, ni erreur console, ni bouton qui ne fait rien. C'est un
  * critère d'acceptation du projet, pas une amélioration.
+ *
+ * Les trois états tiennent dans une colonne de 56 px, ce qui a coûté deux
+ * arbitrages :
+ *
+ * - **le mot « Serveur prêt » disparaît, le matériel reste.** Des deux, le matériel
+ *   est le seul qu'on relise : il change la lecture de chaque chiffre de latence,
+ *   alors que « prêt » est déjà dit par la pastille verte. Le nom accessible, lui,
+ *   porte toujours la phrase entière ;
+ * - **en erreur, le badge et « Réessayer » fusionnent en un seul bouton.** Ils
+ *   étaient deux éléments côte à côte parce que l'entête avait la largeur de les
+ *   porter ; dans un rail, il faudrait en sacrifier un. Fusionner vaut mieux que
+ *   choisir : la surface qui *dit* le problème est celle qui le corrige, ce qui est
+ *   une affordance plus forte que le mot posé à côté.
+ *
+ * **Perte assumée** : la phrase « Serveur injoignable » n'est plus lisible à l'œil,
+ * seule la teinte `warning` signale l'anomalie. Ce n'est pas le seul canal — le
+ * studio grise déjà « Lancer l'analyse » et affiche la cause à l'endroit exact où le
+ * geste échoue. Si cela se révèle trop discret à l'usage, l'incrément suivant est une
+ * étiquette dépliée au survol et au focus ; ne pas la construire d'avance.
+ *
+ * Deux règles d'accessibilité que ces trois états appliquent :
+ *
+ * - **`role="img"` sur les états non cliquables**, et pas un `<span>` nu : un
+ *   `aria-label` posé sur un élément générique est ignoré par une partie des lecteurs
+ *   d'écran, et l'état deviendrait alors muet au lieu d'être abrégé ;
+ * - **`title` double le nom accessible, il n'en est jamais le seul porteur.** Il
+ *   n'existe ni au clavier ni au toucher, et son annonce varie d'un lecteur à l'autre.
  */
 
 import { CircleAlert, RefreshCw } from "lucide-react";
@@ -15,29 +42,39 @@ export function BackendStatusBadge() {
 
   if (isLoading) {
     return (
-      <span className="label-micro rounded-pill bg-surface-2 px-3 py-1.5">
-        Connexion…
+      <span
+        role="img"
+        aria-label="Connexion au serveur…"
+        title="Connexion au serveur…"
+        className="grid size-10 shrink-0 place-items-center"
+      >
+        <span
+          aria-hidden="true"
+          className="size-2 rounded-pill bg-ink-dim motion-safe:animate-pulse"
+        />
       </span>
     );
   }
 
   if (!health) {
     return (
-      <div className="flex items-center gap-2">
-        <span className="label-micro flex items-center gap-1.5 rounded-pill bg-warning/12 px-3 py-1.5 text-warning">
-          <CircleAlert aria-hidden="true" className="size-3.5" />
-          Serveur injoignable
-        </span>
-        <button
-          type="button"
-          onClick={() => void refetch()}
-          disabled={isFetching}
-          className="label-micro flex items-center gap-1.5 rounded-pill px-2 py-1.5 text-ink-dim transition-colors hover:text-ink disabled:opacity-50"
-        >
-          <RefreshCw aria-hidden="true" className="size-3.5" />
-          Réessayer
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={() => void refetch()}
+        disabled={isFetching}
+        aria-label="Serveur injoignable — réessayer"
+        title="Serveur injoignable — réessayer"
+        className={[
+          "grid size-10 shrink-0 place-items-center rounded-pill transition-colors",
+          "bg-warning/12 text-warning hover:enabled:bg-warning/20 disabled:opacity-60",
+        ].join(" ")}
+      >
+        {isFetching ? (
+          <RefreshCw aria-hidden="true" className="size-4 motion-safe:animate-spin" />
+        ) : (
+          <CircleAlert aria-hidden="true" className="size-4" />
+        )}
+      </button>
     );
   }
 
@@ -75,16 +112,20 @@ export function BackendStatusBadge() {
     .filter((line): line is string => line !== null)
     .join(" · ");
 
+  const device = health.device === "cpu" ? "CPU" : "CUDA";
+
   return (
     <span
+      role="img"
+      aria-label={`Serveur prêt, ${device}`}
       title={detail}
-      className="label-micro flex items-center gap-2 rounded-pill bg-surface-2 px-3 py-1.5 text-ink-muted"
+      className="flex w-10 shrink-0 flex-col items-center gap-1 rounded-pill bg-surface-2 py-1.5"
     >
       {/* Vert = fonctionnel : c'est exactement l'usage auquel l'accent est réservé. */}
       <span aria-hidden="true" className="size-1.5 rounded-pill bg-accent" />
-      Serveur prêt
-      <span className="text-ink-dim">·</span>
-      <span className="text-ink">{health.device === "cpu" ? "CPU" : "CUDA"}</span>
+      <span aria-hidden="true" className="label-micro leading-none text-ink">
+        {device}
+      </span>
     </span>
   );
 }
