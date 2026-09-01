@@ -49,6 +49,10 @@ import { formatScore } from "@/shared/lib/score";
 import { snapshotCaption } from "@/shared/lib/snapshotCaption";
 import { snapshotHasPlateFace, snapshotReasonLabel } from "@/shared/lib/snapshotKind";
 import { Button } from "@/shared/ui/Button";
+import {
+  SnapshotComparisonDialog,
+  type ComparisonSide,
+} from "@/shared/ui/SnapshotComparisonDialog";
 import { SnapshotDialog } from "@/shared/ui/SnapshotDialog";
 
 import {
@@ -61,6 +65,7 @@ import {
 import { filterByLine } from "../model/filterLine";
 import { filterByPlate } from "../model/filterPlate";
 import { plateBestGuessMessage, plateUnreadLabel, plateUnreadMessage } from "../model/plateUnread";
+import { rematchPair } from "../model/rematchPair";
 import { crossingsWithRole, crossingsWithoutRole } from "../model/roleCrossings";
 import {
   capturedVehicles,
@@ -155,6 +160,8 @@ export function VehicleRegistry({
   const [expanded, setExpanded] = useState(false);
   //: Le véhicule dont la capture est ouverte en grand, ou `null`.
   const [openSnapshot, setOpenSnapshot] = useState<number | null>(null);
+  /** Le véhicule dont on compare la re-détection, par son numéro. `null` = fermée. */
+  const [openRematch, setOpenRematch] = useState<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   // L'état de recherche vit **ici**, comme `expanded` et `scrollTop` : c'est un état de
   // vue de ce tableau. Le hisser dans `StudioPage` ferait remonter chaque frappe dans le
@@ -253,6 +260,11 @@ export function VehicleRegistry({
     shownSnapshot === null ? null : neighbourVehicle(navigable, shownSnapshot.globalId, -1);
   const nextSnapshot =
     shownSnapshot === null ? null : neighbourVehicle(navigable, shownSnapshot.globalId, 1);
+
+  // Sur `vehicles` et **jamais sur `filtered`** : l'antécédent peut être masqué par
+  // le filtre courant, et le taire viderait la comparaison de son sens précisément
+  // quand on en a besoin. `rematchPair` en est le seul juge, et il est testé.
+  const comparison = openRematch === null ? null : rematchPair(vehicles, openRematch);
 
   const virtualised = expanded && shouldVirtualise(filtered.length);
   const shown = expanded ? filtered : filtered.slice(0, INITIAL_ROWS);
@@ -434,7 +446,16 @@ export function VehicleRegistry({
               />
             )}
             {hasMatch && <MatchCell vehicle={vehicle} threshold={matchThreshold} />}
-            {hasRematch && <RematchCell vehicle={vehicle} />}
+            {hasRematch && (
+              <RematchCell
+                vehicle={vehicle}
+                // Sans job, aucune image n'existe : la cellule reste du texte plutôt
+                // qu'un bouton qui n'ouvrirait qu'une modale de deux repères muets.
+                onCompare={
+                  jobId === null ? undefined : () => setOpenRematch(vehicle.globalId)
+                }
+              />
+            )}
             <Td className="tabular">
               {vehicle.crossedLines.length === 0 ? "—" : vehicle.crossedLines.length}
             </Td>
@@ -670,8 +691,46 @@ export function VehicleRegistry({
           onNext={nextSnapshot === null ? undefined : () => setOpenSnapshot(nextSnapshot.globalId)}
         />
       )}
+
+      {/* La comparaison d'une re-détection. Montée seulement une fois ouverte, comme
+          la modale de capture, et pour la même raison : ses quatre `<img>` ne doivent
+          pas se charger tant que personne ne les regarde. */}
+      {jobId !== null && comparison !== null && (
+        <SnapshotComparisonDialog
+          open
+          onClose={() => setOpenRematch(null)}
+          title="Ce véhicule est-il déjà passé ?"
+          score={
+            comparison.later.rematchScore == null
+              ? undefined
+              : formatScore(comparison.later.rematchScore)
+          }
+          earlier={comparisonSide(jobId, comparison.earlier)}
+          later={comparisonSide(jobId, comparison.later)}
+        />
+      )}
     </section>
   );
+}
+
+/**
+ * Un véhicule vu comme une colonne de la comparaison.
+ *
+ * La vignette de plaque n'est demandée que si elle **existe** — une capture retenue
+ * pour la ressemblance du véhicule n'en a aucune (ADR 0051), et la demander rendrait
+ * 409, donc le repère « Capture purgée » sur un état parfaitement normal. Même garde
+ * qu'à la modale de capture, par le même juge.
+ */
+function comparisonSide(jobId: string, vehicle: VehicleRecord): ComparisonSide {
+  return {
+    title: `${classLabel(vehicle.label)} #${vehicle.globalId}`,
+    subtitle: snapshotCaption(vehicle, formatSceneTimePrecise),
+    vehicleSrc: vehicleSnapshotUrl(jobId, vehicle.globalId, vehicle.snapshotMs),
+    plateSrc: snapshotHasPlateFace(vehicle.snapshotKind)
+      ? platePhotoUrl(jobId, vehicle.globalId, vehicle.snapshotMs)
+      : null,
+    plateText: vehicle.plateText,
+  };
 }
 
 /**
@@ -996,7 +1055,13 @@ function MatchCell({
  * ce qui permet de voir qu'on est passé à côté de peu, et de descendre le seuil en
  * connaissance de cause.
  */
-function RematchCell({ vehicle }: { vehicle: VehicleRecord }) {
+function RematchCell({
+  vehicle,
+  onCompare,
+}: {
+  vehicle: VehicleRecord;
+  onCompare?: (() => void) | undefined;
+}) {
   const { rematchOf, rematchScore } = vehicle;
   if (rematchOf === null || rematchOf === undefined) {
     return <Td className="w-28 text-ink-muted">—</Td>;
@@ -1004,30 +1069,49 @@ function RematchCell({ vehicle }: { vehicle: VehicleRecord }) {
   const under = !matches(rematchScore, DEFAULT_REMATCH_THRESHOLD);
   const strength =
     rematchScore == null ? null : matchStrength(rematchScore, DEFAULT_REMATCH_THRESHOLD);
+  const ink = under
+    ? "text-ink-muted"
+    : strength === "exact"
+      ? "font-medium text-negative"
+      : "text-warning";
+  const label =
+    rematchScore == null ? `#${rematchOf}` : `#${rematchOf} — ${Math.round(rematchScore * 100)} %`;
+  const detail =
+    rematchScore == null
+      ? `Ressemble au véhicule #${rematchOf}`
+      : `Similarité ${rematchScore.toFixed(3)} avec le véhicule #${rematchOf}${
+          under ? " — sous le seuil retenu" : ""
+        }`;
+
+  // **Cliquable, et c'est ce qui rend l'affirmation vérifiable.** Le score dit « ces
+  // deux véhicules se ressemblent » ; seule la comparaison des deux photos permet de
+  // le confirmer ou de le réfuter, et l'écran le promet en toutes lettres. Sans job,
+  // aucune image n'existe : la cellule reste alors du texte, pas un bouton mort.
+  if (onCompare === undefined) {
+    return (
+      <Td className={`w-28 tabular ${ink}`}>
+        <span title={detail}>{label}</span>
+      </Td>
+    );
+  }
+  // Un `<td>` nu et non le `Td` partagé, pour la même raison que la cellule de
+  // capture : `Td` porte `px-3 py-2`, et une surcharge `p-0` ne gagne pas de façon
+  // fiable — l'ordre des utilitaires de rembourrage dans la feuille générée décide,
+  // pas l'ordre des classes. Le rembourrage passe donc sur le bouton, qui doit le
+  // porter de toute façon pour que toute la cellule soit cliquable. Les valeurs sont
+  // identiques à celles de `Td`, sans quoi la rangée changerait de hauteur et la
+  // virtualisation dériverait au-delà de 200 lignes.
   return (
-    <Td
-      className={`w-28 tabular ${
-        under
-          ? "text-ink-muted"
-          : strength === "exact"
-            ? "font-medium text-negative"
-            : "text-warning"
-      }`}
-    >
-      <span
-        title={
-          rematchScore == null
-            ? `Ressemble au véhicule #${rematchOf}`
-            : `Similarité ${rematchScore.toFixed(3)} avec le véhicule #${rematchOf}${
-                under ? " — sous le seuil retenu" : ""
-              }`
-        }
+    <td className="w-28 text-ink-muted">
+      <button
+        type="button"
+        onClick={onCompare}
+        title={`${detail} — cliquer pour comparer les deux photos`}
+        className={`w-full px-3 py-2 text-start tabular underline decoration-dotted underline-offset-2 transition-colors hover:bg-elevated ${ink}`}
       >
-        {rematchScore == null
-          ? `#${rematchOf}`
-          : `#${rematchOf} — ${Math.round(rematchScore * 100)} %`}
-      </span>
-    </Td>
+        {label}
+      </button>
+    </td>
   );
 }
 

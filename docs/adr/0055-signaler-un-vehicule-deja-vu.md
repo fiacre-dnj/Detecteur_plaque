@@ -139,6 +139,26 @@ propriété vraie par coïncidence, qui cesse de l'être sans bruit.
 - **La capture vient gratuitement.** Tout véhicule encodé est déjà photographié
   depuis ADR 0051 (`snapshotKind: "appearance"`), donc l'alerte tient sa promesse
   « à vérifier sur la capture » sans une ligne de code de plus.
+- **La colonne « Déjà vu » du registre est cliquable**, et elle ouvre les deux
+  véhicules **côte à côte**. C'est la contrepartie indispensable de tout ce qui
+  précède : l'écran affirme une ressemblance, et cette modale est le seul endroit où
+  l'affirmation devient vérifiable. Sans elle, comparer deux captures demandait
+  d'ouvrir la première, la fermer, retrouver la seconde rangée, l'ouvrir — donc de
+  comparer deux images **de mémoire**, ce que l'œil fait très mal. Quatre points :
+  - **l'antécédent se cherche dans TOUS les véhicules, jamais dans le jeu filtré**
+    (`model/rematchPair.ts`, testé). Il peut être masqué par le filtre courant, et le
+    taire viderait la comparaison de son sens précisément au moment de l'enquête. Le
+    filtre décide de ce qu'on *parcourt*, pas de ce qu'on a le droit de regarder ;
+  - **l'ordre est chronologique**, le déposant à gauche, jamais « celui qu'on a
+    cliqué ». Une disposition qui change d'une comparaison à l'autre empêche
+    justement de comparer ;
+  - **la plaque lue est affichée sous chaque véhicule**, quand elle existe : deux
+    textes différents réfutent une ressemblance mieux que n'importe quel score ;
+  - **un second dialogue et non un mode de plus.** `SnapshotDialog` empile une
+    capture et sa plaque, celui-ci met deux véhicules en colonnes : les fondre
+    demanderait un drapeau qui change la disposition entière. Ce qui *est* partagé —
+    le cadre d'image et son repli « purgée » — l'est pour de vrai, par
+    `SnapshotFrame`, extrait à cette occasion.
 - **Un résultat archivé avant cette ADR se relit** : les deux champs sont optionnels
   et absents valent « pas de re-détection ».
 

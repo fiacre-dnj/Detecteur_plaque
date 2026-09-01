@@ -17,6 +17,10 @@ plus deux fois dans le même sens » si.
   une ressemblance forte déclenche une alerte, avec son pourcentage, la ligne
   franchie et la photo des deux véhicules à comparer. Le registre gagne une colonne
   « Déjà vu » qui nomme le véhicule d'origine, et l'export CSV deux colonnes.
+  **Un clic sur cette colonne ouvre les deux véhicules côte à côte**, avec leur
+  plaque quand elle a été lue : c'est là que vous tranchez. Sans cet écran, comparer
+  deux photos demandait d'ouvrir la première, la fermer, retrouver la seconde rangée
+  et l'ouvrir — donc de les comparer de mémoire.
   **Aucun chiffre ne change** : un véhicule reconnu reste un véhicule de plus et son
   passage reste compté. L'écran signale, il ne fusionne pas — deux passages du même
   véhicule sont deux passages, et c'est à vous de dire si c'est bien la même

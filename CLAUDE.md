@@ -1907,6 +1907,13 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       coûte plus cher ; et surtout on compare à **tous** les précédents, donc le
       meilleur score d'un lot de cent est mécaniquement plus haut que celui d'un lot
       de deux — un seuil partagé dériverait avec la durée de la vidéo ;
+    - **la colonne « Déjà vu » du registre est cliquable et ouvre les deux véhicules
+      côte à côte.** Sans elle, l'écran affirmait une ressemblance sans donner le
+      moyen de la vérifier : comparer deux captures demandait d'ouvrir la première,
+      la fermer, retrouver la seconde rangée, l'ouvrir — donc de comparer **de
+      mémoire**. `model/rematchPair.ts` en est le seul juge et cherche l'antécédent
+      dans **tous** les véhicules, jamais dans le jeu filtré ; l'ordre est
+      chronologique, jamais « celui qu'on a cliqué » ;
     - **`isViolation` ne se décide plus sur `alert.line !== null`.** Ce raccourci
       était exact tant que seules les infractions nommaient une ligne, et il est
       devenu faux à l'instant où une re-détection en a porté une : elle aurait été
