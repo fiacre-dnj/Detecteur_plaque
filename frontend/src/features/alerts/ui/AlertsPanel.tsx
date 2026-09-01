@@ -50,7 +50,7 @@ import { classLabel } from "@/shared/lib/classes";
 import type { ViolationCounts } from "@/shared/lib/violationTally";
 import { PanelHeading } from "@/shared/ui/PanelHeading";
 
-import { ALERT_LIMIT, type Alert } from "../model/alerts";
+import { ALERT_LIMIT, alertScore, type Alert, type VehicleScores } from "../model/alerts";
 import { NO_FILTER, alertFacets, filterAlerts, isFiltering } from "../model/alertFilters";
 import { AlertCard } from "./AlertCard";
 import { ALERT_LOOK } from "./alertLook";
@@ -90,6 +90,31 @@ interface AlertsPanelProps {
    * job terminé priverait de preuve les alertes au moment précis où elles tombent.
    */
   jobId?: string | null | undefined;
+  /**
+   * L'instant de la capture de chaque véhicule, pour **versionner** son adresse.
+   *
+   * Le serveur sert ces images en `immutable`, et une capture est remplacée dès
+   * qu'une meilleure vue arrive — jusqu'à une dizaine de fois par piste sur une
+   * capture par ressemblance (ADR 0051). Sans version, la vignette resterait figée
+   * pour un an sur la vue la plus lointaine, dans le panneau qui sert justement à
+   * vérifier.
+   *
+   * **En prop et non dans l'`Alert`**, et c'est le piège à connaître : `mergeAlerts`
+   * garde la **première** occurrence d'une clé, donc un instant porté par l'alerte
+   * serait gelé à sa première publication — exactement ce qu'on cherche à éviter.
+   */
+  capturedMs?: ReadonlyMap<number, number | null> | undefined;
+  /**
+   * Les scores **vivants** de chaque véhicule — confiance de lecture, ressemblance.
+   *
+   * En prop et pour la raison exacte de `capturedMs`, qui est le piège de ce
+   * panneau : `mergeAlerts` garde la première occurrence d'une clé, donc un score
+   * porté par l'alerte serait gelé à sa première publication alors que les deux
+   * s'améliorent en cours d'analyse. Absent, la carte retombe sur ce que l'alerte a
+   * figé — le seul recours pour une plaque recherchée dont le véhicule n'a encore
+   * franchi aucune ligne, le registre de l'aperçu étant restreint aux franchisseurs.
+   */
+  scores?: ReadonlyMap<number, VehicleScores> | undefined;
   /** Ouvre la capture en grand. Absent = la vignette n'est pas cliquable. */
   onOpenSnapshot?: ((globalId: number) => void) | undefined;
 }
@@ -102,6 +127,8 @@ export function AlertsPanel({
   live = false,
   onSeek,
   jobId = null,
+  capturedMs,
+  scores,
   onOpenSnapshot,
 }: AlertsPanelProps) {
   const [filter, setFilter] = useState(NO_FILTER);
@@ -251,12 +278,18 @@ export function AlertsPanel({
                     <AlertSnapshot
                       jobId={jobId}
                       globalId={alert.globalId}
+                      capturedMs={capturedMs?.get(alert.globalId) ?? null}
                       live={live}
                       onOpen={() => onOpenSnapshot?.(alert.globalId)}
                     />
                   )}
                   <span className="min-w-0 flex-1">
-                    <AlertCard alert={alert} lines={lines} onSeek={onSeek} />
+                    <AlertCard
+                      alert={alert}
+                      score={alertScore(alert, scores?.get(alert.globalId))}
+                      lines={lines}
+                      onSeek={onSeek}
+                    />
                   </span>
                 </li>
               ))}
@@ -446,11 +479,13 @@ function Chip({
 function AlertSnapshot({
   jobId,
   globalId,
+  capturedMs,
   live,
   onOpen,
 }: {
   jobId: string;
   globalId: number;
+  capturedMs: number | null;
   live: boolean;
   onOpen: () => void;
 }) {
@@ -469,7 +504,7 @@ function AlertSnapshot({
       <img
         // `attempt` fait partie de la clé de cache du navigateur : sans lui, un
         // second chargement de la même adresse ressusciterait la réponse en échec.
-        src={`${vehicleSnapshotUrl(jobId, globalId)}${attempt === 0 ? "" : `?retry=${attempt}`}`}
+        src={vehicleSnapshotUrl(jobId, globalId, capturedMs, attempt)}
         alt={`Capture du véhicule #${globalId}`}
         width={40}
         height={40}

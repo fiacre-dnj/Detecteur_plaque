@@ -8,7 +8,7 @@
  * liste est ce qu'on va chercher. Une cloche coûte quarante pixels et dit la même
  * chose de l'essentiel : combien, et est-ce grave.
  *
- * Deux éléments, et **aucun mot** :
+ * Deux éléments :
  *
  * - **l'icône bascule** à `BellRing` dès qu'il y a quelque chose, `Bell` sinon. Une
  *   cloche muette et une cloche qui sonne se distinguent d'un coup d'œil, là où
@@ -16,6 +16,15 @@
  * - **la pastille porte le compte et la gravité.** Rouge dès qu'une alerte
  *   `critical` existe, orange si toutes sont `warning`. C'est la règle de tout ce
  *   module : la couleur encode la gravité, jamais la famille.
+ *
+ * **Le mot « Alertes » l'accompagne désormais**, et cette docstring a longtemps dit
+ * le contraire. L'icône seule se justifiait quand elle était la seule de la rangée :
+ * un mot de plus à côté de quatre pilules purement textuelles aurait fait de la barre
+ * une cinquième colonne de texte. Depuis que **toutes** les pilules portent une
+ * icône, c'est l'inverse — six glyphes se balaient du regard, un glyphe muet au
+ * milieu de cinq mots est l'exception qu'il faut décoder. Le libellé est masqué par
+ * CSS sous 2xl, jamais retiré : `SettingsPanels` pose le nom accessible dans tous les
+ * cas, il ne peut pas dépendre d'une largeur de fenêtre.
  *
  * **Elle n'est pas une région vivante.** L'annonce `aria-live` est portée par le
  * compteur du tiroir, une seule fois : deux régions vivantes pour le même nombre

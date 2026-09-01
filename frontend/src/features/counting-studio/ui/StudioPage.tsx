@@ -13,10 +13,12 @@
  * regarde pendant et après. Puis, le bas de page s'étant allongé, **tout ce qui
  * reste utile en défilant a été rassemblé à deux endroits** :
  *
- * - la **barre**, désormais collée sous l'entête de l'application, porte l'import,
- *   les quatre tiroirs — Détection, Comptage, Affichage & analyse, **Géométrie** —
- *   et, à son extrémité, les trois chiffres de machine (`TechnicalMetrics`). La
- *   géométrie y remplace un panneau permanent de la colonne de droite : elle se
+ * - la **barre**, désormais collée en haut de la fenêtre — la navigation d'application
+ *   ayant quitté cette place pour un rail vertical —, porte l'import, **les commandes
+ *   de l'analyse**, les tiroirs groupés par famille — Détection, Comptage, Affichage,
+ *   puis **Géométrie**, Recherche et Alertes — et, à son extrémité, les cinq chiffres
+ *   de machine (`TechnicalMetrics`), qui se replient eux-mêmes en tiroir sous 1280 px.
+ *   La géométrie y remplace un panneau permanent de la colonne de droite : elle se
  *   règle comme les autres, une fois, avant de lancer ;
  * - le **lecteur** porte les deux rails — position, intervalle d'analyse, de même
  *   longueur —, la vitesse de lecture, puis « Lancer l'analyse » et « Fermer ». On choisit sa
@@ -79,9 +81,12 @@ import {
   useAlertLog,
 } from "@/features/alerts";
 import {
+  AnalysisControls,
+  AnalysisProgress,
   CrossingTimeline,
   JobProgressBar,
   LaunchDialog,
+  analysisProgress,
   inputVideoUrl,
   useSyncedPreview,
 } from "@/features/analysis-job";
@@ -135,6 +140,8 @@ import { lineRules } from "@/shared/lib/lineRules";
 import { hasAnyRule } from "@/shared/lib/lineViolations";
 import { violationCounts } from "@/shared/lib/violationTally";
 import { formatSceneTimePrecise } from "@/shared/lib/sceneTime";
+import { useMediaQuery } from "@/shared/lib/useMediaQuery";
+import { Activity, ScanSearch, Waypoints } from "lucide-react";
 import { Button } from "@/shared/ui/Button";
 import { SnapshotDialog } from "@/shared/ui/SnapshotDialog";
 
@@ -227,6 +234,42 @@ const ALERTS_PANEL_ID = "alertes";
  * diverger, et la panne serait muette — une pilule qui n'ouvre plus rien.
  */
 const SEARCH_PANEL_ID = "recherche";
+
+/**
+ * Le tiroir de repli des chiffres techniques, sous 1280 px de large.
+ *
+ * Ils vivent à l'extrémité de la barre (`trailing`), et c'est leur place : on les
+ * surveille du coin de l'œil pendant que ça tourne. Mais la rangée doit tenir sur
+ * **une** ligne, et sous cette largeur elle ne le peut plus. Un `flex-wrap` les
+ * laissait alors décrocher en rangée orpheline sous les boutons.
+ *
+ * Un tiroir plutôt qu'un calque flottant écrit pour l'occasion : celui de
+ * `SettingsPanels` porte déjà l'exclusivité, le clic en dehors, `Échap` et les
+ * attributs `aria-expanded` / `aria-controls`.
+ */
+const METRICS_PANEL_ID = "etat";
+
+/**
+ * Au-dessus, les chiffres sont dans la barre ; en dessous, dans leur tiroir.
+ *
+ * **1280 px est mesuré, pas choisi.** Toutes les pilules étant passées en icône seule,
+ * la rangée au repos pèse **1072 px** — import 219, commande 48, réglages 169, outils
+ * 113, chiffres 491, plus les gouttières. Il lui faut donc 1176 px de fenêtre une fois
+ * retirés le rail et les deux marges, et 1226 quand un libellé se déplie au survol.
+ * Mesuré en page : la rangée tient sur une ligne à 1300 px et casse à 1200. 1280 laisse
+ * 54 px de marge sur le pire cas du survol.
+ *
+ * **Pendant une analyse, l'anneau et son détail ne rentrent qu'à partir de ~1500 px**,
+ * et c'est assumé : entre 1280 et 1500, le détail se **tronque** au lieu de faire
+ * passer la rangée sur deux lignes. Déplacer les chiffres dans le tiroir à ce
+ * moment-là aurait été pire — la barre changerait de forme au lancement, c'est-à-dire
+ * à l'endroit exact où l'on regarde.
+ *
+ * Un seul des deux montages existe à la fois — jamais les deux, qui donneraient deux
+ * `<dl>` des mêmes chiffres dans le même document, donc deux annonces au lecteur
+ * d'écran.
+ */
+const METRICS_INLINE_QUERY = "(width >= 1280px)";
 
 export function StudioPage() {
   const { data: health } = useHealth();
@@ -710,6 +753,7 @@ export function StudioPage() {
    * *et* la barre.
    */
   const [openPanel, setOpenPanel] = useState<string | null>(null);
+  const metricsInline = useMediaQuery(METRICS_INLINE_QUERY);
   const isCamera = media.source?.kind === "camera";
   const analysing = session.job !== null && !isTerminal(session.job.status);
   const busy = analysing || session.starting || live.active;
@@ -745,6 +789,16 @@ export function StudioPage() {
       settings.modelId,
     [catalogue?.models, settings.modelId],
   );
+
+  /**
+   * Où en est l'analyse — **calculé une fois** et lu par les trois surfaces.
+   *
+   * Les commandes de la barre, l'anneau de progression et le bloc sous la vidéo
+   * décrivent le même job. Les laisser décider séparément de ce qu'est « en cours »
+   * les ferait diverger sur un état de passage — proposer « Suspendre » sur une
+   * analyse déjà terminée, ou afficher deux pourcentages du même job.
+   */
+  const progress = analysisProgress(session.upload, session.job, selectedModelLabel);
 
   /**
    * Les règles du tracé — sens interdits et voies réservées — lues sur la géométrie
@@ -1174,11 +1228,42 @@ export function StudioPage() {
           connaître celle de la source, c'est le studio qui les met côte à côte. */}
       <SettingsPanels
         leading={
-          <SourcePicker
-            activeLabel={media.source?.label ?? null}
-            disabled={busy}
-            onFile={handleFile}
-          />
+          <>
+            <SourcePicker
+              activeLabel={media.source?.label ?? null}
+              disabled={busy}
+              onFile={handleFile}
+            />
+            {/* **Les commandes de l'analyse, à côté de la source.** Elles vivaient dans
+                le lecteur pour le lancement et sous la vidéo pour la pause et
+                l'annulation : trois zones qu'on ne voit pas d'un même coup d'œil pour
+                piloter une seule chose. En caméra, il n'y a pas de job à lancer — le
+                direct a ses propres commandes dans `RealtimePanel`. */}
+            {!isCamera && (
+              <AnalysisControls
+                progress={progress}
+                onLaunch={openLaunch}
+                canLaunch={canAnalyse}
+                launchHint={analyseTooltip(
+                  serverReady,
+                  media.source?.file !== undefined,
+                  geometry,
+                  busy,
+                )}
+                onPause={session.pause}
+                onResume={session.resume}
+                onCancel={session.cancel}
+              />
+            )}
+            {/* **La progression suit ses commandes**, et non les chiffres. Elle a
+                d'abord été posée à l'autre bout de la barre, avec la métrologie : deux
+                blocs qui parlent pourtant de choses différentes — celui-ci dit *où en
+                est le job*, les autres *comment il se comporte*. Surtout, l'anneau
+                répond au bouton qu'on vient de cliquer, et les séparer obligeait à
+                traverser toute la barre du regard pour vérifier qu'un lancement avait
+                pris. */}
+            {!isCamera && <AnalysisProgress progress={progress} />}
+          </>
         }
         // Tout à droite de la barre (`ms-auto` dans `SettingsPanels`) : les quatre
         // chiffres **d'instant**, objets suivis compris. Ils tenaient quatre des six
@@ -1186,11 +1271,20 @@ export function StudioPage() {
         // bilan du comptage — les deux tiers du meilleur emplacement de l'écran pour
         // de la métrologie qu'on surveille du coin de l'œil. Le nom du fichier, qui
         // occupait cette place, est passé sur la vidéo qu'il nomme.
+        //
+        // Sous 1280 px (`METRICS_INLINE_QUERY`), ils passent dans un tiroir
+        // (`METRICS_PANEL_ID`) : la rangée n'a plus la largeur de les porter, et les
+        // laisser décrocher en seconde ligne reprenait la hauteur que le rail de
+        // navigation venait de rendre.
+        //
+        // **Montés dès qu'une vidéo est chargée**, tirets compris : la barre ne change
+        // plus de forme au moment où l'on lance, c'est-à-dire à l'endroit exact où
+        // l'on regarde. La progression, elle, est à gauche avec ses commandes.
         trailing={
-          resultStats !== null ? (
+          media.source !== null && metricsInline ? (
             <TechnicalMetrics
-              processingFps={resultStats.processingFps}
-              stats={resultStats.stats}
+              processingFps={resultStats?.processingFps ?? null}
+              stats={resultStats?.stats ?? null}
               displayLagMs={displayLagMs}
             />
           ) : null
@@ -1240,6 +1334,10 @@ export function StudioPage() {
           {
             id: GEOMETRY_PANEL_ID,
             label: "Géométrie",
+            // Des points reliés : des lignes et des zones **tracées**. `Spline` dessine
+            // une courbe à poignées, alors qu'on ne trace ici que des segments et des
+            // polygones.
+            icon: <Waypoints aria-hidden="true" className="size-4 shrink-0" />,
             content: (
               <GeometryPanel
                 lines={geometry.lines}
@@ -1284,6 +1382,9 @@ export function StudioPage() {
                 {
                   id: SEARCH_PANEL_ID,
                   label: "Recherche",
+                  // Chercher **dans une image** — ce qu'est la recherche par image
+                  // (ADR 0048), là où `Search` annonce une recherche textuelle.
+                  icon: <ScanSearch aria-hidden="true" className="size-4 shrink-0" />,
                   content: (
                     <VehicleSearchPanel
                       query={query}
@@ -1328,6 +1429,35 @@ export function StudioPage() {
                           ? seekToAlert
                           : undefined
                       }
+                    />
+                  ),
+                },
+              ]
+            : []),
+          // **Les chiffres d'instant, quand la barre est trop étroite pour eux.**
+          // Exactement la même condition que `trailing`, à l'inverse : un seul des
+          // deux montages existe, sinon le document porterait deux `<dl>` des mêmes
+          // chiffres — et un lecteur d'écran les annoncerait deux fois.
+          //
+          // **L'anneau de progression n'y est pas** : il vit à gauche avec ses
+          // commandes, qui ne se replient jamais, elles. L'y remettre donnerait deux
+          // `role="progressbar"` pour le même job.
+          //
+          // En dernier de la rangée parce que c'est un état qu'on consulte, pas un
+          // réglage qu'on pose : il suit les outils de scène plutôt que de s'insérer
+          // entre eux.
+          ...(media.source !== null && !metricsInline
+            ? [
+                {
+                  id: METRICS_PANEL_ID,
+                  label: "État",
+                  icon: <Activity aria-hidden="true" className="size-4 shrink-0" />,
+                  content: (
+                    <TechnicalMetrics
+                      processingFps={resultStats?.processingFps ?? null}
+                      stats={resultStats?.stats ?? null}
+                      displayLagMs={displayLagMs}
+                      layout="grid"
                     />
                   ),
                 },
@@ -1392,7 +1522,7 @@ export function StudioPage() {
                 scène, son bloc conteneur.
 
                 Ce que l'attribut dit : la surface de tracé **pilote** le tiroir de
-                réglages (un clic de ligne ouvre « Géométrie »), donc elle n'est pas
+                réglages (un double-clic de ligne ouvre « Géométrie »), donc elle n'est pas
                 un « en dehors » qui le referme. Sans lui, ouverture et fermeture
                 tomberaient dans le même événement — le gestionnaire de document de
                 `SettingsPanels` s'exécute après celui de React, donc la fermeture
@@ -1429,24 +1559,32 @@ export function StudioPage() {
                 // Les pointillés « pas encore confirmée » suivent le réglage réel,
                 // donc ce que le canvas montre correspond à ce que l'analyse fera.
                 minHits={settings.minHits}
-                // Sélectionner une forme sur la scène **déplie « Géométrie »** :
-                // cliquer un trait est déjà le début du réglage, et l'utilisateur
-                // cliquait puis cherchait dans la barre où le renommer, lui donner
-                // ses rôles de sens ou sa longueur réelle.
-                //
-                // Deux bornes. Rien pendant une analyse ou un direct (`busy`) : le
-                // panneau est alors grisé, et ouvrir un formulaire intouchable
-                // par-dessus la vidéo qu'on regarde tourner serait du bruit. Et rien
-                // sur un clic dans le vide (`null`), qui **désélectionne** — la
-                // conclusion d'un réglage, pas son début. Ce que le clic ne fait pas
-                // non plus : refermer le tiroir, laissé à `Échap`, au re-clic sur la
-                // pilule et au clic hors de la scène.
+                // Un clic **sélectionne et rien de plus** : c'est le geste qui
+                // amorce le glisser, et déplier « Géométrie » par-dessus la vidéo
+                // qu'on est en train de tracer était du bruit sur le geste le plus
+                // fréquent de cet écran.
                 onSelect={(selection) => {
                   dispatch({
                     type: "select",
                     selection: (selection ?? { kind: "none" }) as Selection,
                   });
-                  if (selection !== null && !busy) setOpenPanel(GEOMETRY_PANEL_ID);
+                }}
+                // **Le double-clic déplie « Géométrie »** : ouvrir le réglage d'une
+                // forme est un geste distinct de sa manipulation, et l'utilisateur
+                // cliquait auparavant puis cherchait dans la barre où la renommer ou
+                // lui donner ses rôles de sens.
+                //
+                // Deux bornes. Rien pendant une analyse ou un direct (`busy`) : le
+                // panneau est alors grisé, et ouvrir un formulaire intouchable
+                // par-dessus la vidéo qu'on regarde tourner serait du bruit. Et rien
+                // dans le vide, où le canvas n'appelle pas ce rappel du tout — un
+                // double-clic sur le fond **désélectionne**, c'est la conclusion d'un
+                // réglage et pas son début. Ce que le geste ne fait pas non plus :
+                // refermer le tiroir, laissé à `Échap`, au re-clic sur la pilule et
+                // au clic hors de la scène.
+                onActivate={(selection) => {
+                  dispatch({ type: "select", selection: selection as Selection });
+                  if (!busy) setOpenPanel(GEOMETRY_PANEL_ID);
                 }}
                 onMoveLine={(id, a, b) => dispatch({ type: "moveLine", id, a, b })}
                 onMoveZone={(id, points) => dispatch({ type: "moveZone", id, points })}
@@ -1532,26 +1670,14 @@ export function StudioPage() {
               // au même endroit. L'intervalle retenu se lit deux rangées au-dessus,
               // ce qui remplace le rappel « Portion retenue » écrit sous l'ancien
               // bouton.
+              // « Lancer l'analyse » a quitté cette place pour la barre, où sont
+              // désormais **toutes** les commandes du job — lancer, suspendre,
+              // reprendre, annuler. Le lecteur ne garde que ce qui concerne la source
+              // elle-même.
               actions={
-                <>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    disabled={!canAnalyse}
-                    onClick={openLaunch}
-                    title={analyseTooltip(
-                      serverReady,
-                      media.source?.file !== undefined,
-                      geometry,
-                      busy,
-                    )}
-                  >
-                    Lancer l'analyse
-                  </Button>
-                  <Button variant="ghost" size="sm" onClick={handleClose} disabled={busy}>
-                    Fermer
-                  </Button>
-                </>
+                <Button variant="ghost" size="sm" onClick={handleClose} disabled={busy}>
+                  Fermer
+                </Button>
               }
             />
           )}
@@ -1559,23 +1685,27 @@ export function StudioPage() {
           {/* Le gel expliqué, à l'endroit exact où il se constate. Sans cette
               phrase, « la vidéo ne bouge plus et les boutons sont gris » se lit
               comme un plantage — c'est la lecture qui a produit le rapport
-              « j'augmente la vitesse avant d'analyser et l'écran se fige ». */}
+              « j'augmente la vitesse avant d'analyser et l'écran se fige ».
+
+              **Elle commence par la phase**, et ce n'est pas cosmétique : depuis que
+              la progression tient dans un anneau de 22 px en haut de l'écran, cette
+              phrase est le texte le plus visible sous la vidéo. Écrite « Lecture
+              suspendue : … », elle devenait le seul commentaire d'un écran figé et se
+              lisait comme l'échec du lancement — rapporté tel quel, « je n'arrive pas
+              à lancer », sur une analyse qui tournait à 20 img/s. Le même texte
+              introduit par « Analyse en cours » confirme au lieu d'alarmer. */}
           {analysing && media.source?.file !== undefined && (
             <p role="status" className="text-caption text-ink-muted">
-              Lecture suspendue : la vidéo se cale sur l'image analysée.
+              {progress.label} — la lecture se cale sur l'image analysée.
             </p>
           )}
 
-          {(busy || failed) && (
-            <JobProgressBar
-              upload={session.upload}
-              job={session.job}
-              modelLabel={selectedModelLabel}
-              onCancel={session.cancel}
-              onPause={session.pause}
-              onResume={session.resume}
-            />
-          )}
+          {/* **Ce que la barre ne peut pas porter**, et rien d'autre : l'envoi du
+              fichier avec ses octets, la préparation avec le nom du modèle qui se
+              charge, l'erreur, et la phrase qui explique ce qu'une pause coûte. Le
+              pourcentage, le compteur d'images et les trois boutons sont dans la
+              barre — ils y sont visibles pendant qu'on lit le bas de page. */}
+          {(busy || failed) && <JobProgressBar progress={progress} job={session.job} />}
 
           {/* Le désaccord de dimensions : dit, jamais tu. Sans ce message, l'écran
               montrerait une analyse qui progresse et un canvas vide, ce qui se lit

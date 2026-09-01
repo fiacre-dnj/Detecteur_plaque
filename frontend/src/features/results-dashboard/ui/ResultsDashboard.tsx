@@ -173,7 +173,7 @@ export function ResultsDashboard({
             tiret. */}
         <MetricCard
           size="lg"
-          label="Passages globaux"
+          label="Nombre de véhicule"
           value={lines.length === 0 ? "—" : crossed.length.toString()}
           // **L'unité en toutes lettres, parce que le mot « Passages » ment ici.**
           // Le chiffre compte des véhicules : c'est la demande à laquelle ADR 0045
@@ -185,7 +185,7 @@ export function ResultsDashboard({
           hint={
             lines.length === 0
               ? "Ajoutez une ligne dans Géométrie pour obtenir ce chiffre"
-              : "Véhicules distincts ayant franchi au moins une ligne — un aller-retour compte 1. Une rangée du registre."
+              : "Véhicules distincts ayant franchi au moins une ligne"
           }
         />
       </div>

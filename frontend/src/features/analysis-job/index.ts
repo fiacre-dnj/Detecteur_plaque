@@ -45,6 +45,13 @@ export {
   useSyncedPreview,
   type SyncedPreview,
 } from "./model/useFollowAnalysis";
+export {
+  analysisProgress,
+  type AnalysisPhase,
+  type AnalysisProgress as AnalysisProgressState,
+} from "./model/analysisProgress";
 export { CrossingTimeline } from "./ui/CrossingTimeline";
+export { AnalysisControls } from "./ui/AnalysisControls";
+export { AnalysisProgress } from "./ui/AnalysisProgress";
 export { JobProgressBar } from "./ui/JobProgressBar";
 export { LaunchDialog } from "./ui/LaunchDialog";
