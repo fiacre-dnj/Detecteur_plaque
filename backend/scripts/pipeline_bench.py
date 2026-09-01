@@ -1149,6 +1149,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--batch", type=int, default=None, help="Images par inférence.")
     parser.add_argument(
+        "--prefetch",
+        type=int,
+        default=None,
+        help=(
+            "Lots d'inférence calculés d'avance dans un fil séparé. 0 rend le chemin "
+            "séquentiel. Par défaut : le réglage TRAFFIC_INFERENCE_PREFETCH_BATCHES."
+        ),
+    )
+    parser.add_argument(
         "--plate-net-size",
         type=int,
         default=None,
@@ -1273,6 +1282,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     gmc = args.gmc if args.gmc is not None else settings.tracker_gmc
     imgsz = args.imgsz if args.imgsz is not None else settings.inference_imgsz
     batch = args.batch if args.batch is not None else settings.inference_batch
+    prefetch = args.prefetch if args.prefetch is not None else settings.inference_prefetch_batches
     # Le service pose aussi l'autotune cuDNN dans son `lifespan`, avant toute
     # inférence : sans lui, le banc mesurerait des algorithmes de convolution que le
     # service n'utilise pas. Il suit donc le **réglage**, et les deux drapeaux servent à
@@ -1280,7 +1290,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     cudnn = args.cudnn if args.cudnn is not None else settings.inference_cudnn_autotune
     if cudnn:
         registry.enable_cudnn_autotune()
-    engine = UltralyticsEngine(registry, gmc_method=gmc, imgsz=imgsz, batch=batch)
+    engine = UltralyticsEngine(
+        registry, gmc_method=gmc, imgsz=imgsz, batch=batch, prefetch_batches=prefetch
+    )
     model_id = args.model or settings.default_model_id
 
     # `--ocr` implique `--anpr`, comme dans le service : lire sans détecter n'a pas
@@ -1322,6 +1334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "settings": {
                 "imgsz": imgsz,
                 "batch": batch,
+                "prefetch": prefetch,
                 "stride": args.stride,
                 "frames": args.frames,
                 "warmup": args.warmup,

@@ -127,6 +127,47 @@ class Settings(BaseSettings):
     #: L'échec est franc — une erreur CUDA de mémoire, pas une dégradation
     #: silencieuse — mais il fait échouer le job.
     inference_batch: int = Field(4, ge=1, le=32)
+    #: Lots d'inférence calculés **d'avance**, dans un fil séparé. `0` désactive et
+    #: rend le chemin séquentiel d'avant, à l'identique.
+    #:
+    #: Le jumeau de `DECODE_BUDGET_BYTES` un étage plus haut. Celui-là décharge le
+    #: décodage du chemin critique ; celui-ci décharge **l'aval du moteur** — la
+    #: détection de plaques, l'OCR, les captures, l'apparence. Le générateur du
+    #: moteur étant paresseux, `model.track()` n'avait lieu qu'une fois le service
+    #: sorti de l'image précédente : le GPU attendait le CPU, puis le CPU attendait
+    #: le GPU.
+    #:
+    #: **Le gain est petit, et la mesure dit pourquoi.** Courses alternées sur carte
+    #: chaude, 1080p, ANPR et OCR actives, 250 images :
+    #:
+    #: | fenêtre | `0` | `1` | rapport |
+    #: |---|---|---|---|
+    #: | OCR active (2 plaques publiées) | 23,2 img/s | 25,5 img/s | **1,10×** |
+    #: | plaques localisées, jamais lues | 29,3 img/s | 30,9 img/s | 1,05× |
+    #: | plaques sous le plancher, OCR muette | 42,2 img/s | 41,4 img/s | 1,00× |
+    #:
+    #: C'est **à la limite du bruit de 11 %** de cette machine ; ce qui rend le
+    #: résultat crédible n'est pas le rapport mais le **signe** : `1` gagne les cinq
+    #: paires alternées, et les comptages, franchissements et plaques publiées sont
+    #: identiques dans chacune.
+    #:
+    #: **Et ce n'était pas l'hypothèse de départ**, qui annonçait le double. Elle
+    #: supposait un aval fait de travail CPU à cacher derrière le GPU du moteur. Le
+    #: profil dit l'inverse : l'aval est **lui aussi** du GPU — détection de plaques
+    #: 22,0 ms par image dont 17,9 de passe avant — et deux flux CUDA sur une même
+    #: carte se sérialisent quoi qu'on fasse. Seules les moitiés CPU se recouvrent :
+    #: l'OCR (6,4 ms, onnxruntime), les recadrages, le domaine. D'où la troisième
+    #: ligne du tableau, où l'OCR ne se déclenche jamais et où il n'y a donc
+    #: rigoureusement rien à cacher.
+    #:
+    #: **Aucun chiffre ne change**, quelle que soit la valeur : ni l'ordre des appels
+    #: au modèle, ni l'état du tracker, ni l'ordre des images rendues. C'est ce qui
+    #: rend `0` utilisable comme témoin plutôt que comme repli de secours.
+    #:
+    #: `1` suffit — c'est le lot d'avance qui recouvre, pas la profondeur de la file.
+    #: Au-delà, on retient des images décodées **et** leurs résultats de suivi en
+    #: mémoire sans rien gagner.
+    inference_prefetch_batches: int = Field(1, ge=0, le=4)
     #: Budget de threads d'inférence **CPU**. `0` laisse chaque bibliothèque décider,
     #: c'est-à-dire prendre tous les cœurs.
     #:

@@ -75,6 +75,13 @@ DECODE_PUT_TIMEOUT_S = 0.05
 #: qu'un jour quelqu'un mettra légitimement dans la file.
 _DECODE_DONE = object()
 
+#: Lots d'inférence d'avance, par défaut.
+#:
+#: `1` suffit : c'est le lot d'avance qui recouvre le moteur avec l'aval, pas la
+#: profondeur de la file. Au-delà, on ne gagne plus rien et l'on retient des images
+#: décodées **et** leurs résultats de suivi en mémoire.
+DEFAULT_INFERENCE_PREFETCH = 1
+
 type _DecodedFrame = tuple[int, npt.NDArray[np.uint8]]
 type _DecodedBatch = list[_DecodedFrame]
 
@@ -322,7 +329,7 @@ def _first_analysed_index(start_ms: float, fps: float, stride: int) -> int:
 class UltralyticsEngine:
     """Détection et suivi par Ultralytics, derrière le port du domaine."""
 
-    __slots__ = ("_batch", "_gmc", "_imgsz", "_registry")
+    __slots__ = ("_batch", "_gmc", "_imgsz", "_prefetch", "_registry")
 
     def __init__(
         self,
@@ -331,8 +338,9 @@ class UltralyticsEngine:
         gmc_method: str | None = None,
         imgsz: int = DEFAULT_IMGSZ,
         batch: int = 1,
+        prefetch_batches: int = DEFAULT_INFERENCE_PREFETCH,
     ) -> None:
-        """Les trois réglages de **déploiement** du moteur.
+        """Les réglages de **déploiement** du moteur.
 
         Ils vivent ici et non dans `EngineSpec`, qui porte la **requête** : la
         taille d'entrée, le lot et la compensation de mouvement arbitrent du débit
@@ -349,6 +357,7 @@ class UltralyticsEngine:
         self._registry = registry
         self._imgsz = imgsz
         self._batch = max(1, batch)
+        self._prefetch = max(0, prefetch_batches)
         # Le mouvement seul est un réglage de déploiement ; le fichier de suivi, lui,
         # ne peut plus être résolu ici : il porte désormais le seuil de confiance de
         # **la requête** (voir `detector_floor`). Il est donc résolu par course.
@@ -365,6 +374,7 @@ class UltralyticsEngine:
             detector_floor_base=_base_tracker()["track_low_thresh"],
             imgsz=self._imgsz,
             batch=self._batch,
+            prefetch_batches=self._prefetch,
         )
 
     def _tracker_for(self, spec: EngineSpec, model: Any) -> Path:  # noqa: ANN401
@@ -444,6 +454,21 @@ class UltralyticsEngine:
         d'avance suffisent à le faire disparaître du chemin critique. Le plafond
         devient `max(décodage, GPU)` au lieu de leur somme.
 
+        **Un second fil, un étage plus haut, depuis qu'il est mesuré.** Le décodage
+        n'était pas le seul travail sérialisé avec le GPU : ce générateur est
+        paresseux, donc le `track()` du modèle n'était appelé qu'une fois le *service*
+        sorti de l'image précédente — détection de plaques, OCR, captures,
+        apparence. `prefetch` fait avancer le suivi d'un lot pendant que l'aval
+        travaille.
+
+        **Le gain est petit et il fallait le mesurer pour le savoir** : 1,10× quand
+        l'OCR tourne, 1,05× quand elle ne publie rien, **1,00× quand elle ne se
+        déclenche jamais**. L'aval n'est pas du travail CPU à cacher derrière le
+        GPU — il est *lui aussi* du GPU (détection de plaques : 22,0 ms par image
+        dont 17,9 de passe avant), et deux flux CUDA sur une même carte se
+        sérialisent. Seules les moitiés CPU se recouvrent. Voir
+        `Settings.inference_prefetch_batches` pour le tableau complet.
+
         Ce que le fil ne change pas, et qu'il ne faut pas casser : `frame_index` est
         l'index **dans le fichier**, donc `timestamp_ms` reste du temps de scène
         absolu. Une fenêtre ne décale aucun horodatage.
@@ -481,45 +506,92 @@ class UltralyticsEngine:
                 batch=self._batch,
                 frame_bytes=max(1, info.width * info.height * 3),
             )
-            for chunk in batches:
-                results = model.track(
-                    source=[image for _, image in chunk],
-                    tracker=str(tracker_config),
-                    # **Le plancher du détecteur, pas le seuil de l'utilisateur.** Ce
-                    # dernier est passé au tracker comme `track_high_thresh` /
-                    # `new_track_thresh` : la création de pistes reste à son niveau,
-                    # mais les détections faibles atteignent enfin la seconde
-                    # association, qui prolonge une piste dont la confiance plonge.
-                    # Voir `detector_floor` pour la panne que cela corrige.
-                    conf=detector_floor(spec.confidence),
-                    iou=spec.iou,
-                    classes=list(spec.class_ids),
-                    # **NMS inter-classes**, et c'est le piège 5 de prompt/13. Le NMS
-                    # par défaut d'Ultralytics est *class-aware* : il ne compare que
-                    # des boîtes de même classe. Une camionnette scorée `car 0.52`
-                    # **et** `truck 0.41` survit donc en double, devient deux pistes,
-                    # deux identités, et compte deux fois. Nos quatre classes sont
-                    # mutuellement exclusives sur un objet physique, donc la
-                    # suppression doit ignorer la classe.
-                    agnostic_nms=True,
-                    device=self._registry.device(),
-                    half=self._registry.half(),
-                    imgsz=self._imgsz,
-                    persist=True,
-                    verbose=False,
+            # `yield from` et non une boucle `for` : c'est lui qui **ferme** le flux
+            # de préchargement quand l'appelant referme celui-ci — une annulation,
+            # une borne de fin de fenêtre. Une boucle laisserait le fil d'inférence
+            # au ramasse-miettes, donc vivant sur le modèle après la sortie du
+            # `with` qui rend le bail (invariant 9).
+            yield from prefetch(
+                self._tracked_batches(model, batches, spec, tracker_config, info.fps),
+                depth=self._prefetch,
+                name="traffic-inference",
+            )
+
+    def _tracked_batches(
+        self,
+        model: Any,  # noqa: ANN401 — YOLO n'est pas typé
+        batches: Iterator[_DecodedBatch],
+        spec: EngineSpec,
+        tracker_config: Path,
+        fps: float,
+    ) -> Iterator[EngineFrame]:
+        """Suit lot par lot. **Extrait de `iter_video` pour être recouvrable.**
+
+        Tant que ce code vivait dans le corps du générateur public, il était
+        indissociable du `yield` que le consommateur pilote : chaque `track()` du modèle
+        n'avait lieu qu'une fois l'aval du service terminé sur l'image précédente.
+        Isolé, il devient un flux que `prefetch` peut faire avancer d'un lot pendant
+        que le service travaille — sans qu'un seul appel change d'ordre ni
+        d'argument.
+
+        `batches` est fermée explicitement : elle tient le fil de décodage, et la
+        fermeture en cascade d'une boucle `for` passe par le ramasse-miettes.
+        """
+        try:
+            yield from self._track_batches(model, batches, spec, tracker_config, fps)
+        finally:
+            close = getattr(batches, "close", None)
+            if close is not None:
+                close()
+
+    def _track_batches(
+        self,
+        model: Any,  # noqa: ANN401 — YOLO n'est pas typé
+        batches: Iterator[_DecodedBatch],
+        spec: EngineSpec,
+        tracker_config: Path,
+        fps: float,
+    ) -> Iterator[EngineFrame]:
+        """Le suivi proprement dit, sans la fermeture du décodage."""
+        for chunk in batches:
+            results = model.track(
+                source=[image for _, image in chunk],
+                tracker=str(tracker_config),
+                # **Le plancher du détecteur, pas le seuil de l'utilisateur.** Ce
+                # dernier est passé au tracker comme `track_high_thresh` /
+                # `new_track_thresh` : la création de pistes reste à son niveau,
+                # mais les détections faibles atteignent enfin la seconde
+                # association, qui prolonge une piste dont la confiance plonge.
+                # Voir `detector_floor` pour la panne que cela corrige.
+                conf=detector_floor(spec.confidence),
+                iou=spec.iou,
+                classes=list(spec.class_ids),
+                # **NMS inter-classes**, et c'est le piège 5 de prompt/13. Le NMS
+                # par défaut d'Ultralytics est *class-aware* : il ne compare que
+                # des boîtes de même classe. Une camionnette scorée `car 0.52`
+                # **et** `truck 0.41` survit donc en double, devient deux pistes,
+                # deux identités, et compte deux fois. Nos quatre classes sont
+                # mutuellement exclusives sur un objet physique, donc la
+                # suppression doit ignorer la classe.
+                agnostic_nms=True,
+                device=self._registry.device(),
+                half=self._registry.half(),
+                imgsz=self._imgsz,
+                persist=True,
+                verbose=False,
+            )
+            # `strict=True` : Ultralytics promet un résultat par image d'entrée,
+            # dans l'ordre. S'il en rendait un de moins, tout le reste du lot
+            # serait décalé d'un cran — donc des boîtes rattachées à la mauvaise
+            # image, avec des horodatages plausibles et faux.
+            for (index, image), result in zip(chunk, results, strict=True):
+                yield EngineFrame(
+                    frame_index=index,
+                    # Temps de scène, vrai par construction.
+                    timestamp_ms=index / fps * 1000.0,
+                    image=image,
+                    tracks=_to_observations(result),
                 )
-                # `strict=True` : Ultralytics promet un résultat par image d'entrée,
-                # dans l'ordre. S'il en rendait un de moins, tout le reste du lot
-                # serait décalé d'un cran — donc des boîtes rattachées à la mauvaise
-                # image, avec des horodatages plausibles et faux.
-                for (index, image), result in zip(chunk, results, strict=True):
-                    yield EngineFrame(
-                        frame_index=index,
-                        # Temps de scène, vrai par construction.
-                        timestamp_ms=index / info.fps * 1000.0,
-                        image=image,
-                        tracks=_to_observations(result),
-                    )
 
     def open_stream(self, spec: EngineSpec) -> UltralyticsStream:
         """Ouvre un flux persistant pour le temps réel.
@@ -689,6 +761,98 @@ def decode_ahead(
             except queue.Empty:
                 break
         thread.join(timeout=1.0)
+
+
+def prefetch[T](source: Iterator[T], *, depth: int, name: str) -> Iterator[T]:
+    """Fait tourner `source` dans un fil et rend `depth` éléments d'avance.
+
+    **Le jumeau de `decode_ahead`, un étage plus haut.** Celui-là décharge le
+    décodage du chemin critique ; celui-ci décharge le *consommateur*. Le générateur
+    de `iter_video` est paresseux : tant que personne ne réclamait l'image suivante,
+    le `track()` du modèle n'était appelé qu'*après* que l'aval en ait fini avec la
+    précédente — plaques, OCR, captures, apparence. Moteur et aval se relayaient donc,
+    chacun laissant l'autre attendre.
+
+    **Ce que le recouvrement rend, mesuré, est bien plus modeste que ce qu'on en
+    attendait** : 1,10× quand l'OCR tourne, 1,05× quand elle ne publie rien, **1,00×
+    quand elle ne se déclenche jamais**. L'hypothèse — un aval de travail CPU à
+    cacher derrière le GPU du moteur — est fausse : l'aval est *lui aussi* du GPU
+    (détection de plaques 22,0 ms par image, dont 17,9 de passe avant), et deux flux
+    CUDA sur une même carte se sérialisent quoi qu'on fasse. Seules les moitiés CPU
+    se recouvrent — l'OCR d'onnxruntime, les recadrages, le domaine —, d'où un gain
+    qui suit exactement la quantité d'OCR de la scène. Le tableau complet est dans
+    `Settings.inference_prefetch_batches` ; à ne pas relire comme une accélération
+    générale, ce qu'il n'est pas.
+
+    **Aucun chiffre ne change.** L'ordre des appels au modèle, l'état du tracker et
+    l'ordre des images rendues sont exactement ceux d'avant ; seul l'*instant* où le
+    travail a lieu change. C'est la propriété qui rend ce changement livrable, et
+    `depth=0` rend le chemin séquentiel à l'identique pour le prouver.
+
+    Trois propriétés à ne pas casser, les mêmes que pour `decode_ahead` — plus une
+    qui lui est propre :
+
+    - **le fil meurt avec le générateur**, et `source` est fermée explicitement :
+      c'est elle qui tient le fil de décodage, qui resterait sinon vivant sur un
+      fichier ouvert jusqu'au ramasse-miettes ;
+    - **le producteur ne bloque jamais indéfiniment** sur une file pleine ;
+    - **une exception traverse**, relevée dans le fil appelant ;
+    - **le `join` n'est PAS borné.** L'appelant est `iter_video`, sous un bail de
+      modèle : rendre la main pendant qu'un `track()` tourne encore relâcherait le
+      bail sous une inférence en vol, et deux jobs partageraient une instance —
+      invariant 9, c'est-à-dire des chiffres plausibles et faux. Le producteur ne
+      peut pas se bloquer durablement (il n'attend que `source`, elle-même bornée,
+      ou un dépôt qu'il réessaie), donc l'attente est toujours celle d'un lot.
+    """
+    if depth <= 0:
+        yield from source
+        return
+
+    pending: queue.Queue[object] = queue.Queue(maxsize=depth)
+    stop = threading.Event()
+
+    def offer(item: object) -> bool:
+        """Dépose `item`, ou renonce si l'appelant a cessé de lire."""
+        while not stop.is_set():
+            try:
+                pending.put(item, timeout=DECODE_PUT_TIMEOUT_S)
+            except queue.Full:
+                continue
+            return True
+        return False
+
+    def produce() -> None:
+        try:
+            for item in source:
+                if not offer(item):
+                    return
+            offer(_DECODE_DONE)
+        except BaseException as exc:
+            offer(exc)
+        finally:
+            close = getattr(source, "close", None)
+            if close is not None:
+                close()
+
+    thread = threading.Thread(target=produce, name=name, daemon=True)
+    thread.start()
+    try:
+        while True:
+            item = pending.get()
+            if item is _DECODE_DONE:
+                return
+            if isinstance(item, BaseException):
+                raise item
+            yield cast("T", item)
+    finally:
+        stop.set()
+        # Vidée pour débloquer un producteur en attente, comme dans `decode_ahead`.
+        while True:
+            try:
+                pending.get_nowait()
+            except queue.Empty:
+                break
+        thread.join()
 
 
 def _iter_decoded(video_path: Path, *, stride: int, first_index: int) -> Iterator[_DecodedFrame]:
