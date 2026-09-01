@@ -35,7 +35,7 @@ import { classColor } from "@/shared/config/palettes";
 import { classLabel } from "@/shared/lib/classes";
 // Le juge unique de la ressemblance : le tiroir d'alertes lit le même, donc un
 // véhicule signalé là-bas est teinté ici, et réciproquement.
-import { matches, matchStrength } from "@/shared/lib/vehicleMatch";
+import { DEFAULT_REMATCH_THRESHOLD, matches, matchStrength } from "@/shared/lib/vehicleMatch";
 import {
   crossingDirectionName,
   crossingHeadingDeg,
@@ -206,6 +206,22 @@ export function VehicleRegistry({
   );
 
   /**
+   * Un véhicule a-t-il été **re-détecté** quelque part dans ce registre (ADR 0055) ?
+   *
+   * Même règle et même raison que `hasMatch` juste au-dessus : décidé sur `vehicles`
+   * entier, jamais sur les rangées rendues.
+   *
+   * **Sans seuil dans la condition**, contrairement à `hasMatch` : `rematchOf` n'est
+   * publié que si le serveur a trouvé quelque chose, donc sa seule présence dit que
+   * la fonctionnalité a tourné. La colonne montre alors aussi les scores sous le
+   * curseur, en gris — c'est ce qui permet de voir qu'on est passé à côté de peu.
+   */
+  const hasRematch = useMemo(
+    () => vehicles.some((entry) => entry.rematchOf !== null && entry.rematchOf !== undefined),
+    [vehicles],
+  );
+
+  /**
    * Une capture existe-t-elle **quelque part** dans ce registre ?
    *
    * Même règle et même raison que les deux drapeaux ci-dessus : calculé sur
@@ -356,6 +372,11 @@ export function VehicleRegistry({
               la capture avant la plaque : le score se vérifie **sur la photo**, et
               les séparer obligerait à recoller deux colonnes du regard. */}
           {hasMatch && <Th className="w-24">Ressemblance</Th>}
+          {/* « Déjà vu » à côté de « Ressemblance » : les deux sont des similarités
+              d'apparence et se lisent ensemble. Elles ne disent pourtant pas la même
+              chose — l'une compare à une photo fournie, l'autre aux véhicules déjà
+              passés — d'où deux colonnes et non une. */}
+          {hasRematch && <Th className="w-28">Déjà vu</Th>}
           {/* « Passages » remplace « Ré-id » : la ré-identification n'existe plus
               (ADR 0016), et le nombre de franchissements d'un véhicule est
               l'information qui rend une ligne du registre vérifiable — un 0 dit
@@ -413,6 +434,7 @@ export function VehicleRegistry({
               />
             )}
             {hasMatch && <MatchCell vehicle={vehicle} threshold={matchThreshold} />}
+            {hasRematch && <RematchCell vehicle={vehicle} />}
             <Td className="tabular">
               {vehicle.crossedLines.length === 0 ? "—" : vehicle.crossedLines.length}
             </Td>
@@ -956,6 +978,54 @@ function MatchCell({
           pourquoi un véhicule tombe juste sous le curseur. */}
       <span title={`Similarité ${score.toFixed(3)}${under ? " — sous le seuil retenu" : ""}`}>
         {`${Math.round(score * 100)} %`}
+      </span>
+    </Td>
+  );
+}
+
+/**
+ * « Ce véhicule est déjà passé » — l'antécédent et la ressemblance (ADR 0055).
+ *
+ * **Le numéro et le pourcentage ensemble, jamais l'un sans l'autre.** « 87 % » seul
+ * ne se vérifie sur rien ; « comme #12 » seul cache que ce n'est qu'une hypothèse.
+ * C'est la même raison qui met la capture à côté de la ressemblance.
+ *
+ * Le seuil ne vient **pas** en prop, contrairement à `MatchCell` : la colonne
+ * n'existe que si le serveur a trouvé quelque chose, et le curseur d'affichage ne
+ * décide ici que d'une teinte. Un score sous le seuil reste lisible en gris — c'est
+ * ce qui permet de voir qu'on est passé à côté de peu, et de descendre le seuil en
+ * connaissance de cause.
+ */
+function RematchCell({ vehicle }: { vehicle: VehicleRecord }) {
+  const { rematchOf, rematchScore } = vehicle;
+  if (rematchOf === null || rematchOf === undefined) {
+    return <Td className="w-28 text-ink-muted">—</Td>;
+  }
+  const under = !matches(rematchScore, DEFAULT_REMATCH_THRESHOLD);
+  const strength =
+    rematchScore == null ? null : matchStrength(rematchScore, DEFAULT_REMATCH_THRESHOLD);
+  return (
+    <Td
+      className={`w-28 tabular ${
+        under
+          ? "text-ink-muted"
+          : strength === "exact"
+            ? "font-medium text-negative"
+            : "text-warning"
+      }`}
+    >
+      <span
+        title={
+          rematchScore == null
+            ? `Ressemble au véhicule #${rematchOf}`
+            : `Similarité ${rematchScore.toFixed(3)} avec le véhicule #${rematchOf}${
+                under ? " — sous le seuil retenu" : ""
+              }`
+        }
+      >
+        {rematchScore == null
+          ? `#${rematchOf}`
+          : `#${rematchOf} — ${Math.round(rematchScore * 100)} %`}
       </span>
     </Td>
   );

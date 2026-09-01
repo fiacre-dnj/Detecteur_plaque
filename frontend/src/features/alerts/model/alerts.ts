@@ -33,7 +33,9 @@ export type AlertKind =
   | "plate-exact"
   | "plate-partial"
   | "vehicle-exact"
-  | "vehicle-partial";
+  | "vehicle-partial"
+  | "vehicle-rematch-exact"
+  | "vehicle-rematch-partial";
 
 /**
  * Ce que l'alerte vaut.
@@ -115,6 +117,94 @@ export function alertFromVehicleMatch(vehicle: {
     line: null,
     direction: null,
     watched: null,
+  };
+}
+
+/** Ce qu'il faut d'un véhicule pour situer sa re-détection dans le temps. */
+export interface CrossingBearer {
+  crossedLines: readonly { lineId: string; direction: number; timestampMs: number }[];
+  firstSeenMs: number;
+}
+
+/**
+ * Le **premier** franchissement d'un véhicule, résolu sur le tracé courant.
+ *
+ * Trois points :
+ *
+ * - **le premier et non le plus récent** : c'est le moment où l'on a reconnu le
+ *   véhicule, donc celui qu'il faut aller voir. Les passages suivants sont le même
+ *   véhicule qui continue sa route ;
+ * - **résolu contre `rules`, qui contient TOUTES les lignes** et pas seulement
+ *   celles qui portent une règle. La re-détection vaut pour tout type de ligne, y
+ *   compris « Comptage seul » ;
+ * - **une ligne retirée du tracé ne fait pas disparaître l'alerte** : l'instant
+ *   survit, la ligne devient `null`. Taire l'alerte ferait dépendre ce qu'on
+ *   remarque d'une géométrie qu'on a le droit de modifier après coup.
+ */
+export function firstCrossingOf(
+  vehicle: CrossingBearer,
+  rules: ReadonlyMap<string, { lineId: string; lineName: string; color: string }>,
+): { line: AlertLine | null; direction: number | null; timestampMs: number } {
+  let earliest: { lineId: string; direction: number; timestampMs: number } | null = null;
+  for (const crossing of vehicle.crossedLines) {
+    if (earliest === null || crossing.timestampMs < earliest.timestampMs) earliest = crossing;
+  }
+  if (earliest === null) {
+    // Ne devrait pas arriver — le serveur ne re-détecte que des franchisseurs — mais
+    // un résultat rouvert n'a pas à faire confiance à cette invariance pour afficher
+    // une carte. La première apparition est le repli honnête.
+    return { line: null, direction: null, timestampMs: vehicle.firstSeenMs };
+  }
+  const rule = rules.get(earliest.lineId);
+  return {
+    line: rule ? { id: rule.lineId, name: rule.lineName, color: rule.color } : null,
+    direction: earliest.direction,
+    timestampMs: earliest.timestampMs,
+  };
+}
+
+/**
+ * L'alerte d'un véhicule qui ressemble à un franchisseur **antérieur** (ADR 0055).
+ *
+ * Trois choix qui ne se devinent pas :
+ *
+ * - **une carte par véhicule**, clé `r:<globalId>`, sans instant ni score. Un même
+ *   véhicule qui franchit trois lignes ne remplit pas le tiroir de trois cartes
+ *   identiques, et l'amélioration du score n'en crée pas une quatrième. Même raison
+ *   que `alertFromVehicleMatch` juste au-dessus ;
+ * - **datée du franchissement**, pas de la première apparition : l'alerte parle du
+ *   passage sur le trait, et c'est là qu'il faut amener la tête de lecture pour
+ *   vérifier. C'est la différence avec la recherche par image, où le véhicule est
+ *   intéressant du début à la fin ;
+ * - **elle nomme l'antécédent** (`rematchOf`). « 87 % » tout seul ne se vérifie sur
+ *   rien ; « comme #12 — 87 % » se vérifie sur deux captures.
+ */
+export function alertFromRematch(
+  vehicle: {
+    globalId: number;
+    label: string;
+    plateText?: string | null;
+    plateTextScore?: number | null;
+    rematchOf?: number | null;
+  },
+  crossing: { line: AlertLine | null; direction: number | null; timestampMs: number },
+  strength: "exact" | "partial",
+): Alert {
+  return {
+    key: `r:${vehicle.globalId}`,
+    kind: strength === "exact" ? "vehicle-rematch-exact" : "vehicle-rematch-partial",
+    severity: strength === "exact" ? "critical" : "warning",
+    timestampMs: crossing.timestampMs,
+    globalId: vehicle.globalId,
+    label: vehicle.label,
+    plateText: vehicle.plateText ?? null,
+    plateTextScore: vehicle.plateTextScore ?? null,
+    line: crossing.line,
+    direction: crossing.direction,
+    // `watched` porte « ce qu'on cherchait » : ici, le véhicule déjà vu. C'est le
+    // seul champ de l'`Alert` qui puisse le nommer, et `ALERT_LOOK` le lit déjà pour
+    // composer sa phrase — un huitième champ pour la même idée serait un de trop.
+    watched: vehicle.rematchOf == null ? null : `#${vehicle.rematchOf}`,
   };
 }
 
@@ -232,6 +322,7 @@ export function sortAlerts(alerts: readonly Alert[], limit: number = ALERT_LIMIT
  */
 export interface VehicleScores {
   matchScore?: number | null;
+  rematchScore?: number | null;
   plateTextScore?: number | null;
 }
 
@@ -278,15 +369,33 @@ export function alertScore(alert: Alert, live?: VehicleScores | undefined): Aler
       const value = live?.matchScore ?? null;
       return value === null ? null : { kind: "match", value };
     }
+    case "vehicle-rematch-exact":
+    case "vehicle-rematch-partial": {
+      // Même unité que ci-dessus — une similarité cosinus — donc le même mot.
+      // Inventer une troisième nature pour le même nombre serait une distinction
+      // sans différence, et l'écart entre les deux est déjà porté par le titre.
+      const value = live?.rematchScore ?? null;
+      return value === null ? null : { kind: "match", value };
+    }
     default:
       return null;
   }
 }
 
-/** Une infraction, par opposition à une plaque trouvée. */
+/**
+ * Une infraction, par opposition à ce que l'analyse ne fait que **remarquer**.
+ *
+ * **Décidé sur la nature et non sur la présence d'une ligne**, depuis qu'une
+ * re-détection en porte une (ADR 0055). `alert.line !== null` a longtemps été un
+ * raccourci exact — seules les infractions nommaient une ligne — et il est devenu
+ * faux en silence : une re-détection aurait été comptée comme une infraction, donc
+ * teintée et filtrée comme telle, sans que rien ne lève.
+ */
 export function isViolation(alert: Alert): boolean {
-  return alert.line !== null;
+  return VIOLATION_KINDS.has(alert.kind);
 }
+
+const VIOLATION_KINDS = new Set<AlertKind>(["wrong-way", "closed-line", "reserved-lane"]);
 
 /**
  * Les franchissements d'un résultat complet jusqu'à la tête de lecture.

@@ -160,6 +160,15 @@ interface SettingsPanelsProps {
    * case qui ne fait rien.
    */
   plateOcrAvailable: boolean;
+  /**
+   * L'encodeur d'apparence est-il installé, et se charge-t-il ?
+   *
+   * Les deux mêmes états que l'ANPR, et le second est celui qui trompe de la même
+   * façon : poids présents, chargement en échec, case cochable et pas une
+   * re-détection en sortie. `null` = pas encore testé, ce n'est pas un échec.
+   */
+  reidAvailable: boolean;
+  reidLoadable: boolean | null;
   /** Vrai s'il existe au moins une zone : « ignorer hors zone » en dépend. */
   hasZones: boolean;
   /**
@@ -242,6 +251,8 @@ export function SettingsPanels({
   plateAvailable,
   plateLoadable,
   plateOcrAvailable,
+  reidAvailable,
+  reidLoadable,
   hasZones,
   lines,
   diagnostics,
@@ -477,6 +488,25 @@ export function SettingsPanels({
             reçoit — donc les chiffres. Sa place est ici, à côté du seuil de confiance
             et des classes, et le diagnostic de comptage compte d'ailleurs ce qu'il a
             retiré (« Masquées par une zone »). */}
+        {/* La re-détection (ADR 0055). **Indépendante de l'ANPR** et posée juste
+            après elle : on reconnaît un véhicule à son apparence, pas à son texte,
+            donc la subordonner au repérage des plaques la rendrait muette dans le
+            cas d'usage même qui l'a demandée. Les trois états sont ceux de l'ANPR,
+            et le deuxième trompe pareil — poids présents, chargement en échec. */}
+        <Toggle
+          label="Signaler les véhicules déjà vus"
+          checked={settings.vehicleRematch}
+          disabled={disabled || !reidAvailable || reidLoadable === false}
+          hint={
+            !reidAvailable
+              ? "Encodeur d'apparence absent du serveur : `scripts/fetch_reid_model.py` l'installe."
+              : reidLoadable === false
+                ? "Encodeur présent mais illisible : il ne rendrait aucune re-détection."
+                : "Chaque véhicule qui franchit une ligne est comparé à ceux déjà passés. Les ressemblances sont signalées dans les alertes, à vérifier sur la capture — aucun comptage ne change."
+          }
+          onChange={(vehicleRematch) => onChange({ vehicleRematch })}
+        />
+
         <Toggle
           label="Ignorer hors zone"
           checked={settings.maskOutsideZones}

@@ -141,6 +141,7 @@ import { hasAnyRule } from "@/shared/lib/lineViolations";
 import { violationCounts } from "@/shared/lib/violationTally";
 import { formatSceneTimePrecise } from "@/shared/lib/sceneTime";
 import { useMediaQuery } from "@/shared/lib/useMediaQuery";
+import { DEFAULT_REMATCH_THRESHOLD } from "@/shared/lib/vehicleMatch";
 import { Activity, ScanSearch, Waypoints } from "lucide-react";
 import { Button } from "@/shared/ui/Button";
 import { SnapshotDialog } from "@/shared/ui/SnapshotDialog";
@@ -1073,6 +1074,9 @@ export function StudioPage() {
     // pistes d'une image ne le portant pas. `null` quand rien n'est cherché.
     vehicles: session.preview?.vehicles ?? null,
     matchThreshold: queryIsArmed(query) ? query.threshold : null,
+    // `null` dès que la case est décochée : sans elle le serveur ne publie aucun
+    // `rematchOf`, et armer le seuil ne ferait qu'un parcours de liste pour rien.
+    rematchThreshold: settings.vehicleRematch ? DEFAULT_REMATCH_THRESHOLD : null,
     // Le job identifie la course ; `"live"` couvre la caméra, qui n'a pas de job.
     // Un changement vide le journal, sinon les alertes de l'analyse précédente
     // s'afficheraient au-dessus des nouvelles avec des horodatages qui ne désignent
@@ -1101,11 +1105,19 @@ export function StudioPage() {
       // `null` quand aucune recherche n'est armée, et **pas** `0` : le second
       // signalerait tout véhicule encodé, donc la totalité du trafic.
       matchThreshold: queryIsArmed(query) ? query.threshold : null,
+      rematchThreshold: settings.vehicleRematch ? DEFAULT_REMATCH_THRESHOLD : null,
     });
     // `query` entier et non ses deux champs : `queryIsArmed` lit `file` et le seuil
     // vient de `threshold`, mais l'objet est remplacé à chaque `patchQuery`, donc le
     // décomposer ne gagnerait aucun rendu et ferait mentir la liste de dépendances.
-  }, [session.result, replay.timeMs, alertRules, settings.plateWatchlist, query]);
+  }, [
+    session.result,
+    replay.timeMs,
+    alertRules,
+    settings.plateWatchlist,
+    settings.vehicleRematch,
+    query,
+  ]);
 
   const alerts = replayAlerts ?? liveAlerts;
 
@@ -1300,6 +1312,8 @@ export function StudioPage() {
         // qui n'est pas un échec et ne doit rien désactiver.
         plateLoadable={health?.plateLoadable ?? null}
         plateOcrAvailable={catalogue?.plateOcrAvailable ?? false}
+        reidAvailable={reidAvailable}
+        reidLoadable={health?.reidLoadable ?? null}
         hasZones={geometry.zones.length > 0}
         // Pour nommer les lignes des quasi-franchissements dans le diagnostic : le
         // serveur les publie par identifiant, et un identifiant ne dit rien à l'œil.

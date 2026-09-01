@@ -80,6 +80,12 @@ export function vehiclesCsv(result: AnalysisResult, lines: readonly CountingLine
       "Plaque",
       "Confiance lecture",
       "Score plaque",
+      // La re-détection, en **deux colonnes** : un tableur trie et filtre sur des
+      // valeurs, donc « #12 — 87 % » dans une seule case obligerait à la découper à
+      // la main avant tout classement. Vides quand rien n'a été re-détecté, jamais
+      // un zéro — qui se lirait comme une ressemblance mesurée et nulle.
+      "Déjà vu (véhicule)",
+      "Déjà vu (similarité)",
     ],
     result.vehicles.map((vehicle: VehicleRecord) => [
       vehicle.globalId,
@@ -103,6 +109,8 @@ export function vehiclesCsv(result: AnalysisResult, lines: readonly CountingLine
       vehicle.plateText,
       vehicle.plateTextScore,
       vehicle.bestPlateScore,
+      vehicle.rematchOf ?? null,
+      vehicle.rematchScore ?? null,
     ]),
   );
 }
