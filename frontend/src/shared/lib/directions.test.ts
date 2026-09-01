@@ -26,6 +26,7 @@ import {
   lineName,
   roleLabel,
   rolesForKind,
+  showsDirections,
   signOf,
 } from "./directions";
 import { defaultDirectionNames, sideOfLine } from "./geometry";
@@ -382,6 +383,46 @@ describe("les libellés des nouveaux rôles", () => {
     expect(directionName(counting, "positive")).toBe("Passage");
   });
 
+  it("dit « Autorisé » du côté permis d'une ligne « Autorisé · interdit »", () => {
+    // Le seul libellé qui dépende du **type** et pas seulement du rôle. Le rôle
+    // stocké reste `entry` — ADR 0040 en a besoin pour garder ces lignes dans les
+    // colonnes « Entrée par » du registre — mais le mot affiché suit le type.
+    const oneway = line({ positiveRole: "entry", negativeRole: "forbidden" });
+    expect(directionName(oneway, "positive")).toBe("Autorisé");
+    expect(directionName(oneway, "negative")).toBe("Interdit");
+  });
+
+  it("dit « Autorisé » aussi sur la paire héritée { exit, forbidden }", () => {
+    // `lineKind` relit déjà cette paire sous « Autorisé · interdit » : sans ce cas,
+    // deux lignes du même type porteraient deux mots différents selon leur âge.
+    const legacy = line({ positiveRole: "exit", negativeRole: "forbidden" });
+    expect(lineKind(legacy)).toBe("oneway");
+    expect(directionName(legacy, "positive")).toBe("Autorisé");
+  });
+
+  it("garde « Entrée » et « Sortie » sur une ligne à deux sens", () => {
+    // **Le test qui borne le changement.** Le même rôle `entry` doit continuer à se
+    // dire « Entrée » là où il décrit vraiment une entrée de carrefour : le nouveau
+    // mot ne vaut que face à un sens interdit.
+    const both = line({ positiveRole: "entry", negativeRole: "exit" });
+    expect(directionName(both, "positive")).toBe("Entrée");
+    expect(directionName(both, "negative")).toBe("Sortie");
+  });
+
+  it("emploie le mot que le sélecteur de type annonce", () => {
+    // Comparé au libellé de `LINE_KINDS` plutôt que recopié : c'est ce désaccord-là
+    // qu'on vient de corriger, et le recopier ici laisserait les deux dériver à
+    // nouveau sans qu'un test ne le voie.
+    const option = LINE_KINDS.find((candidate) => candidate.kind === "oneway");
+    const oneway = line({ positiveRole: "entry", negativeRole: "forbidden" });
+    // L'invariant énoncé dans un seul sens : le libellé du type **est** ses deux noms
+    // de sens joints. Plus fort qu'une comparaison moitié par moitié, et sans
+    // indexation — dont `noUncheckedIndexedAccess` fait à juste titre un `undefined`.
+    const allowed = directionName(oneway, "positive");
+    const forbidden = directionName(oneway, "negative").toLocaleLowerCase("fr");
+    expect(option?.label).toBe(`${allowed} · ${forbidden}`);
+  });
+
   it("rend le libellé court en minuscules", () => {
     expect(roleLabel("forbidden")).toBe("interdit");
     expect(roleLabel("transit")).toBe("passage");
@@ -406,5 +447,50 @@ describe("isForbiddenRole et lineHasRule", () => {
     expect(lineHasRule(line({ positiveRole: "entry", negativeRole: "exit" }))).toBe(false);
     expect(lineHasRule(line({ negativeRole: "forbidden" }))).toBe(true);
     expect(lineHasRule(line({ allowedClassIds: [5] }))).toBe(true);
+  });
+});
+
+describe("showsDirections — quels traits portent des sens", () => {
+  it("se tait sur « Comptage seul », et sur lui seul", () => {
+    // Ses deux sens portent le même rôle : les afficher écrit « Passage » deux fois
+    // et dessine deux flèches opposées qui ne distinguent rien. Le type dit déjà
+    // tout — ce qui franchit compte, quel que soit le côté.
+    expect(showsDirections(line({ positiveRole: "transit", negativeRole: "transit" }))).toBe(
+      false,
+    );
+
+    expect(showsDirections(line({ positiveRole: "entry", negativeRole: "exit" }))).toBe(true);
+    expect(showsDirections(line({ positiveRole: "entry", negativeRole: "forbidden" }))).toBe(
+      true,
+    );
+  });
+
+  it("garde les sens d'une ligne infranchissable", () => {
+    // **Le cas à ne pas confondre avec « comptage seul ».** Ses deux rôles sont
+    // identiques eux aussi, mais savoir de quel côté on n'aurait pas dû passer est
+    // toute l'information — et c'est le seul endroit du canevas où une couleur
+    // encode une valeur. Les effacer viderait « Interdit » de son sens.
+    const closed = line({ positiveRole: "forbidden", negativeRole: "forbidden" });
+
+    expect(showsDirections(closed)).toBe(true);
+  });
+
+  it("garde les sens d'une ligne héritée « à préciser »", () => {
+    // Un `neutral` doit rester visible : c'est le repère qui force le choix. Le
+    // masquer laisserait une ligne sans rôle passer inaperçue, donc un bilan de
+    // carrefour amputé sans que rien ne le dise.
+    expect(showsDirections(line())).toBe(true);
+  });
+
+  it("n'est pas `lineHasRule` sous un autre nom", () => {
+    // Les deux prédicats répondent à deux questions, et les confondre effacerait
+    // les flèches d'« Interdit » ou ferait réapparaître celles de « Passage ».
+    const closed = line({ positiveRole: "forbidden", negativeRole: "forbidden" });
+    const transit = line({ positiveRole: "transit", negativeRole: "transit" });
+
+    expect(lineHasRule(closed)).toBe(true);
+    expect(showsDirections(closed)).toBe(true);
+    expect(lineHasRule(transit)).toBe(false);
+    expect(showsDirections(transit)).toBe(false);
   });
 });

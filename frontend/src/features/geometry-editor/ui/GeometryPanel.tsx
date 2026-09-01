@@ -46,6 +46,7 @@ import {
   directionRole,
   isForbiddenRole,
   lineKind,
+  showsDirections,
   type LineKind,
 } from "@/shared/lib/directions";
 import type { Selection } from "@/entities/geometry";
@@ -306,7 +307,11 @@ function LineRules({
   // l'échange rendrait la paire identique, et un bouton qui ne fait rien se lit
   // comme un bouton cassé. Sur une ligne héritée « à préciser », il garde son rôle
   // d'ADR 0021 : poser la paire par défaut au premier clic.
-  const swappable = kind !== "closed" && kind !== "transit";
+  //
+  // `transit` n'est plus testé ici, et ce n'est pas un oubli : le bouton ne vit que
+  // dans la branche où les sens s'affichent, dont « Comptage seul » est justement
+  // exclu. L'y garder laisserait croire qu'un cas reste à couvrir.
+  const swappable = kind !== "closed";
   const reserved = line.allowedClassIds ?? null;
 
   return (
@@ -348,13 +353,15 @@ function LineRules({
           tout ce qu'il y a à savoir — ce qui franchit compte, quel que soit le
           côté d'où il vient.
 
-          Le canevas, lui, garde ses deux flèches : elles disent de quel côté est
-          chaque sens, ce qui reste vrai et sert à relier une rangée à un trait.
-          C'est le *réglage* des sens qui disparaît, pas leur géométrie. */}
-      {kind === "transit" ? (
+          **Le canevas se tait aussi**, et c'est `showsDirections` qui le décide
+          pour les deux surfaces — ici et dans `draw.ts`. Deux comparaisons
+          `kind === "transit"` recopiées auraient fini par diverger : un panneau muet
+          au-dessus d'un trait qui, lui, continuerait d'afficher deux flèches. */}
+      {!showsDirections(line) ? (
         <p className="rounded-input bg-base p-2 text-micro text-ink-dim">
           Les deux sens sont comptés ensemble : tout véhicule qui franchit la ligne
-          compte, quel que soit le côté d'où il vient.
+          compte, quel que soit le côté d'où il vient. Le trait n'affiche donc aucune
+          flèche sur la vidéo.
         </p>
       ) : (
         <div className="flex items-stretch gap-1.5">

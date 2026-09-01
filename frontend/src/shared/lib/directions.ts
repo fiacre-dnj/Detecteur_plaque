@@ -55,6 +55,23 @@ export function signOf(direction: number): DirectionSign {
  */
 export function directionName(line: CountingLine, sign: DirectionSign): string {
   const role = directionRole(line, sign);
+  // **Sur une ligne « Autorisé · interdit », le côté qui passe se dit « Autorisé ».**
+  //
+  // Le seul libellé de ce module qui dépende du *type* de la ligne et pas seulement du
+  // rôle, et c'est voulu : sur cette ligne-là, `entry` ne décrit pas une entrée de
+  // carrefour mais le sens permis en face d'un sens interdit. Afficher « Entrée · Interdit »
+  // sous un type nommé « Autorisé · interdit » faisait lire deux choses différentes au
+  // même endroit — l'utilisateur choisit un type et voit d'autres mots sur son trait.
+  //
+  // `entry` reste le rôle stocké, et c'est ADR 0040 qui l'impose : c'est lui qui garde
+  // ces lignes dans les colonnes « Entrée par » du registre et dans les comparatifs de
+  // Statistique. On change donc le **mot affiché**, jamais le rôle — un type dérivé de
+  // ses rôles reste la seule source de vérité.
+  //
+  // Couvre aussi la paire héritée `{exit, forbidden}`, que `lineKind` relit déjà sous ce
+  // type : son côté autorisé se dit « Autorisé » comme l'autre, sans quoi deux lignes de
+  // même type porteraient deux mots selon leur âge.
+  if (lineKind(line) === "oneway" && !isForbiddenRole(role)) return ALLOWED_NAME;
   const named = ROLE_NAMES[role];
   if (named !== null) return named;
   const given = sign === "positive" ? line.positiveName : line.negativeName;
@@ -72,6 +89,20 @@ export function directionName(line: CountingLine, sign: DirectionSign): string {
  * attendait « Interdit » — ne planterait jamais, et se lirait comme un bug de
  * tracé.
  */
+/**
+ * Le mot du côté permis d'une ligne « Autorisé · interdit ».
+ *
+ * Hors de `ROLE_NAMES` parce qu'il ne nomme pas un rôle mais un rôle **dans un
+ * type** : le même `entry` reste « Entrée » sur une ligne à deux sens. Nommé ici
+ * plutôt qu'écrit en clair dans `directionName`, pour qu'il reste au même endroit que
+ * les cinq autres libellés du module.
+ *
+ * Il doit rester d'accord avec le libellé du type dans `LINE_KINDS`
+ * (« Autorisé · interdit ») — c'est toute la raison de ce libellé, et un test le
+ * verrouille en comparant les deux chaînes plutôt qu'en recopiant le mot.
+ */
+const ALLOWED_NAME = "Autorisé";
+
 const ROLE_NAMES: Readonly<Record<DirectionRole, string | null>> = {
   entry: "Entrée",
   exit: "Sortie",
@@ -326,4 +357,29 @@ export function lineHasRule(line: CountingLine): boolean {
     isForbiddenRole(directionRole(line, "negative")) ||
     (line.allowedClassIds ?? null) !== null
   );
+}
+
+/**
+ * Cette ligne a-t-elle des **sens à montrer** ?
+ *
+ * Faux pour « Comptage seul », et pour lui seul : ses deux sens portent le même
+ * rôle, donc les afficher écrit « Passage » deux fois — dans le panneau comme sur
+ * le trait — et dessine deux flèches opposées qui ne distinguent rien. Le type dit
+ * déjà tout ce qu'il y a à savoir : ce qui franchit compte, quel que soit le côté
+ * d'où il vient.
+ *
+ * **Un seul juge, parce que deux surfaces posent la question.** Le panneau de
+ * géométrie décide s'il rend ses deux rangées, et `draw.ts` s'il peint ses deux
+ * étiquettes. Deux comparaisons `kind === "transit"` recopiées finiraient par
+ * diverger — et la panne serait exactement du genre que ce dépôt documente le
+ * plus : un panneau muet au-dessus d'un trait bavard, sans que rien ne plante.
+ *
+ * Ce n'est **pas** `lineHasRule` avec un autre nom. Une ligne infranchissable n'a
+ * pas de bilan à donner mais garde deux sens bien distincts — savoir de quel côté
+ * on n'aurait pas dû passer est toute l'information —, et une ligne à deux sens
+ * sans aucune règle affiche évidemment les siens. Les deux prédicats répondent à
+ * deux questions, et les confondre effacerait les flèches d'« Interdit ».
+ */
+export function showsDirections(line: CountingLine): boolean {
+  return lineKind(line) !== "transit";
 }

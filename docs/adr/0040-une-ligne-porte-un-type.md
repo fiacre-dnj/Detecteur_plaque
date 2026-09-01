@@ -30,11 +30,25 @@ Trois points :
 - **aucun champ du contrat ne bouge.** Le type reste dérivé, les rôles restent
   `entry` / `forbidden` des deux côtés du réseau, et aucune migration n'est due.
 
-**Et « Comptage seul » n'affiche plus ses deux sens.** Les deux rangées y disaient
-« Passage » deux fois sous un bouton d'inversion déjà grisé : trois éléments
-d'interface pour zéro information. Une phrase les remplace. Le canevas, lui, garde
-ses deux flèches — elles disent de quel côté est chaque sens, ce qui reste vrai et
-sert à relier une rangée à un trait.
+**Et « Comptage seul » n'affiche plus aucun sens, ni dans le panneau ni sur le
+trait.** Les deux rangées y disaient « Passage » deux fois sous un bouton d'inversion
+déjà grisé, et le canevas peignait les deux mêmes étiquettes plus la flèche du sens
+positif au milieu du trait. Sur cette ligne les deux côtés portent le même rôle,
+comptent pareil et s'affichent pareil : la flèche ne répondait à aucune question
+qu'on puisse encore se poser, et elle en suggérait une fausse — qu'un sens compterait
+et pas l'autre. Le **nom** de la ligne reste, il n'indique pas un sens, et le halo de
+`drawLine` continue de signaler le moment où la ligne compte.
+
+`showsDirections` (`shared/lib/directions.ts`) en est le **seul** juge, lu par le
+panneau et par `draw.ts`. Deux comparaisons `kind === "transit"` recopiées auraient
+fini par diverger, et la panne aurait été exactement du genre que ce dépôt documente
+le plus : un panneau muet au-dessus d'un trait bavard, sans que rien ne plante.
+
+Il ne faut pas le confondre avec `lineHasRule` : une ligne **infranchissable** a deux
+rôles identiques elle aussi, et garde pourtant ses flèches et ses libellés — savoir
+de quel côté on n'aurait pas dû passer est toute l'information, et c'est le seul
+endroit du canevas où une couleur encode une valeur. Un test verrouille l'écart entre
+les deux prédicats.
 
 ## Contexte
 

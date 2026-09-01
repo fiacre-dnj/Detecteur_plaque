@@ -103,10 +103,15 @@ export function formatCrossingRate(rate: number | null): string {
   return rate === null ? "—" : `${Math.round(rate * 100)} %`;
 }
 
-/** Formate un score de plaque en pourcentage. */
-export function formatScore(score: number | null): string {
-  return score === null ? "—" : `${Math.round(score * 100)} %`;
-}
+/**
+ * Formate un score de plaque en pourcentage.
+ *
+ * **Réexporté et non défini ici** : trois features l'affichent — les Résultats, le
+ * registre et le tiroir d'alertes — et une feature n'importe jamais une autre. Le
+ * juge unique vit dans `shared/lib/score.ts` ; ce réexport garde l'API publique de
+ * la feature intacte pour ses lecteurs d'origine.
+ */
+export { formatScore } from "@/shared/lib/score";
 
 /**
  * Libellé du sens d'un franchissement.

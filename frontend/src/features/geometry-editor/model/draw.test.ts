@@ -20,13 +20,15 @@
 
 import { describe, expect, it } from "bun:test";
 
-import type { Box, Point } from "@/shared/api/contracts";
+import type { Box, CountingLine, Point } from "@/shared/api/contracts";
 import { sideOfLine } from "@/shared/lib/geometry";
 
 import {
   DIRECTION_LABEL_CLEARANCE,
   type LabelPlacement,
+  DIRECTION_LABEL_MAX,
   directionLabelAnchors,
+  directionText,
   lineNameAnchor,
   plateLabelBaseline,
   resolveLabelCollisions,
@@ -381,5 +383,47 @@ describe("resolveLabelCollisions — deux lignes proches ne s'écrasent plus", (
 
   it("rend une liste vide sans entrée", () => {
     expect(resolveLabelCollisions([], VIEW)).toEqual([]);
+  });
+});
+
+describe("directionText — ce que le canevas écrit vraiment sur un trait", () => {
+  /**
+   * Le canevas est un bitmap : aucun test d'écran ne peut relire ses étiquettes. Ces
+   * trois cas sont donc la **seule** garantie que les mots peints sont ceux que les
+   * autres écrans affichent — et le mode de panne visé est précis : une version qui
+   * lirait `line.positiveName` en direct plutôt que de passer par `directionName`
+   * peindrait des mots que plus rien d'autre ne montre, sans que rien ne plante.
+   */
+  const line = (overrides: Partial<CountingLine> = {}): CountingLine => ({
+    id: "l1",
+    name: "L1",
+    color: "#539df5",
+    zoneId: null,
+    a: { x: 100, y: 500 },
+    b: { x: 900, y: 500 },
+    positiveName: "",
+    negativeName: "",
+    positiveRole: "neutral",
+    negativeRole: "neutral",
+    ...overrides,
+  });
+
+  it("écrit « Autorisé » et « Interdit » sur une ligne à sens unique", () => {
+    const oneway = line({ positiveRole: "entry", negativeRole: "forbidden" });
+    expect(directionText(oneway, "positive")).toBe("Autorisé");
+    expect(directionText(oneway, "negative")).toBe("Interdit");
+  });
+
+  it("garde « Entrée » et « Sortie » sur une ligne à deux sens", () => {
+    const both = line({ positiveRole: "entry", negativeRole: "exit" });
+    expect(directionText(both, "positive")).toBe("Entrée");
+    expect(directionText(both, "negative")).toBe("Sortie");
+  });
+
+  it("borne la longueur, parce que le trait n'est pas élastique", () => {
+    // Un nom libre d'une ligne héritée peut être long ; les cinq libellés de rôle,
+    // non. C'est la seule raison pour laquelle cette fonction n'est pas `directionName`.
+    const named = line({ positiveName: "Entrée par la rue du Maréchal Foch" });
+    expect(directionText(named, "positive").length).toBeLessThanOrEqual(DIRECTION_LABEL_MAX);
   });
 });
