@@ -773,11 +773,16 @@ class AnalysisSession:
         **Le mode de panne d'ADR 0029 ne se rejoue pas ici**, et la raison est
         structurelle : le consommateur de l'OCR est *statistique* — `PlateTextVote`
         exige plusieurs lectures concordantes, donc raréfier les lectures empêche un
-        texte d'exister. Celui de la ReID est un *remplacement* : `record_embedding`
-        écrase `match_score` au lieu de l'accumuler. Il n'y a aucun vote à affamer,
-        et la première vue reste inconditionnelle (`appearance_width_px is None`),
-        donc **aucun véhicule candidat ne perd son score** — la marge ne peut
-        refuser qu'une amélioration.
+        texte d'exister. Celui de la ReID est un *maximum* : `record_embedding` retient
+        la meilleure des mesures, chacune indépendante des autres. Raréfier les vues
+        ne peut donc que priver d'une chance de mieux faire, jamais empêcher un score
+        d'exister — et la première vue reste inconditionnelle
+        (`appearance_width_px is None`), donc **aucun véhicule candidat ne perd son
+        score** : la marge ne peut refuser qu'une amélioration.
+
+        Cette docstring a annoncé un *remplacement* et non un maximum, et c'était la
+        description d'un défaut : le score publié était celui de la dernière vue
+        acceptée, donc arbitraire. Voir `record_embedding`.
 
         `1.0` reproduit l'ancien comportement au bit près (`w > best * 1.0` ≡
         `w > best`), ce qui rend le réglage strictement additif.
@@ -810,27 +815,46 @@ class AnalysisSession:
         Ne revérifie pas `should_embed` : le service a déjà posé la question, et la
         reposer ici ferait exister deux endroits qui décident de la même chose.
 
-        `match_score` à `None` est un état **normal** : il n'y a pas d'image de
-        requête. L'apparence est alors encodée pour rien — c'est pourquoi le service
-        n'appelle cet étage qu'en présence d'une requête.
+        **Les deux champs sont monotones**, et aucun des deux ne l'était.
 
-        **La largeur ne redescend jamais**, et cette clause manquait. Depuis
-        ADR 0055, un franchissement force un encodage quelle que soit la largeur de
-        la boîte : écrire cette largeur telle quelle rabaissait la référence de la
-        règle monotone, qui rouvrait alors des ré-encodages déjà payés — ADR 0050 à
-        l'envers. `appearance_width_px` décrit « la meilleure vue déjà encodée », pas
-        « la dernière ».
+        **La largeur ne redescend jamais.** Depuis ADR 0055, un franchissement force
+        un encodage quelle que soit la largeur de la boîte : écrire cette largeur
+        telle quelle rabaissait la référence de la règle monotone, qui rouvrait alors
+        des ré-encodages déjà payés — ADR 0050 à l'envers. `appearance_width_px`
+        décrit « la meilleure vue déjà encodée », pas « la dernière ».
 
-        `match_score`, lui, est bien **remplacé** : c'est une mesure sur la vue
-        courante, pas un rang. Une vue plus étroite peut parfaitement donner une
-        meilleure ressemblance, et la taire serait mentir sur ce qu'on a mesuré.
+        **La ressemblance non plus.** Cette docstring a longtemps affirmé le
+        contraire — « c'est une mesure sur la vue courante, pas un rang » — et
+        l'argument était faux. Un véhicule est encodé six à onze fois ; publier la
+        **dernière** mesure ne rend pas la chose plus honnête, cela la rend
+        **arbitraire**. La question posée est « ce véhicule ressemble-t-il à la photo
+        cherchée ? », et la réponse est le meilleur de ce qu'on a mesuré : deux vues
+        du même véhicule ne se ressemblent pas autant qu'on croit (0,387 au plus bas,
+        ADR 0048), donc une vue oblique ne réfute pas une vue franche. C'est le même
+        défaut que `record_rematch` a payé, et sur le même étage.
+
+        Depuis ADR 0055 il était même devenu pire : un franchissement forcé contourne
+        la marge de largeur, donc une vue étroite prise au passage du trait pouvait
+        écraser le score d'une vue trois fois plus large.
+
+        **`None` ne retire rien.** Il couvre deux états qui ne sont pas des
+        rétractations : aucune image de requête, ou une mesure sous
+        `reid_min_similarity`. Ce plancher décide de ce qu'on **publie**, jamais de ce
+        qu'on **efface** — et il mordait au défaut, `cosine_similarity` étant bornée à
+        `[-1, 1]` : une similarité négative échouait `score >= 0.0`, donc un `None`
+        passait par-dessus un 0,83 légitime et le véhicule disparaissait des résultats
+        qu'il avait mérités, tout en gardant la photo qui servait à le vérifier.
         """
         aggregate = self._aggregates.get(global_id)
         if aggregate is None:
             return
         best = aggregate.appearance_width_px
         aggregate.appearance_width_px = width_px if best is None else max(best, width_px)
-        aggregate.match_score = match_score
+        if match_score is None:
+            return
+        current = aggregate.match_score
+        if current is None or match_score > current:
+            aggregate.match_score = match_score
 
     def record_rematch(self, global_id: int, other_id: int, score: float) -> None:
         """Retient la **meilleure** ressemblance mesurée à un franchisseur antérieur.

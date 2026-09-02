@@ -39,8 +39,10 @@ from traffic_analysis.features.counting.application.analysis_service import Anal
 from traffic_analysis.features.counting.application.dto import AnalysisJobConfig
 from traffic_analysis.features.counting.domain.appearance import cosine_similarity
 from traffic_analysis.features.counting.domain.models import BoundingBox, TrackObservation
+from traffic_analysis.features.counting.infrastructure.vehicle_crop import VEHICLE_MARGIN
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from traffic_analysis.features.counting.application.dto import AnalysisResultData
@@ -329,6 +331,78 @@ class TestMargeDeLargeur:
         assert _run_growing(video, improvement=0.5).vectors_produced == 8
 
 
+class TestLaMeilleureVueGagne:
+    """Le score publié est le **meilleur** des encodages, pas celui du dernier.
+
+    Un véhicule est encodé six à onze fois sur sa vie, et deux vues du même véhicule
+    ne se ressemblent pas autant qu'on croit (0,387 au plus bas, ADR 0048) : publier
+    la dernière mesure rendait le score arbitraire. C'est le jumeau exact du défaut
+    qu'ADR 0055 a payé sur `rematch_score`, sur le même étage.
+
+    **Aucun test de bout en bout ne faisait varier le score entre les vues d'un même
+    véhicule** — tous les `similarity_for` en service ignorent leur index — et c'est
+    précisément ce qui a laissé passer le défaut.
+    """
+
+    @staticmethod
+    def _by_width(narrow_at: float) -> Callable[[BoundingBox], float]:
+        """Une ressemblance forte partout, sauf sur une largeur précise.
+
+        `similarity_by_box` et non `similarity_for` : celui-ci est indexé sur la
+        position dans le lot, qui vaut toujours zéro quand un seul véhicule est à
+        l'écran. La largeur, elle, identifie la vue.
+        """
+        return lambda box: 0.20 if box.width == narrow_at else 0.88
+
+    def _run_with(
+        self, video: Path, similarity: Callable[[BoundingBox], float], *, floor: float = 0.0
+    ) -> AnalysisResultData:
+        service = AnalysisService(
+            FakeEngine(_growing()),
+            vehicle_embedder=FakeVehicleEmbedder(similarity_by_box=similarity),
+            reid_min_similarity=floor,
+            reid_appearance_improvement=1.0,
+        )
+        return service.run_video("job-1", video, CONFIG, query_image=QUERY)
+
+    def test_une_derniere_vue_oblique_ne_ruine_pas_le_score(self, video: Path) -> None:
+        """**Le test qui reproduit le défaut.**
+
+        `_growing` va de 60 à 200 px par pas de 20 : la dernière vue encodée est
+        celle de 200 px. Elle ne ressemble pas à la requête, les six autres si.
+        """
+        result = self._run_with(video, self._by_width(200.0))
+
+        assert result.vehicles[0].match_score == pytest.approx(0.88, abs=1e-4)
+
+    def test_une_seule_bonne_vue_suffit(self, video: Path) -> None:
+        """Le symétrique : une seule vue franche au milieu d'un passage médiocre.
+
+        C'est le cas d'usage réel — un véhicule n'offre son bon angle qu'un instant —
+        et c'est ce que la dernière mesure faisait perdre.
+        """
+        result = self._run_with(video, lambda box: 0.91 if box.width == 120.0 else 0.15)
+
+        assert result.vehicles[0].match_score == pytest.approx(0.91, abs=1e-4)
+
+    def test_un_plancher_n_efface_pas_un_score_deja_acquis(self, video: Path) -> None:
+        """Le plancher décide de ce qu'on **publie**, jamais de ce qu'on **efface**.
+
+        Au défaut, une mesure refusée écrivait `None` par-dessus le score gagné plus
+        tôt : le véhicule disparaissait des résultats en gardant la photo qui servait
+        à le vérifier.
+        """
+        result = self._run_with(video, self._by_width(200.0), floor=0.50)
+
+        assert result.vehicles[0].match_score == pytest.approx(0.88, abs=1e-4)
+
+    def test_aucune_vue_au_dessus_du_plancher_reste_sans_score(self, video: Path) -> None:
+        """Le contrôle négatif : la règle du maximum ne fabrique pas de score."""
+        result = self._run_with(video, lambda _box: 0.10, floor=0.50)
+
+        assert result.vehicles[0].match_score is None
+
+
 class TestScorePublie:
     def test_le_score_traverse_jusqu_au_registre(self, video: Path) -> None:
         result = _run(video, embedder=FakeVehicleEmbedder(similarity_for=lambda _index: 0.83))
@@ -560,3 +634,26 @@ class TestBudgetDeThreadsDeLEncodeur:
         options = self._options_of(tmp_path, monkeypatch, 0)
 
         assert options.intra_op_num_threads == 0  # type: ignore[attr-defined]
+
+
+class TestCadrageSymetrique:
+    """Les deux côtés de la comparaison doivent définir « une vignette » pareil.
+
+    La galerie encode la boîte du détecteur **plus `VEHICLE_MARGIN`** ; le client
+    élargit du même rapport avant d'envoyer sa requête. Sans cette égalité, le même
+    véhicule occupe 100 % de la tuile 208² d'un côté et ~89 % de l'autre, donc il y
+    paraît 12 % plus gros — et la similarité baisse sans que rien ne le signale.
+    """
+
+    def test_la_marge_du_client_est_verrouillee_sur_celle_du_serveur(self) -> None:
+        """**Le seul mécanisme disponible** en travers de la frontière de langage.
+
+        Le nombre vit des deux côtés, ce qui est un doublon assumé. Ce test le
+        verrouille en **nommant le fichier client**, de sorte qu'une modification du
+        serveur casse un test qui dit où aller — même procédé que
+        `MIN_PLATE_CROP_SIDE_PX`.
+
+        Si ce test échoue : mettre à jour `QUERY_MARGIN` dans
+        `frontend/src/features/vehicle-search/model/crop.ts`, puis cette valeur.
+        """
+        assert VEHICLE_MARGIN == 0.06
