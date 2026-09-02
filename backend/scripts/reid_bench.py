@@ -41,6 +41,15 @@ une seconde ligne, `byVehicle`, réduite par véhicule : c'est elle qui dit où 
 mais aussi le plafond des différents. Comparer les deux lignes est la seule façon de
 voir l'effet net.
 
+**Sur un montage doublé, `diff` est contaminé et les écarts sont pessimistes.** Le
+banc sépare les paires sur le `track_id` : deux instances du **même** véhicule dans
+deux copies du même métrage portent deux identifiants, donc leurs comparaisons — qui
+sortent naturellement très haut — tombent dans `diff`. Mesuré sur `Timeline 1.mov`,
+`diffMax` vaut 0,896, très probablement une vraie paire inter-copies mal étiquetée.
+Une comparaison de deux réductions y résiste (mêmes vues, mêmes étiquettes des deux
+côtés) ; une valeur absolue lue seule ferait conclure à une contre-performance de
+l'encodeur alors que c'est le montage qui trompe le banc.
+
 **Ce que ce banc ne mesure pas** : le cas inter-caméra. Toutes ses vues viennent d'une
 même vidéo, donc d'un même point de vue. Une photo importée par l'utilisateur vient
 d'ailleurs, et c'est plus difficile. `rank1` est donc une **borne haute** de ce que la

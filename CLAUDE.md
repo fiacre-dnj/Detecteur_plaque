@@ -1980,9 +1980,31 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       propriété vraie par coïncidence qui cesse de l'être en silence — la famille de
       panne que ce fichier documente le plus.
 
-    **Le seuil n'est pas mesuré**, et l'ADR le dit : la vidéo doublée est le cas
-    idéal (métrage identique au pixel près) et valide le câblage, pas le chiffre.
-    `scripts/reid_bench.py` est l'outil pour trancher sur du métrage réel.
+    **Les distributions sont mesurées depuis le 2026-09-02**, et le seuil n'en sort
+    pas pour autant : elles se recouvrent de **0,026 à 0,896** (35 pistes,
+    `reid_bench.py`). Aucun seuil global n'est donc à la fois sûr et utile, et 0,75
+    tombe **dans** le recouvrement — il manque de vraies paires et en admet au moins
+    une fausse. C'est ce que l'écran promet déjà, désormais chiffré.
+
+    Trois autres chiffres de cette course ferment des questions qui se reposeront :
+    - **une vidéo doublée n'est PAS identique au pixel près**, et ce fichier l'a
+      affirmé deux fois. Mesuré sur un montage exporté : décalage de 1543 images
+      exactement, mais **0,9/255 d'écart pixel** au décalage. Avec le vrai encodeur,
+      48 régions correspondantes rendent **0,969 à 0,997 (médiane 0,991), zéro à
+      1,0** — quand la même image contre elle-même rend **1,000000**. Le plafond est
+      donc le codec : **95–99 % sur un doublon exporté est un succès, pas un
+      manque**, et 100,0 % demanderait une concaténation sans réencodage ;
+    - **donner plus de vues à la galerie ne rend rien.** Elle ne se remplit qu'aux
+      franchissements — 1 ou 2 vues par véhicule là où `MAX_VIEWS_PER_VEHICLE` en
+      admet 4 — et le levier évident était d'activer la règle monotone en largeur.
+      Mesuré (ligne `byVehicle` du banc, qui simule exactement ce levier) : `sameMean`
+      +0,061, `diffMean` +0,048, écart net **+0,013**, et **rang-1 identique** — aucune
+      décision changée, pour 20 à 40 s de CPU. Rejeté ;
+    - **le banc compte deux instances d'un même véhicule comme deux véhicules** quand
+      le tracker leur a donné deux identifiants. Sur un montage doublé, `diff` est donc
+      contaminé et les écarts sont **pessimistes** ; l'égalité des rang-1 y résiste, les
+      valeurs absolues non.
+
     [ADR 0055](docs/adr/0055-signaler-un-vehicule-deja-vu.md).
 
 ## Ce que l'analyse signale — les alertes

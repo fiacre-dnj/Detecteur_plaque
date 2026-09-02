@@ -270,15 +270,95 @@ alertes de plaque s'en sortaient par leur score gelé ; « Véhicule recherché 
 « Véhicule déjà vu » n'affichaient donc **aucun** pourcentage. La carte est désormais
 construite et passée.
 
+## Ce que la mesure a tranché — 2026-09-02
+
+Deuxième course sur `Timeline 1.mov` (1280×720, 30 fps, 109,37 s, H.264), après les
+correctifs ci-dessus : **21 correspondances à 95–99 %, 3 véhicules sans
+correspondance**. Les trois chiffres qui suivent ferment autant de questions.
+
+### La vidéo doublée n'est PAS identique au pixel près
+
+Cette ADR l'a écrit deux fois — « métrage identique au pixel près », « la bonne réponse
+vaut 1,00 par construction ». **C'est faux pour tout montage exporté**, et c'était
+l'hypothèse tacite derrière l'attente d'un 100 %.
+
+| | |
+|---|---|
+| Décalage entre les deux copies | **exactement 1543 images = 51,433 s** (même optimum à t = 10, 30 et 40 s) |
+| Écart pixel au décalage exact | **0,87 à 0,96 sur 255** — non nul |
+| Portion réellement doublée | `t ∈ [0 ; 51,4]` ↔ `[51,43 ; 102,9]` |
+| Après 102,9 s | l'écart saute à **18,7 / 255** : plus aucun homologue |
+
+### Le plafond de ressemblance est le codec, pas l'encodeur
+
+48 régions comparées entre les deux copies au décalage exact, avec le vrai
+`vehicle-reid.onnx` :
+
+| | |
+|---|---|
+| Contrôle — même image contre elle-même | **1,000000** exactement |
+| Les deux copies, même région | **min 0,9688 · médiane 0,9911 · max 0,9972** |
+| Régions atteignant 1,0 | **0 sur 48** |
+
+Le contrôle établit que l'encodeur est déterministe ; les 95–99 % du registre **sont**
+donc le plafond du ré-encodage H.264. **Un score de 95–99 % sur un doublon exporté est
+un succès, pas un manque** — et atteindre 100,0 % demanderait une concaténation sans
+réencodage (`ffmpeg -c copy`).
+
+### Les trois « manquants » sont trois bonnes réponses
+
+#158 (L4 à 107,1 s), #164 (L3 à 104,4 s) et #171 (L3 à 107,4 s) franchissent **après
+102,9 s**, dans les 6,5 s de queue qui n'existent qu'une fois dans le montage. Ils
+n'ont aucun antécédent : une correspondance y serait un faux positif. Avec les 21
+paires vérifiées au décalage sur leurs **deux** franchissements chacune, cela fait
+**24 décisions justes sur 24**.
+
+### Donner plus de vues à la galerie ne rend rien — mesuré, et rejeté
+
+La galerie ne se remplit qu'aux **franchissements** : sans image de requête,
+`optional` est vide dans `_match_appearances`, donc un véhicule ne dépose que 1 ou 2
+vues alors que `MAX_VIEWS_PER_VEHICLE` en admet 4. Le levier évident était donc
+d'activer la règle monotone en largeur dès que la galerie tourne.
+
+La ligne `byVehicle` du banc simule exactement ce levier — 4 vues par véhicule contre
+1 en paire à paire. Sur 35 pistes / 130 vues :
+
+| Réduction | same | min | diff | max | écart | rang-1 |
+|---|---|---|---|---|---|---|
+| paire à paire (1 vue ↔ 1 vue) | +0,747 | +0,026 | +0,214 | +0,896 | +0,533 | **90,6 %** |
+| par véhicule (1 vue ↔ 4 vues) | +0,808 | +0,026 | +0,262 | +0,896 | +0,546 | **90,6 %** |
+
+Contrôle sur 15 pistes / 59 vues : écart +0,593 → +0,608, rang-1 88,1 % → 88,1 %.
+
+Le maximum relève `sameMean` de +0,061 **et** `diffMean` de +0,048 : presque un
+lavage, pour +0,013 d'écart net. Et surtout **le rang-1 est identique** — passer de 1 à
+4 vues n'a changé **aucune décision**. Le levier ne vaut donc pas ses 6 à 11 encodages
+par véhicule à 21,8 ms, soit 20 à 40 s de CPU sur ce clip. Ne pas le reproposer sans
+une mesure qui contredise celle-ci.
+
+### Le biais de cette mesure, à connaître avant de la relire
+
+Sur une vidéo doublée, les deux instances d'un même véhicule portent **deux
+`track_id`**, donc le banc les compte comme deux véhicules **différents** :
+`diffMax = 0,896` est très probablement une vraie paire inter-copies mal étiquetée. Les
+écarts mesurés sont donc **pessimistes**.
+
+L'égalité des rang-1 y résiste — les deux lignes partagent les mêmes vues et les mêmes
+étiquettes — mais les valeurs absolues, non. Une mesure propre demande du métrage non
+doublé, et il n'en existait pas d'exploitable ici : `INTERSECTION_.mov` (491 s, même
+résolution) rend **0 vue** sur deux fenêtres de 60 s, ses véhicules ne franchissant pas
+le plancher de 96 px.
+
 ## Ce que cette ADR ne prétend pas
 
-**Le seuil n'est pas mesuré.** 0,75 est un point de départ raisonné, pas un chiffre
-issu du banc. La vidéo doublée est le cas idéal — métrage identique au pixel près,
-donc similarité proche de 1 — et elle valide le **câblage**, pas le seuil. En trafic
-réel, deux vues du même véhicule descendent à 0,387 et deux véhicules différents
-montent à 0,891 (ADR 0048) : le recouvrement est large, et l'écran promet des
-candidats à vérifier, jamais un verdict.
+**Le seuil de 0,75 n'est toujours pas le produit d'une optimisation**, et les
+distributions maintenant mesurées disent pourquoi il ne peut pas l'être : elles se
+recouvrent de **0,026 à 0,896**. Aucun seuil global n'est à la fois sûr et utile, et
+0,75 tombe **dans** le recouvrement — il manquera de vraies paires et en admettra au
+moins une fausse. C'est exactement ce que l'écran promet (« des candidats à vérifier,
+jamais un verdict »), et c'est désormais chiffré plutôt que supposé.
 
-`scripts/reid_bench.py` est l'outil pour trancher sur du métrage réel. Tant que ce
-n'est pas fait, ce chiffre reste un défaut d'affichage déplaçable, et non une
-propriété du système.
+Ce qui reste à mesurer est le cas qui compte vraiment et qu'aucun métrage disponible
+n'exerce : **un véhicule qui repasse des heures plus tard, sous un autre angle**. Le
+doublon ne le simule pas — il ne fait varier ni la lumière, ni la trajectoire, ni le
+point de vue.
