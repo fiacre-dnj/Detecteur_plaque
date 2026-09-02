@@ -216,6 +216,39 @@ Corrigé au passage, même famille : **`record_embedding` rabaissait
 encodage forcé au franchissement sur une boîte étroite remettait donc la règle
 monotone d'ADR 0050 en arrière et rouvrait des ré-encodages déjà payés.
 
+### Et le même défaut vivait sur la recherche par image
+
+Cette ADR a d'abord écrit, dans ce paragraphe même, que `match_score` devait **rester
+remplacé** — « c'est une mesure sur la vue courante, pas un rang ». **L'argument était
+faux**, et il l'était pour la raison exacte qui a fait corriger `rematch_score` : un
+véhicule est encodé six à onze fois, donc publier la dernière mesure ne la rend pas
+plus honnête, cela la rend **arbitraire**. La question posée est « ce véhicule
+ressemble-t-il à la photo cherchée ? », et une vue oblique ne réfute pas une vue
+franche (0,387 au plus bas entre deux vues d'un même véhicule, ADR 0048).
+
+Pire, la correction ci-dessus l'avait **aggravé** : un franchissement forcé contourne
+la marge de largeur, donc une vue étroite prise au passage du trait pouvait écraser le
+score d'une vue trois fois plus large. Le `VehicleRecord` annonçait alors « meilleure
+vue : 320 px » en portant le score d'une vue de 100 px.
+
+Et un bug sans ambiguïté s'y cachait : **`None` effaçait un score acquis.**
+`cosine_similarity` étant bornée à `[-1, 1]`, une similarité négative échoue
+`score >= reid_min_similarity` **même au défaut `0.0`** — donc un `None` passait
+par-dessus un 0,83 légitime, le véhicule disparaissait des résultats qu'il avait
+mérités, et il gardait la photo qui servait à le vérifier (`_keep_snapshot` étant
+indépendant du plancher).
+
+`record_embedding` retient donc désormais le maximum, et `None` ne retire rien : le
+plancher de déploiement décide de ce qu'on **publie**, jamais de ce qu'on **efface**.
+
+**Ce qui ne s'est pas transposé, et c'est délibéré.** La règle « — sous le seuil » du
+registre ne passe pas à la colonne « Ressemblance » : la recherche par image a un
+curseur de 0 à 0,95 dont l'aide dit « descendre trouve plus de candidats », la cellule
+n'affirme aucune **identité** — elle montre un nombre — et c'est ce nombre qui permet
+de comprendre pourquoi un véhicule tombe juste sous le curseur. `hasMatch` continue
+pour la même raison de ne pas exiger un score au-dessus du seuil : cette colonne
+**est** la surface de retour du curseur.
+
 ### Et le bruit sous le seuil
 
 Les sept véhicules de la **première** copie n'ont, par construction, aucun jumeau

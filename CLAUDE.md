@@ -1898,10 +1898,46 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       où la bonne réponse vaut **1,00 par construction**, trois jumeaux sur sept
       publiaient 0,42, 0,60 et 0,27, et le dernier désignait **un autre véhicule**.
       Le numéro suit le score, jamais l'inverse ;
-    - **`record_embedding` ne rabaisse plus `appearance_width_px`.** La galerie
-      comparait, lui non : un encodage forcé au franchissement sur une boîte étroite
-      remettait la règle monotone d'ADR 0050 en arrière et rouvrait des ré-encodages
-      déjà payés ;
+    - **`record_embedding` est monotone sur ses DEUX champs**, et il ne l'était sur
+      aucun. `appearance_width_px` était rabaissé par un encodage forcé au
+      franchissement, ce qui remettait la règle monotone d'ADR 0050 en arrière ; et
+      `match_score` — la ressemblance à l'**image de requête**, ADR 0048 — souffrait du
+      défaut jumeau de `record_rematch`, en pire. Il retient désormais le maximum lui
+      aussi, et `None` ne retire rien : le plancher de déploiement décide de ce qu'on
+      **publie**, jamais de ce qu'on **efface**. Ce dernier point était un bug franc —
+      `cosine_similarity` étant bornée à `[-1, 1]`, une similarité négative échoue
+      `score >= 0.0` **au défaut**, donc un `None` passait par-dessus un 0,83 légitime
+      et le véhicule disparaissait des résultats en gardant la photo qui servait à le
+      vérifier ;
+    - **la règle du seuil, elle, ne s'est PAS transposée à la recherche par image**, et
+      c'est délibéré : celle-ci a un curseur de 0 à 0,95 dont l'aide dit « descendre
+      trouve plus de candidats », sa cellule n'affirme aucune **identité** — elle montre
+      un nombre — et c'est ce nombre qui permet de comprendre pourquoi un véhicule tombe
+      juste sous le curseur. `hasMatch` continue pour la même raison de ne pas exiger un
+      score au-dessus du seuil : cette colonne **est** la surface de retour du curseur.
+      La symétrie aveugle aurait retiré l'outil de réglage ;
+    - **le cadrage de la requête envoyait autre chose que ce qu'on voyait cadrer.**
+      `pointFor` mesurait le conteneur alors que l'image portait `w-full max-h-64
+      object-contain` : sur une photo plus haute que large — une photo de téléphone —
+      `object-contain` letterboxait horizontalement, les fractions incluaient les bandes
+      vides, et `cropToJpeg` les appliquait à `naturalWidth`. Le rectangle bleu étant
+      dessiné dans le même repère faux, **rien ne le signalait**. Corrigé en supprimant
+      le letterbox (`w-fit` + image intrinsèque, plus de `object-contain`) et non en
+      apprenant à le calculer : la boîte de l'image *est* alors sa boîte de contenu,
+      donc les fractions sont exactes par construction — et une largeur imposée
+      réintroduite un jour **déformerait visiblement** l'aperçu au lieu de décaler le
+      cadrage en silence ;
+    - **la requête replique la marge de 6 %** (`QUERY_MARGIN` dans `crop.ts`). La
+      galerie encode la boîte du détecteur *plus* `VEHICLE_MARGIN` : sans elle, le même
+      véhicule occupe 100 % de la tuile 208² d'un côté et ~89 % de l'autre, donc il y
+      paraît 12 % plus gros. Le nombre vit des deux côtés de la frontière de langage —
+      doublon assumé — et un test **backend** le verrouille en nommant le fichier
+      client, même procédé que `MIN_PLATE_CROP_SIDE_PX` ;
+    - **`snapshotCaption` nomme à quoi sa ressemblance se compare.** Il y a désormais
+      deux ressemblances — à la photo cherchée et à un autre véhicule du clip — et la
+      modale de comparaison affichait les deux sous le même mot : « Ressemblance 100 % »
+      en entête, « ressemblance 34 % » dans les légendes. Erreur d'unité invisible, les
+      deux chiffres étant plausibles ;
     - **la garde temporelle** : un déposant n'est éligible que s'il avait **disparu**
       avant que le candidat n'apparaisse. Deux véhicules simultanément visibles ne
       peuvent pas être le même objet physique, et c'est le faux positif le plus

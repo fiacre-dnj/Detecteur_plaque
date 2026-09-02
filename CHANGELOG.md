@@ -11,6 +11,25 @@ plus deux fois dans le même sens » si.
 
 ### Corrigé
 
+- **La recherche par image retenait la mauvaise mesure, et pouvait perdre un
+  véhicule.** Un véhicule est comparé à votre photo six à onze fois, sous des angles
+  différents — et c'est la **dernière** comparaison qui était publiée, même quand une
+  vue bien meilleure avait été mesurée juste avant. Pire : quand la dernière mesure
+  tombait sous le plancher du serveur, elle **effaçait** le bon score et le véhicule
+  disparaissait des résultats qu'il avait mérités, tout en gardant la photo qui
+  servait à le vérifier. C'est désormais la meilleure mesure qui est publiée, et une
+  mesure refusée n'efface plus rien.
+- **Le cadrage de la photo cherchée n'était pas celui que vous encadriez.** Sur une
+  photo plus haute que large — une photo de téléphone — la zone envoyée au serveur
+  était décalée et redimensionnée par rapport au rectangle bleu que vous voyiez, sans
+  le moindre message. L'aperçu s'ajuste maintenant à l'image, et ce que vous cadrez
+  est ce qui part. Le cadrage reprend aussi la petite marge que le serveur ajoute
+  autour des véhicules de la vidéo, pour que les deux images se comparent dans les
+  mêmes conditions.
+- **Les deux « ressemblances » ne se confondent plus.** Ressembler à la photo
+  cherchée et ressembler à un autre véhicule de la vidéo sont deux mesures
+  différentes, et la fenêtre de comparaison les affichait sous le même mot. La
+  légende dit désormais laquelle elle montre.
 - **La re-détection retenait la mauvaise mesure.** Un véhicule qui franchit deux
   lignes est comparé deux fois, sous deux angles différents — et c'est la **dernière**
   comparaison qui était publiée, même quand elle était bien moins bonne, même quand
