@@ -1049,11 +1049,14 @@ function MatchCell({
  * ne se vérifie sur rien ; « comme #12 » seul cache que ce n'est qu'une hypothèse.
  * C'est la même raison qui met la capture à côté de la ressemblance.
  *
- * Le seuil ne vient **pas** en prop, contrairement à `MatchCell` : la colonne
- * n'existe que si le serveur a trouvé quelque chose, et le curseur d'affichage ne
- * décide ici que d'une teinte. Un score sous le seuil reste lisible en gris — c'est
- * ce qui permet de voir qu'on est passé à côté de peu, et de descendre le seuil en
- * connaissance de cause.
+ * Le seuil ne vient **pas** en prop, contrairement à `MatchCell` : la re-détection n'a
+ * aucun curseur — elle est une case à cocher — donc il n'y a rien à recevoir.
+ *
+ * **Et sous le seuil, rien n'est affirmé**, à l'inverse de `MatchCell` juste au-dessus.
+ * L'asymétrie est délibérée : là-bas l'utilisateur a fourni une photo et règle un
+ * curseur, donc le pourcentage sous le seuil est l'outil qui lui dit de le descendre ;
+ * ici personne n'a rien demandé et la cellule affirmerait une **identité** — « c'est
+ * le #12 » — à 2 %. Voir `isRematched`.
  */
 function RematchCell({
   vehicle,
