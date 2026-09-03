@@ -40,6 +40,7 @@ from traffic_analysis.features.counting.domain.models import (
     VehicleRecord,
     ZoneDef,
     ZoneTally,
+    class_group,
 )
 from traffic_analysis.features.counting.domain.plate_geometry import unread_reason
 from traffic_analysis.features.counting.domain.plate_text import normalise_plate_reading
@@ -400,6 +401,34 @@ class AnalysisSession:
         du camion : la supprimer effacerait un vrai véhicule. Sous-compter est
         l'erreur la plus difficile à remarquer, donc en cas de doute on garde.
 
+        **Et le seuil ne suffit pas : il a été calibré sur la seule classe qui y
+        échappe.** L'argument ci-dessus vaut pour une *voiture* devant un camion, à
+        0,8. La mesure est `intersection / min(aire)`, donc elle est structurellement
+        asymétrique : un camion ne peut jamais être contenu dans une moto, une moto
+        l'est trivialement dans un camion. Mesuré sur ce code, un pilote dans la
+        boîte de sa propre moto, un piéton devant un bus et une moto devant un camion
+        rendent tous **1,000** — les trois passent le seuil, et c'est toujours le plus
+        petit objet qui part, c'est-à-dire exactement les deux classes qu'on peine à
+        détecter. Conséquences mesurées en bout de chaîne : une moto suivie cinq
+        images devant un camion ne laisse **aucune** trace nulle part, et une moto
+        englobée trois secondes ressort en **deux** véhicules — le même mécanisme
+        sous-compte et double-compte.
+
+        La suppression est donc bornée aux objets **physiquement exclusifs entre
+        eux** (`class_group`). Le cas cible reste traité : la cabine et le semi sont
+        tous deux `truck`, donc du même groupe — et deux boîtes de même label le sont
+        quelle que soit la table. La garde porte sur le **groupe** et jamais sur
+        l'égalité de label, sinon une cabine détectée `car` dans un semi `truck`
+        redeviendrait deux pistes, deux véhicules, deux franchissements : le piège 6
+        rouvert par le correctif censé le préserver.
+
+        Ce que la garde **ne** protège pas, et il faut le savoir : deux objets de la
+        même famille. Un enfant marchant contre un adulte est à 1,0, une voiture
+        entièrement dans la boîte d'un bus aussi. Ce dernier cas existait déjà avant
+        ce correctif ; le traiter demanderait un critère de plausibilité — la cabine
+        partage un bord de la boîte du semi, la moto au milieu du camion non — à
+        mesurer, jamais à adopter en défaut. Voir ADR 0056.
+
         **La plus petite part**, jamais la plus grande : la cabine est un morceau du
         véhicule, et c'est la boîte du véhicule entier qui décrit l'objet physique.
 
@@ -416,6 +445,11 @@ class AnalysisSession:
                 continue
             for j, second in enumerate(observations[i + 1 :], start=i + 1):
                 if j in dropped:
+                    continue
+                # **Avant la géométrie** : que deux objets puissent être le même
+                # objet physique ne dépend pas de l'endroit où ils se trouvent. Un
+                # pilote et sa moto se recouvrent à 1,0 et restent deux objets.
+                if class_group(first.label) != class_group(second.label):
                     continue
                 if first.box.containment(second.box) < CONTAINMENT_THRESHOLD:
                     continue

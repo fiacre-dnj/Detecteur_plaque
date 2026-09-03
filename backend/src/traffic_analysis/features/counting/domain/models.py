@@ -172,6 +172,52 @@ def category_of(label: str) -> CountCategory:
     return CATEGORY_OF_CLASS.get(label, "vehicle")
 
 
+#: Familles d'objets **physiquement exclusifs entre eux**, et rien d'autre.
+#:
+#: À ne pas confondre avec `CountCategory`, qui range pour l'affichage — « 42
+#: véhicules, 7 personnes ». Ici la question est tout autre, et elle n'a qu'un seul
+#: consommateur légitime : *ces deux boîtes peuvent-elles décrire le même objet
+#: physique ?* Deux boîtes du même groupe qui se recouvrent sont un doublon du
+#: détecteur ; deux boîtes de groupes différents sont deux objets réels.
+#:
+#: Trois groupes et pas deux : `bicycle` et `motorcycle` sont un même objet vu par
+#: deux classes voisines — un scooter sort régulièrement sous l'une ou l'autre — mais
+#: un deux-roues n'est **pas** un doublon de la voiture derrière lui, ni de son
+#: pilote. `CountCategory` les range tous les deux en `vehicle` et ne peut donc pas
+#: répondre.
+type ClassGroup = Literal["person", "two_wheeler", "motor_vehicle"]
+
+#: `coco_name` → groupe. Écrit à la main plutôt que dérivé de `DETECTABLE_CLASSES` :
+#: la catégorie qu'il porte est celle de l'affichage, et faire dériver l'une de
+#: l'autre lierait deux questions qui n'ont pas de raison d'évoluer ensemble.
+CLASS_GROUP_OF: dict[str, ClassGroup] = {
+    "person": "person",
+    "bicycle": "two_wheeler",
+    "motorcycle": "two_wheeler",
+    "car": "motor_vehicle",
+    "bus": "motor_vehicle",
+    "truck": "motor_vehicle",
+    "train": "motor_vehicle",
+}
+
+
+def class_group(label: str) -> ClassGroup:
+    """Famille d'objets physiquement exclusifs d'un label. Inconnu ⇒ `motor_vehicle`.
+
+    **Le repli est le choix conservateur, et il mérite son mot.** Un label inconnu ne
+    peut venir que d'un modèle entraîné sur autre chose que COCO — une voiture nommée
+    autrement, typiquement. Le ranger avec les véhicules à moteur garde pour lui le
+    comportement d'avant l'existence des groupes, c'est-à-dire la déduplication du
+    piège 6 ; lui donner un groupe à part la lui retirerait en silence, et
+    sous-compter est l'erreur la plus difficile à remarquer.
+
+    Deux boîtes portant le **même** label tombent dans le même groupe quel que soit le
+    repli : le cas cible — la cabine et le semi, tous deux `truck` — est donc protégé
+    par construction, jamais par la table.
+    """
+    return CLASS_GROUP_OF.get(label, "motor_vehicle")
+
+
 @dataclass(frozen=True, slots=True)
 class BoundingBox:
     """Boîte en pixels source, coin supérieur gauche + dimensions."""

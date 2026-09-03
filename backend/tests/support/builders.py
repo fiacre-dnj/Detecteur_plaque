@@ -27,6 +27,7 @@ from traffic_analysis.features.counting.domain.models import (
 
 # Identifiants COCO, nommés pour que les scénarios se lisent.
 PERSON = 0
+BICYCLE = 1
 CAR = 2
 MOTORCYCLE = 3
 BUS = 5
@@ -34,6 +35,7 @@ TRUCK = 7
 
 CLASS_LABELS: dict[int, str] = {
     PERSON: "person",
+    BICYCLE: "bicycle",
     CAR: "car",
     MOTORCYCLE: "motorcycle",
     BUS: "bus",

@@ -193,7 +193,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1761 tests
+uv run pytest                                                            # 1796 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -204,6 +204,7 @@ uv run python scripts/fetch_plate_model.py
 uv run python scripts/fetch_plate_ocr_model.py       # modèle OCR + son dictionnaire
 uv run python scripts/fetch_reid_model.py            # encodeur de ressemblance (optionnel)
 uv run python scripts/audit_lignes.py                # « pourquoi cette ligne est à 0 ? »
+uv run python scripts/recall_bench.py --videos <clip> --inventory   # « y a-t-il des motos ? »
 
 # ── Frontend (cd frontend)
 bun install
@@ -2083,6 +2084,58 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     (`too_small`), mais seulement *après* avoir payé l'analyse. Mesuré en 720p sur ce
     dépôt : 29 véhicules, **zéro plaque publiée**. L'avertissement dit une conséquence
     et deux gestes (ADR 0032), jamais un interdit — `canAnalyse` reste le seul juge.
+41. **La suppression des boîtes incluses effaçait les petits objets, et le seuil
+    n'y pouvait rien.** `_drop_contained` jette, **avant le suivi**, toute boîte dont
+    90 % de l'aire tombe dans une autre. Sa docstring justifiait le seuil ainsi :
+    « le cas cible atteint 1,0, tandis qu'**une voiture** roulant devant un camion peut
+    être à 0,8 ». La mesure étant `intersection / min(aire)`, elle est structurellement
+    asymétrique — un camion ne peut jamais être contenu dans une moto — et le seuil
+    avait donc été calibré sur la seule classe qui y échappe. Mesuré sur le vrai
+    domaine : pilote dans la boîte de sa moto, piéton devant un bus, moto devant un
+    camion → **1,000 les trois**, et c'est toujours le plus petit qui part, c'est-à-dire
+    exactement les deux classes qu'on peine à détecter.
+
+    Conséquences mesurées en bout de chaîne : une moto suivie 5 images devant un camion
+    ne laisse **aucune** trace (`high_detections=5`, comptée nulle part) ; une moto qui
+    franchit à l'intérieur de la boîte d'un camion rend `crossings=0` contre `1` pour
+    le témoin ; une moto englobée 3,3 s sans que le tracker la perde ressort en **deux**
+    véhicules — le même mécanisme sous-compte *et* double-compte. Sur les archives de ce
+    dépôt, qui ne contiennent ni moto ni personne donc en borne basse : `containedOut`
+    = 1 610 pour 18 044 observations suivies, **8,2 %**.
+
+    Personne ne pouvait le voir : `_drop_contained` tourne **avant** `_count_scores`,
+    donc une observation supprimée n'entre dans aucun des six chiffres du tiroir
+    « Comptage », et le seul témoin est un scalaire sans classe sous une aide qui parle
+    de cabine de semi-remorque. Le seul verrou de la suite,
+    `test_une_voiture_devant_un_camion_est_conservee`, est construit à 0,8 **par choix
+    des coordonnées**.
+
+    La suppression est désormais bornée aux objets **physiquement exclusifs entre eux**,
+    `class_group` dans `counting/domain/models.py` : `{person}` ·
+    `{bicycle, motorcycle}` · `{car, bus, truck, train}`. Quatre points :
+    - **la garde porte sur le GROUPE, jamais sur l'égalité de label.** Le détecteur ne
+      nomme pas toujours la cabine comme le semi : `first.label != second.label`
+      rouvrirait le piège 6 sur une cabine `car` dans un semi `truck`. Un test le
+      verrouille ;
+    - **trois groupes et pas deux.** `CountCategory` range déjà en `vehicle` / `person`
+      et ne peut pas répondre : elle met les deux-roues avec les voitures. Or un scooter
+      sort régulièrement sous `bicycle` **ou** `motorcycle` — vrai doublon — sans être un
+      doublon de la voiture derrière lui. Les deux tables restent séparées : ranger pour
+      l'affichage et décider si deux boîtes sont le même objet n'ont pas de raison
+      d'évoluer ensemble ;
+    - **le repli d'un label inconnu est `motor_vehicle`**, donc le comportement d'avant
+      les groupes ; deux boîtes de **même** label tombent de toute façon dans le même
+      groupe, donc le cas cible est protégé par construction et non par la table ;
+    - **c'est nécessaire mais pas suffisant, et l'ordre importe.** Un pilote qui survit à
+      `agnostic_nms` — IoU réaliste 0,407, sous le seuil de 0,45 — était **réeffacé ici**
+      à containment 1,000. Corriger le NMS seul n'aurait rien rendu, et aurait fait
+      conclure que la piste du NMS était morte.
+
+    Les comptages changent par construction, dans un seul sens, et **strictement pas du
+    tout** sur une sélection qui ne contient que des véhicules à moteur. Reste dû :
+    publier `contained_out` **par paire de classes**, sur le patron de `near_misses` —
+    une suppression anonyme est aussi opaque que le doublon qu'elle évite.
+    [ADR 0056](docs/adr/0056-la-suppression-des-boites-incluses-effacait-les-petits-objets.md).
 
 ## Ce que l'analyse signale — les alertes
 
@@ -2613,7 +2666,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1761 (1 skip) | 938 |
+| Nombre | 1796 (1 skip) | 938 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

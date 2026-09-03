@@ -47,6 +47,17 @@ l'application, ou une contrainte d'environnement qui a fait perdre du temps.
    roulant devant un camion peut être à 0,8 dans sa boîte et ne doit **pas** être
    supprimée (supprimer un vrai véhicule sous-compte, l'erreur la plus difficile à
    remarquer).
+   *Amendé le 2026-09-03 : **le seuil ne suffit pas, parce qu'il a été calibré sur
+   la seule classe qui y échappe.** L'argument ci-dessus vaut pour une voiture, à
+   0,8 ; la mesure divisant par la plus petite aire, un objet nettement plus petit
+   atteint 1,0 sans effort. Mesuré : pilote dans la boîte de sa moto, piéton devant
+   un bus, moto devant un camion — **1,000 les trois**, et c'est toujours le plus
+   petit qui part. La suppression est donc bornée aux objets physiquement exclusifs
+   entre eux (`class_group` : `{person}` · `{bicycle, motorcycle}` ·
+   `{car, bus, truck, train}`). La garde porte sur le **groupe** et jamais sur
+   l'égalité de label, sinon une cabine détectée `car` dans un semi `truck` rouvre
+   ce piège-ci
+   ([ADR 0056](../docs/adr/0056-la-suppression-des-boites-incluses-effacait-les-petits-objets.md)).*
 
 ## B. Comptage — un véhicule manqué
 
