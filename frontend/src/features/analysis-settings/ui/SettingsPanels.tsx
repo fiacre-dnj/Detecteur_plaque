@@ -1347,8 +1347,14 @@ function ClassPicker({ classes, selected, disabled, onChange }: ClassPickerProps
         </p>
       ) : (
         people.some((entry) => chosen.has(entry.id)) && (
+          // **Une promesse que l'écran ne tenait pas.** « À part » se lisait « pas
+          // dans le total », alors que le chiffre de tête compte les objets distincts
+          // ayant franchi, personnes comprises — et il le doit, puisque les cartes par
+          // type en sont la somme exacte. Ce qui est vrai, et utile, c'est que les
+          // personnes ont leur propre carte et ne se fondent jamais dans « Voiture ».
           <p className="mt-1 text-micro text-ink-dim">
-            Les personnes sont comptées <strong>à part</strong> des véhicules.
+            Les personnes ont leur <strong>propre carte</strong> dans les résultats.
+            Elles entrent dans le total des objets ayant traversé, comme les véhicules.
           </p>
         )
       )}

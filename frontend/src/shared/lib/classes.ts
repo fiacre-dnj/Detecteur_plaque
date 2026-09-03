@@ -64,3 +64,12 @@ export function classLabel(raw: string): string {
  * classe dont l'utilisateur se plaint.
  */
 export const SMALL_CLASSES: ReadonlySet<string> = new Set(["motorcycle", "bicycle", "person"]);
+
+/**
+ * Le nom COCO de la seule classe qui ne soit pas un véhicule.
+ *
+ * Nommé plutôt qu'écrit en clair là où on en a besoin : `"person"` en littéral dans
+ * un composant est une chaîne magique qu'un renommage du catalogue laisserait
+ * silencieusement fausse — la carte disparaîtrait sans que rien ne le dise.
+ */
+export const PERSON_CLASS = "person";
