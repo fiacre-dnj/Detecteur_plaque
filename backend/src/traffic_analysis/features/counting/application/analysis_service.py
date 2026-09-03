@@ -153,6 +153,37 @@ type CancellationCheck = Callable[[], bool]
 type PauseGate = Callable[[], float]
 
 
+def _align_crossing_labels(result: AnalysisResultData) -> None:
+    """Réaligne le libellé des franchissements sur le vote **final** du véhicule.
+
+    L'invariant 4 promet qu'on compte sous `identity_label`, le vote majoritaire sur
+    **la vie du véhicule**. C'était vrai du registre et de `tracked_by_class`, relus à
+    la fin ; c'était faux des franchissements, écrits une fois pour toutes avec le vote
+    tel qu'il était à l'instant du passage.
+
+    Le cas frappe précisément moto, vélo et personne — les trois classes que le
+    détecteur confond — et dont la lecture **s'améliore en approchant** : un deux-roues
+    lu `person` de loin bascule après le franchissement si la ligne est dans la moitié
+    éloignée du champ. Deux conséquences distinctes, et la seconde est la plus
+    dommageable : le même objet était classé différemment par deux surfaces de la même
+    page, et la règle de **voie réservée** — évaluée côté client sur ce libellé —
+    pouvait signaler en rouge une moto parfaitement autorisée.
+
+    `result.vehicles` vient d'être rempli par `session.vehicles()` : on lit le vote
+    final là, plutôt que de le reconstruire, pour qu'il n'existe qu'une source.
+
+    **Aucun total ne change** : ni `crossings`, ni les tallies — que le domaine a déjà
+    déplacés au fil de l'eau. Seule l'étiquette d'un événement bouge.
+    """
+    voted = {record.global_id: record.label for record in result.vehicles}
+    result.crossings[:] = [
+        event
+        if voted.get(event.global_id, event.label) == event.label
+        else replace(event, label=voted[event.global_id])
+        for event in result.crossings
+    ]
+
+
 def _crossing_order(event: CrossingEvent) -> tuple[float, int, str, int]:
     """Ordre de publication d'un franchissement : **son instant d'abord**.
 
@@ -678,6 +709,16 @@ class AnalysisService:
         # Trier ici et non dans le domaine : le compteur émet au fil de l'eau et n'a
         # aucune raison de connaître l'ordre final. C'est l'orchestration qui range,
         # et `crossingsUpTo` côté client suppose cet ordre pour rejouer un résultat.
+        # **Le libellé d'un franchissement était gelé au vote de l'instant du passage.**
+        # Les tallies de ligne suivent désormais le vote au fil de l'eau (ADR 0061),
+        # mais un `CrossingEvent` déjà émis, lui, ne peut pas se corriger tout seul :
+        # c'est un objet immuable parti depuis longtemps. On le réaligne ici, sur le
+        # registre final, qui porte le vote de toute la vie du véhicule (invariant 4).
+        #
+        # **À l'assemblage et non au vote** : les aperçus SSE portent donc encore
+        # l'étiquette du moment, et c'est sans conséquence — le client remplace son
+        # journal vivant par celui du résultat dès la fin de l'analyse.
+        _align_crossing_labels(result)
         result.crossings.sort(key=_crossing_order)
 
         if on_progress is not None:

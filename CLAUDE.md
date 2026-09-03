@@ -193,7 +193,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1869 tests
+uv run pytest                                                            # 1874 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -2297,6 +2297,43 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     **nom COCO** (`SMALL_CLASSES` dans `shared/lib/classes.ts`), jamais sur le libellé
     français, qu'un renommage falsifierait.
     [ADR 0060](docs/adr/0060-la-definition-d-analyse-devient-un-reglage-de-l-utilisateur.md).
+46. **Un franchissement porte le vote final du véhicule, plus celui de l'instant du
+    passage.** L'invariant 4 n'était vrai qu'à moitié : le registre et
+    `tracked_by_class` sont relus à la fin, mais `LineCrossingCounter._count` écrivait
+    `label` une fois pour toutes et `_retally` ne déplaçait la voix que dans
+    `tracked_by_class`. Aucun chemin ne menait aux tallies de ligne. Mesuré sur le vrai
+    domaine — un deux-roues lu `person ×3` puis `motorcycle ×4`, franchissant au
+    milieu : `by_class = {'person': 1}` et `tracked_by_class = {'motorcycle': 1}`. Le
+    même objet, deux classes, sur le même écran.
+
+    **Cela frappe exactement les classes qui manquent** : `person`, `bicycle` et
+    `motorcycle` sont les trois que le détecteur confond (ADR 0057), et leur lecture
+    **s'améliore en approchant** (ADR 0060). Le basculement tombe donc après le
+    franchissement dès que la ligne est dans la moitié éloignée du champ. Seconde
+    conséquence, la plus dommageable : la **voie réservée** était évaluée sur ce libellé
+    gelé, donc une voie réservée aux motos signalait en rouge, avec sa photo, un
+    deux-roues autorisé — et le commentaire de `lineViolations.ts` affirmait le
+    contraire de ce que le code faisait.
+
+    Corrigé **à la source**, côté serveur : `DirectionTally.relabel` déplace une voix
+    sans toucher au total, `LineCrossingCounter.relabel` la porte à la ligne, et
+    `TrackNumbering(on_relabel=…)` prévient la session — un **rappel** et non une
+    dépendance, le numérotage ignorant les lignes et le compteur ignorant le vote. Seul
+    `_VehicleAggregate.crossings` sait *quels* franchissements déplacer, et il les tenait
+    déjà. `_align_crossing_labels` réaligne enfin le journal à l'assemblage, les
+    `CrossingEvent` émis étant immuables. Trois points :
+    - **aucun total ne bouge** — un franchissement reste un franchissement, seule
+      l'étiquette change, donc `total == Σ by_class` tient des deux côtés (invariant 3) ;
+    - **conditionné à `confirmed`**, comme `_retally` : un véhicule pas encore compté
+      n'a rien fait compter, et lui retirer une voix passerait un compteur sous zéro ;
+    - **les aperçus SSE gardent l'étiquette du moment** et c'est sans conséquence, le
+      client remplaçant son journal vivant par celui du résultat à la fin. Les tallies,
+      eux, sont corrigés au fil de l'eau : le KPI est juste en direct.
+
+    **La fréquence n'est pas mesurée** — les clips de ce dépôt ne contiennent ni moto ni
+    personne. Elle se lira sur `result.json.gz` en comptant les franchissements dont
+    `vehicle.label != crossing.label`, désormais zéro par construction.
+    [ADR 0061](docs/adr/0061-un-franchissement-porte-le-vote-final-du-vehicule.md).
 
 ## Ce que l'analyse signale — les alertes
 
@@ -2827,7 +2864,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1869 (1 skip) | 947 |
+| Nombre | 1874 (1 skip) | 947 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

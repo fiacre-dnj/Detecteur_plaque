@@ -271,7 +271,7 @@ class AnalysisSession:
         self._config = config
         self._counter = LineCrossingCounter(config.lines, config.zones, config.min_hits)
         self._zones = ZonePresenceCounter(config.zones, config.min_hits)
-        self._numbering = TrackNumbering()
+        self._numbering = TrackNumbering(on_relabel=self._relabel_crossings)
         # Toutes les pistes connues, pas seulement les actives : `_release_lost`
         # doit pouvoir abandonner une piste qui a cessé d'être rapportée.
         self._tracks: dict[int, SessionTrack] = {}
@@ -387,6 +387,24 @@ class AnalysisSession:
             else:
                 self._rescued_by_low_score += 1
                 self._scores_by_class[observation.label] = (high, rescued + 1)
+
+    def _relabel_crossings(self, vehicle_id: int, previous: str, new: str) -> None:
+        """Le vote a basculé : ses franchissements déjà comptés changent d'étiquette.
+
+        **La session est le seul endroit d'où l'on peut faire ce lien.** Le numérotage
+        connaît le vote et ignore les lignes ; le compteur connaît les lignes et ignore
+        le vote. Seul l'agrégat sait *quels* franchissements ce véhicule a faits —
+        `_VehicleAggregate.crossings` les tenait déjà, pour le registre.
+
+        Aucun total ne bouge, ni par ligne ni globalement : un franchissement reste un
+        franchissement, seule sa classe change. C'est ce qui rend l'opération sûre
+        vis-à-vis de l'invariant 3.
+        """
+        aggregate = self._aggregates.get(vehicle_id)
+        if aggregate is None:
+            return
+        for crossing in aggregate.crossings:
+            self._counter.relabel(crossing.line_id, crossing.direction, previous, new)
 
     def _class_diagnostics(self) -> dict[str, ClassDiagnostic]:
         """Le diagnostic par type, **classes cherchées comprises quand elles sont à zéro**.

@@ -45,6 +45,10 @@ véhicules physiques.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 @dataclass(slots=True)
@@ -75,9 +79,27 @@ class TrackNumbering:
     qui ne décompte rien — seul l'identifiant de piste redevient disponible).
     """
 
-    __slots__ = ("_by_class", "_confirmed", "_next_id", "_number_of_track", "_vehicles")
+    __slots__ = (
+        "_by_class",
+        "_confirmed",
+        "_next_id",
+        "_number_of_track",
+        "_on_relabel",
+        "_vehicles",
+    )
 
-    def __init__(self) -> None:
+    def __init__(self, on_relabel: Callable[[int, str, str], None] | None = None) -> None:
+        #: Prévenu quand le vote déplace le type d'un véhicule **déjà compté**.
+        #:
+        #: Le numérotage sait déplacer sa propre voix (`_retally`) mais ignore tout des
+        #: lignes : leurs tallies, eux, ont compté ce franchissement sous l'ancien type.
+        #: Sans ce rappel, la ventilation par type d'une ligne resterait figée sur ce
+        #: que le véhicule *paraissait* à l'instant du passage pendant que le registre
+        #: affiche sa classe finale — le même objet sous deux classes (ADR 0061).
+        #:
+        #: Un rappel plutôt qu'une dépendance : le numérotage n'a pas à connaître le
+        #: compteur de lignes, et c'est la session qui les tient tous les deux.
+        self._on_relabel = on_relabel
         # Piste vivante → numéro. **Vidé par `forget`** quand la piste est
         # abandonnée : un identifiant de piste réémis par le tracker après cette
         # fenêtre désigne un autre véhicule, et lui rendre l'ancien numéro
@@ -196,6 +218,12 @@ class TrackNumbering:
         if leader_label != vehicle.label and leader_count > incumbent_count:
             if vehicle.confirmed:
                 self._retally(vehicle.label, leader_label)
+                # **Même condition que `_retally`, et pour la même raison** : un
+                # véhicule pas encore confirmé n'a rien fait compter nulle part, donc
+                # il n'y a aucune voix à déplacer. La déplacer quand même ferait
+                # descendre un compteur de ligne sous zéro.
+                if self._on_relabel is not None:
+                    self._on_relabel(vehicle_id, vehicle.label, leader_label)
             vehicle.label = leader_label
             vehicle.class_id = leader_class
 

@@ -625,6 +625,31 @@ class DirectionTally:
         self.first_ms = timestamp_ms if self.first_ms is None else min(self.first_ms, timestamp_ms)
         self.last_ms = timestamp_ms if self.last_ms is None else max(self.last_ms, timestamp_ms)
 
+    def relabel(self, previous: str, new: str) -> None:
+        """Déplace **une** voix d'un type à l'autre, sans toucher au total.
+
+        Le pendant de `TrackNumbering._retally` pour les tallies de ligne. Le vote de
+        classe continue d'évoluer après un franchissement — un deux-roues lu `person`
+        de loin devient `motorcycle` en approchant — et sans ce transfert la
+        ventilation par type d'une ligne resterait figée sur ce que le véhicule
+        *paraissait* à l'instant du passage, pendant que le registre affiche sa classe
+        finale. Le même objet, deux classes, sur le même écran.
+
+        **Le total ne bouge pas**, et c'est ce qui rend l'opération sûre : un
+        franchissement reste un franchissement, seule son étiquette change. L'invariant
+        3 — `total == Σ by_class` — est donc préservé par construction.
+
+        Silencieuse si l'ancien type n'est pas là : la piste a pu franchir avant d'être
+        confirmée, auquel cas rien n'a été compté sous son nom, et retirer une voix
+        ferait descendre un compteur sous zéro.
+        """
+        if previous == new or self.by_class.get(previous, 0) <= 0:
+            return
+        self.by_class[previous] -= 1
+        if self.by_class[previous] <= 0:
+            del self.by_class[previous]
+        self.by_class[new] = self.by_class.get(new, 0) + 1
+
 
 @dataclass(slots=True)
 class LineTally:
