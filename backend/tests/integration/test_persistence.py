@@ -543,3 +543,32 @@ class TestPurgeTtl:
         expired = await repository.list_expired(older_than_minutes=60)
 
         assert [job.id for job in expired] == ["termine-vieux"]
+
+    async def test_list_interrupted_rend_exactement_les_non_terminaux(
+        self, repository: SqlAlchemyJobRepository
+    ) -> None:
+        """Le **complément exact** de `list_expired`, et c'est la propriété utile.
+
+        Ce que `list_expired` ne rend jamais est précisément ce qu'aucune purge ne
+        peut prendre : sans cette seconde lecture, un job resté `paused` garde sa
+        ligne **et sa vidéo** pour toujours.
+
+        Aucun filtre de date ici : au démarrage, l'ancienneté ne dit rien. Un job
+        `running` écrit il y a trois secondes appartient au processus qui vient de
+        mourir exactement comme celui d'il y a trois semaines.
+        """
+        for job_id, status in (
+            ("en-file", "queued"),
+            ("en-cours", "running"),
+            ("suspendu", "paused"),
+            ("fini", "done"),
+            ("echoue", "error"),
+            ("annule", "cancelled"),
+        ):
+            await repository.add(_job(job_id))
+            if status != "queued":
+                await repository.set_status(job_id, status)  # type: ignore[arg-type]
+
+        interrupted = await repository.list_interrupted()
+
+        assert sorted(job.id for job in interrupted) == ["en-cours", "en-file", "suspendu"]

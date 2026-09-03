@@ -131,3 +131,13 @@ class InMemoryJobRepository:
             and job.finished_at is not None
             and (now - job.finished_at).total_seconds() > cutoff_s
         ]
+
+    async def list_interrupted(self) -> Sequence[JobRecord]:
+        """Jobs non terminaux.
+
+        Ici la liste est **toujours vide au démarrage** — ce dépôt perd tout à
+        l'arrêt du processus, c'est sa limite assumée. La méthode existe parce que
+        le port l'exige, et elle est réellement utile en cours de vie : elle dit ce
+        qui travaille.
+        """
+        return [job for job in self._jobs.values() if not is_terminal(job.status)]

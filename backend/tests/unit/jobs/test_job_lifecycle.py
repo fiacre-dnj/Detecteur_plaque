@@ -24,6 +24,7 @@ from traffic_analysis.features.counting.application.dto import (
 )
 from traffic_analysis.features.jobs.application.job_manager import JobManager
 from traffic_analysis.features.jobs.application.progress_hub import ProgressHub
+from traffic_analysis.features.jobs.domain.records import JobRecord
 from traffic_analysis.features.jobs.domain.status import (
     InvalidJobTransition,
     can_transition,
@@ -92,11 +93,17 @@ async def _manager(
     preview_interval_ms: int = 0,
     preview_vehicles_interval_ms: int = 1000,
     preparer: FakePreparer | None = None,
+    repository: InMemoryJobRepository | None = None,
 ) -> tuple[JobManager, InMemoryJobRepository, FileResultStore]:
     """Gestionnaire de test. **Aperçu désactivé par défaut** : les scénarios de
     cycle de vie n'en veulent pas, et publier des images à chaque frame y
-    ajouterait du bruit sans rien vérifier de plus."""
-    repository = InMemoryJobRepository(clock)
+    ajouterait du bruit sans rien vérifier de plus.
+
+    `repository` permet de **rebrancher un gestionnaire neuf sur un dépôt déjà
+    peuplé** — c'est ainsi qu'on simule un redémarrage du service : la base
+    survit, l'état en mémoire non.
+    """
+    repository = repository if repository is not None else InMemoryJobRepository(clock)
     store = FileResultStore(tmp_path / "data")
     manager = JobManager(
         repository=repository,
@@ -818,3 +825,144 @@ class TestPurgeDesVideosDeposees:
 
         assert await manager.purge_expired_inputs(60) == 1
         assert await manager.purge_expired_inputs(60) == 0
+
+
+class TestReconciliationAuDemarrage:
+    """Ce qu'un arrêt du service laisse derrière lui, et comment on le solde.
+
+    Le scénario est toujours le même : un dépôt qui **survit** au processus, et un
+    gestionnaire **neuf** branché dessus. C'est exactement ce qui se passe au
+    redémarrage — la base garde les lignes, l'état en mémoire (workers, événements
+    d'annulation, barrières de pause) repart vide.
+
+    Relevé sur une base réelle avant ce correctif : **quinze jobs sur dix-huit**
+    bloqués en `queued`, `paused` ou `running`, dont un « en cours » depuis six
+    jours, et des vidéos de dix-sept jours sous un TTL de vingt-quatre heures.
+    """
+
+    @staticmethod
+    async def _depot_survivant(clock: FrozenClock) -> InMemoryJobRepository:
+        """Un dépôt tel qu'un arrêt brutal le laisse : les trois états vivants,
+        plus un job terminal comme témoin."""
+        repository = InMemoryJobRepository(clock)
+        for job_id, status in (
+            ("en-file", "queued"),
+            ("en-cours", "running"),
+            ("suspendu", "paused"),
+            ("termine", "done"),
+        ):
+            await repository.add(
+                JobRecord(
+                    id=job_id,
+                    status="queued",
+                    model_id="yolov8n",
+                    file_name="clip.mp4",
+                    file_size_bytes=16,
+                    created_at=clock.now(),
+                )
+            )
+            if status != "queued":
+                await repository.set_status(job_id, status)
+        return repository
+
+    async def test_les_trois_etats_vivants_sont_termines_en_erreur(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """`queued`, `running` et `paused` décrivent tous un worker qui n'existe
+        plus. `error` et non `cancelled` : personne n'a renoncé, le service est
+        tombé."""
+        repository = await self._depot_survivant(clock)
+        manager, _, _ = await _manager(tmp_path, clock, repository=repository)
+
+        assert await manager.reconcile_interrupted() == 3
+
+        for job_id in ("en-file", "en-cours", "suspendu"):
+            record = await manager.get(job_id)
+            assert record.status == "error", job_id
+            assert record.error_code == "interrupted_by_restart", job_id
+            assert record.error is not None and "redémarré" in record.error
+
+    async def test_un_job_termine_n_est_jamais_touche(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """Le garde qui compte : un historique qui se réécrirait au démarrage
+        vaudrait moins que pas d'historique du tout."""
+        repository = await self._depot_survivant(clock)
+        manager, _, _ = await _manager(tmp_path, clock, repository=repository)
+
+        await manager.reconcile_interrupted()
+
+        temoin = await manager.get("termine")
+        assert temoin.status == "done"
+        assert temoin.error_code is None
+
+    async def test_la_reconciliation_est_idempotente(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """Elle tourne à **chaque** démarrage, y compris juste après elle-même —
+        un redémarrage en boucle ne doit pas réécrire des jobs déjà soldés."""
+        repository = await self._depot_survivant(clock)
+        manager, _, _ = await _manager(tmp_path, clock, repository=repository)
+
+        assert await manager.reconcile_interrupted() == 3
+        assert await manager.reconcile_interrupted() == 0
+
+    async def test_un_job_reconcilie_devient_enfin_purgeable(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """**Le vrai enjeu.**
+
+        `list_expired` ne rend que des jobs terminaux : tant qu'un job reste
+        `paused`, ni sa ligne ni sa **vidéo** ne peuvent être purgées. Or la vidéo
+        porte des plaques et des visages, et `input_ttl_minutes` promet de
+        l'effacer — un écart entre une promesse de confidentialité et le
+        comportement réel est plus grave qu'une promesse absente.
+        """
+        repository = await self._depot_survivant(clock)
+        manager, _, store = await _manager(tmp_path, clock, repository=repository)
+        video = store.input_path("suspendu", ".mp4")
+        video.write_bytes(b"\x00" * 16)
+
+        clock.advance(2 * 3600)
+        assert await manager.purge_expired_inputs(60) == 0, "avant : la purge est aveugle"
+        assert video.exists()
+
+        await manager.reconcile_interrupted()
+
+        # `set_status` date la fin de *maintenant*, donc il faut laisser le TTL
+        # s'écouler à nouveau : c'est bien le comportement voulu, un job soldé à
+        # l'instant n'est pas périmé.
+        clock.advance(2 * 3600)
+        assert await manager.purge_expired_inputs(60) == 1
+        assert not video.exists()
+
+        # La ligne aussi, et pas seulement la vidéo. On vise **ce** job plutôt que
+        # de compter : la purge emporte au même passage le témoin `done`, périmé
+        # lui aussi, et un décompte se lirait comme un effet de bord de la
+        # réconciliation alors que c'est le TTL qui fait son travail.
+        await manager.purge_expired(60)
+        with pytest.raises(JobNotFoundError):
+            await manager.get("suspendu")
+
+    async def test_un_job_suspendu_redevient_supprimable(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """Sans réconciliation, `cancel_or_purge` répond `200` et ne fait **rien**.
+
+        Elle pose un événement d'annulation dans un dictionnaire en mémoire, vide
+        après un redémarrage : aucun worker n'écoute, le statut ne bouge pas, et le
+        job devient indéboulonnable depuis une interface qui affiche pourtant un
+        bouton « Supprimer ». Mesuré sur le service réel : trois `DELETE`
+        successifs, trois `200`, le job toujours `paused`.
+        """
+        repository = await self._depot_survivant(clock)
+        manager, _, _ = await _manager(tmp_path, clock, repository=repository)
+
+        await manager.cancel_or_purge("suspendu")
+        assert (await manager.get("suspendu")).status == "paused", "avant : inchangé"
+
+        await manager.reconcile_interrupted()
+        await manager.cancel_or_purge("suspendu")
+
+        with pytest.raises(JobNotFoundError):
+            await manager.get("suspendu")
