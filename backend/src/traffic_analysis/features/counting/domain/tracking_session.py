@@ -24,8 +24,11 @@ from typing import TYPE_CHECKING
 
 from traffic_analysis.features.counting.domain.line_counter import LineCrossingCounter
 from traffic_analysis.features.counting.domain.models import (
+    LABEL_OF_CLASS_ID,
     SNAPSHOT_CAUSE_PRIORITY,
+    VEHICLE_CLASS_IDS,
     AnalysisStats,
+    ClassDiagnostic,
     CountingLineDef,
     CrossingEvent,
     Diagnostics,
@@ -97,6 +100,18 @@ class SessionConfig:
     #: distinction que le panneau de diagnostic affiche, et qui était impossible à
     #: établir sans cette valeur. Le défaut est celui du schéma de requête.
     confidence_threshold: float = 0.35
+    #: Les classes que l'utilisateur a réellement cochées. **Diagnostic seul.**
+    #:
+    #: Le comptage ne les lit pas : le filtrage a lieu bien en amont, au détecteur
+    #: (`classes=` d'Ultralytics). Elles servent à publier une rangée de diagnostic
+    #: **par classe cherchée, y compris à zéro** — « motorcycle 0 / 0 » est la seule
+    #: façon d'écrire « on l'a cherchée et jamais trouvée ».
+    #:
+    #: **Elles doivent venir du serveur et non des cases de l'écran.** Le client
+    #: connaît sa sélection *courante*, qui peut avoir changé depuis l'analyse :
+    #: afficher « Moto 0 / 0 » sur un résultat où la moto n'a jamais été cherchée
+    #: serait exactement le mensonge que ce champ existe pour éviter.
+    class_ids: tuple[int, ...] = VEHICLE_CLASS_IDS
     #: La lecture du texte de plaque tourne-t-elle réellement ?
     #:
     #: Ce que le service a **résolu**, et non ce que la requête a demandé : le
@@ -240,6 +255,7 @@ class AnalysisSession:
         "_masked_out",
         "_numbering",
         "_rescued_by_low_score",
+        "_scores_by_class",
         "_tracks",
         "_zones",
     )
@@ -283,6 +299,7 @@ class AnalysisSession:
         # plongent ? », qui se mesure sur des observations.
         self._high_detections = 0
         self._rescued_by_low_score = 0
+        self._scores_by_class: dict[str, tuple[int, int]] = {}
 
     def feed(
         self,
@@ -360,10 +377,37 @@ class AnalysisSession:
         seraient coupées en deux sans la bande basse.
         """
         for observation in observations:
+            # La ventilation par type est rangée dans le **même** parcours que le
+            # total : deux boucles séparées finiraient par ne plus compter la même
+            # population, et le détail contredirait le total sur le même écran.
+            high, rescued = self._scores_by_class.get(observation.label, (0, 0))
             if observation.score >= self._config.confidence_threshold:
                 self._high_detections += 1
+                self._scores_by_class[observation.label] = (high + 1, rescued)
             else:
                 self._rescued_by_low_score += 1
+                self._scores_by_class[observation.label] = (high, rescued + 1)
+
+    def _class_diagnostics(self) -> dict[str, ClassDiagnostic]:
+        """Le diagnostic par type, **classes cherchées comprises quand elles sont à zéro**.
+
+        C'est l'absence qui est l'information : « motorcycle 0 / 0 » veut dire « on l'a
+        cherchée et jamais trouvée », et aucun curseur ne rattrapera cela. Omettre la
+        clé se lirait « pas d'information », ce qui envoie chercher ailleurs.
+
+        Une classe **détectée sans avoir été cochée** ne peut pas exister — le
+        filtrage a lieu au détecteur — mais si elle apparaissait, elle serait rendue
+        quand même : taire une observation réellement comptée pour respecter une liste
+        serait le pire des deux mondes.
+        """
+        rows = {
+            LABEL_OF_CLASS_ID[class_id]: ClassDiagnostic()
+            for class_id in self._config.class_ids
+            if class_id in LABEL_OF_CLASS_ID
+        }
+        for label, (high, rescued) in self._scores_by_class.items():
+            rows[label] = ClassDiagnostic(high_detections=high, rescued_by_low_score=rescued)
+        return dict(sorted(rows.items()))
 
     def _mask(self, observations: Sequence[TrackObservation]) -> tuple[TrackObservation, ...]:
         """Filtre les détections hors zone quand le masque est actif.
@@ -1012,6 +1056,13 @@ class AnalysisSession:
                 contained_out=self._contained_out,
                 confirmed_tracks=confirmed,
                 tentative_tracks=len(self._tracks) - confirmed,
+                # **Dérivé, jamais accumulé en parallèle.** `issued` compte les numéros
+                # émis et `size` ceux qui ont atteint `min_hits` : l'écart est le
+                # cumul que `tentative_tracks` ne peut pas donner, puisque celui-ci ne
+                # voit que les pistes encore vivantes. Un second compteur finirait par
+                # diverger du premier (invariant 3).
+                unconfirmed_tracks=self._numbering.issued - self._numbering.size,
+                by_class=self._class_diagnostics(),
                 # Les pistes **encore vivantes** sont exclues : une piste qui
                 # approche de la ligne à l'instant où l'on publie n'a rien manqué,
                 # elle n'a pas fini. C'est `self._tracks` qui fait foi — une piste

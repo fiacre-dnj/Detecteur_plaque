@@ -303,6 +303,20 @@ def serialise_stats(stats: AnalysisStats) -> dict[str, Any]:
             "confirmedTracks": stats.diagnostics.confirmed_tracks,
             "tentativeTracks": stats.diagnostics.tentative_tracks,
             "rescuedByLowScore": stats.diagnostics.rescued_by_low_score,
+            # Le **cumul** que `tentativeTracks` ne peut pas donner : celui-ci ne
+            # compte que les pistes encore vivantes à la dernière image, donc il vaut
+            # zéro alors même que douze motos viennent d'être abandonnées.
+            "unconfirmedTracks": stats.diagnostics.unconfirmed_tracks,
+            # Par type, et les types cochés à **zéro sont présents** : c'est l'absence
+            # qui est l'information — « motorcycle 0 / 0 » veut dire « cherchée, jamais
+            # trouvée ». Même raisonnement que `nearMisses`.
+            "byClass": {
+                label: {
+                    "highDetections": row.high_detections,
+                    "rescuedByLowScore": row.rescued_by_low_score,
+                }
+                for label, row in stats.diagnostics.by_class.items()
+            },
             # Par ligne, et non un total : un total ne dirait pas **laquelle** est
             # mal placée, ce qui est la seule chose qu'on veut en savoir. Une ligne
             # sans quasi-franchissement est présente à `0` — l'absence de clé se

@@ -315,6 +315,10 @@ class AnalysisJobConfig:
             # d'une observation suivie si elle tenait le seuil ou si elle a été
             # rattrapée par la bande basse (ADR 0024).
             confidence_threshold=self.confidence_threshold,
+            # Même statut : le comptage ne les lit pas, le filtrage ayant lieu au
+            # détecteur. Elles servent à publier une rangée de diagnostic par classe
+            # **cherchée**, y compris celles restées à zéro.
+            class_ids=self.class_ids,
         )
 
 

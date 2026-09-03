@@ -58,11 +58,13 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import { ModelPicker } from "@/features/model-picker";
 import type {
+  ClassDiagnostic,
   CountingLine,
   DetectableClass,
   Diagnostics,
   VehicleModel,
 } from "@/shared/api/contracts";
+import { classLabel } from "@/shared/lib/classes";
 import { normalisePlate } from "@/shared/lib/plate";
 import { ToolbarButton } from "@/shared/ui/ToolbarButton";
 
@@ -869,7 +871,13 @@ function DiagnosticsPanel({
   diagnostics: Diagnostics;
   lines: readonly CountingLine[];
 }) {
-  const rows: { label: string; value: number; hint: string }[] = [
+  // **Deux natures, deux blocs, et les mélanger était le défaut de ce panneau.**
+  // Quatre de ces chiffres s'accumulent sur toute l'analyse ; « Pistes confirmées »
+  // et « Pistes provisoires » décrivent les pistes encore vivantes à la dernière
+  // image, c'est-à-dire les ~2,5 dernières secondes. Alignés dans la même grille,
+  // ils se lisaient tous comme des totaux — au point qu'un résultat archivé de ce
+  // dépôt affiche « Pistes confirmées : 16 » sous 165 véhicules comptés.
+  const cumulative: { label: string; value: number; hint: string }[] = [
     {
       label: "Détections retenues",
       value: diagnostics.highDetections,
@@ -888,16 +896,6 @@ function DiagnosticsPanel({
       hint: "Sous le seuil : elles prolongent une piste existante sans jamais en ouvrir une — c'est le mécanisme qui évite qu'une piste se coupe en deux quand la confiance plonge un instant.",
     },
     {
-      label: "Pistes confirmées",
-      value: diagnostics.confirmedTracks,
-      hint: "Ont atteint le seuil d'images avant comptage.",
-    },
-    {
-      label: "Pistes provisoires",
-      value: diagnostics.tentativeTracks,
-      hint: "Pas encore confirmées : baisser « Images avant comptage » les compterait.",
-    },
-    {
       label: "Masquées par une zone",
       value: diagnostics.maskedOut,
       hint: "Écartées parce qu'elles étaient hors des zones.",
@@ -911,17 +909,60 @@ function DiagnosticsPanel({
     },
   ];
 
+  // Le chiffre qui répondait à « combien n'ont jamais été confirmés » manquait, et
+  // « Pistes provisoires » promettait de le donner sans le pouvoir : mesuré, une
+  // scène de 300 images avec douze motos scintillantes affiche `0`. Absent d'un
+  // résultat archivé, auquel cas la rangée n'est pas rendue — « pas mesuré » et
+  // « zéro » ne se disent pas de la même façon.
+  if (diagnostics.unconfirmedTracks !== undefined) {
+    cumulative.push({
+      label: "Jamais confirmées",
+      value: diagnostics.unconfirmedTracks,
+      hint:
+        "Objets suivis qui n'ont jamais atteint « Images avant comptage », sur toute " +
+        "l'analyse. Un scintillement d'une image n'est pas un véhicule : un chiffre " +
+        "élevé sur une scène chargée est normal.",
+    });
+  }
+
+  const instant: { label: string; value: number; hint: string }[] = [
+    {
+      label: "Pistes confirmées",
+      value: diagnostics.confirmedTracks,
+      hint: "Ont atteint le seuil d'images avant comptage.",
+    },
+    {
+      label: "Pistes provisoires",
+      value: diagnostics.tentativeTracks,
+      hint: "Pas encore confirmées : baisser « Images avant comptage » les compterait.",
+    },
+  ];
+
   return (
     <div className="rounded-input bg-base p-2">
       <p className="label-micro mb-2">Diagnostic de la dernière analyse</p>
       <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
-        {rows.map((row) => (
+        {cumulative.map((row) => (
           <div key={row.label} className="flex items-baseline justify-between gap-2" title={row.hint}>
             <dt className="text-micro text-ink-dim">{row.label}</dt>
             <dd className="text-micro font-bold text-ink-muted tabular">{row.value}</dd>
           </div>
         ))}
       </dl>
+
+      <p className="label-micro mt-2 mb-1">À la dernière image analysée</p>
+      <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
+        {instant.map((row) => (
+          <div key={row.label} className="flex items-baseline justify-between gap-2" title={row.hint}>
+            <dt className="text-micro text-ink-dim">{row.label}</dt>
+            <dd className="text-micro font-bold text-ink-muted tabular">{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="mt-1 text-micro text-ink-dim">
+        Pistes vivantes à cet instant, pas un total : celles d'avant ont été
+        abandonnées.
+      </p>
       {diagnostics.highDetections === 0 && diagnostics.rescuedByLowScore === 0 ? (
         // **Le cinquième cas**, et le seul que les quatre chiffres n'expliquent
         // pas : zéro détection à *tous* les seuils. Ce n'est alors pas un réglage
@@ -946,7 +987,78 @@ function DiagnosticsPanel({
         </p>
       )}
 
+      <ClassDiagnostics byClass={diagnostics.byClass} />
       <NearMisses nearMisses={diagnostics.nearMisses} lines={lines} />
+    </div>
+  );
+}
+
+/**
+ * Le diagnostic **par type d'objet** — la seule rangée qui sache dire « jamais
+ * détecté ».
+ *
+ * Les six chiffres au-dessus additionnent toutes les classes : ils ne distinguent
+ * pas « 3 000 voitures détectées et zéro moto » de « tout va bien ». C'est pourtant
+ * exactement la question qu'on pose en ouvrant ce panneau quand une classe manque.
+ *
+ * **Les types cochés à zéro sont rendus, pas omis** : `Moto 0 / 0` est
+ * l'information — la classe a été cherchée et jamais trouvée, et aucun curseur ne
+ * rattrapera cela. Même raisonnement que les quasi-franchissements publiés à `0`
+ * par ligne. La liste vient du **serveur** et non des cases de l'écran : la
+ * sélection courante peut avoir changé depuis l'analyse.
+ *
+ * Ce sont des **observations suivies**, pas des véhicules — plusieurs milliers pour
+ * quelques dizaines de véhicules. L'aide le dit, sinon l'écran gagne un chiffre de
+ * plus qu'on divisera par un autre (invariant 3).
+ */
+function ClassDiagnostics({ byClass }: { byClass: Record<string, ClassDiagnostic> | undefined }) {
+  // `undefined` vient d'un résultat archivé avant que le champ existe. Un objet vide
+  // ne devrait pas arriver — le serveur rend une rangée par classe cochée — mais s'y
+  // fier serait une supposition de plus.
+  const entries = Object.entries(byClass ?? {});
+  if (entries.length === 0) return null;
+
+  const silent = entries.filter(
+    ([, row]) => row.highDetections === 0 && row.rescuedByLowScore === 0,
+  );
+
+  return (
+    <div className="mt-2 border-t border-line/40 pt-2">
+      <p className="label-micro mb-1">Par type d'objet</p>
+      <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
+        {entries.map(([label, row]) => {
+          const never = row.highDetections === 0 && row.rescuedByLowScore === 0;
+          return (
+            <div
+              key={label}
+              className="flex items-baseline justify-between gap-2"
+              title={`${row.highDetections} au-dessus du seuil, ${row.rescuedByLowScore} en dessous.`}
+            >
+              <dt className="truncate text-micro text-ink-dim">{classLabel(label)}</dt>
+              <dd
+                className={`text-micro font-bold tabular ${never ? "text-warning" : "text-ink-muted"}`}
+              >
+                {row.highDetections} / {row.rescuedByLowScore}
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
+      <p className="mt-1 text-micro text-ink-dim">
+        Observations suivies, retenues / faibles — pas des véhicules.
+        {silent.length > 0 ? (
+          <>
+            {" "}
+            <strong className="text-warning">
+              {silent.map(([label]) => classLabel(label)).join(", ")}
+              {silent.length > 1 ? " n'ont" : " n'a"} jamais été détecté
+              {silent.length > 1 ? "s" : ""}.
+            </strong>{" "}
+            Aucun curseur ne les rattrapera : il faut un modèle plus grand, une image
+            plus définie, ou un plan plus serré.
+          </>
+        ) : null}
+      </p>
     </div>
   );
 }

@@ -201,6 +201,10 @@ CLASS_GROUP_OF: dict[str, ClassGroup] = {
 }
 
 
+#: Identifiant COCO → `coco_name`, pour nommer une classe cochée que l'analyse n'a
+#: jamais rencontrée : sans elle, une classe à zéro n'aurait pas de clé.
+LABEL_OF_CLASS_ID: dict[int, str] = {entry.id: entry.coco_name for entry in DETECTABLE_CLASSES}
+
 #: Identifiant COCO → catégorie, pour les appelants qui n'ont que l'identifiant.
 #:
 #: Le pendant de `CATEGORY_OF_CLASS`, indexé autrement. Le repli est celui de
@@ -803,6 +807,25 @@ class VehicleRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ClassDiagnostic:
+    """Le diagnostic d'**un** type d'objet, cumulé sur toute l'analyse.
+
+    Les six chiffres globaux de `Diagnostics` ne savent pas distinguer « 3 000
+    voitures détectées et zéro moto » de « tout va bien » : ils additionnent tout.
+    Or c'est exactement la question qu'on pose quand une classe manque.
+
+    **Un type coché à `0` et `0` n'a jamais été détecté**, et c'est la seule façon
+    d'écrire cette phrase. Aucun curseur ne le rattrapera — le geste est ailleurs :
+    un modèle plus gros, une définition d'analyse plus haute, un plan plus serré.
+    """
+
+    #: Observations suivies de ce type dont le score atteint le seuil de l'utilisateur.
+    high_detections: int = 0
+    #: Observations suivies de ce type **sous** le seuil : la bande basse au travail.
+    rescued_by_low_score: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class Diagnostics:
     """Compteurs de diagnostic, pour rendre « le compte est faux » explicable.
 
@@ -823,8 +846,34 @@ class Diagnostics:
     #: peut pas bouger se lit comme une absence de détections faibles.
     high_detections: int = 0
     masked_out: int = 0
+    #: Pistes vivantes **à la dernière image analysée** qui ont atteint `min_hits`.
+    #:
+    #: **Un instantané au milieu de cumuls, et c'est le piège de ce bloc.** Les quatre
+    #: autres nombres s'accumulent sur toute l'analyse ; ces deux-là décrivent les
+    #: ~2,5 dernières secondes, `_release_lost` ayant purgé le reste. Mesuré sur trois
+    #: résultats archivés : `confirmedTracks: 16` sous 165 véhicules comptés.
     confirmed_tracks: int = 0
+    #: Pistes vivantes à la dernière image qui n'ont **pas** atteint `min_hits`.
+    #:
+    #: Lire ce chiffre comme « combien d'objets n'ont jamais été confirmés » est
+    #: l'erreur qu'il invite, et c'est précisément l'état où meurt un petit objet :
+    #: une moto qui scintille deux images est numérotée, suivie, puis abandonnée bien
+    #: avant qu'on regarde le panneau. Mesuré : 300 images avec **douze motos
+    #: scintillantes** rendent `tentative_tracks = 0`. Le chiffre qui répond est
+    #: `unconfirmed_tracks`.
     tentative_tracks: int = 0
+    #: Objets numérotés qui n'ont **jamais** atteint `min_hits`, sur toute l'analyse.
+    #:
+    #: Le cumul que `tentative_tracks` ne peut pas donner. Dérivé d'un état déjà tenu
+    #: (`TrackNumbering.issued - size`) et **jamais accumulé en parallèle** :
+    #: `unconfirmed_tracks + tracked_vehicles == issued` par construction, ce qu'un
+    #: test verrouille. Un second compteur finirait par diverger du premier
+    #: (invariant 3).
+    #:
+    #: **Ce ne sont pas des véhicules perdus.** Un scintillement d'une image n'est pas
+    #: un véhicule, et `min_hits` existe pour cela : un chiffre élevé sur une scène
+    #: chargée est normal. Ce qui était anormal, c'est qu'il soit invisible.
+    unconfirmed_tracks: int = 0
     #: Observations suivies dont le score est **sous** le seuil de l'utilisateur.
     #:
     #: C'est la bande basse de BoT-SORT en train de faire son travail : une détection
@@ -852,6 +901,20 @@ class Diagnostics:
     #: un véhicule peut être passé, avoir fait demi-tour ou s'être garé. Le chiffre
     #: dit que le tracé et le suivi se sont manqués de peu, rien de plus.
     near_misses: dict[str, int] = field(default_factory=dict)
+    #: **Le même diagnostic, par type d'objet.** Clé = `coco_name`.
+    #:
+    #: `field(default_factory=dict)`, sur le patron de `near_misses` : un résultat
+    #: archivé sans la clé se relit sans rien casser.
+    #:
+    #: **Les types cochés à zéro sont présents**, et c'est tout l'objet du champ :
+    #: l'absence de clé se lirait « pas d'information » alors que « motorcycle 0 / 0 »
+    #: est l'information — la classe a été cherchée et jamais trouvée. Même
+    #: raisonnement que `near_misses`, publié à `0` par ligne.
+    #:
+    #: La somme des `high_detections` par classe égale `high_detections`, et de même
+    #: pour la bande basse : c'est cette égalité, et non les valeurs, qui empêche le
+    #: détail de diverger du total.
+    by_class: dict[str, ClassDiagnostic] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

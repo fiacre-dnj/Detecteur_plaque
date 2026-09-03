@@ -193,7 +193,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1857 tests
+uv run pytest                                                            # 1865 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -209,7 +209,7 @@ uv run python scripts/recall_bench.py --videos <clip> --inventory   # « y a-t-i
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 938 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 940 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -2219,6 +2219,43 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     `maxLostMs` 2500 puis 8000. Avant, elles rendaient des chiffres **strictement
     identiques** — cette identité *était* le bug.
     [ADR 0058](docs/adr/0058-la-survie-d-une-piste-perdue-n-atteignait-pas-le-tracker.md).
+44. **Le diagnostic sait dire quel type n'a jamais été détecté.** Deux défauts du tiroir
+    « Comptage », et le second est le plus trompeur :
+    - **tout était global.** Six chiffres qui somment les quatre classes ne distinguent
+      pas « 3 000 voitures et zéro moto » de « tout va bien ». Le panneau concluait
+      pourtant « ces chiffres disent lequel » des quatre cas — or le premier, « jamais
+      détecté », n'était mesurable par aucun d'eux ;
+    - **« Pistes provisoires » est un instantané au milieu de quatre cumuls.** Il se
+      calcule sur `self._tracks`, que `_release_lost` purge : il décrit les ~2,5
+      dernières secondes. Mesuré sur le vrai domaine — 300 images, une voiture et
+      **douze motos scintillant une image chacune** au-dessus du seuil — il affiche
+      **0**, sous une aide qui promet « baisser *Images avant comptage* les
+      compterait ». Confirmé sur les archives : job `74dfee38`, 28 véhicules sous
+      `confirmedTracks: 1` ; `dd263f4c`, 165 sous 16. **Aucune** analyse archivée n'a un
+      `tentativeTracks` non nul.
+
+    Deux champs, aucune comptabilité nouvelle :
+    - **`unconfirmed_tracks`** = `TrackNumbering.issued - size`. Le compteur existait,
+      testé, **sans consommateur**. C'est un dérivé et jamais un second compteur :
+      `unconfirmed_tracks + tracked_vehicles == issued`, et c'est cette égalité — pas la
+      valeur — qu'un test verrouille (invariant 3). **Ce ne sont pas des véhicules
+      perdus** : un scintillement d'une image n'est pas un véhicule ;
+    - **`by_class`** — le même diagnostic par type, patron de `near_misses`. **Les types
+      cochés à zéro sont rendus** : `motorcycle: 0 / 0` est l'information, omettre la
+      clé se lirait « pas mesuré ». La liste vient du **serveur** via
+      `SessionConfig.class_ids` (diagnostic seul, comme `confidence_threshold`) et
+      jamais des cases de l'écran, dont la sélection courante peut avoir changé depuis
+      l'analyse.
+
+    Le panneau est coupé en deux blocs — cumuls, puis « À la dernière image analysée ».
+    Les types jamais détectés sont **nommés en toutes lettres** : « Moto n'a jamais été
+    détectée. Aucun curseur ne la rattrapera : il faut un modèle plus grand, une image
+    plus définie, ou un plan plus serré. » Une conséquence et trois gestes.
+
+    **`contained_out` n'est pas ventilé par paire**, contrairement à ce que l'audit
+    recommandait : cette ventilation existait pour révéler la suppression inter-classes,
+    qu'ADR 0056 a supprimée. Ce qui reste est le cas voulu, deux boîtes de même groupe.
+    [ADR 0059](docs/adr/0059-le-diagnostic-sait-dire-quel-type-n-a-jamais-ete-detecte.md).
 
 ## Ce que l'analyse signale — les alertes
 
@@ -2749,7 +2786,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1857 (1 skip) | 938 |
+| Nombre | 1865 (1 skip) | 940 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 
