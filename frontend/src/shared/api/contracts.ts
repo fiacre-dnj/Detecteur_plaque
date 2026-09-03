@@ -336,6 +336,15 @@ export interface AnalysisRequest {
    * (ADR 0016).
    */
   maxLostMs: number;
+  /**
+   * Largeur d'entrée du réseau — `null` suit le défaut du déploiement.
+   *
+   * **Ce n'est pas la taille d'un objet dans la vidéo qui décide qu'il est détecté,
+   * c'est sa taille ici.** En 16:9 le letterbox rend 640×384 : une moto de 60 px sur
+   * du 1080p n'en fait plus que 20. Multiple de 32 imposé — le pas de la grille du
+   * réseau — et le serveur refuse le reste par un 422.
+   */
+  inferenceImgsz: number | null;
   maskOutsideZones: boolean;
   frameStride: number;
   detectPlates: boolean;

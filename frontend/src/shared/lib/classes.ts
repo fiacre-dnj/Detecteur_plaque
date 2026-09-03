@@ -48,3 +48,19 @@ const LABELS: Readonly<Record<string, string>> = {
 export function classLabel(raw: string): string {
   return LABELS[raw] ?? raw;
 }
+
+/**
+ * Les classes que la définition d'analyse punit — **par nom COCO, jamais par
+ * libellé**.
+ *
+ * Ce sont les plus petits gabarits de COCO : leur boîte fait couramment 60 px de
+ * large sur une vue de circulation, donc une vingtaine dans une entrée de réseau à
+ * 640 (ADR 0037). Une voiture au même endroit en fait trois fois plus.
+ *
+ * Un ensemble nommé ici plutôt qu'un test dans l'écran qui en a besoin : deux
+ * surfaces s'en servent déjà — l'avertissement d'avant-analyse et, demain, tout ce
+ * qui voudra dire « ce type-là demande de la définition ». Deux listes finiraient par
+ * diverger, et la panne serait un avertissement qui ne se déclenche plus sur la
+ * classe dont l'utilisateur se plaint.
+ */
+export const SMALL_CLASSES: ReadonlySet<string> = new Set(["motorcycle", "bicycle", "person"]);

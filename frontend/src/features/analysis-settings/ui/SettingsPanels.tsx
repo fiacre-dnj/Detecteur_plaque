@@ -71,6 +71,7 @@ import { ToolbarButton } from "@/shared/ui/ToolbarButton";
 import { plateCapability } from "../model/plateCapability";
 import {
   ANALYSIS_FPS_CAPS,
+  ANALYSIS_IMGSZ_CHOICES,
   ANALYSIS_SPEEDS,
   BOUNDS,
   DEFAULT_CONFIDENCE,
@@ -369,6 +370,31 @@ export function SettingsPanels({
               ? undefined
               : () => onChange({ confidenceThreshold: null })
           }
+        />
+
+        {/* **Le levier des petits objets**, et il n'existait nulle part avant
+            ADR 0060 : ni dans la requête, ni à l'écran. Il est posé juste sous
+            « Confiance véhicules » parce que c'est le curseur que l'on descend en
+            vain quand une moto manque — la cause est ici, pas là.
+
+            Un `Choice` et jamais un curseur : le côté doit être multiple de 32, et
+            le serveur refuse le reste par un 422. */}
+        <Choice
+          label="Définition d'analyse"
+          options={ANALYSIS_IMGSZ_CHOICES}
+          value={settings.inferenceImgsz}
+          disabled={disabled}
+          hint={
+            "Largeur à laquelle l'image entre dans le réseau — en 16:9, 640 donne " +
+            "640×384. Ce n'est pas la taille d'un objet dans la vidéo qui décide " +
+            "qu'il est détecté, c'est sa taille ici : à 640, une moto de 60 px n'en " +
+            "fait plus que 20. Monter retrouve les petits objets et coûte à peu près " +
+            "le carré du rapport en temps d'analyse. " +
+            (settings.inferenceImgsz === null
+              ? "Suit le réglage du serveur."
+              : "Valeur explicite : elle part avec l'analyse.")
+          }
+          onChange={(inferenceImgsz) => onChange({ inferenceImgsz })}
         />
 
         <PanelGridFullRow>

@@ -153,6 +153,17 @@ class AnalysisJobConfig:
     min_hits: int = 2
     mask_outside_zones: bool = False
     frame_stride: int = 1
+    #: Côté d'entrée du réseau pour **cette** course. `None` garde celui du déploiement.
+    #:
+    #: Le seul réglage de cette liste qui décrive une **ressource** plutôt qu'une règle
+    #: de comptage, et il est passé côté requête pour la même raison que
+    #: `plate_confidence` : « des petits objets ou de la cadence » est un arbitrage de
+    #: **scène**, pas de machine. Un plan large sur un carrefour lointain a besoin de
+    #: 960 là où une caméra à trois mètres n'y gagne rien.
+    #:
+    #: Deux jobs voisins cessent d'être comparables sans le lire : il apparaît donc dans
+    #: le récapitulatif d'avant-analyse et dans le `config_json` du job.
+    inference_imgsz: int | None = None
     detect_plates: bool = False
     #: Seuil du détecteur de plaques pour **cette** course. `None` garde celui du
     #: déploiement.
@@ -300,6 +311,9 @@ class AnalysisJobConfig:
             # scène, le tracker en images analysées ; c'est l'adaptateur qui convertit,
             # parce que lui seul connaît la cadence et le pas. Voir ADR 0058.
             max_lost_ms=self.max_lost_ms,
+            # Le seul champ de cette spec qui ne soit PAS un simple indice : un moteur
+            # qui l'ignore rend d'autres detections, donc d'autres chiffres.
+            imgsz=self.inference_imgsz,
         )
 
     def session_config(self) -> SessionConfig:

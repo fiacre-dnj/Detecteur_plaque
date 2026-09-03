@@ -74,6 +74,20 @@ class EngineSpec:
     #: chiffres. Le respecter aligne seulement les deux horloges.
     max_lost_ms: float = 2500.0
 
+    #: Côté d'entrée du réseau demandé, ou `None` pour suivre le déploiement.
+    #:
+    #: **Ce n'est pas la taille d'un objet dans la vidéo qui décide qu'il est détecté,
+    #: c'est sa taille ici.** En 16:9 le letterbox rend 640×384 : une moto de 60 px sur
+    #: du 1080p n'en fait plus que 20, soit moins de trois cellules de la grille P3.
+    #: C'est la cause qu'ADR 0037 a nommée sans pouvoir la corriger, le réglage
+    #: n'existant nulle part dans la requête.
+    #:
+    #: Contrairement à `start_ms` et `max_lost_ms`, ce n'est **pas** un simple indice :
+    #: un moteur qui l'ignore rendra d'autres détections, donc d'autres chiffres. Il n'y
+    #: a pas de règle équivalente ailleurs qui le rattraperait — c'est le seul champ de
+    #: cette classe dans ce cas, et le `FakeEngine` de la CI n'en produit aucune image.
+    imgsz: int | None = None
+
 
 def nms_class_groups(class_ids: Sequence[int]) -> tuple[tuple[int, ...], ...]:
     """Partitionne les classes demandées en groupes de suppression pour le moteur.

@@ -16,6 +16,11 @@ import { analysisSummaryRows, type AnalysisSummaryInput } from "./analysisSummar
 const BASE: AnalysisSummaryInput = {
   modelLabel: "YOLOv8 nano",
   classLabels: ["Voiture", "Camion"],
+  // Aucune classe petite : `BASE` ne doit porter **aucun** avertissement, sinon les
+  // tests qui en attendent un ne prouveraient plus rien.
+  smallClassLabels: [],
+  // `null` = le réglage du serveur, le défaut de l'écran.
+  inferenceImgsz: null,
   lineCount: 2,
   zoneCount: 0,
   ruledLineCount: 0,
@@ -39,10 +44,14 @@ function row(input: Partial<AnalysisSummaryInput>, label: string) {
 }
 
 describe("analysisSummaryRows", () => {
-  it("rend les six rangées, dans l'ordre de lecture", () => {
+  it("rend les sept rangées, dans l'ordre de lecture", () => {
+    // « Définition d'analyse » vient juste après les objets comptés : c'est le
+    // réglage qui décide si les petits d'entre eux seront vus, et le lire ailleurs
+    // qu'à côté d'eux n'aurait aucun sens.
     expect(analysisSummaryRows(BASE).map((item) => item.label)).toEqual([
       "Modèle",
       "Objets comptés",
+      "Définition d'analyse",
       "Géométrie",
       "Portion analysée",
       "Plaques",
@@ -161,5 +170,71 @@ describe("l'avertissement de définition sur les plaques", () => {
     expect(
       plateRow({ ...BASE, detectPlates: true, readPlateText: true, sourceHeight: null })?.warning,
     ).toBeUndefined();
+  });
+});
+
+describe("les petits objets", () => {
+  const counted = (input: Partial<AnalysisSummaryInput>) => row(input, "Objets comptés");
+
+  it("prévient quand un type petit est coché, en nommant les gestes", () => {
+    // Le jumeau de l'avertissement des plaques, pour la classe de problème que ce
+    // dépôt a mis le plus longtemps à nommer : ce n'est pas la taille d'un objet
+    // dans la vidéo qui décide qu'il est détecté, c'est sa taille dans le réseau.
+    const objets = counted({
+      classLabels: ["Voiture", "Moto"],
+      smallClassLabels: ["Moto"],
+    });
+
+    expect(objets?.value).toBe("Voiture · Moto");
+    expect(objets?.warning).toContain("Moto");
+    expect(objets?.warning).toContain("Définition d'analyse");
+  });
+
+  it("accorde la phrase au nombre de types concernés", () => {
+    const un = counted({ classLabels: ["Moto"], smallClassLabels: ["Moto"] });
+    const deux = counted({
+      classLabels: ["Moto", "Personne"],
+      smallClassLabels: ["Moto", "Personne"],
+    });
+
+    expect(un?.warning).toContain("est le plus petit objet");
+    expect(deux?.warning).toContain("sont les plus petits objets");
+  });
+
+  it("dit une conséquence et des gestes, jamais un interdit", () => {
+    // La doctrine de tous les avertissements de cette page : `canAnalyse` reste le
+    // seul juge, et une phrase qui dirait « impossible » contredirait un bouton
+    // parfaitement actif.
+    const objets = counted({ classLabels: ["Moto"], smallClassLabels: ["Moto"] });
+
+    expect(objets?.warning).not.toContain("impossible");
+    expect(objets?.warning).not.toContain("Cochez");
+  });
+
+  it("se tait quand aucun type petit n'est coché", () => {
+    expect(counted({ classLabels: ["Voiture"], smallClassLabels: [] })?.warning).toBeUndefined();
+  });
+
+  it("ne recopie aucune dimension de tenseur, qui deviendrait fausse", () => {
+    // `640×384` était tentant, et cesserait d'être vrai dès que la définition
+    // d'analyse change. Même précaution que le seuil de plaques, qui n'affirme
+    // qu'une hauteur de source.
+    const objets = counted({ classLabels: ["Moto"], smallClassLabels: ["Moto"] });
+
+    expect(objets?.warning).not.toContain("640");
+    expect(objets?.warning).not.toContain("384");
+  });
+});
+
+describe("la définition d'analyse", () => {
+  const definition = (input: Partial<AnalysisSummaryInput>) => row(input, "Définition d'analyse");
+
+  it("est toujours affichée : elle rend deux jobs incomparables sans qu'on la lise", () => {
+    expect(definition({ inferenceImgsz: null })?.value).toBe("Réglage du serveur");
+    expect(definition({ inferenceImgsz: 960 })?.value).toBe("960 px");
+  });
+
+  it("n'avertit de rien : ce n'est pas une conséquence, c'est un fait", () => {
+    expect(definition({ inferenceImgsz: 1280 })?.warning).toBeUndefined();
   });
 });

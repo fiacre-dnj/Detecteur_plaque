@@ -60,6 +60,7 @@ const REQUEST: AnalysisRequest = {
   iouThreshold: 0.45,
   minHits: 3,
   maxLostMs: 2500,
+  inferenceImgsz: null,
   maskOutsideZones: true,
   frameStride: 1,
   classIds: [2, 3, 5, 7],

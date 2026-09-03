@@ -135,7 +135,7 @@ import { PlaybackFpsBadge, TransportBar } from "@/features/video-transport";
 import type { CrossingEvent, Point, Preset, TrackSnapshot } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
 import { platePhotoUrl, vehicleSnapshotUrl } from "@/shared/api/jobUrls";
-import { VEHICLE_CLASSES, classLabel } from "@/shared/lib/classes";
+import { SMALL_CLASSES, VEHICLE_CLASSES, classLabel } from "@/shared/lib/classes";
 import { lineRules } from "@/shared/lib/lineRules";
 import { hasAnyRule } from "@/shared/lib/lineViolations";
 import { violationCounts } from "@/shared/lib/violationTally";
@@ -836,6 +836,16 @@ export function StudioPage() {
         classLabels: (detectableClasses ?? [])
           .filter((entry) => settings.classIds.includes(entry.id))
           .map((entry) => entry.label),
+        // **Le tri se fait sur le nom COCO, jamais sur le libellé français** : le
+        // récapitulatif ne connaît pas le catalogue, et deviner « ce nom ressemble à
+        // une moto » depuis une chaîne traduite cesserait d'être vrai au premier
+        // renommage. `SMALL_CLASSES` est le seul juge.
+        smallClassLabels: (detectableClasses ?? [])
+          .filter(
+            (entry) => settings.classIds.includes(entry.id) && SMALL_CLASSES.has(entry.cocoName),
+          )
+          .map((entry) => entry.label),
+        inferenceImgsz: settings.inferenceImgsz,
         lineCount: geometry.lines.length,
         zoneCount: geometry.zones.length,
         // Compté sur les règles **résolues** et non sur les champs bruts : une voie
@@ -861,6 +871,7 @@ export function StudioPage() {
       settings.plateWatchlist.length,
       settings.analysisSpeed,
       settings.maxAnalysisFps,
+      settings.inferenceImgsz,
       alertRules,
       geometry.lines.length,
       geometry.zones.length,

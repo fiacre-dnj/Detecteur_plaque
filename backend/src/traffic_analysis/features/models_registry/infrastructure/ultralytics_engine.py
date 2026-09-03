@@ -796,7 +796,11 @@ class UltralyticsEngine:
                 predictor=_group_aware_predictor(),
                 device=self._registry.device(),
                 half=self._registry.half(),
-                imgsz=self._imgsz,
+                # **La requête d'abord, le déploiement en repli.** C'est le seul
+                # réglage de `EngineSpec` qui ne soit pas un simple indice : ce n'est
+                # pas la taille d'un objet dans la vidéo qui décide qu'il est détecté,
+                # c'est sa taille ici (ADR 0060).
+                imgsz=spec.imgsz or self._imgsz,
                 persist=True,
                 verbose=False,
             )
@@ -891,7 +895,11 @@ class UltralyticsStream:
             # projet : les deux modes partagent le code de comptage pour qu'un même
             # tracé donne les mêmes chiffres. Les faire détecter à deux résolutions
             # différentes romprait cette promesse là où personne ne la vérifie.
-            imgsz=self._imgsz,
+            #
+            # « La même » veut donc dire celle de **la requête** depuis ADR 0060, avec
+            # le déploiement en repli — et non la constante du moteur, qui ferait
+            # justement détecter les deux modes à deux résolutions différentes.
+            imgsz=self._spec.imgsz or self._imgsz,
             verbose=False,
         )
         return _to_observations(results[0]) if results else ()

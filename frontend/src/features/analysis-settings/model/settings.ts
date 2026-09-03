@@ -155,6 +155,23 @@ export interface AnalysisSettings {
    * champ, donc un `localStorage` antérieur reprend simplement le défaut.
    */
   maxAnalysisFps: number | null;
+  /**
+   * Largeur à laquelle l'image entre dans le réseau — `null` = le défaut du serveur.
+   *
+   * **Le levier des petits objets, et il n'existait nulle part.** Ce n'est pas la
+   * taille d'un objet dans la vidéo qui décide qu'il est détecté, c'est sa taille
+   * ici : en 16:9 le letterbox rend 640×384, donc une moto de 60 px sur du 1080p
+   * n'en fait plus que 20 — moins de trois cellules de la grille P3. ADR 0037 avait
+   * nommé cette cause sans pouvoir la corriger, le réglage n'existant ni dans la
+   * requête ni à l'écran.
+   *
+   * Un choix et non un curseur continu : le côté doit être **multiple de 32**, le
+   * pas de la grille du réseau, et le serveur refuse le reste.
+   *
+   * Pas d'incrément de `SETTINGS_SCHEMA_VERSION` : la fusion est champ par champ,
+   * donc un `localStorage` antérieur reprend simplement le défaut.
+   */
+  inferenceImgsz: number | null;
   showTrails: boolean;
 }
 
@@ -198,6 +215,11 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   // redevient ce qu'ADR 0020 décrivait — un choix explicite pour brider une
   // machine partagée, pas un défaut qui contredit l'autre réglage.
   maxAnalysisFps: null,
+  // `null` et non `640` : le défaut appartient au **déploiement**
+  // (`TRAFFIC_INFERENCE_IMGSZ`), qui peut l'avoir monté pour sa machine. Recopier
+  // 640 ici l'imposerait à chaque requête et défairait ce réglage en silence — même
+  // convention que `confidenceThreshold` et `plateConfidence`.
+  inferenceImgsz: null,
   showTrails: true,
 };
 
@@ -225,6 +247,25 @@ export const ANALYSIS_FPS_CAPS: readonly { value: number | null; label: string }
   { value: null, label: "Illimité" },
   { value: 30, label: "30 img/s" },
   { value: 60, label: "60 img/s" },
+];
+
+/**
+ * Les définitions d'analyse proposées.
+ *
+ * Trois valeurs, toutes **multiples de 32** — le pas de la grille du réseau, que le
+ * serveur impose. Un curseur continu inviterait à taper 500, que le serveur
+ * refuserait, ou pire : `pipeline_bench` l'arrondirait à 512 en silence.
+ *
+ * Le coût suit l'aire du tenseur, pas la largeur : sur du 1080p, 960 vaut ×2,1 et
+ * 1280 ×3,8. Au-delà de 1280, la crête VRAM extrapolée dépasse ce qu'une carte de
+ * 4 Gio tient confortablement en lot — d'où l'absence de 1920, que le serveur
+ * accepte pourtant.
+ */
+export const ANALYSIS_IMGSZ_CHOICES: readonly { value: number | null; label: string }[] = [
+  { value: null, label: "Serveur" },
+  { value: 640, label: "640" },
+  { value: 960, label: "960" },
+  { value: 1280, label: "1280" },
 ];
 
 /**
@@ -375,6 +416,11 @@ export function toRequest(
     // les quatre véhicules est le même que celui de `sanitiseClassIds` — l'écran
     // reste utilisable quand l'utilisateur a tout décoché.
     classIds: settings.classIds.length > 0 ? [...settings.classIds] : [...DEFAULT_SETTINGS.classIds],
+    // Borné à ce que le serveur accepte, **multiple de 32 compris** : une valeur
+    // relue d'un `localStorage` bricolé vaudrait un 422 sur un écran qui paraît
+    // normal. Hors bornes ⇒ `null`, c'est-à-dire le défaut du déploiement, jamais un
+    // arrondi silencieux — arrondir choisirait à la place de l'utilisateur.
+    inferenceImgsz: isSupportedImgsz(settings.inferenceImgsz) ? settings.inferenceImgsz : null,
     // Borné aux cadences que le serveur accepte : une valeur hors de [0,25 ; 8] —
     // relue d'un `localStorage` bricolé — vaudrait un 422 sur un écran qui paraît
     // valide. Hors bornes ⇒ aucune borne, qui est le défaut.
@@ -439,6 +485,18 @@ function isSupportedSpeed(value: number | null): boolean {
 function isSupportedFpsCap(value: number | null): boolean {
   if (value === null) return true;
   return Number.isFinite(value) && value >= FPS_CAP_BOUNDS.min && value <= FPS_CAP_BOUNDS.max;
+}
+
+/**
+ * Le côté d'entrée est-il envoyable tel quel ?
+ *
+ * Les trois conditions du serveur, et la troisième est celle qu'on oublie : bornes,
+ * entier, **et multiple de 32**. `pydantic` refuse le reste par un 422, ce qui est
+ * la bonne réponse — mais un écran ne doit pas la provoquer.
+ */
+function isSupportedImgsz(value: number | null): boolean {
+  if (value === null) return true;
+  return Number.isInteger(value) && value >= 64 && value <= 1920 && value % 32 === 0;
 }
 
 /**
@@ -531,6 +589,11 @@ function mergeSettings(source: Record<string, unknown>): AnalysisSettings {
   merged.analysisSpeed = isSupportedSpeed(speed) ? speed : merged.analysisSpeed;
   const fpsCap = nullableNumber(source.maxAnalysisFps, merged.maxAnalysisFps);
   merged.maxAnalysisFps = isSupportedFpsCap(fpsCap) ? fpsCap : merged.maxAnalysisFps;
+  // Écartée plutôt qu'arrondie, pour la même raison que les deux cadences : une
+  // valeur qui n'est multiple de rien ne correspond à aucun choix de l'écran, et
+  // l'arrondir à 512 afficherait une définition que l'utilisateur n'a pas demandée.
+  const imgsz = nullableNumber(source.inferenceImgsz, merged.inferenceImgsz);
+  merged.inferenceImgsz = isSupportedImgsz(imgsz) ? imgsz : merged.inferenceImgsz;
 
   // Les identifiants non numériques sont écartés un par un plutôt que de faire
   // tomber toute la liste : un `localStorage` bricolé à la main ne doit pas coûter

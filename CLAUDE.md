@@ -193,7 +193,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1865 tests
+uv run pytest                                                            # 1869 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -209,7 +209,7 @@ uv run python scripts/recall_bench.py --videos <clip> --inventory   # « y a-t-i
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 940 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 947 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -2256,6 +2256,47 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     recommandait : cette ventilation existait pour révéler la suppression inter-classes,
     qu'ADR 0056 a supprimée. Ce qui reste est le cas voulu, deux boîtes de même groupe.
     [ADR 0059](docs/adr/0059-le-diagnostic-sait-dire-quel-type-n-a-jamais-ete-detecte.md).
+45. **La définition d'analyse devient un réglage de l'utilisateur.** Ce qui décide qu'un
+    objet est détecté n'est pas sa taille dans la vidéo mais **sa taille dans l'entrée du
+    réseau** — le commentaire de `core/settings.py` le disait déjà, à un endroit que
+    personne ne lit. `rect=True` étant imposé par Ultralytics en prédiction, une source
+    16:9 entre en **640×384** : une moto de 60 px sur du 1080p en fait **20**, moins de
+    trois cellules de la grille P3. ADR 0037 avait nommé cette cause sans pouvoir la
+    corriger — le réglage n'existait ni dans la requête ni à l'écran, seulement dans
+    `TRAFFIC_INFERENCE_IMGSZ`.
+
+    Table d'aires sur du 1920×1080 : 640 → 640×384 (×1,00) ; 960 → 960×544 (×2,13) ;
+    1280 → 1280×736 (×3,83). **Corollaire contre-intuitif : filmer plus défini n'achète
+    rien au détecteur** tant qu'`imgsz` ne bouge pas, la taille dans le tenseur valant
+    `fraction de l'image × imgsz` — ce qu'ADR 0031 avait mesuré sans en donner la cause.
+    Mesuré au banc sur un clip 720p, `yolov8n@640` contre `yolo11x@1280` : rappel `car`
+    **0,481**, les **27 manqués tous dans le seau 32-64 px**, les **25 réussites toutes
+    au-delà de 128**. Sur des voitures ; les motos sont plus petites.
+
+    `inferenceImgsz` voyage donc par requête, `null` suivant le déploiement — convention
+    de `confidenceThreshold`. Cinq points :
+    - **c'est un arbitrage de scène, pas de machine** : un plan large sur un carrefour
+      lointain a besoin de 960 là où une caméra à trois mètres paierait ×2,1 pour rien ;
+    - **un `Choice`, jamais un curseur** : le côté doit être multiple de 32, et un 500
+      serait refusé par un 422 — ou pire, arrondi à 512 en silence par `pipeline_bench`.
+      Trois valeurs (640 / 960 / 1280) ; `1920` n'est pas proposé, sa crête VRAM
+      extrapolée (~2,8 Gio) ne tenant pas en lot sur 4 Gio ;
+    - **c'est le SEUL champ d'`EngineSpec` qui ne soit pas un simple indice.** `start_ms`
+      et `max_lost_ms` sont des optimisations qu'un moteur peut ignorer sans changer un
+      chiffre ; ici il n'y a pas de règle équivalente en aval. La propriété « un moteur
+      peut ignorer toute la spec » cesse d'être vraie, et c'est écrit à sa place ;
+    - **le direct suit la requête aussi**, via `self._spec.imgsz` : les deux modes doivent
+      détecter à la même résolution, et lire la constante du moteur les ferait diverger ;
+    - **le récapitulatif l'affiche toujours**, sans avertissement — ce réglage rend deux
+      jobs incomparables sans qu'on le lise.
+
+    Un **avertissement** accompagne `motorcycle`, `bicycle` ou `person` coché, jumeau de
+    celui des plaques : une conséquence et trois gestes, jamais un interdit. Deux
+    précautions tenues par des tests — il **ne recopie aucune dimension de tenseur**
+    (« 640×384 » deviendrait faux dès que le réglage change), et le tri se fait sur le
+    **nom COCO** (`SMALL_CLASSES` dans `shared/lib/classes.ts`), jamais sur le libellé
+    français, qu'un renommage falsifierait.
+    [ADR 0060](docs/adr/0060-la-definition-d-analyse-devient-un-reglage-de-l-utilisateur.md).
 
 ## Ce que l'analyse signale — les alertes
 
@@ -2786,7 +2827,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1865 (1 skip) | 940 |
+| Nombre | 1869 (1 skip) | 947 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

@@ -38,6 +38,17 @@ export interface AnalysisSummaryInput {
   modelLabel: string;
   /** Les types cochés, déjà traduits en français par l'appelant. */
   classLabels: readonly string[];
+  /**
+   * Ceux d'entre eux qui sont **petits** — moto, vélo, personne.
+   *
+   * Traduits par l'appelant comme `classLabels`, et **sous-ensemble de celui-ci** :
+   * ce module ne connaît pas le catalogue, et deviner « ce nom ressemble à une
+   * moto » depuis une chaîne française serait le genre de coïncidence qui cesse
+   * d'être vraie à la première traduction.
+   */
+  smallClassLabels: readonly string[];
+  /** Définition d'analyse demandée, `null` = celle du serveur. */
+  inferenceImgsz: number | null;
   lineCount: number;
   zoneCount: number;
   /** Lignes portant au moins un sens interdit ou une voie réservée. */
@@ -78,7 +89,8 @@ const PLATE_READABLE_MIN_SOURCE_HEIGHT = 1080;
 export function analysisSummaryRows(input: AnalysisSummaryInput): AnalysisSummaryRow[] {
   return [
     { label: "Modèle", value: input.modelLabel },
-    countedObjects(input.classLabels),
+    countedObjects(input.classLabels, input.smallClassLabels),
+    definitionRow(input.inferenceImgsz),
     geometrySummary(input.lineCount, input.zoneCount),
     ...surveillance(input.ruledLineCount, input.watchedPlateCount, input.readPlateText),
     { label: "Portion analysée", value: rangeSummary(input.range) },
@@ -129,7 +141,10 @@ function surveillance(
   ];
 }
 
-function countedObjects(labels: readonly string[]): AnalysisSummaryRow {
+function countedObjects(
+  labels: readonly string[],
+  smallLabels: readonly string[],
+): AnalysisSummaryRow {
   if (labels.length === 0) {
     return {
       label: "Objets comptés",
@@ -137,7 +152,44 @@ function countedObjects(labels: readonly string[]): AnalysisSummaryRow {
       warning: "Cochez au moins un type dans « Détection » : sans classe, rien ne sera compté.",
     };
   }
-  return { label: "Objets comptés", value: labels.join(" · ") };
+  const value = labels.join(" · ");
+  if (smallLabels.length === 0) return { label: "Objets comptés", value };
+
+  // Le jumeau de l'avertissement des plaques, pour la classe de problème que ce
+  // dépôt a mis le plus longtemps à nommer. Il dit une **conséquence** et trois
+  // gestes, jamais un interdit : `canAnalyse` reste le seul juge.
+  //
+  // **Il ne recopie aucun chiffre de tenseur.** Le dire en « 640×384 » était
+  // tentant et deviendrait faux dès que la définition d'analyse change — c'est
+  // exactement ce que `PLATE_READABLE_MIN_SOURCE_HEIGHT` évite en n'affirmant
+  // qu'une hauteur de source.
+  const names = smallLabels.join(" et ");
+  const plural = smallLabels.length > 1;
+  return {
+    label: "Objets comptés",
+    value,
+    warning:
+      `${names} ${plural ? "sont les plus petits objets" : "est le plus petit objet"} de ` +
+      "COCO. Ce n'est pas leur taille dans la vidéo qui décide qu'ils sont détectés, " +
+      "c'est leur taille dans l'entrée du réseau : monter « Définition d'analyse », " +
+      "baisser « Confiance véhicules » ou resserrer le plan sont les trois gestes qui " +
+      "en récupèrent.",
+  };
+}
+
+/**
+ * La définition d'analyse, **toujours affichée**.
+ *
+ * Contrairement aux autres rangées, celle-ci n'existe pas pour avertir : elle
+ * existe parce que ce réglage rend deux jobs incomparables sans qu'on le lise. Il
+ * était jusqu'ici une variable d'environnement du serveur, donc identique pour tout
+ * le monde ; il ne l'est plus.
+ */
+function definitionRow(imgsz: number | null): AnalysisSummaryRow {
+  return {
+    label: "Définition d'analyse",
+    value: imgsz === null ? "Réglage du serveur" : `${imgsz} px`,
+  };
 }
 
 /**

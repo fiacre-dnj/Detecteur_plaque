@@ -43,6 +43,9 @@ from traffic_analysis.features.models_registry.infrastructure.ultralytics_engine
 BASE = yaml.safe_load(TRACKER_CONFIG.read_text(encoding="utf-8"))
 BASE_BUFFER = int(BASE["track_buffer"])
 
+#: Le schema refuse une analyse sans ligne ni zone : elle ne produirait aucun compteur.
+_LINE = {"id": "l1", "a": {"x": 0.0, "y": 0.0}, "b": {"x": 100.0, "y": 0.0}}
+
 
 class TestLaConversion:
     def test_le_defaut_retombe_exactement_sur_le_fichier_de_base(self) -> None:
@@ -226,3 +229,52 @@ class TestLesDeuxCategoriesRestentDistinctes:
 
     def test_la_cle_gravee_vise_un_attribut_d_instance_et_non_args(self) -> None:
         assert ENGRAVED_TRACKER_ATTRS == {"track_buffer": "max_frames_lost"}
+
+
+class TestDefinitionDAnalyse:
+    """La définition d'analyse voyage par requête — ADR 0060.
+
+    Elle n'était réglable que par `TRAFFIC_INFERENCE_IMGSZ`, donc invisible et
+    identique pour tout le monde. C'est pourtant **le** levier des petits objets :
+    ce n'est pas la taille d'un objet dans la vidéo qui décide qu'il est détecté,
+    c'est sa taille dans l'entrée du réseau.
+    """
+
+    def test_le_spec_porte_la_definition_demandee(self) -> None:
+        spec = EngineSpec(model_id="yolov8n", confidence=0.35, iou=0.45, class_ids=(2,), imgsz=960)
+        assert spec.imgsz == 960
+
+    def test_le_defaut_suit_le_deploiement(self) -> None:
+        """`None` et non `640` : le déploiement peut l'avoir monté pour sa machine,
+        et recopier une valeur ici l'écraserait à chaque requête."""
+        spec = EngineSpec(model_id="yolov8n", confidence=0.35, iou=0.45, class_ids=(2,))
+        assert spec.imgsz is None
+
+    def test_le_schema_de_requete_refuse_ce_qui_n_est_pas_multiple_de_32(self) -> None:
+        """Le pas de la grille du réseau. Un 500 serait arrondi à 512 en silence par
+        certains chemins — un refus vaut mieux qu'un réglage qu'on croit avoir posé."""
+        import pytest
+        from pydantic import ValidationError
+
+        from traffic_analysis.features.counting.application.request_schema import (
+            AnalysisRequestSchema,
+        )
+
+        base = {"modelId": "yolov8n", "lines": [_LINE], "zones": []}
+        assert AnalysisRequestSchema(**base, inferenceImgsz=960).inference_imgsz == 960
+        assert AnalysisRequestSchema(**base).inference_imgsz is None
+        with pytest.raises(ValidationError):
+            AnalysisRequestSchema(**base, inferenceImgsz=500)
+        with pytest.raises(ValidationError):
+            AnalysisRequestSchema(**base, inferenceImgsz=2048)
+
+    def test_la_valeur_descend_de_la_requete_jusqu_au_spec(self) -> None:
+        """Le transport complet : c'est son absence qui rendait ADR 0037 incorrigible."""
+        from traffic_analysis.features.counting.application.request_schema import (
+            AnalysisRequestSchema,
+        )
+
+        schema = AnalysisRequestSchema(
+            modelId="yolov8n", lines=[_LINE], zones=[], inferenceImgsz=1280
+        )
+        assert schema.to_config().engine_spec().imgsz == 1280

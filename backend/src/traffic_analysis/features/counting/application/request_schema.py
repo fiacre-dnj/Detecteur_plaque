@@ -169,6 +169,22 @@ class AnalysisRequestSchema(CamelModel):
     iou_threshold: float = Field(0.45, ge=0.05, le=0.95)
     min_hits: int = Field(2, ge=1, le=10)
     max_lost_ms: float = Field(2500, ge=200, le=15000)
+    inference_imgsz: int | None = Field(
+        None,
+        ge=64,
+        le=1920,
+        multiple_of=32,
+        description=(
+            "Largeur à laquelle l'image entre dans le réseau. **Ce n'est pas la "
+            "taille d'un objet dans la vidéo qui décide qu'il est détecté, c'est sa "
+            "taille ici** : en 16:9 le letterbox rend 640×384, donc une moto de 60 px "
+            "sur du 1080p n'en fait plus que 20. Monter retrouve les petits objets et "
+            "coûte à peu près le carré du rapport en temps d'analyse. Multiple de 32 "
+            "imposé — c'est le pas de la grille du réseau. `null` suit le défaut du "
+            "déploiement (`TRAFFIC_INFERENCE_IMGSZ`), même convention que "
+            "`plateConfidence`."
+        ),
+    )
     mask_outside_zones: bool = False
     frame_stride: int = Field(1, ge=1, le=10)
     detect_plates: bool = False
@@ -437,6 +453,7 @@ class AnalysisRequestSchema(CamelModel):
             plate_text_confidence=self.plate_text_confidence,
             read_plate_text=self.read_plate_text,
             max_lost_ms=self.max_lost_ms,
+            inference_imgsz=self.inference_imgsz,
             lines=tuple(line.to_domain() for line in self.lines),
             zones=tuple(zone.to_domain() for zone in self.zones),
             class_ids=tuple(self.class_ids),
