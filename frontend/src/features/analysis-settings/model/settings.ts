@@ -252,20 +252,29 @@ export const ANALYSIS_FPS_CAPS: readonly { value: number | null; label: string }
 /**
  * Les définitions d'analyse proposées.
  *
- * Trois valeurs, toutes **multiples de 32** — le pas de la grille du réseau, que le
+ * Quatre valeurs, toutes **multiples de 32** — le pas de la grille du réseau, que le
  * serveur impose. Un curseur continu inviterait à taper 500, que le serveur
  * refuserait, ou pire : `pipeline_bench` l'arrondirait à 512 en silence.
  *
- * Le coût suit l'aire du tenseur, pas la largeur : sur du 1080p, 960 vaut ×2,1 et
- * 1280 ×3,8. Au-delà de 1280, la crête VRAM extrapolée dépasse ce qu'une carte de
- * 4 Gio tient confortablement en lot — d'où l'absence de 1920, que le serveur
- * accepte pourtant.
+ * **Le coût ne suit pas l'aire**, contrairement à ce que cette liste a d'abord
+ * annoncé. Mesuré sur la Quadro P1000, `yolov8n`, source 1080p : 640 → 19,1 ms,
+ * 960 → 24,6 (**×1,29** pour ×2,13 d'aire), 1280 → 40,0 (×2,09 pour ×3,83),
+ * 1920 → 74,9 (×3,92 pour ×8,50). La carte est à moitié inoccupée à 640, donc un
+ * tenseur plus grand la remplit au lieu de coûter proportionnellement.
+ *
+ * **1920 est proposé depuis que la VRAM a été mesurée au lieu d'être extrapolée** :
+ * l'allocation torch vaut 121 Mio à lot 1, pas les ~2,8 Gio qu'un calcul à l'aire
+ * annonçait. Sur une source 1080p, 1920 veut dire « plus aucune réduction » —
+ * l'image entre telle quelle. Au-delà de la définition de la source, le letterbox
+ * **agrandit** (`scaleup` vaut `True` et n'est pas surchargé) : plus de cellules de
+ * grille, mais aucun détail nouveau.
  */
 export const ANALYSIS_IMGSZ_CHOICES: readonly { value: number | null; label: string }[] = [
   { value: null, label: "Serveur" },
   { value: 640, label: "640" },
   { value: 960, label: "960" },
   { value: 1280, label: "1280" },
+  { value: 1920, label: "1920" },
 ];
 
 /**

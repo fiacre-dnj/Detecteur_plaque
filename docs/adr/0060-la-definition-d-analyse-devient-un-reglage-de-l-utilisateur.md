@@ -78,10 +78,41 @@ La chaîne, vérifiée étage par étage :
 le mur d'association de `test_naissance_de_piste.py` est réel mais n'est pas ce qui
 bloque ici. C'est bien la porte de création de piste.
 
-**Réserves à ne pas taire** : 62 instances, sous le seuil de 200 que le banc exige lui-même
-— la direction est nette, la valeur exacte ne l'est pas ; ce sont des **voitures** et non
-des motos, plus petites encore ; et le banc mesure le **rappel**, pas la précision : baisser
-le seuil fait entrer des faux positifs dont le coût n'est pas chiffré ici.
+### Ce que le rappel seul cachait
+
+Le paragraphe ci-dessus a d'abord conclu sur le rappel seul, et **c'est ce qui a failli
+faire changer un défaut**. Un banc de rappel pousse toujours dans le même sens : baisser
+un seuil l'augmente mécaniquement. `recall_bench.py` compte désormais aussi les
+candidats non appariés :
+
+| imgsz | conf | rappel `car` | précision `car` | F1 | effet de bord |
+|---|---|---|---|---|---|
+| 640 | 0,35 *(défauts)* | 0,484 | **1,000** | 0,652 | aucun |
+| 960 | 0,35 | 0,484 | 1,000 | 0,652 | aucun |
+| **960** | **0,20** | **0,790** | 0,860 | **0,824** | **17 `bus` inventés** |
+| 960 | 0,12 | 0,790 | 0,583 | 0,671 | pire partout |
+
+Trois choses qu'on ne voyait pas :
+
+- **le compromis reste favorable** — F1 0,652 → 0,824. Le rappel gagne 63 % et la
+  précision n'en perd que 14, parce que **le tracker filtre les détections instables** :
+  mesuré au détecteur nu, la précision tombe à 0,707 au même réglage. C'est l'écart
+  entre `--stage detector` et `--stage tracked`, et il joue ici en faveur du réglage ;
+- **le modèle invente une classe.** À 0,20, 17 observations de `bus` sur un clip qui
+  n'en contient aucun. Probablement **un** objet fantôme suivi pendant dix-sept images
+  plutôt que dix-sept fantômes — le banc compte des observations, pas des véhicules —
+  mais un compteur affichera un bus qui n'est jamais passé ;
+- **0,12 est franchement mauvais** : même rappel qu'à 0,20, précision effondrée. Il
+  existe donc un optimum, et il n'est pas au plus bas.
+
+**Le défaut n'est pas changé.** Le gain est réel mais son effet de bord dépend de la
+scène et des classes cochées, et il est mesuré sur 62 instances d'un seul clip. Le
+réglage est exposé, documenté et chiffré ; le choix appartient à qui regarde sa vidéo.
+
+**Réserves à ne pas taire** : 62 instances, sous le seuil de 200 que le banc exige
+lui-même — la direction est nette, la valeur exacte ne l'est pas ; ce sont des
+**voitures** et non des motos, plus petites encore ; et la « vérité » est un modèle
+COCO, donc une partie des faux positifs peut être de vrais objets qu'elle a manqués.
 
 ## La décision
 

@@ -272,3 +272,66 @@ class TestLeBancMesureLaProduction:
         truth_call = bench.split("def _truth_boxes")[1].split("def ")[0]
         assert "agnostic_nms=False" in truth_call
         assert "classes=None" in truth_call
+
+
+class TestPrecision:
+    """**La moitié de la question que ce banc ne posait pas.**
+
+    Un banc de rappel seul pousse toujours dans le même sens : baisser un seuil
+    augmente mécaniquement le rappel. Mesuré sur une vraie vidéo, passer la confiance
+    de 0,35 à 0,12 fait monter le rappel de 0,484 à 0,806 **et tomber la précision de
+    1,000 à 0,583**. Lu seul, le rappel aurait fait changer un défaut.
+    """
+
+    def test_un_candidat_qui_n_apparie_rien_est_un_faux_positif(self) -> None:
+        tally = recall_bench.Tally()
+        reference = detection("car", 2, 1.0, box(0, 0, 100, 100))
+        tally.record(reference, reference)
+        tally.record_candidate(matched_same_label=True)
+        tally.record_candidate(matched_same_label=False)
+
+        report = tally.report()
+        assert report["candidates"] == 2
+        assert report["falsePositives"] == 1
+        assert report["precision"] == pytest.approx(0.5)
+
+    def test_une_classe_entierement_hallucinee_est_visible(self) -> None:
+        """Le cas mesuré : à confiance 0,20, le modèle invente 17 `bus` sur un clip
+        qui n'en contient aucun. Sans compteur de candidats, cette classe n'aurait
+        aucune ligne — l'absence de vérité l'aurait rendue invisible."""
+        tally = recall_bench.Tally()
+        for _ in range(17):
+            tally.record_candidate(matched_same_label=False)
+
+        report = tally.report()
+        assert report["truth"] == 0
+        assert report["recall"] is None
+        assert report["falsePositives"] == 17
+        assert report["precision"] == pytest.approx(0.0)
+
+    def test_aucun_candidat_ne_vaut_pas_une_precision_parfaite(self) -> None:
+        """`None` et jamais `1.0` : « rien rendu » n'est pas « parfaitement précis ».
+
+        Les confondre ferait passer un modèle muet pour le meilleur du banc — le
+        classement s'inverserait exactement sur le cas le plus inutile.
+        """
+        assert recall_bench.Tally().report()["precision"] is None
+
+    def test_le_f1_departage_deux_reglages_que_le_rappel_seul_ne_departage_pas(self) -> None:
+        """C'est le seul chiffre qui tranche quand l'un gagne du rappel et perd de la
+        précision — c'est-à-dire **tous** les réglages de seuil.
+
+        Les valeurs sont celles mesurées sur le clip de ce dépôt : les défauts rendent
+        un rappel bien plus bas pour une précision parfaite, et 960/0,20 gagne malgré
+        ses fausses détections.
+        """
+        defauts = recall_bench._f1(true_positives=30, candidates=30, truth=62)
+        ouvert = recall_bench._f1(true_positives=49, candidates=57, truth=62)
+
+        assert defauts == pytest.approx(0.652, abs=0.001)
+        assert ouvert == pytest.approx(0.824, abs=0.001)
+        assert ouvert > defauts
+
+    def test_le_f1_est_indefini_sans_verite_ni_candidat(self) -> None:
+        assert recall_bench._f1(0, 0, 10) is None
+        assert recall_bench._f1(0, 10, 0) is None

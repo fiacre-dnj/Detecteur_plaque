@@ -210,6 +210,22 @@ def match(
     return pairs
 
 
+def _f1(true_positives: int, candidates: int, truth: int) -> float | None:
+    """Moyenne harmonique de la précision et du rappel, `None` si l'un manque.
+
+    Le seul chiffre qui départage deux réglages dont l'un gagne du rappel et perd de
+    la précision — c'est-à-dire **tous** les réglages de seuil. Sans lui, un banc de
+    rappel conclut invariablement « baissez le seuil ».
+    """
+    if candidates == 0 or truth == 0:
+        return None
+    precision = true_positives / candidates
+    recall = true_positives / truth
+    if precision + recall == 0.0:
+        return 0.0
+    return round(2 * precision * recall / (precision + recall), 4)
+
+
 def bucket_of(width: float) -> str:
     """Le seau de largeur d'une boîte, en pixels source."""
     for name, low, high in WIDTH_BUCKETS:
@@ -221,7 +237,15 @@ def bucket_of(width: float) -> str:
 class Tally:
     """Le décompte d'une classe, accumulé image après image."""
 
-    __slots__ = ("_confusion", "_matched", "_missed_by_width", "_spatial", "_truth_by_width")
+    __slots__ = (
+        "_candidates",
+        "_confusion",
+        "_matched",
+        "_missed_by_width",
+        "_spatial",
+        "_true_positives",
+        "_truth_by_width",
+    )
 
     def __init__(self) -> None:
         self._matched = 0
@@ -229,6 +253,10 @@ class Tally:
         self._confusion: dict[str, int] = {}
         self._missed_by_width: dict[str, int] = {name: 0 for name, _, _ in WIDTH_BUCKETS}
         self._truth_by_width: dict[str, int] = {name: 0 for name, _, _ in WIDTH_BUCKETS}
+        #: Boîtes **rendues** par le candidat sous ce label, appariées ou non.
+        self._candidates = 0
+        #: Celles d'entre elles qui tombent sur une vérité du **même** label.
+        self._true_positives = 0
 
     def record(self, reference: Detection, matched: Detection | None) -> None:
         """Range une instance de vérité et ce que le candidat en a fait."""
@@ -247,12 +275,43 @@ class Tally:
         self._missed_by_width[seau] += 1
         self._confusion[matched.label] = self._confusion.get(matched.label, 0) + 1
 
+    def record_candidate(self, matched_same_label: bool) -> None:
+        """Range une boîte **rendue par le candidat**, appariée ou non.
+
+        **Sans ce compteur, le banc ne mesurait que la moitié de la question**, et
+        cette moitié pousse toujours dans le même sens : baisser un seuil augmente
+        mécaniquement le rappel. Mesuré sur une vraie vidéo, passer la confiance de
+        0,35 à 0,12 fait monter le rappel de 0,484 à 0,806 — et tomber la précision de
+        1,000 à 0,500. **Une détection sur deux est alors fausse**, c'est-à-dire un
+        véhicule fantôme dans le total d'un compteur.
+
+        Un rappel lu seul aurait fait changer un défaut. C'est le mode de panne que ce
+        dépôt appelle « plausible et faux ».
+        """
+        self._candidates += 1
+        if matched_same_label:
+            self._true_positives += 1
+
     def report(self) -> dict[str, Any]:
         total = sum(self._truth_by_width.values())
+        false_positives = self._candidates - self._true_positives
         return {
             "truth": total,
             "matched": self._matched,
             "recall": round(self._matched / total, 4) if total else None,
+            "candidates": self._candidates,
+            "falsePositives": false_positives,
+            # `None` et jamais `1.0` sans candidat : « rien rendu » n'est pas
+            # « parfaitement précis ». Confondre les deux ferait passer un modèle muet
+            # pour le meilleur du banc.
+            "precision": (
+                round(self._true_positives / self._candidates, 4) if self._candidates else None
+            ),
+            # La moyenne harmonique, **le seul chiffre qui départage deux réglages**
+            # dont l'un gagne du rappel et perd de la précision. Mesuré, 960 à 0,20
+            # rend F1 0,683 contre 0,652 aux défauts : un gain réel mais bien plus
+            # mince que le rappel seul ne le laissait croire.
+            "f1": _f1(self._true_positives, self._candidates, total),
             "spatialMatched": self._spatial,
             "spatialRecall": round(self._spatial / total, 4) if total else None,
             "enoughInstances": total >= MIN_INSTANCES,
@@ -483,16 +542,40 @@ def _accumulate(
         cand_index = pairs.get(index)
         tally.record(truth_box, observed[cand_index] if cand_index is not None else None)
 
+    # **L'autre moitié de la question** : ce que le candidat rend et que la vérité ne
+    # voit pas. Rangé sous le label du CANDIDAT — c'est lui qui serait compté à
+    # l'écran — et apparié au même label, sinon une moto rendue « person » compterait
+    # comme une bonne détection de personne.
+    same_label = {
+        cand_index
+        for truth_index, cand_index in pairs.items()
+        if observed[cand_index].label == reference[truth_index].label
+    }
+    for cand_index, candidate in enumerate(observed):
+        tallies.setdefault(candidate.label, Tally()).record_candidate(cand_index in same_label)
+
 
 def _print_class(label: str, result: dict[str, Any]) -> None:
     total = result["truth"]
-    if not total:
+    if not total and not result["candidates"]:
         return
-    recall = result["recall"]
-    spatial = result["spatialRecall"]
     flag = "" if result["enoughInstances"] else f"  ⚠ {total} < {MIN_INSTANCES}, non concluant"
-    print(f"      {label:<12} {result['matched']:>5} / {total:<5} rappel {recall:.3f}", end="")
-    print(f"   spatial {spatial:.3f}{flag}")
+    recall = result["recall"]
+    precision = result["precision"]
+    f1_score = result["f1"]
+    print(f"      {label:<12} {result['matched']:>5} / {total:<5}", end="")
+    print(f" rappel {recall:.3f}" if recall is not None else " rappel     —", end="")
+    # **La précision au même endroit que le rappel, et jamais ailleurs.** Les deux se
+    # lisent ensemble ou pas du tout : un rappel qui monte pendant qu'une précision
+    # s'effondre est une régression, et l'afficher seul fait baisser des seuils.
+    print(f"  précision {precision:.3f}" if precision is not None else "  précision     —", end="")
+    print(f"  F1 {f1_score:.3f}" if f1_score is not None else "  F1     —", end="")
+    print(f"{flag}")
+    if result["falsePositives"]:
+        print(
+            f"                   {result['falsePositives']} fausses sur "
+            f"{result['candidates']} rendues"
+        )
     missed = {k: v for k, v in result["missedByWidth"].items() if v}
     if missed:
         detail = "  ".join(f"{k} {v}" for k, v in missed.items())

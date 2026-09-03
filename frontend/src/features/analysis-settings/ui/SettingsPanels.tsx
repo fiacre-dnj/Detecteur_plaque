@@ -398,9 +398,10 @@ export function SettingsPanels({
             "qu'il est détecté, c'est sa taille ici : à 640, une moto de 60 px n'en " +
             "fait plus que 20. À monter avec « Confiance véhicules » : seule, la " +
             "définition ne rend rien — les objets retrouvés sont trop peu sûrs pour " +
-            "ouvrir une piste. Mesuré ensemble sur une vidéo réelle, 640 à 960 avec " +
-            "la confiance à 0,20 fait passer le rappel de 0,48 à 0,79, pour +29 % de " +
-            "temps d'analyse. " +
+            "ouvrir une piste. Mesuré ensemble sur une vidéo réelle, 960 avec la " +
+            "confiance à 0,20 fait passer le rappel de 0,48 à 0,79 et la précision de " +
+            "1,00 à 0,86, pour +29 % de temps d'analyse — des objets en plus, et " +
+            "quelques-uns d'inventés. " +
             (settings.inferenceImgsz === null
               ? "Suit le réglage du serveur."
               : "Valeur explicite : elle part avec l'analyse.")

@@ -193,7 +193,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1884 tests
+uv run pytest                                                            # 1889 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -2293,6 +2293,17 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     `--stage tracked` 0,484 — le détecteur trouve 20 objets de plus, le tracker les jette
     tous. `fuse_score: false` ne rachète rien sur ce cas.
 
+    **Et le rappel seul mentait, ce qui a failli faire changer un défaut.** Un banc de
+    rappel pousse toujours dans le même sens — baisser un seuil l'augmente
+    mécaniquement. Avec la précision, mesurée depuis : 640/0,35 rend **rappel 0,484,
+    précision 1,000, F1 0,652** ; 960/0,20 rend **0,790 / 0,860 / 0,824** ; 960/0,12
+    rend **0,790 / 0,583 / 0,671**. Trois choses invisibles sans ce chiffre — le
+    compromis reste favorable à 0,20 (le **tracker filtre** les détections instables :
+    au détecteur nu la précision tomberait à 0,707) ; le modèle **invente une classe**
+    (17 observations de `bus` sur un clip qui n'en contient aucun) ; et 0,12 est
+    franchement mauvais, donc l'optimum n'est pas au plus bas. **Le défaut n'est pas
+    changé** : le gain est réel, son effet de bord dépend de la scène.
+
     `inferenceImgsz` voyage donc par requête, `null` suivant le déploiement — convention
     de `confidenceThreshold`. Cinq points :
     - **c'est un arbitrage de scène, pas de machine** : un plan large sur un carrefour
@@ -2884,7 +2895,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1884 (1 skip) | 947 |
+| Nombre | 1889 (1 skip) | 947 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 
