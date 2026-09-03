@@ -317,6 +317,13 @@ def _truth_boxes(
     `agnostic_nms=False` : la référence ne doit surtout pas subir la suppression
     inter-classes qu'on cherche à mesurer. `iou=0.7`, la valeur d'évaluation d'Ultralytics,
     plus permissive que le 0,45 du candidat pour la même raison.
+
+    `half` n'est **pas** passé, et pas par oubli : la roue le déprécie et journalise un
+    avertissement **par appel**, donc par image — dix-sept lignes de bruit pour vingt-cinq
+    images, dans un outil dont la sortie est le produit. Le défaut de `cfg/default.yaml`
+    vaut déjà `False`, qui est ce que la référence veut : elle n'a aucune contrainte de
+    cadence, et la demi-précision changerait ses boîtes. Le chemin candidat, lui, le
+    passe — il doit refléter la production, avertissement compris.
     """
     results = model.predict(
         source=image,
@@ -326,7 +333,6 @@ def _truth_boxes(
         agnostic_nms=False,
         imgsz=imgsz,
         device=device,
-        half=False,
         verbose=False,
     )
     return _to_detections(results[0], wanted)
@@ -500,6 +506,9 @@ def _print_class(label: str, result: dict[str, Any]) -> None:
 def _print_inventory(label: str, result: dict[str, Any]) -> None:
     """L'inventaire ne rend qu'un décompte : aucun candidat n'a tourné."""
     total = result["truth"]
+    if not total:
+        print(f"      {label:<12} {0:>5} instances  ⚠ absente de ce clip")
+        return
     flag = "" if result["enoughInstances"] else f"  ⚠ < {MIN_INSTANCES}, mesure non concluante"
     widths = "  ".join(f"{k} {v}" for k, v in result["truthByWidth"].items() if v)
     print(f"      {label:<12} {total:>5} instances{flag}")
@@ -724,7 +733,14 @@ def _inventory(
     trouve ni moto ni piéton, la conclusion est « il n'y en a pas dans ce clip » et non
     « le détecteur échoue ». Les deux se ressemblent beaucoup dans un rapport.
     """
-    tallies: dict[str, Tally] = {}
+    # **Les classes demandées à zéro sont rendues, pas omises** : c'est l'absence qui
+    # est l'information, et c'est exactement la question qu'on pose en lançant un
+    # inventaire. Un rapport qui n'imprime que « car 52 » répond « non » sans le dire,
+    # et se lit aussi bien comme « la classe n'a pas été cherchée » — même raisonnement
+    # que `near_misses`, publié à zéro par ligne.
+    tallies: dict[str, Tally] = {
+        LABEL_OF_ID[class_id]: Tally() for class_id in sorted(wanted) if class_id in LABEL_OF_ID
+    }
     processed = 0
     for image in _decode(video, start_ms=spec.start_ms, frames=frames):
         processed += 1
