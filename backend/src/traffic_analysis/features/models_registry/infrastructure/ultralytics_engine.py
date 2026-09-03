@@ -49,6 +49,11 @@ DEFAULT_FPS = 30.0
 #: chiffre, il rend seulement réglable ce qui était subi.
 DEFAULT_IMGSZ = 640
 
+#: Détections gardées par image après NMS. **Exactement le défaut d'Ultralytics** :
+#: le nommer ne change aucun chiffre, il rend seulement visible une troncature qui
+#: s'applique par score décroissant, donc sur les petits objets d'abord.
+DEFAULT_MAX_DET = 300
+
 #: Largeur attendue de `boxes.data` en suivi : `[x1, y1, x2, y2, id, conf, cls]`.
 TRACKED_BOX_COLUMNS = 7
 
@@ -515,7 +520,7 @@ def _first_analysed_index(start_ms: float, fps: float, stride: int) -> int:
 class UltralyticsEngine:
     """Détection et suivi par Ultralytics, derrière le port du domaine."""
 
-    __slots__ = ("_batch", "_gmc", "_imgsz", "_prefetch", "_registry")
+    __slots__ = ("_batch", "_gmc", "_imgsz", "_max_det", "_prefetch", "_registry")
 
     def __init__(
         self,
@@ -523,6 +528,7 @@ class UltralyticsEngine:
         *,
         gmc_method: str | None = None,
         imgsz: int = DEFAULT_IMGSZ,
+        max_det: int = DEFAULT_MAX_DET,
         batch: int = 1,
         prefetch_batches: int = DEFAULT_INFERENCE_PREFETCH,
     ) -> None:
@@ -542,6 +548,7 @@ class UltralyticsEngine:
         """
         self._registry = registry
         self._imgsz = imgsz
+        self._max_det = max(1, max_det)
         self._batch = max(1, batch)
         self._prefetch = max(0, prefetch_batches)
         # Le mouvement seul est un réglage de déploiement ; le fichier de suivi, lui,
@@ -801,6 +808,11 @@ class UltralyticsEngine:
                 # pas la taille d'un objet dans la vidéo qui décide qu'il est détecté,
                 # c'est sa taille ici (ADR 0060).
                 imgsz=spec.imgsz or self._imgsz,
+                # Explicite, et c'est tout ce que cela change : 300 est le défaut
+                # d'Ultralytics. La troncature se fait par score décroissant, donc
+                # elle jette les petits objets en premier — la nommer permet au moins
+                # de la voir avant de la subir.
+                max_det=self._max_det,
                 persist=True,
                 verbose=False,
             )
@@ -828,13 +840,23 @@ class UltralyticsEngine:
         # que ce mode vend — la latence — contre du débit dont il n'a que faire.
         # Le *résolveur* et non le fichier : le flux doit prendre son bail avant de
         # pouvoir demander au modèle la forme de sa tête. Voir `_tracker_for`.
-        return UltralyticsStream(self._registry, spec, self._tracker_for, self._imgsz)
+        return UltralyticsStream(
+            self._registry, spec, self._tracker_for, self._imgsz, self._max_det
+        )
 
 
 class UltralyticsStream:
     """Suivi image par image, avec état persistant entre les appels."""
 
-    __slots__ = ("_imgsz", "_lease", "_model", "_registry", "_spec", "_tracker_config")
+    __slots__ = (
+        "_imgsz",
+        "_lease",
+        "_max_det",
+        "_model",
+        "_registry",
+        "_spec",
+        "_tracker_config",
+    )
 
     def __init__(
         self,
@@ -842,10 +864,12 @@ class UltralyticsStream:
         spec: EngineSpec,
         resolve_tracker: Callable[[EngineSpec, Any], Path],
         imgsz: int = DEFAULT_IMGSZ,
+        max_det: int = DEFAULT_MAX_DET,
     ) -> None:
         self._registry = registry
         self._spec = spec
         self._imgsz = imgsz
+        self._max_det = max_det
         # Le gestionnaire de contexte est conservé et fermé à la main : le bail
         # doit survivre à l'appel qui l'ouvre, contrairement à `iter_video`.
         self._lease = registry.lease(spec.model_id)
@@ -900,6 +924,7 @@ class UltralyticsStream:
             # le déploiement en repli — et non la constante du moteur, qui ferait
             # justement détecter les deux modes à deux résolutions différentes.
             imgsz=self._spec.imgsz or self._imgsz,
+            max_det=self._max_det,
             verbose=False,
         )
         return _to_observations(results[0]) if results else ()

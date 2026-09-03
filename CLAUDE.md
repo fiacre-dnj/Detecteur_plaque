@@ -193,7 +193,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1874 tests
+uv run pytest                                                            # 1884 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -2864,7 +2864,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1874 (1 skip) | 947 |
+| Nombre | 1884 (1 skip) | 947 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

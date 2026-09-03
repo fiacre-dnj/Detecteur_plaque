@@ -149,3 +149,19 @@ def test_le_suivi_persiste_entre_les_appels() -> None:
     """
     for index, call in enumerate(TRACK_CALLS):
         assert "persist=True" in call, f"L'appel n°{index + 1} ne persiste pas le suivi."
+
+
+def test_le_plafond_de_detections_est_explicite_dans_les_deux_modes() -> None:
+    """`max_det` était subi, alors que le détecteur de plaques nomme les siens.
+
+    300 est le défaut d'Ultralytics : le nommer ne change aucun chiffre. Mais la
+    troncature s'applique **par score décroissant** (`nms.py`, `i = i[:max_det]`), donc
+    elle jette les boîtes les plus faibles — c'est-à-dire les petits objets qu'on
+    cherche justement à récupérer. Un plafond qu'on subit sans le voir est exactement le
+    genre de réglage qui fait chercher la panne ailleurs.
+    """
+    for index, call in enumerate(TRACK_CALLS):
+        assert "max_det=self._max_det" in call, (
+            f"L'appel n°{index + 1} à `.track()` laisse le plafond de détections "
+            "implicite : une scène chargée y perdra ses petits objets en silence."
+        )

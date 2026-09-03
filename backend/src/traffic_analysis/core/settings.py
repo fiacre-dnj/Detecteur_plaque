@@ -111,6 +111,24 @@ class Settings(BaseSettings):
     #: vidéos, en regardant **débit et comptage** : c'est le seul réglage de cette
     #: section qui peut faire disparaître des véhicules.
     inference_imgsz: int = Field(640, ge=64, le=1920)
+    #: Détections gardées par image, après NMS.
+    #:
+    #: **300 est ce qu'Ultralytics appliquait déjà sans que personne l'écrive** ; le
+    #: rendre explicite ne change aucun chiffre. Le détecteur de plaques nomme les
+    #: siens (`max_det=1`, `max_det=8`) depuis toujours — celui des véhicules subissait
+    #: le défaut sans le dire.
+    #:
+    #: La troncature s'applique **par score décroissant** (`nms.py`, `i = i[:max_det]`),
+    #: donc ce sont les boîtes les plus faibles qui tombent : exactement les petits
+    #: objets qu'on cherche à récupérer. Le seuil qui alimente ce lot est bas —
+    #: `detector_floor(0,35)` vaut 0,10 — donc beaucoup de boîtes faibles y entrent.
+    #:
+    #: **À monter seulement sur une scène qui touche réellement le plafond**, ce qui
+    #: n'arrive pas sur une vue de circulation ordinaire : le coût est payé en aval, où
+    #: chaque boîte supplémentaire alimente l'étage d'apparence de BoT-SORT (ADR 0047).
+    #: Aucun comptage ne peut empirer en le montant — les boîtes ajoutées sont celles
+    #: qui étaient silencieusement jetées.
+    inference_max_det: int = Field(300, ge=10, le=3000)
     #: Images par inférence en **différé**. Sans effet en direct, où les images
     #: arrivent une par une.
     #:

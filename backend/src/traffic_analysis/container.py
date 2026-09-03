@@ -277,6 +277,7 @@ def build_counting_stack(
         registry,
         gmc_method=settings.tracker_gmc,
         imgsz=settings.inference_imgsz,
+        max_det=settings.inference_max_det,
         batch=settings.inference_batch,
         prefetch_batches=settings.inference_prefetch_batches,
     )
