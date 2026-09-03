@@ -100,6 +100,35 @@ def test_le_nms_ignore_la_classe_dans_les_deux_modes() -> None:
         )
 
 
+def test_le_nms_par_groupe_est_installe_dans_les_deux_modes() -> None:
+    """**Les deux mécanismes sont nécessaires, et aucun ne suffit** — ADR 0057.
+
+    `agnostic_nms=True` seul supprime la moto sous son pilote. Le découpage par
+    groupe corrige cela, et il tient à deux fils que rien d'autre ne surveille :
+
+    - `predictor=` couvre le cas « aucun prédicteur encore construit », c'est-à-dire
+      un déploiement où le préchauffage est désactivé ;
+    - `install_group_aware_nms` couvre le cas inverse, qui est le **cas normal** : le
+      préchauffage appelle `model.predict()` au démarrage, `predict()` ne construit
+      son prédicteur qu'une fois par instance, et `ModelRegistry` garde ses instances
+      d'un job à l'autre. Sans l'échange de classe, `predictor=` serait ignoré pour
+      toute la vie du processus et le correctif serait entièrement inerte.
+
+    En perdre un rendrait le NMS par groupe silencieusement inopérant dans une
+    configuration sur deux, sans qu'aucun chiffre ne paraisse faux.
+    """
+    for index, call in enumerate(TRACK_CALLS):
+        assert "predictor=_group_aware_predictor()" in call, (
+            f"L'appel n°{index + 1} à `.track()` ne passe pas le prédicteur par groupe. "
+            "Sans préchauffage, un pilote y effacera sa moto."
+        )
+    assert SOURCE.count("install_group_aware_nms(") == 3, (
+        "Il doit y avoir la définition et **deux** appels — différé et direct. "
+        "Le direct partage l'instance résidente avec le différé : l'oublier ferait "
+        "compter un motard pour un seul objet en caméra."
+    )
+
+
 def test_les_classes_de_vehicules_sont_restreintes_dans_les_deux_modes() -> None:
     """Sans `classes=`, le modèle rend les 80 classes de COCO.
 

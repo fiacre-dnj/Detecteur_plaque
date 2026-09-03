@@ -27,6 +27,7 @@ from traffic_analysis.features.counting.application.dto import (
     TrackObservation,
     VideoInfo,
 )
+from traffic_analysis.features.counting.application.ports import nms_class_groups
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -158,6 +159,130 @@ def detector_floor(confidence: float) -> float:
     base_high = float(base["track_high_thresh"])
     band_ratio = base_low / base_high if base_high > 0 else 1.0
     return min(base_low, confidence * band_ratio)
+
+
+@lru_cache(maxsize=1)
+def _group_aware_predictor() -> type:
+    """Le prédicteur qui découpe le NMS par famille de classes.
+
+    Construit à l'appel et mis en cache : `ultralytics` n'est jamais importé au
+    chargement de ce module, et la classe doit pourtant hériter du sien.
+
+    **Ce qu'il change, et rien d'autre.** `postprocess` appelle
+    `non_max_suppression` **une fois par famille** (`nms_class_groups`) au lieu
+    d'une fois pour tout, en gardant le régime agnostique **à l'intérieur** de
+    chaque appel. La suppression reste donc inter-classes là où deux classes
+    décrivent le même objet physique — le piège 5 est intégralement préservé — et
+    devient impossible entre un piéton et la moto qu'il conduit.
+
+    Quatre points qui ne se devinent pas :
+
+    - **une seule famille ⇒ on délègue au parent**, donc zéro différence, pas même
+      un `clone`. C'est le cas du jeu de classes par défaut, et c'est ce qui rend le
+      changement livrable sans réanalyser quoi que ce soit ;
+    - **le tenseur brut DOIT être cloné à chaque appel.** `non_max_suppression` fait
+      `prediction = prediction.transpose(-1, -2)` — une **vue** — puis
+      `prediction[..., :4] = xywh2xyxy(...)`, donc elle convertit les boîtes **en
+      place** dans le tenseur de l'appelant. Un second appel sur le même tenseur
+      reconvertirait des xyxy en xyxy : des boîtes plausibles et fausses, sans la
+      moindre erreur ;
+    - **les résultats fusionnés sont retriés par score décroissant.** Concaténer
+      trois familles rend un ordre par blocs, là où `torchvision.ops.nms` rend
+      toujours un ordre décroissant. Le tracker n'a pas à connaître la différence, et
+      c'est aussi ce qui rend la troncature à `max_det` honnête : elle doit couper
+      les scores les plus bas, pas la dernière famille de la liste ;
+    - **`end2end` et l'extraction de caractéristiques délèguent au parent.** Une tête
+      `end2end` ne passe pas par le NMS du tout (`nms.py` sort en tête de fonction),
+      donc il n'y a rien à découper ; `_feats` fait rendre des indices que la fusion
+      ne saurait pas recoller.
+    """
+    from ultralytics.models.yolo.detect import DetectionPredictor
+    from ultralytics.utils import nms
+
+    class GroupAwareDetectionPredictor(DetectionPredictor):
+        """NMS agnostique **dans** une famille de classes, jamais **entre** deux."""
+
+        def postprocess(
+            self,
+            preds: Any,  # noqa: ANN401 — la signature du parent n'est pas typée
+            img: Any,  # noqa: ANN401
+            orig_imgs: Any,  # noqa: ANN401
+            **kwargs: Any,  # noqa: ANN401
+        ) -> Any:  # noqa: ANN401
+            groups = nms_class_groups(self.args.classes or ())
+            if (
+                len(groups) < 2
+                or getattr(self, "_feats", None) is not None
+                or getattr(self.model, "end2end", False)
+            ):
+                return super().postprocess(preds, img, orig_imgs, **kwargs)
+
+            import torch
+
+            # `pop` et non `get` : le parent le retire aussi, et `construct_results`
+            # reçoit ensuite le reste des arguments.
+            iou = kwargs.pop("iou", self.args.iou)
+            raw = preds[0] if isinstance(preds, (list, tuple)) else preds
+            per_group = [
+                nms.non_max_suppression(
+                    raw.clone(),
+                    self.args.conf,
+                    iou,
+                    list(group),
+                    self.args.agnostic_nms,
+                    max_det=self.args.max_det,
+                    nc=0 if self.args.task == "detect" else len(getattr(self.model, "names", ())),
+                    end2end=False,
+                    rotated=self.args.task == "obb",
+                )
+                for group in groups
+            ]
+
+            merged = []
+            for index in range(len(per_group[0])):
+                rows = torch.cat([group[index] for group in per_group], dim=0)
+                order = rows[:, 4].argsort(descending=True)[: self.args.max_det]
+                merged.append(rows[order])
+
+            if not isinstance(orig_imgs, list):
+                from ultralytics.utils import ops
+
+                orig_imgs = ops.convert_torch2numpy_batch(orig_imgs)[..., ::-1]
+            return self.construct_results(merged, img, orig_imgs, **kwargs)
+
+    return GroupAwareDetectionPredictor
+
+
+def install_group_aware_nms(model: Any) -> None:  # noqa: ANN401 — YOLO n'est pas typé
+    """Fait porter le NMS par famille au prédicteur **déjà construit** du modèle.
+
+    **Sans cela, le correctif serait entièrement inerte, en silence.** `predict()`
+    ne construit son prédicteur qu'une fois par instance de modèle
+    (`engine/model.py`, `if not self.predictor or …`), et `ModelRegistry` garde ses
+    instances chargées d'un job à l'autre. Or le **préchauffage** appelle
+    `model.predict()` au démarrage : le prédicteur par défaut est donc en place
+    avant le premier `track()`, et l'argument `predictor=` de `predict()` est ignoré
+    pour toute la vie du processus. C'est le mode de panne exact d'ADR 0035, et il
+    est ici pire — la première analyse après un démarrage n'obéirait pas non plus.
+
+    On échange donc la **classe de l'instance**, ce qui est légal entre deux classes
+    de même disposition et n'ajoute aucun attribut : la famille se relit à chaque
+    image sur `self.args.classes`.
+
+    **Ne pas « simplifier » en posant `model.predictor = None`.** `track()` ferait
+    `hasattr(self.predictor, "trackers")` → faux → `register_tracker` une seconde
+    fois, et `model.callbacks` **empile** : un `on_predict_postprocess_end` en double
+    appelle `tracker.update()` deux fois par image, soit des chiffres plausibles et
+    complètement faux. Même raison que la note de `reset_trackers`.
+
+    Le test de type est **exact** (`type(...) is`) : un prédicteur de segmentation ou
+    de pose n'a rien à faire ici, et un prédicteur déjà échangé n'a rien à refaire.
+    """
+    from ultralytics.models.yolo.detect import DetectionPredictor
+
+    predictor = getattr(model, "predictor", None)
+    if predictor is not None and type(predictor) is DetectionPredictor:
+        predictor.__class__ = _group_aware_predictor()
 
 
 #: Les clés de requête qui portent le seuil **de l'utilisateur**, tel quel.
@@ -553,6 +678,11 @@ class UltralyticsEngine:
         fps: float,
     ) -> Iterator[EngineFrame]:
         """Le suivi proprement dit, sans la fermeture du décodage."""
+        # Le préchauffage a déjà construit le prédicteur par défaut sur cette
+        # instance résidente : `predictor=` ci-dessous serait donc ignoré, et le
+        # découpage du NMS par famille n'aurait jamais lieu. Voir
+        # `install_group_aware_nms`.
+        install_group_aware_nms(model)
         for chunk in batches:
             results = model.track(
                 source=[image for _, image in chunk],
@@ -570,10 +700,22 @@ class UltralyticsEngine:
                 # par défaut d'Ultralytics est *class-aware* : il ne compare que
                 # des boîtes de même classe. Une camionnette scorée `car 0.52`
                 # **et** `truck 0.41` survit donc en double, devient deux pistes,
-                # deux identités, et compte deux fois. Nos quatre classes sont
-                # mutuellement exclusives sur un objet physique, donc la
-                # suppression doit ignorer la classe.
+                # deux identités, et compte deux fois.
+                #
+                # **Mais il ne doit ignorer la classe qu'À L'INTÉRIEUR d'une famille
+                # d'objets physiquement exclusifs**, et c'est ADR 0057. La prémisse
+                # écrite ici — « nos quatre classes sont mutuellement exclusives sur
+                # un objet physique » — a cessé d'être vraie le jour où `person` et
+                # `bicycle` sont devenues cochables : un pilote et sa moto sont deux
+                # objets réels, et l'agnostique effaçait le moins sûr des deux.
+                # `predictor` découpe donc l'appel par famille (`nms_class_groups`),
+                # et ce drapeau garde son sens **dans** chaque famille.
                 agnostic_nms=True,
+                # Le cas « aucun prédicteur encore construit » — préchauffage
+                # désactivé. Quand il en existe déjà un, `predict()` ignore cet
+                # argument et c'est `install_group_aware_nms` qui a fait le travail.
+                # Les deux sont nécessaires ; aucun ne suffit.
+                predictor=_group_aware_predictor(),
                 device=self._registry.device(),
                 half=self._registry.half(),
                 imgsz=self._imgsz,
@@ -638,6 +780,9 @@ class UltralyticsStream:
         # argument, elle hériterait aussi de son **seuil** — le direct partage
         # l'instance résidente avec le différé. Voir `reset_trackers`.
         reset_trackers(self._model, self._tracker_config)
+        # Le direct partage l'instance résidente avec le différé : sans cet appel,
+        # il compterait un motard pour un seul objet là où le différé en compte deux.
+        install_group_aware_nms(self._model)
 
     def track(
         self,
@@ -657,9 +802,11 @@ class UltralyticsStream:
             conf=detector_floor(self._spec.confidence),
             iou=self._spec.iou,
             classes=list(self._spec.class_ids),
-            # Voir le mode différé : NMS inter-classes, sinon une camionnette
-            # survit en `car` **et** en `truck` et compte deux fois.
+            # Voir le mode différé : NMS inter-classes **dans une famille**, sinon
+            # une camionnette survit en `car` et en `truck` et compte deux fois —
+            # mais un pilote et sa moto ne se suppriment jamais (ADR 0057).
             agnostic_nms=True,
+            predictor=_group_aware_predictor(),
             device=self._registry.device(),
             half=self._registry.half(),
             # La même taille d'entrée qu'en différé, et c'est un invariant du

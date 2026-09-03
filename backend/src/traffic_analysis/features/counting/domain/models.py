@@ -201,6 +201,15 @@ CLASS_GROUP_OF: dict[str, ClassGroup] = {
 }
 
 
+#: Identifiant COCO → catégorie, pour les appelants qui n'ont que l'identifiant.
+#:
+#: Le pendant de `CATEGORY_OF_CLASS`, indexé autrement. Le repli est celui de
+#: `category_of`, et pour la même raison.
+CATEGORY_OF_ID: dict[int, CountCategory] = {
+    entry.id: entry.category for entry in DETECTABLE_CLASSES
+}
+
+
 def class_group(label: str) -> ClassGroup:
     """Famille d'objets physiquement exclusifs d'un label. Inconnu ⇒ `motor_vehicle`.
 

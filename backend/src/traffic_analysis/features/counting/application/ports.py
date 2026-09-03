@@ -57,6 +57,60 @@ class EngineSpec:
     start_ms: float = 0.0
 
 
+def nms_class_groups(class_ids: Sequence[int]) -> tuple[tuple[int, ...], ...]:
+    """Partitionne les classes demandées en groupes de suppression pour le moteur.
+
+    Le juge unique de la façon dont le moteur découpe sa suppression des doublons,
+    publié ici parce que l'adaptateur vit dans une autre feature et ne peut lire que
+    le contrat (`features/models_registry` → `counting/application`).
+
+    **Pourquoi le moteur en a besoin.** Le NMS d'Ultralytics ne connaît que deux
+    régimes : *class-aware*, qui ne compare jamais deux classes — donc laisse une
+    camionnette survivre comme `car 0.52` **et** `truck 0.41`, le piège 5 — et
+    *agnostique*, qui compare tout — donc supprime la moto sous son pilote dès que
+    leur recouvrement dépasse le seuil IoU. Aucun des deux n'est ce qu'on veut. La
+    bonne règle est « agnostique **dans** un groupe, jamais **entre** deux », et elle
+    s'obtient en découpant l'appel.
+
+    **Le groupe est la CATÉGORIE, et surtout pas `class_group`.** Les deux tables
+    existent, elles se ressemblent, et les confondre est le piège de ce module — un
+    test verrouille l'écart. Elles répondent à deux questions différentes :
+
+    - `class_group` sert à la **containment** (`_drop_contained`, ADR 0056) : « cet
+      objet peut-il être *à l'intérieur* de l'autre en restant un objet distinct ? »
+      Une moto **devant** un camion est contenue à 1,0 dans sa boîte et reste une
+      moto, d'où trois familles ;
+    - ici la question est l'**IoU** : « ces deux boîtes, qui *coïncident*, peuvent-elles
+      décrire le même objet ? » Deux boîtes de classes véhicule qui se recouvrent
+      au-delà de 0,45 ont la même taille et la même place — c'est un objet scoré deux
+      fois, exactement le piège 5. La moto **devant** le camion, elle, n'atteint jamais
+      cette IoU : les tailles sont trop différentes.
+
+    La seule classe dont la boîte coïncide légitimement avec celle d'un **autre** objet
+    est `person` : un pilote occupe la boîte de sa machine. D'où deux groupes, et pas
+    trois.
+
+    Trois propriétés, et la première est celle qui rend le changement livrable :
+
+    - **une seule catégorie ⇒ une seule partie**, donc un seul appel au NMS, donc le
+      comportement d'aujourd'hui au bit près. C'est le cas du jeu de classes par défaut
+      (`car`, `motorcycle`, `bus`, `truck`) : aucune analyse existante ne change de
+      chiffre, et c'est vérifié sur la sortie du NMS lui-même ;
+    - **l'ordre est déterministe** — les catégories par leur nom, les identifiants
+      croissants à l'intérieur. Deux courses identiques doivent soumettre les mêmes
+      lots dans le même ordre, sinon le NMS glouton pourrait départager autrement ;
+    - **une classe hors catalogue est un véhicule**, comme partout ailleurs
+      (`category_of`) : elle continue donc d'être dédupliquée avec eux.
+    """
+    from traffic_analysis.features.counting.domain.models import CATEGORY_OF_ID
+
+    groups: dict[str, list[int]] = {}
+    for class_id in sorted(set(class_ids)):
+        category = CATEGORY_OF_ID.get(class_id, "vehicle")
+        groups.setdefault(category, []).append(class_id)
+    return tuple(tuple(ids) for _, ids in sorted(groups.items()))
+
+
 @dataclass(frozen=True, slots=True)
 class EngineFrame:
     """Une frame analysée, telle que le moteur la rapporte.

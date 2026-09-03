@@ -193,7 +193,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1796 tests
+uv run pytest                                                            # 1832 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -2136,6 +2136,53 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     publier `contained_out` **par paire de classes**, sur le patron de `near_misses` —
     une suppression anonyme est aussi opaque que le doublon qu'elle évite.
     [ADR 0056](docs/adr/0056-la-suppression-des-boites-incluses-effacait-les-petits-objets.md).
+42. **Le NMS agnostique supprimait la moto sous son pilote.** `agnostic_nms=True`
+    annule le décalage par classe (`nms.py`, `c = x[:, 5:6] * (0 if agnostic else
+    max_wh)`) : toutes les classes entrent dans un seul bassin de suppression, et la
+    moins sûre disparaît dès que le recouvrement dépasse `iou_threshold`. Vérifié sur la
+    vraie fonction : deux boîtes à IoU 0,667, `person 0.55` et `motorcycle 0.48` — la
+    moto disparaît ; et **c'est symétrique**, `person 0.40` contre `motorcycle 0.62`
+    efface la personne. Le commentaire qui justifiait le réglage invoquait « nos
+    **quatre** classes mutuellement exclusives » : `git log -S` le date du 2026-08-06 et
+    l'ajout de `person` au catalogue du 2026-08-12. Prémisse falsifiée six jours après
+    avoir été écrite.
+
+    **Le mécanisme est certain, sa fréquence ne l'est pas** : sur une géométrie
+    réaliste, l'IoU pilote/moto vaut **0,407**, sous le seuil de 0,45. Corollaire
+    contre-intuitif à ne pas oublier — **baisser le « Seuil IoU » aggrave ce cas**, le
+    monter le soigne.
+
+    Le NMS reste agnostique **dans** un groupe et ne compare jamais deux groupes :
+    `nms_class_groups` (dans `counting/application/ports.py`, le contrat que
+    l'adaptateur peut lire) partitionne, et un `DetectionPredictor` dérivé appelle
+    `non_max_suppression` **une fois par groupe**. Cinq points :
+    - **le groupe est la CATÉGORIE, surtout pas `class_group`.** Les deux tables se
+      ressemblent et les confondre est le piège : la containment demande « l'un
+      peut-il être *dans* l'autre » (une moto **devant** un camion, oui, à 1,0), le NMS
+      demande « ces deux boîtes qui *coïncident* sont-elles le même objet » (oui — deux
+      boîtes de véhicule à IoU > 0,45 ont la même taille et la même place). Une
+      première version utilisait `class_group` et a été rejetée par ses propres tests ;
+    - **le défaut ne change pas d'un bit** : `car`/`motorcycle`/`bus`/`truck` sont tous
+      `vehicle`, donc une seule partie, donc un seul appel. Un test compare les
+      tenseurs par `torch.equal` ;
+    - **deux mécanismes d'installation, aucun ne suffit.** `predict()` ne construit son
+      prédicteur qu'une fois par instance, et **le préchauffage appelle
+      `model.predict()` au démarrage** : `predictor=` serait donc ignoré pour toute la
+      vie du processus. `install_group_aware_nms` échange la classe de l'instance déjà
+      construite. Pire qu'ADR 0035 — là-bas la première analyse obéissait, ici aucune ;
+    - **ne pas poser `model.predictor = None`** : `track()` ré-enregistrerait le
+      tracker, `model.callbacks` empile, et `tracker.update()` tournerait deux fois par
+      image ;
+    - **chaque groupe reçoit un `clone`** : `non_max_suppression` fait
+      `prediction[..., :4] = xywh2xyxy(...)` sur une **vue**, donc elle convertit en
+      place. Un second appel reconvertirait des xyxy en xyxy.
+
+    **Livrée seule, cette ADR ne rend rien** : un pilote qui survit au NMS était
+    réeffacé par `_drop_contained` à containment 1,000. Les décisions 41 et 42 vont
+    ensemble. Et `multi_label` est **définitivement close** : inatteignable
+    (`get_cfg` lève `SyntaxError`, `postprocess` ne la passe pas) et inutile telle
+    quelle (deux lignes d'une même ancre portent la même boîte, IoU 1,0).
+    [ADR 0057](docs/adr/0057-le-nms-agnostique-supprimait-la-moto-sous-son-pilote.md).
 
 ## Ce que l'analyse signale — les alertes
 
@@ -2666,7 +2713,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1796 (1 skip) | 938 |
+| Nombre | 1832 (1 skip) | 938 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 
