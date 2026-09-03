@@ -56,6 +56,24 @@ class EngineSpec:
     #: en refermant le générateur, ce que la boucle d'analyse fait déjà en sortant.
     start_ms: float = 0.0
 
+    #: Silence au-delà duquel une piste est abandonnée, en **ms de temps de scène**.
+    #:
+    #: Le même réglage que `SessionConfig.max_lost_ms` — une seule source, la requête,
+    #: et deux consommateurs. Le domaine oublie l'identité d'un véhicule au bout de ce
+    #: délai ; le tracker, lui, doit renoncer **au même moment**, sinon l'un rend un
+    #: `track_id` que l'autre ne reconnaît plus et le véhicule reçoit un numéro neuf.
+    #:
+    #: **Il n'atteignait pas le tracker du tout**, et le curseur de l'écran était
+    #: inerte : `track_buffer` est une constante du fichier de suivi versionné, et
+    #: `EngineSpec` ne portait pas ce champ, donc la valeur ne *pouvait pas* descendre
+    #: jusqu'à l'adaptateur. Voir `track_buffer_frames` et ADR 0058.
+    #:
+    #: **Un moteur qui l'ignore reste correct** : c'est la même doctrine que
+    #: `start_ms` — un indice, jamais la règle. Le domaine applique `max_lost_ms` de
+    #: son côté quoi qu'il arrive, donc le `FakeEngine` de la CI produit les mêmes
+    #: chiffres. Le respecter aligne seulement les deux horloges.
+    max_lost_ms: float = 2500.0
+
 
 def nms_class_groups(class_ids: Sequence[int]) -> tuple[tuple[int, ...], ...]:
     """Partitionne les classes demandées en groupes de suppression pour le moteur.

@@ -161,6 +161,42 @@ def detector_floor(confidence: float) -> float:
     return min(base_low, confidence * band_ratio)
 
 
+def track_buffer_frames(max_lost_ms: float, fps: float, stride: int) -> int:
+    """« Survie d'une piste perdue » (ms de scène) → `track_buffer` (images analysées).
+
+    **Le seul juge de cette conversion, et il doit le rester.** Écrite deux fois elle
+    divergerait, et la panne serait un tampon deux fois trop court sans qu'aucun
+    message ne le dise — la piste repart alors sous un numéro neuf et le véhicule est
+    compté deux fois.
+
+    **Deux horloges qui ne se parlaient pas.** Le domaine abandonne une piste après
+    `max_lost_ms` de temps de **scène** (`_release_lost`) ; le tracker après
+    `track_buffer` images **analysées** (`byte_tracker.py`,
+    `self.max_frames_lost = args.track_buffer`, sans aucune mise à l'échelle). Le
+    fichier versionné annonçait un « miroir exact » qui n'était vrai qu'à 30 img/s et
+    au pas 1 :
+
+    - **à pas 3**, le domaine oublie à 2,5 s pendant que le tracker tient 7,5 s : il
+      rend un `track_id` que le domaine ne reconnaît plus, `_advance_tracks` crée une
+      piste neuve et `_number_tracks` émet un `global_id` neuf. Un véhicule compté
+      deux fois, en silence ;
+    - **à 60 img/s**, l'inverse : le tracker renonce à 1,25 s sous un curseur qui
+      annonce 2,5.
+
+    Le défaut retombe **exactement** sur la valeur du fichier de base — 2 500 ms à
+    30 img/s au pas 1 donnent 75 — donc `resolved_tracker_config` n'écrit aucun
+    fichier dérivé et rien ne change pour qui ne touche pas au curseur.
+
+    Un plancher à 1 : un tampon nul ferait abandonner une piste à l'image même où elle
+    disparaît, ce qui retirerait au tracker toute la tolérance qui justifie son
+    existence. Une cadence inconnue rend `0`, que l'appelant lit comme « ne rien
+    imposer », faute de pouvoir convertir.
+    """
+    if fps <= 0.0 or max_lost_ms <= 0.0:
+        return 0
+    return max(1, round(max_lost_ms / 1000.0 * fps / max(1, stride)))
+
+
 @lru_cache(maxsize=1)
 def _group_aware_predictor() -> type:
     """Le prédicteur qui découpe le NMS par famille de classes.
@@ -323,6 +359,20 @@ LIVE_TRACKER_KEYS = frozenset(
     }
 )
 
+#: Clés du fichier **gravées à la construction**, et l'attribut d'instance qu'elles
+#: alimentent. Une catégorie à part, et la première de son genre.
+#:
+#: `LIVE_TRACKER_KEYS` ne peut pas les couvrir : `reset()` ne les relit pas (vérifié à
+#: l'exécution — `args.track_buffer = 450` puis `reset()` laisse `max_frames_lost` à
+#: 75). Écrire la valeur dans le fichier dérivé ne suffit donc pas non plus, puisque
+#: le fichier n'est relu à aucun moment une fois les trackers en place.
+#:
+#: Elles rompent la garantie que `REQUEST_TRACKER_KEYS ⊆ LIVE_TRACKER_KEYS` rendait
+#: suffisante, et c'est pourquoi elles sont nommées ici plutôt que traitées au vol :
+#: la prochaine lecture de ce module doit voir qu'il existe **deux** façons de
+#: reposer un réglage, pas une.
+ENGRAVED_TRACKER_ATTRS: dict[str, str] = {"track_buffer": "max_frames_lost"}
+
 
 def head_is_end2end(model: Any) -> bool:  # noqa: ANN401
     """La tête de détection de ce modèle se passe-t-elle de NMS (`end2end`) ?
@@ -351,7 +401,7 @@ def head_is_end2end(model: Any) -> bool:  # noqa: ANN401
 
 @lru_cache(maxsize=32)
 def resolved_tracker_config(
-    gmc_method: str, high_thresh: float, appearance_reid: bool = True
+    gmc_method: str, high_thresh: float, appearance_reid: bool = True, track_buffer: int = 0
 ) -> Path:
     """Chemin du tracker à utiliser, mouvement et seuil de piste imposés.
 
@@ -408,6 +458,11 @@ def resolved_tracker_config(
     # supérieur à son `track_high_thresh` et la bande basse serait vide. Voir
     # `detector_floor`, qui est le seul juge de cette valeur.
     overrides["track_low_thresh"] = detector_floor(high_thresh)
+    # `0` veut dire « ne rien imposer » : le direct, qui n'a pas de cadence connue, et
+    # tout appelant qui ne peut pas convertir. Le fichier de base garde alors sa valeur,
+    # c'est-à-dire le comportement d'avant ADR 0058.
+    if track_buffer > 0:
+        overrides["track_buffer"] = track_buffer
     if not appearance_reid:
         # **Seul `with_reid` est posé, et pas `model`.** `build_encoder` sort sur le
         # premier argument : à `False`, la valeur de `model` n'est jamais lue, donc
@@ -420,7 +475,13 @@ def resolved_tracker_config(
     # L'apparence entre dans le nom : deux courses du même processus qui ne diffèrent
     # que par elle — un job `yolov8n` puis un job `yolo26n` — écriraient sinon dans le
     # même fichier, et la seconde emporterait la première pendant qu'elle tourne.
-    slug = f"botsort-gmc-{gmc_method}-hi-{high_thresh:.2f}-reid-{int(appearance_reid)}.yaml"
+    # Le tampon entre dans le nom pour la même raison que l'apparence : deux courses
+    # du même processus qui ne diffèrent que par lui écriraient sinon dans le même
+    # fichier, et la seconde emporterait la première pendant qu'elle tourne.
+    slug = (
+        f"botsort-gmc-{gmc_method}-hi-{high_thresh:.2f}"
+        f"-reid-{int(appearance_reid)}-buf-{track_buffer}.yaml"
+    )
     target = Path(tempfile.gettempdir()) / "traffic-analysis" / slug
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.with_name(f"{target.name}.{os.getpid()}.tmp")
@@ -502,16 +563,27 @@ class UltralyticsEngine:
             prefetch_batches=self._prefetch,
         )
 
-    def _tracker_for(self, spec: EngineSpec, model: Any) -> Path:  # noqa: ANN401
-        """Le fichier de suivi de cette course : mouvement, seuil de requête, apparence.
+    def _tracker_for(
+        self,
+        spec: EngineSpec,
+        model: Any,  # noqa: ANN401
+        track_buffer: int = 0,
+    ) -> Path:
+        """Le fichier de suivi de cette course : mouvement, seuil, apparence, tampon.
 
         **Le modèle est un argument parce que la réponse en dépend**, et il ne peut
         donc plus être résolu avant d'avoir pris le bail : c'est la tête du réseau
         chargé qui dit si la ré-identification d'apparence est gratuite ou si elle
         coûte une inférence par véhicule (`head_is_end2end`, ADR 0047).
+
+        `track_buffer` vaut `0` par défaut — « ne rien imposer » — parce que le
+        **direct** appelle ce résolveur sans pouvoir le calculer : un flux caméra n'a
+        pas de cadence déclarée, et la conversion ms → images en demande une.
         """
         appearance_reid = not head_is_end2end(model)
-        tracker_config = resolved_tracker_config(self._gmc, spec.confidence, appearance_reid)
+        tracker_config = resolved_tracker_config(
+            self._gmc, spec.confidence, appearance_reid, track_buffer
+        )
         # Journalisé **par course** parce que ces valeurs sont exactement ce qu'on
         # vient regarder quand un seuil semble sans effet ou qu'une cadence s'écroule :
         # le curseur, ce que le détecteur laisse passer, l'apparence, et le fichier
@@ -619,7 +691,13 @@ class UltralyticsEngine:
         with self._registry.lease(spec.model_id) as model:
             # **Résolu à l'intérieur du bail**, et pas avant : le fichier de suivi
             # dépend de la forme de la tête du modèle chargé (`head_is_end2end`).
-            tracker_config = self._tracker_for(spec, model)
+            #
+            # Le tampon se calcule ici parce que c'est ici que la cadence est connue :
+            # `max_lost_ms` est du temps de scène, `track_buffer` un nombre d'images
+            # analysées, et seul cet endroit tient les deux bouts (ADR 0058).
+            tracker_config = self._tracker_for(
+                spec, model, track_buffer_frames(spec.max_lost_ms, info.fps, stride)
+            )
             # Le fichier **et** le nettoyage : Ultralytics ne relit pas le premier
             # une fois ses trackers en place, donc le seuil de cette requête-ci
             # n'arriverait jamais jusqu'au tracker. Voir `reset_trackers`.
@@ -1138,6 +1216,7 @@ def reset_trackers(model: Any, tracker_config: Path | None = None) -> None:  # n
         tracker.reset()
     if tracker_config is not None:
         _reapply_request_keys(trackers, tracker_config)
+        _reapply_engraved_keys(trackers, tracker_config)
 
 
 def _reapply_request_keys(trackers: Any, tracker_config: Path) -> None:  # noqa: ANN401
@@ -1163,6 +1242,43 @@ def _reapply_request_keys(trackers: Any, tracker_config: Path) -> None:  # noqa:
             continue
         for key, value in wanted.items():
             setattr(args, key, value)
+
+
+def _reapply_engraved_keys(trackers: Any, tracker_config: Path) -> None:  # noqa: ANN401
+    """Repose les clés **gravées à la construction**, sur l'attribut qu'elles ont
+    alimenté.
+
+    Une catégorie distincte de `_reapply_request_keys`, et il faut la garder distincte :
+    celle-là écrit sur `tracker.args`, que le tracker relit à chaque image ; celle-ci
+    écrit sur l'**instance**, parce que `args.track_buffer` n'est plus jamais lu après
+    `__init__` — vérifié à l'exécution, `args.track_buffer = 450` puis `reset()` laisse
+    `max_frames_lost` à 75.
+
+    Sans elle, `track_buffer` serait correctement écrit dans le fichier dérivé,
+    correctement journalisé, et sans le moindre effet à partir de la **deuxième**
+    analyse d'un processus : le patron exact d'ADR 0035, sur le réglage que ce
+    correctif existe pour brancher.
+
+    Silencieuse sur une valeur absente du fichier — le cas normal du direct, qui
+    n'impose aucun tampon — et journalisée sur un tracker sans l'attribut attendu,
+    parce qu'un réglage qui redevient inerte ne doit pas le redevenir en silence.
+    """
+    if not trackers:
+        return
+    content = _tracker_file(tracker_config)
+    for key, attribute in ENGRAVED_TRACKER_ATTRS.items():
+        value = content.get(key)
+        if value is None:
+            continue
+        for tracker in trackers:
+            if not hasattr(tracker, attribute):
+                logger.warning(
+                    "tracker sans l'attribut attendu : réglage gravé non reposé",
+                    key=key,
+                    attribute=attribute,
+                )
+                continue
+            setattr(tracker, attribute, value)
 
 
 @lru_cache(maxsize=32)

@@ -193,7 +193,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1832 tests
+uv run pytest                                                            # 1857 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -2183,6 +2183,42 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     (`get_cfg` lève `SyntaxError`, `postprocess` ne la passe pas) et inutile telle
     quelle (deux lignes d'une même ancre portent la même boîte, IoU 1,0).
     [ADR 0057](docs/adr/0057-le-nms-agnostique-supprimait-la-moto-sous-son-pilote.md).
+43. **« Survie d'une piste perdue » n'atteignait pas le tracker.** Le troisième réglage
+    inerte de ce module, après ADR 0035 et ADR 0037. `maxLostMs` n'avait qu'un
+    consommateur, `_release_lost` dans le domaine : `grep -rn track_buffer backend/src/`
+    ne le trouvait **que dans des commentaires**, et surtout **`EngineSpec` ne portait
+    pas le champ** — la valeur ne *pouvait pas* atteindre l'adaptateur. Le bug n'était
+    pas dans un calcul, il était dans l'absence de transport.
+
+    **Deux horloges qui ne se parlaient pas.** Le domaine abandonne après `max_lost_ms`
+    de temps de **scène** ; le tracker après `track_buffer` images **analysées**
+    (`self.max_frames_lost = args.track_buffer`, sans aucune mise à l'échelle). Le
+    « miroir exact » qu'annonçait `botsort_reid.yaml` n'était vrai qu'à 30 img/s au
+    pas 1 : à **pas 3** le domaine oublie à 2,5 s pendant que le tracker tient 7,5 s —
+    il rend un `track_id` que le domaine ne reconnaît plus, donc un `global_id` neuf,
+    donc **un véhicule compté deux fois en silence** ; à **60 img/s** l'inverse, le
+    tracker renonce à 1,25 s sous un curseur qui annonce 2,5.
+
+    Trois pièces, et la troisième est une catégorie nouvelle :
+    - **`EngineSpec.max_lost_ms`**, un **indice** comme `start_ms` — un moteur qui
+      l'ignore reste correct, le domaine appliquant la règle de son côté. Le
+      `FakeEngine` de la CI rend donc les mêmes chiffres ;
+    - **`track_buffer_frames(max_lost_ms, fps, stride)`**, seul juge de la conversion,
+      dans l'adaptateur parce que lui seul connaît la cadence et le pas ;
+    - **`ENGRAVED_TRACKER_ATTRS`** — écrire la valeur dans le fichier dérivé ne suffit
+      pas : vérifié à l'exécution, `args.track_buffer = 450` puis `reset()` laisse
+      `max_frames_lost` à 75. Les clés **gravées à la construction** se reposent sur
+      l'**instance**, pas sur `tracker.args`. `REQUEST_TRACKER_KEYS ⊆
+      LIVE_TRACKER_KEYS` tient toujours mais **ne couvre plus tout** : il existe
+      désormais deux façons de reposer un réglage, et un test le verrouille.
+
+    **Le défaut ne change rien, par construction** : 2 500 ms à 30 img/s au pas 1 valent
+    exactement 75, la valeur du fichier versionné. **Le direct n'impose aucun tampon** —
+    un flux caméra n'a pas de cadence déclarée, donc la conversion est impossible.
+    Contrôle de non-régression le plus parlant : deux analyses à `frameStride 3`,
+    `maxLostMs` 2500 puis 8000. Avant, elles rendaient des chiffres **strictement
+    identiques** — cette identité *était* le bug.
+    [ADR 0058](docs/adr/0058-la-survie-d-une-piste-perdue-n-atteignait-pas-le-tracker.md).
 
 ## Ce que l'analyse signale — les alertes
 
@@ -2713,7 +2749,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1832 (1 skip) | 938 |
+| Nombre | 1857 (1 skip) | 938 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

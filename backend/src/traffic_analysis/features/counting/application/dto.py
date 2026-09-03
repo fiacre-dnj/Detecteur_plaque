@@ -295,6 +295,11 @@ class AnalysisJobConfig:
             # besoin de personne : refermer le générateur suffit à arrêter le
             # décodage.
             start_ms=self.start_ms,
+            # Le **même** champ que celui du domaine, et c'est le but : les deux
+            # horloges doivent renoncer au même moment. Le domaine compte en temps de
+            # scène, le tracker en images analysées ; c'est l'adaptateur qui convertit,
+            # parce que lui seul connaît la cadence et le pas. Voir ADR 0058.
+            max_lost_ms=self.max_lost_ms,
         )
 
     def session_config(self) -> SessionConfig:
