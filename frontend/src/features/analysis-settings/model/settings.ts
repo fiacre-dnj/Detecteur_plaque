@@ -172,6 +172,19 @@ export interface AnalysisSettings {
    * donc un `localStorage` antérieur reprend simplement le défaut.
    */
   inferenceImgsz: number | null;
+  /**
+   * Plancher de confiance des **petits objets** — moto, vélo, personne. `null` leur
+   * applique « Confiance véhicules » comme aux autres.
+   *
+   * **Le curseur unique force un choix qui n'a pas lieu d'être.** Mesuré sur une vraie
+   * vidéo : descendre la confiance de 0,35 à 0,20 fait passer le rappel des voitures de
+   * 0,484 à 0,790 — et **inventer dix-sept observations de `bus`** sur un clip qui n'en
+   * contient aucun. Les deux effets ne portent pas sur les mêmes classes.
+   *
+   * Pas d'incrément de `SETTINGS_SCHEMA_VERSION` : la fusion est champ par champ, donc
+   * un `localStorage` antérieur reprend simplement le défaut.
+   */
+  smallObjectConfidence: number | null;
   showTrails: boolean;
 }
 
@@ -220,6 +233,10 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   // 640 ici l'imposerait à chaque requête et défairait ce réglage en silence — même
   // convention que `confidenceThreshold` et `plateConfidence`.
   inferenceImgsz: null,
+  // `null` = aucun traitement à part, donc le comportement d'avant ADR 0062 au chiffre
+  // près. Le gain est réel mais son effet de bord — des classes inventées — dépend de
+  // la scène : ce n'est pas un défaut, c'est un choix devant sa vidéo.
+  smallObjectConfidence: null,
   showTrails: true,
 };
 
@@ -430,6 +447,14 @@ export function toRequest(
     // normal. Hors bornes ⇒ `null`, c'est-à-dire le défaut du déploiement, jamais un
     // arrondi silencieux — arrondir choisirait à la place de l'utilisateur.
     inferenceImgsz: isSupportedImgsz(settings.inferenceImgsz) ? settings.inferenceImgsz : null,
+    // Borné comme le curseur principal — mêmes bornes serveur — et `null` hors
+    // bornes : un plancher relu d'un `localStorage` bricolé vaudrait un 422.
+    smallObjectConfidence:
+      settings.smallObjectConfidence !== null &&
+      settings.smallObjectConfidence >= BOUNDS.confidenceThreshold.min &&
+      settings.smallObjectConfidence <= BOUNDS.confidenceThreshold.max
+        ? settings.smallObjectConfidence
+        : null,
     // Borné aux cadences que le serveur accepte : une valeur hors de [0,25 ; 8] —
     // relue d'un `localStorage` bricolé — vaudrait un 422 sur un écran qui paraît
     // valide. Hors bornes ⇒ aucune borne, qui est le défaut.
@@ -603,6 +628,10 @@ function mergeSettings(source: Record<string, unknown>): AnalysisSettings {
   // l'arrondir à 512 afficherait une définition que l'utilisateur n'a pas demandée.
   const imgsz = nullableNumber(source.inferenceImgsz, merged.inferenceImgsz);
   merged.inferenceImgsz = isSupportedImgsz(imgsz) ? imgsz : merged.inferenceImgsz;
+  merged.smallObjectConfidence = nullableNumber(
+    source.smallObjectConfidence,
+    merged.smallObjectConfidence,
+  );
 
   // Les identifiants non numériques sont écartés un par un plutôt que de faire
   // tomber toute la liste : un `localStorage` bricolé à la main ne doit pas coûter

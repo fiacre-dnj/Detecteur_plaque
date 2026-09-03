@@ -64,7 +64,7 @@ import type {
   Diagnostics,
   VehicleModel,
 } from "@/shared/api/contracts";
-import { classLabel } from "@/shared/lib/classes";
+import { SMALL_CLASSES, classLabel } from "@/shared/lib/classes";
 import { normalisePlate } from "@/shared/lib/plate";
 import { ToolbarButton } from "@/shared/ui/ToolbarButton";
 
@@ -408,6 +408,46 @@ export function SettingsPanels({
           }
           onChange={(inferenceImgsz) => onChange({ inferenceImgsz })}
         />
+
+        {/* **Le curseur unique forçait un choix qui n'a pas lieu d'être.** Mesuré :
+            descendre la confiance de 0,35 à 0,20 fait passer le rappel des voitures
+            de 0,484 à 0,790 — et inventer dix-sept observations de « bus » sur un
+            clip qui n'en contient aucun. Les deux effets ne portent pas sur les
+            mêmes classes, donc deux planchers (ADR 0062).
+
+            Il n'apparaît que si un petit objet est coché : sur une sélection de
+            véhicules à moteur il ne s'appliquerait à rien, et un curseur sans effet
+            est le pire état d'un réglage. */}
+        {settings.classIds.some((id) =>
+          (detectableClasses ?? []).some(
+            (entry) => entry.id === id && SMALL_CLASSES.has(entry.cocoName),
+          ),
+        ) ? (
+          <Slider
+            label="Confiance petits objets"
+            value={settings.smallObjectConfidence ?? settings.confidenceThreshold ?? DEFAULT_CONFIDENCE}
+            bounds={BOUNDS.confidenceThreshold}
+            disabled={disabled}
+            format={(value) => `${Math.round(value * 100)} %`}
+            hint={
+              "S'applique à Moto, Vélo et Personne seulement — les plus petits objets " +
+              "de COCO, qui scorent structurellement plus bas. Le descendre les " +
+              "récupère sans faire entrer de faux positifs sur les voitures et les " +
+              "bus. " +
+              (settings.smallObjectConfidence === null
+                ? "Suit « Confiance véhicules »."
+                : "Valeur explicite : elle ne s'applique qu'à ces trois classes.")
+            }
+            onChange={(smallObjectConfidence) => onChange({ smallObjectConfidence })}
+            // Le même chemin de retour que « Confiance véhicules » : sans lui, une
+            // fois touché, impossible de revenir à « suivre l'autre curseur ».
+            onReset={
+              settings.smallObjectConfidence === null
+                ? undefined
+                : () => onChange({ smallObjectConfidence: null })
+            }
+          />
+        ) : null}
 
         <PanelGridFullRow>
           <ClassPicker

@@ -88,6 +88,12 @@ class EngineSpec:
     #: cette classe dans ce cas, et le `FakeEngine` de la CI n'en produit aucune image.
     imgsz: int | None = None
 
+    #: Plancher de confiance des **petits objets** — moto, vélo, personne.
+    #:
+    #: `None` (le défaut) rend le comportement d'avant ADR 0062 : un seul seuil pour
+    #: toutes les classes. Voir `class_confidence_floors`, seul juge de la dérivation.
+    small_confidence: float | None = None
+
 
 def nms_class_groups(class_ids: Sequence[int]) -> tuple[tuple[int, ...], ...]:
     """Partitionne les classes demandées en groupes de suppression pour le moteur.
@@ -141,6 +147,55 @@ def nms_class_groups(class_ids: Sequence[int]) -> tuple[tuple[int, ...], ...]:
         category = CATEGORY_OF_ID.get(class_id, "vehicle")
         groups.setdefault(category, []).append(class_id)
     return tuple(tuple(ids) for _, ids in sorted(groups.items()))
+
+
+def class_confidence_floors(
+    class_ids: Sequence[int], confidence: float, small_confidence: float | None
+) -> tuple[tuple[int, float], ...]:
+    """Le plancher de confiance **par classe**, ordonné et déterministe.
+
+    `small_confidence` à `None` rend le même plancher pour tout le monde, c'est-à-dire
+    exactement le comportement d'avant ADR 0062 : un no-op strict.
+
+    **Pourquoi un plancher par classe.** Mesuré sur une vidéo réelle, descendre le
+    curseur global de 0,35 à 0,20 fait passer le rappel des voitures de 0,484 à 0,790 —
+    et fait **inventer dix-sept observations de `bus`** sur un clip qui n'en contient
+    aucun. Le curseur unique force donc à choisir entre « rater les petits objets » et
+    « compter des véhicules fantômes », alors que les deux effets ne portent pas sur les
+    mêmes classes.
+
+    Trois points qui ne se devinent pas :
+
+    - **le minimum de ces planchers va au tracker**, jamais celui de l'utilisateur : le
+      seuil de requête part sur `track_high_thresh` / `new_track_thresh` (ADR 0024), et
+      s'il restait à 0,35 une moto à 0,25 n'ouvrirait aucune piste — le plancher par
+      classe n'aurait alors aucun effet. C'est `minimum_floor` qui le garantit ;
+    - **le filtre par classe vit donc APRÈS le NMS et AVANT le tracker**, dans le
+      `postprocess` du prédicteur. Le tracker ne doit jamais voir une voiture à 0,25 :
+      s'il la voyait, elle ouvrirait une piste que rien en aval ne saurait retirer — le
+      score publié d'une piste vient de sa dernière détection et oscille ;
+    - **jamais dans `_to_observations` ni dans le domaine.** Les deux sont en aval du
+      tracker : filtrer là tuerait une piste en cours de vie au lieu d'empêcher sa
+      naissance, et `counting/domain/models.py` documente déjà qu'une détection non
+      associée n'existe plus à ce stade.
+    """
+    from traffic_analysis.features.counting.domain.models import SMALL_CLASS_IDS
+
+    if small_confidence is None:
+        return tuple((class_id, confidence) for class_id in sorted(set(class_ids)))
+    return tuple(
+        (class_id, small_confidence if class_id in SMALL_CLASS_IDS else confidence)
+        for class_id in sorted(set(class_ids))
+    )
+
+
+def minimum_floor(floors: Sequence[tuple[int, float]], fallback: float) -> float:
+    """Le plus bas des planchers — **ce qui doit partir au tracker**.
+
+    `fallback` sert quand aucune classe n'est demandée, cas que le schéma de requête
+    refuse déjà mais que le port ne peut pas supposer.
+    """
+    return min((floor for _, floor in floors), default=fallback)
 
 
 @dataclass(frozen=True, slots=True)

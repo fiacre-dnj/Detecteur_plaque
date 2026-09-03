@@ -169,6 +169,19 @@ class AnalysisRequestSchema(CamelModel):
     iou_threshold: float = Field(0.45, ge=0.05, le=0.95)
     min_hits: int = Field(2, ge=1, le=10)
     max_lost_ms: float = Field(2500, ge=200, le=15000)
+    small_object_confidence: float | None = Field(
+        None,
+        ge=0.01,
+        le=0.99,
+        description=(
+            "Plancher de confiance des **petits objets** — moto, vélo, personne. `null` "
+            "(le défaut) leur applique `confidenceThreshold` comme aux autres, donc "
+            "aucun changement. Mesuré : descendre le curseur unique de 0,35 à 0,20 fait "
+            "passer le rappel des voitures de 0,484 à 0,790 **et inventer dix-sept "
+            "observations de `bus`** sur un clip qui n'en contient aucun. Les deux effets "
+            "ne portent pas sur les mêmes classes, d'où deux planchers."
+        ),
+    )
     inference_imgsz: int | None = Field(
         None,
         ge=64,
@@ -454,6 +467,7 @@ class AnalysisRequestSchema(CamelModel):
             read_plate_text=self.read_plate_text,
             max_lost_ms=self.max_lost_ms,
             inference_imgsz=self.inference_imgsz,
+            small_object_confidence=self.small_object_confidence,
             lines=tuple(line.to_domain() for line in self.lines),
             zones=tuple(zone.to_domain() for zone in self.zones),
             class_ids=tuple(self.class_ids),

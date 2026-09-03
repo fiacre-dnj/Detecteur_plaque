@@ -27,7 +27,11 @@ from traffic_analysis.features.counting.application.dto import (
     TrackObservation,
     VideoInfo,
 )
-from traffic_analysis.features.counting.application.ports import nms_class_groups
+from traffic_analysis.features.counting.application.ports import (
+    class_confidence_floors,
+    minimum_floor,
+    nms_class_groups,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -251,8 +255,13 @@ def _group_aware_predictor() -> type:
             **kwargs: Any,  # noqa: ANN401
         ) -> Any:  # noqa: ANN401
             groups = nms_class_groups(self.args.classes or ())
+            # **Le chemin propre couvre deux besoins**, et il faut le prendre dès que
+            # l'un des deux est actif : découper le NMS par famille (ADR 0057) et
+            # appliquer un plancher par classe (ADR 0062). Sans planchers et avec une
+            # seule famille, on délègue — et la sortie est identique au bit près, ce
+            # qu'un test vérifie.
             if (
-                len(groups) < 2
+                (len(groups) < 2 and not getattr(self, "_class_floors", ()))
                 or getattr(self, "_feats", None) is not None
                 or getattr(self.model, "end2end", False)
             ):
@@ -283,7 +292,7 @@ def _group_aware_predictor() -> type:
             for index in range(len(per_group[0])):
                 rows = torch.cat([group[index] for group in per_group], dim=0)
                 order = rows[:, 4].argsort(descending=True)[: self.args.max_det]
-                merged.append(rows[order])
+                merged.append(_apply_class_floors(rows[order], self))
 
             if not isinstance(orig_imgs, list):
                 from ultralytics.utils import ops
@@ -294,7 +303,34 @@ def _group_aware_predictor() -> type:
     return GroupAwareDetectionPredictor
 
 
-def install_group_aware_nms(model: Any) -> None:  # noqa: ANN401 — YOLO n'est pas typé
+def _apply_class_floors(rows: Any, predictor: Any) -> Any:  # noqa: ANN401
+    """Jette les boîtes dont le score tombe sous le plancher **de leur classe**.
+
+    **Après le NMS et avant le tracker**, et c'est le seul endroit possible. Plus tôt,
+    le NMS travaillerait sur un jeu déjà amputé — une voiture faible pourrait cesser de
+    supprimer son propre doublon. Plus tard, le tracker aurait déjà ouvert une piste que
+    rien ne saurait retirer : le score publié d'une piste vient de sa dernière détection
+    et oscille, donc filtrer en aval couperait une piste vivante au hasard des images.
+
+    Sans plancher, le tenseur est rendu **tel quel** — pas une copie, pas un masque
+    trivial : c'est ce qui garantit que le chemin par défaut ne change pas d'un bit.
+    """
+    floors = getattr(predictor, "_class_floors", ())
+    if not floors or rows.shape[0] == 0:
+        return rows
+
+    import torch
+
+    keep = torch.ones(rows.shape[0], dtype=torch.bool, device=rows.device)
+    for class_id, floor in floors:
+        keep &= ~((rows[:, 5] == float(class_id)) & (rows[:, 4] < floor))
+    return rows[keep]
+
+
+def install_group_aware_nms(
+    model: Any,  # noqa: ANN401 — YOLO n'est pas typé
+    class_floors: tuple[tuple[int, float], ...] = (),
+) -> None:
     """Fait porter le NMS par famille au prédicteur **déjà construit** du modèle.
 
     **Sans cela, le correctif serait entièrement inerte, en silence.** `predict()`
@@ -322,8 +358,19 @@ def install_group_aware_nms(model: Any) -> None:  # noqa: ANN401 — YOLO n'est 
     from ultralytics.models.yolo.detect import DetectionPredictor
 
     predictor = getattr(model, "predictor", None)
-    if predictor is not None and type(predictor) is DetectionPredictor:
+    if predictor is None:
+        return
+    if type(predictor) is DetectionPredictor:
         predictor.__class__ = _group_aware_predictor()
+    # **Reposé à chaque course**, comme les clés de requête du tracker : les planchers
+    # viennent de la requête, et une instance résidente les garderait d'un job à
+    # l'autre. Jamais posé sur un prédicteur étranger — il ne saurait pas les lire, et
+    # l'attribut resterait là à ne rien faire.
+    if type(predictor) is _group_aware_predictor():
+        # `setattr` et non l'affectation directe : la classe est construite
+        # paresseusement, donc `mypy` ne connaît que `object` ici. Le contournement est
+        # préférable à un `type: ignore`, qui masquerait aussi une vraie faute de nom.
+        setattr(predictor, "_class_floors", class_floors)  # noqa: B010
 
 
 #: Les clés de requête qui portent le seuil **de l'utilisateur**, tel quel.
@@ -588,9 +635,16 @@ class UltralyticsEngine:
         pas de cadence déclarée, et la conversion ms → images en demande une.
         """
         appearance_reid = not head_is_end2end(model)
-        tracker_config = resolved_tracker_config(
-            self._gmc, spec.confidence, appearance_reid, track_buffer
+        # **Le MINIMUM des planchers, jamais le seuil nominal.** Il part sur
+        # `track_high_thresh` / `new_track_thresh` (ADR 0024) : le laisser a 0,35
+        # empecherait une moto a 0,25 d'ouvrir une piste, et le plancher par classe
+        # n'aurait aucun effet. Sans plancher par classe, `minimum_floor` rend
+        # exactement `spec.confidence` — le chemin par defaut ne bouge pas.
+        floor = minimum_floor(
+            class_confidence_floors(spec.class_ids, spec.confidence, spec.small_confidence),
+            spec.confidence,
         )
+        tracker_config = resolved_tracker_config(self._gmc, floor, appearance_reid, track_buffer)
         # Journalisé **par course** parce que ces valeurs sont exactement ce qu'on
         # vient regarder quand un seuil semble sans effet ou qu'une cadence s'écroule :
         # le curseur, ce que le détecteur laisse passer, l'apparence, et le fichier
@@ -767,7 +821,8 @@ class UltralyticsEngine:
         # instance résidente : `predictor=` ci-dessous serait donc ignoré, et le
         # découpage du NMS par famille n'aurait jamais lieu. Voir
         # `install_group_aware_nms`.
-        install_group_aware_nms(model)
+        floors = class_confidence_floors(spec.class_ids, spec.confidence, spec.small_confidence)
+        install_group_aware_nms(model, floors)
         for chunk in batches:
             results = model.track(
                 source=[image for _, image in chunk],
@@ -778,7 +833,7 @@ class UltralyticsEngine:
                 # mais les détections faibles atteignent enfin la seconde
                 # association, qui prolonge une piste dont la confiance plonge.
                 # Voir `detector_floor` pour la panne que cela corrige.
-                conf=detector_floor(spec.confidence),
+                conf=detector_floor(minimum_floor(floors, spec.confidence)),
                 iou=spec.iou,
                 classes=list(spec.class_ids),
                 # **NMS inter-classes**, et c'est le piège 5 de prompt/13. Le NMS
@@ -849,6 +904,7 @@ class UltralyticsStream:
     """Suivi image par image, avec état persistant entre les appels."""
 
     __slots__ = (
+        "_floors",
         "_imgsz",
         "_lease",
         "_max_det",
@@ -888,7 +944,10 @@ class UltralyticsStream:
         reset_trackers(self._model, self._tracker_config)
         # Le direct partage l'instance résidente avec le différé : sans cet appel,
         # il compterait un motard pour un seul objet là où le différé en compte deux.
-        install_group_aware_nms(self._model)
+        self._floors = class_confidence_floors(
+            spec.class_ids, spec.confidence, spec.small_confidence
+        )
+        install_group_aware_nms(self._model, self._floors)
 
     def track(
         self,
@@ -905,7 +964,7 @@ class UltralyticsStream:
             # Le même plancher qu'en différé, et pour la même raison : les deux
             # modes doivent suivre à l'identique, sinon un même tracé ne donne pas
             # les mêmes chiffres selon qu'on rejoue un fichier ou qu'on filme.
-            conf=detector_floor(self._spec.confidence),
+            conf=detector_floor(minimum_floor(self._floors, self._spec.confidence)),
             iou=self._spec.iou,
             classes=list(self._spec.class_ids),
             # Voir le mode différé : NMS inter-classes **dans une famille**, sinon

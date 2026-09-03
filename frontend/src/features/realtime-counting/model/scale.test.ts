@@ -61,6 +61,7 @@ const REQUEST: AnalysisRequest = {
   minHits: 3,
   maxLostMs: 2500,
   inferenceImgsz: null,
+  smallObjectConfidence: null,
   maskOutsideZones: true,
   frameStride: 1,
   classIds: [2, 3, 5, 7],

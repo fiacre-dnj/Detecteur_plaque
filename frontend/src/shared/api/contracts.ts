@@ -345,6 +345,15 @@ export interface AnalysisRequest {
    * réseau — et le serveur refuse le reste par un 422.
    */
   inferenceImgsz: number | null;
+  /**
+   * Plancher de confiance des **petits objets** — moto, vélo, personne.
+   *
+   * `null` leur applique `confidenceThreshold` comme aux autres : un no-op strict.
+   * Le **minimum** des deux part au tracker (`newTrackThresh`, ADR 0024) et le filtre
+   * par classe s'applique après le NMS — sans quoi un objet sous le seuil global
+   * n'ouvrirait aucune piste et ce second plancher serait inerte.
+   */
+  smallObjectConfidence: number | null;
   maskOutsideZones: boolean;
   frameStride: number;
   detectPlates: boolean;

@@ -205,6 +205,18 @@ CLASS_GROUP_OF: dict[str, ClassGroup] = {
 #: jamais rencontrée : sans elle, une classe à zéro n'aurait pas de clé.
 LABEL_OF_CLASS_ID: dict[int, str] = {entry.id: entry.coco_name for entry in DETECTABLE_CLASSES}
 
+#: Les classes que la définition d'analyse punit — les plus petits gabarits de COCO.
+#:
+#: Leur boîte fait couramment 60 px de large sur une vue de circulation, donc une
+#: vingtaine dans une entrée de réseau à 640 (ADR 0037). Une voiture au même endroit en
+#: fait trois fois plus, et c'est toute la différence.
+#:
+#: **Le miroir exact de `SMALL_CLASSES` côté client** (`shared/lib/classes.ts`), qui
+#: nomme les mêmes classes pour l'avertissement d'avant-analyse. Doublon assumé de part
+#: et d'autre de la frontière de langage, comme `QUERY_MARGIN` d'ADR 0055, et un test
+#: le verrouille en nommant le fichier client.
+SMALL_CLASS_IDS: frozenset[int] = frozenset({0, 1, 3})
+
 #: Identifiant COCO → catégorie, pour les appelants qui n'ont que l'identifiant.
 #:
 #: Le pendant de `CATEGORY_OF_CLASS`, indexé autrement. Le repli est celui de

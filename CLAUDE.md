@@ -193,7 +193,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1889 tests
+uv run pytest                                                            # 1901 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -2365,6 +2365,37 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     personne. Elle se lira sur `result.json.gz` en comptant les franchissements dont
     `vehicle.label != crossing.label`, désormais zéro par construction.
     [ADR 0061](docs/adr/0061-un-franchissement-porte-le-vote-final-du-vehicule.md).
+47. **Un plancher de confiance par classe, pour les trois plus petits gabarits.**
+    L'audit posait la condition « seulement si baisser le curseur global achète des
+    petits objets **au prix** de faux positifs ailleurs ». Elle est remplie : mesuré,
+    960/0,20 fait passer le rappel `car` de 0,484 à 0,790 **et inventer dix-sept
+    observations de `bus`** sur un clip qui n'en contient aucun. Le curseur unique force
+    donc à choisir entre rater les petits objets et compter des fantômes, alors que les
+    deux effets ne portent pas sur les mêmes classes.
+
+    `smallObjectConfidence` s'applique à `person`, `bicycle` et `motorcycle` seulement —
+    les trois plus bas rappels de COCO (0,673 / 0,392 / 0,580 en yolov8n). **Un seul
+    curseur et pas sept** : ce qui sépare les classes ici est leur taille, et elle
+    partitionne le catalogue en deux. `SMALL_CLASS_IDS` (domaine) est le miroir exact de
+    `SMALL_CLASSES` (client), verrouillé par un test **backend** qui lit le fichier
+    client — même procédé que `MIN_PLATE_CROP_SIDE_PX`. Trois points :
+    - **`null` est un no-op strict** : tous les planchers valent le curseur unique, donc
+      `minimum_floor` rend exactement `confidence`. Aucune analyse existante ne bouge ;
+    - **le MINIMUM des planchers part au tracker**, jamais le seuil nominal — il devient
+      `new_track_thresh` (ADR 0024), et à 0,35 une moto à 0,25 n'ouvrirait aucune piste :
+      le plancher par classe serait **inerte**, la panne d'ADR 0037 à un autre étage ;
+    - **le filtre vit après le NMS et avant le tracker**, dans le `postprocess` d'ADR
+      0057. Plus tôt, le NMS travaillerait sur un jeu amputé ; plus tard, le tracker
+      aurait ouvert une piste que rien ne saurait retirer, le score d'une piste venant de
+      sa dernière détection et oscillant. Jamais dans le domaine, où une détection non
+      associée n'existe déjà plus.
+
+    Le curseur n'est rendu que si un petit objet est coché : ailleurs il ne s'appliquerait
+    à rien, et un réglage sans effet est le pire état d'un réglage. **Le gain sur les
+    motos n'est pas mesuré** — tout ce qui précède porte sur des voitures et des `bus`
+    fantômes. Ce qui est mesuré suffit au mécanisme : baisser le curseur unique invente
+    des objets dans les classes qu'on ne cherchait pas.
+    [ADR 0062](docs/adr/0062-un-plancher-de-confiance-par-classe.md).
 
 ## Ce que l'analyse signale — les alertes
 
@@ -2895,7 +2926,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1889 (1 skip) | 947 |
+| Nombre | 1901 (1 skip) | 947 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

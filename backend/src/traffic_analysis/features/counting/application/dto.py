@@ -164,6 +164,13 @@ class AnalysisJobConfig:
     #: Deux jobs voisins cessent d'être comparables sans le lire : il apparaît donc dans
     #: le récapitulatif d'avant-analyse et dans le `config_json` du job.
     inference_imgsz: int | None = None
+    #: Plancher de confiance des **petits objets** — moto, vélo, personne.
+    #:
+    #: `None` leur applique `confidence_threshold` comme aux autres : un no-op strict.
+    #: Mesuré, c'est ce qui rend ce second plancher nécessaire — descendre le curseur
+    #: unique achète des voitures **au prix de bus inventés**, et les deux effets ne
+    #: portent pas sur les mêmes classes. Voir `class_confidence_floors` (ADR 0062).
+    small_object_confidence: float | None = None
     detect_plates: bool = False
     #: Seuil du détecteur de plaques pour **cette** course. `None` garde celui du
     #: déploiement.
@@ -314,6 +321,7 @@ class AnalysisJobConfig:
             # Le seul champ de cette spec qui ne soit PAS un simple indice : un moteur
             # qui l'ignore rend d'autres detections, donc d'autres chiffres.
             imgsz=self.inference_imgsz,
+            small_confidence=self.small_object_confidence,
         )
 
     def session_config(self) -> SessionConfig:
