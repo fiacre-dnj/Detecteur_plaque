@@ -206,6 +206,15 @@ class ResultStore(Protocol):
         """
         ...
 
+    def list_job_ids(self) -> tuple[str, ...]:
+        """Les jobs tels que le **disque** les connaît, pour confronter à la base.
+
+        Rend uniquement des noms en forme d'identifiant de job : l'appelant s'en
+        sert pour effacer, et rien d'autre du répertoire de données ne doit y
+        apparaître.
+        """
+        ...
+
     def delete(self, job_id: str) -> None:
         """Supprime les artefacts d'un job. **Idempotent** : un fichier déjà
         absent n'est pas une erreur."""

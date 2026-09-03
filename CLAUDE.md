@@ -193,7 +193,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1700 tests
+uv run pytest                                                            # 1761 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -208,7 +208,7 @@ uv run python scripts/audit_lignes.py                # « pourquoi cette ligne e
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 882 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 938 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -1963,8 +1963,11 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       n'ont par construction aucun jumeau — affichaient tous un numéro à 2 ou 31 %, en
       gris. Le motif d'origine (« voir qu'on est passé à côté de peu ») ne survit pas à
       l'usage : une identité affirmée à 2 % n'est pas une information nuancée, c'est
-      une affirmation fausse. Le score brut reste dans l'infobulle et dans le CSV, qui
-      est de la donnée et non une vue. `isRematched` / `hasRematch`
+      une affirmation fausse. Le score brut reste dans l'infobulle et dans le CSV **du
+      bouton du registre**, qui est de la donnée et non une vue — précision qui a son
+      importance depuis qu'on a compté les exports : celui de l'API
+      (`GET /jobs/{id}/export.csv`) ne peut pas le porter, `job_vehicles` n'ayant
+      aucune colonne de re-détection. `isRematched` / `hasRematch`
       (`vehicle-registry/model/rematchPair.ts`) en sont les seuls juges ;
     - **la colonne « Déjà vu » du registre est cliquable et ouvre les deux véhicules
       côte à côte.** Sans elle, l'écran affirmait une ressemblance sans donner le
@@ -2006,6 +2009,80 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       valeurs absolues non.
 
     [ADR 0055](docs/adr/0055-signaler-un-vehicule-deja-vu.md).
+40. **Au démarrage, un job non terminal est un job interrompu — et une vidéo qu'on
+    ne purge pas est une promesse rompue.** Un `queued`, un `running` ou un `paused`
+    survivait à l'arrêt du service et n'en sortait **jamais**. Relevé sur une base
+    réelle : **quinze jobs sur dix-huit** bloqués, dont un « en cours » depuis six
+    jours, et des vidéos de **dix-sept jours** sous un TTL de vingt-quatre heures.
+    Trois mécanismes refusaient de les prendre, et aucun ne le signalait :
+    - `list_expired` ne rend que des jobs **terminaux**, donc la purge ne voyait ni
+      la ligne ni la vidéo. C'est le point grave : la vidéo porte des plaques et des
+      visages, et `input_ttl_minutes` promet de l'effacer ;
+    - `cancel_or_purge` posait son événement d'annulation dans un dictionnaire **en
+      mémoire**, vide après un redémarrage. Sur un `paused` fantôme elle répondait
+      `200` sans rien changer : le job était **indéboulonnable** depuis une interface
+      qui affichait pourtant un bouton. Mesuré : trois `DELETE`, trois `200`, le job
+      toujours `paused` ;
+    - **reprendre** un tel job réussissait et le repassait en `running` : le SSE
+      émettait une trame puis se taisait, et l'écran annonçait une analyse en cours à
+      39 % pour toujours. Le pire des trois, parce que l'application affirmait qu'un
+      travail avançait.
+
+    `reconcile_interrupted` les termine en `error` — personne n'a renoncé, le service
+    est tombé — avec le code `interrupted_by_restart`, **après les migrations et avant
+    de servir** : c'est cette fenêtre qui rend vraie l'équivalence « non terminal ⇒
+    interrompu », et l'appeler plus tard tuerait des analyses en cours. La garde de
+    `cancel_or_purge` porte désormais sur la **présence de l'événement** et non sur le
+    statut : `_run` le pose à son entrée et le retire dans son `finally`, donc son
+    absence veut dire exactement « aucun worker ». Un `queued` garde son cas propre —
+    il a bien un worker, mais bloqué sur le sémaphore.
+
+    **Trois corollaires, même famille de panne, même fenêtre de démarrage :**
+    - **`purge_orphan_directories`** efface les répertoires que plus **aucune ligne**
+      ne référence — la purge parcourt la base, donc elle ne peut pas les voir.
+      Relevé : 663 Mo, dont un répertoire de 573 Mo qu'aucune des deux bases
+      coexistantes ne connaissait. **Au démarrage seulement, et c'est une condition de
+      sûreté** : le dépôt d'une analyse écrit la vidéo *avant* d'insérer la ligne, donc
+      un balayage périodique effacerait un jour un envoi en cours. Le filtre est la
+      forme d'un `uuid4().hex` — l'appelant efface, donc rien d'autre du répertoire de
+      données ne doit lui apparaître ;
+    - **`database_url` est ancré comme `data_dir`.** La garde existait sur son voisin
+      immédiat et n'avait pas été étendue : lancer `uvicorn` depuis la racine du dépôt
+      ouvrait `<racine>/data/traffic.db` pendant que les vidéos continuaient d'aller
+      dans `backend/data/jobs/`. **Deux bases coexistaient**, chacune ignorant la
+      moitié des fichiers — 19 jobs et 4 presets d'un côté, 5 jobs et aucun preset de
+      l'autre. Rien ne lève : le service démarre, l'historique est simplement vide.
+      Trois formes traversent inchangées — non-SQLite, en mémoire, déjà enracinée.
+      **Une seule barre est retirée du chemin de l'URL, jamais `lstrip("/")`** :
+      `sqlite:////opt/x.db` donne `//opt/x.db`, et tout retirer le rendrait relatif,
+      donc déplacé — exactement le mode de panne que l'ancrage existe pour supprimer.
+      `_ensure_parent_directory` portait le même défaut et le perd aussi ;
+    - **`framesLabel`** : un job `done` n'affiche plus que les images réellement
+      analysées. `totalFrames` est le nombre **annoncé par le conteneur**, souvent
+      approximatif — `Progress.ratio` le documente déjà et borne la fraction à 1 —, et
+      « 6590 / 6660 » sous un job à 100 % se lit comme soixante-dix images perdues.
+      Seul `done` s'effondre : sur une analyse arrêtée, la fraction dit jusqu'où elle
+      est allée.
+
+    **Deux exports CSV coexistent, et l'écart est structurel.** Ce n'est pas un
+    doublon à supprimer : `prompt/05` §266 impose la route, et le bouton du registre
+    ne peut pas s'en servir. L'export de l'API lit les tables dénormalisées — il
+    répond sur dix mille véhicules sans ouvrir le résultat, mais ne connaît que des
+    identifiants stables (`l1`, `A→B`) et ignore les rôles de sens, que le serveur ne
+    lit jamais. Celui du bouton part du résultat chargé et du **tracé courant** : noms
+    de ligne, libellés de rôle, et les deux colonnes de re-détection, dont aucune n'a
+    de colonne en base. `test_job_exports.py` verrouille les deux jeux d'en-têtes pour
+    que l'écart reste écrit et non subi ; la docstring du client citait par ailleurs
+    `/jobs/{id}/vehicles.csv`, une route qui **n'a jamais existé**.
+
+    **Et deux libellés qui mentaient.** Le bouton de l'historique dit « Annuler » sur
+    un job vivant et « Supprimer » sur un job terminal, parce que `DELETE` fait
+    l'un puis l'autre — un libellé unique se lisait comme inopérant au premier clic.
+    Le récapitulatif d'avant-analyse **prévient qu'une source sous 1080p ne publiera
+    quasiment aucune plaque** : l'information existait déjà, véhicule par véhicule
+    (`too_small`), mais seulement *après* avoir payé l'analyse. Mesuré en 720p sur ce
+    dépôt : 29 véhicules, **zéro plaque publiée**. L'avertissement dit une conséquence
+    et deux gestes (ADR 0032), jamais un interdit — `canAnalyse` reste le seul juge.
 
 ## Ce que l'analyse signale — les alertes
 
@@ -2536,7 +2613,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1700 (1 skip) | 882 |
+| Nombre | 1761 (1 skip) | 938 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

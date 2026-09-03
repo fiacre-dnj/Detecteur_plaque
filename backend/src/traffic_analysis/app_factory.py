@@ -391,8 +391,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Un échec ne doit pas empêcher le service de démarrer : sans réconciliation on
     # retombe sur l'ancien comportement, c'est-à-dire des jobs fantômes. Refuser de
     # démarrer serait une panne bien pire que celle qu'on corrige.
+    #
+    # Le balayage des orphelins suit immédiatement, et **dans cet ordre** : la
+    # réconciliation ne crée aucun orphelin, mais elle rend des jobs purgeables, et
+    # confronter le disque à une base déjà soldée évite un second passage.
     try:
         await container.job_manager.reconcile_interrupted()
+        await container.job_manager.purge_orphan_directories()
     except Exception as exc:
         logger.warning("réconciliation des jobs interrompus en échec", error=str(exc))
 

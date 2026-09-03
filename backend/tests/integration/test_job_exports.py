@@ -289,3 +289,64 @@ class TestSurvieAuRedemarrage:
         assert response.status_code == 200
         assert response.json()["status"] == "done"
         assert vehicles.json()["total"] == 2
+
+
+class TestDeuxExportsDeuxMetiers:
+    """L'écart entre l'export de l'API et celui du bouton du registre.
+
+    Deux fichiers CSV portent le même nom de métier et n'ont pas les mêmes
+    colonnes. Ce n'est pas un doublon à supprimer — `prompt/05` §266 impose la
+    route, et le bouton ne peut pas s'en servir — mais un écart qui doit rester
+    **écrit**, sinon il se lit comme un oubli et quelqu'un « corrigera » le mauvais
+    côté.
+
+    La différence est structurelle : `job_vehicles` n'a aucune colonne
+    `rematch_*` ni `match_score`, ces valeurs ne vivant que dans le
+    `result.json.gz`. Et le serveur ne lit jamais les rôles de sens (ADR 0016,
+    ADR 0021), donc il ne peut pas nommer un sens autrement que `A→B`.
+    """
+
+    def test_l_export_de_l_api_ne_pretend_pas_porter_la_re_detection(self) -> None:
+        """Le jour où une migration ajoutera ces colonnes, ce test tombera — et
+        c'est précisément le moment où il faudra revoir les deux côtés."""
+        from traffic_analysis.features.jobs.application.csv_export import (
+            CROSSING_HEADERS,
+            VEHICLE_HEADERS,
+        )
+
+        assert VEHICLE_HEADERS == (
+            "Identifiant",
+            "Type",
+            "Vu de (s)",
+            "Vu jusqu'à (s)",
+            "Lignes franchies",
+            "Zones visitées",
+            "Franchissements",
+            "Plaque",
+            "Confiance lecture",
+            "Score de plaque",
+        )
+        assert not any("Déjà vu" in header for header in VEHICLE_HEADERS)
+        assert "Sens" in CROSSING_HEADERS
+
+    def test_le_client_porte_bien_les_colonnes_que_l_api_ne_peut_pas_porter(self) -> None:
+        """Verrouillé **depuis le backend**, en nommant le fichier client.
+
+        Même procédé que `MIN_PLATE_CROP_SIDE_PX` et que la marge de recadrage de
+        la ReID : une constante qui vit des deux côtés de la frontière de langage
+        n'a pas de compilateur commun, donc c'est un test qui tient les deux bouts.
+        """
+        from pathlib import Path
+
+        source = Path(__file__).resolve().parents[2] / (
+            "../frontend/src/features/vehicle-registry/model/exportCsv.ts"
+        )
+        contenu = source.resolve().read_text(encoding="utf-8")
+
+        # Ce que le bouton porte et que l'API ne peut pas porter.
+        assert '"Déjà vu (véhicule)"' in contenu
+        assert '"Déjà vu (similarité)"' in contenu
+        # Et la route est nommée correctement. Pas d'assertion négative sur
+        # `vehicles.csv` : la docstring la cite justement pour dire qu'elle n'a
+        # jamais existé, et interdire le mot interdirait de l'expliquer.
+        assert "export.csv?dataset=vehicles|crossings" in contenu

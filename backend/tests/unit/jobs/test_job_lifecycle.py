@@ -944,25 +944,122 @@ class TestReconciliationAuDemarrage:
         with pytest.raises(JobNotFoundError):
             await manager.get("suspendu")
 
-    async def test_un_job_suspendu_redevient_supprimable(
+    async def test_un_job_suspendu_orphelin_est_supprimable(
         self, tmp_path: Path, clock: FrozenClock
     ) -> None:
-        """Sans réconciliation, `cancel_or_purge` répond `200` et ne fait **rien**.
+        """Le job devenait **indéboulonnable**, et c'est corrigé à deux endroits.
 
-        Elle pose un événement d'annulation dans un dictionnaire en mémoire, vide
-        après un redémarrage : aucun worker n'écoute, le statut ne bouge pas, et le
-        job devient indéboulonnable depuis une interface qui affiche pourtant un
-        bouton « Supprimer ». Mesuré sur le service réel : trois `DELETE`
-        successifs, trois `200`, le job toujours `paused`.
+        `cancel_or_purge` posait son événement d'annulation dans un dictionnaire en
+        mémoire, vide après un redémarrage : aucun worker n'écoutait, le statut ne
+        bougeait pas, et l'interface affichait pourtant un bouton « Supprimer ».
+        Mesuré sur le service réel avant correctif : trois `DELETE` successifs,
+        trois `200`, le job toujours `paused`.
+
+        La réconciliation traite le cas au démarrage ; la garde « pas d'événement,
+        donc pas de worker » de `cancel_or_purge` est la défense en profondeur, et
+        c'est elle que ce test vise — d'où l'absence d'appel à
+        `reconcile_interrupted` avant le premier geste.
         """
         repository = await self._depot_survivant(clock)
         manager, _, _ = await _manager(tmp_path, clock, repository=repository)
 
-        await manager.cancel_or_purge("suspendu")
-        assert (await manager.get("suspendu")).status == "paused", "avant : inchangé"
+        # Premier geste : le job est vivant en base mais sans worker, donc terminé
+        # ici même plutôt que confié à un observateur qui n'existe pas.
+        assert (await manager.cancel_or_purge("suspendu")).status == "cancelled"
 
-        await manager.reconcile_interrupted()
+        # Second geste : terminal, donc purgé — ligne et répertoire.
         await manager.cancel_or_purge("suspendu")
-
         with pytest.raises(JobNotFoundError):
             await manager.get("suspendu")
+
+    async def test_un_job_en_cours_avec_son_worker_n_est_pas_termine_de_force(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """Le garde symétrique, et celui qui protège une vraie analyse.
+
+        Un `running` **qui a son worker** doit rester confié à ce worker : c'est lui
+        qui écrit le résultat partiel et publie l'état terminal. Le terminer depuis
+        la boucle asyncio couperait l'analyse par le milieu et laisserait un thread
+        écrire dans un job déjà clos. La distinction ne se lit pas dans le statut,
+        seulement dans la présence de l'événement.
+        """
+        manager, _, _ = await _manager(tmp_path, clock, engine=SlowEngine(_frames(200)))
+        await _submit(manager, tmp_path)
+        await _await_running(manager, "job-1")
+
+        record = await manager.cancel_or_purge("job-1")
+
+        # Pas encore terminal : l'annulation est *demandée*, le worker la constate.
+        assert record.status == "running"
+        assert await _await_status(manager, "job-1") == "cancelled"
+
+
+class TestBalayageDesOrphelins:
+    """Un répertoire de job que plus aucune ligne ne référence.
+
+    La troisième et dernière façon dont une vidéo échappait à son TTL, après le job
+    non terminal et la purge aveugle. Celle-ci est hors de portée de tout le reste :
+    la purge parcourt la base, donc elle ne peut pas voir ce qui n'y est pas.
+    Relevé sur ce dépôt : 663 Mo, dont un répertoire de 573 Mo qu'aucune des deux
+    bases coexistantes ne connaissait.
+    """
+
+    ORPHELIN = "0123456789abcdef0123456789abcdef"
+
+    async def test_un_repertoire_sans_ligne_est_efface(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        manager, _, store = await _manager(tmp_path, clock)
+        orphelin = store.directory_for(self.ORPHELIN)
+        (orphelin / "input.mp4").write_bytes(b"\x00" * 16)
+
+        assert await manager.purge_orphan_directories() == 1
+        assert not orphelin.exists()
+
+    async def test_un_repertoire_reference_n_est_jamais_touche(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """Le garde qui compte : effacer le répertoire d'un job vivant détruirait
+        une analyse en cours **et** le résultat d'une analyse terminée."""
+        manager, _, store = await _manager(tmp_path, clock)
+        await _submit(manager, tmp_path)
+        await _await_status(manager, "job-1")
+        directory = store.directory_for("job-1")
+
+        assert await manager.purge_orphan_directories() == 0
+        assert directory.is_dir()
+        assert store.path_for("job-1") is not None
+
+    async def test_ce_qui_ne_ressemble_pas_a_un_job_est_ignore(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """L'appelant efface : tout ce que le répertoire de données contient d'autre
+        — un dossier posé à la main, une sauvegarde — doit lui rester invisible.
+
+        Le filtre est la forme d'un `uuid4().hex`, pas une liste d'exceptions : une
+        liste oublierait toujours le cas suivant.
+        """
+        manager, _, store = await _manager(tmp_path, clock)
+        for nom in ("sauvegarde", "job-1", self.ORPHELIN.upper(), "abc"):
+            (store.directory_for(self.ORPHELIN).parent / nom).mkdir(parents=True, exist_ok=True)
+        store.delete(self.ORPHELIN)
+
+        assert await manager.purge_orphan_directories() == 0
+        for nom in ("sauvegarde", "job-1", self.ORPHELIN.upper(), "abc"):
+            assert (store.directory_for(self.ORPHELIN).parent / nom).is_dir(), nom
+
+    async def test_le_balayage_est_idempotent(self, tmp_path: Path, clock: FrozenClock) -> None:
+        manager, _, store = await _manager(tmp_path, clock)
+        (store.directory_for(self.ORPHELIN) / "input.mp4").write_bytes(b"\x00")
+
+        assert await manager.purge_orphan_directories() == 1
+        assert await manager.purge_orphan_directories() == 0
+
+    async def test_un_repertoire_de_donnees_absent_ne_leve_pas(
+        self, tmp_path: Path, clock: FrozenClock
+    ) -> None:
+        """Le cas du **premier démarrage sur une machine neuve** : le répertoire de
+        données est git-ignoré, donc son absence est normale, pas une anomalie."""
+        manager, _, _ = await _manager(tmp_path, clock)
+
+        assert await manager.purge_orphan_directories() == 0

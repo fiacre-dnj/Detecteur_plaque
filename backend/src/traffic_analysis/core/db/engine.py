@@ -67,7 +67,16 @@ def _ensure_parent_directory(database_url: str) -> None:
     from urllib.parse import urlsplit
 
     # `sqlite+aiosqlite:///./data/traffic.db` → `./data/traffic.db`
-    location = urlsplit(database_url).path.lstrip("/")
+    #
+    # **Une seule barre**, jamais `lstrip("/")` : la première sépare l'URL de son
+    # chemin, les suivantes appartiennent au chemin. Avec `lstrip`,
+    # `sqlite+aiosqlite:////opt/data/x.db` rendait `opt/data/x.db` et le répertoire
+    # se créait sous le CWD au lieu de `/opt/data` — la base s'ouvrait alors
+    # ailleurs que là où l'opérateur l'avait demandée. Même règle que
+    # `Settings._anchor_sqlite_url`, qui doit voir le même chemin que cette
+    # fonction.
+    path = urlsplit(database_url).path
+    location = path[1:] if path.startswith("/") else path
     if not location or location == ":memory:":
         return
     Path(location).expanduser().parent.mkdir(parents=True, exist_ok=True)

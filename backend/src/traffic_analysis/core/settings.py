@@ -10,6 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -1012,6 +1013,55 @@ class Settings(BaseSettings):
         if value.is_absolute() or value.root or value.drive:
             return value
         return (_PACKAGE_ROOT / value).resolve()
+
+    @field_validator("database_url")
+    @classmethod
+    def _anchor_sqlite_url(cls, value: str) -> str:
+        """Même ancrage que `data_dir`, sur le **fichier SQLite**.
+
+        La garde ci-dessus existait ; elle n'avait pas été étendue à son voisin
+        immédiat, et la panne s'est produite : lancer `uvicorn` depuis la racine du
+        dépôt plutôt que depuis `backend/` fait résoudre `./data/traffic.db` en
+        `<racine>/data/traffic.db`, tandis que `data_dir` — ancré, lui — continue
+        d'écrire les vidéos dans `backend/data/jobs/`.
+
+        **Deux bases coexistent alors**, et chacune ignore la moitié des fichiers.
+        Relevé sur ce dépôt : 19 jobs et 4 presets d'un côté, 5 jobs et 0 preset de
+        l'autre, plus 663 Mo de vidéos qu'aucune purge ne pouvait voir puisque leur
+        ligne vivait dans l'autre base. Rien ne lève : le service démarre,
+        l'historique répond, il est simplement vide.
+
+        Trois formes traversent **inchangées**, et c'est ce qui rend la règle sûre :
+        une base non-SQLite (PostgreSQL), une base en mémoire, et un chemin déjà
+        enraciné — la forme d'un déploiement conteneurisé, que réécrire serait une
+        surprise. Le critère d'enracinement est celui de `_anchor_to_package_root`,
+        pour la même raison Windows.
+        """
+        if not value.startswith("sqlite"):
+            return value
+        split = urlsplit(value)
+        # **Une seule barre retirée, jamais `lstrip("/")`** : c'est elle qui sépare
+        # l'URL de son chemin, et les suivantes appartiennent au chemin.
+        # `sqlite+aiosqlite:///./data/x.db` → `./data/x.db` (relatif), mais
+        # `sqlite+aiosqlite:////opt/data/x.db` → `/opt/data/x.db` (enraciné). Un
+        # `lstrip` rendrait `opt/data/x.db` dans le second cas, donc déplacerait un
+        # chemin que l'opérateur avait écrit absolu — exactement le mode de panne
+        # que `_anchor_to_package_root` documente.
+        location = split.path[1:] if split.path.startswith("/") else split.path
+        if not location or location == ":memory:":
+            return value
+        path = Path(location)
+        if path.is_absolute() or path.root or path.drive:
+            return value
+        anchored = (_PACKAGE_ROOT / path).resolve()
+        # Reconstruit à la main : `urlunsplit` replie `scheme:///chemin` en
+        # `scheme:/chemin` quand le netloc est vide, une forme que SQLAlchemy ne
+        # relit pas comme un chemin de fichier. `as_posix()` et non `str()` pour la
+        # même raison — sur Windows, `str()` rendrait des antislashs dans une URL.
+        rebuilt = f"{split.scheme}:///{anchored.as_posix()}"
+        if split.query:
+            rebuilt = f"{rebuilt}?{split.query}"
+        return rebuilt
 
     @field_validator("cors_origins", "trusted_hosts", mode="before")
     @classmethod

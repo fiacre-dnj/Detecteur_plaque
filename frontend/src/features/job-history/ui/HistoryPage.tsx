@@ -9,14 +9,22 @@
  *
  * C'est aussi pourquoi « Ouvrir » et « Relancer » mènent au même écran : la seule
  * différence est ce qui est prérempli.
+ *
+ * **La troisième action change de nom selon l'état du job, et ce n'est pas
+ * cosmétique.** `DELETE /jobs/{id}` est un `cancelOrPurge` : sur un job vivant il
+ * arrête l'analyse et la rangée **reste** — au statut « annulé » —, sur un job
+ * terminal il efface la ligne, le résultat et la vidéo. Un bouton « Supprimer »
+ * unique se lisait donc comme inopérant la première fois qu'on le cliquait, et il
+ * fallait deviner qu'un second clic finissait le travail. Le libellé dit
+ * maintenant lequel des deux gestes on déclenche.
  */
 
-import { RotateCcw, Trash2 } from "lucide-react";
+import { Ban, RotateCcw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 
 import { useModels } from "@/entities/model";
-import type { Job, JobStatus } from "@/shared/api/contracts";
+import { isTerminal, type Job, type JobStatus } from "@/shared/api/contracts";
 import { Button } from "@/shared/ui/Button";
 
 import {
@@ -24,6 +32,7 @@ import {
   PAGE_SIZE,
   durationSeconds,
   formatDateTime,
+  framesLabel,
   statusTone,
   useDeleteJob,
   useJobConfig,
@@ -201,7 +210,7 @@ export function HistoryPage() {
                       {seconds === null ? "—" : `${seconds} s`}
                     </td>
                     <td className="px-3 py-2 text-ink-muted tabular">
-                      {job.processedFrames} / {job.totalFrames}
+                      {framesLabel(job)}
                     </td>
                     <td className="px-3 py-2 tabular">
                       {job.status === "done" ? (
@@ -247,12 +256,22 @@ export function HistoryPage() {
                         <Button
                           size="sm"
                           variant="danger"
-                          icon={<Trash2 className="size-3.5" />}
+                          icon={
+                            isTerminal(job.status) ? (
+                              <Trash2 className="size-3.5" />
+                            ) : (
+                              <Ban className="size-3.5" />
+                            )
+                          }
                           disabled={remove.isPending}
-                          title="Supprime le job et son résultat, définitivement"
+                          title={
+                            isTerminal(job.status)
+                              ? "Supprime le job, son résultat et sa vidéo, définitivement"
+                              : "Arrête l'analyse. La rangée reste, et un second clic la supprimera."
+                            }
                           onClick={() => remove.mutate(job.jobId)}
                         >
-                          Supprimer
+                          {isTerminal(job.status) ? "Supprimer" : "Annuler"}
                         </Button>
                       </span>
                     </td>

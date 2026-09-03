@@ -848,6 +848,9 @@ export function StudioPage() {
         watchedPlateCount: settings.plateWatchlist.length,
         analysisSpeed: settings.analysisSpeed,
         maxAnalysisFps: settings.maxAnalysisFps,
+        // Les dimensions **réellement décodées**, pas celles de la balise : c'est
+        // le même `scene` qui sert de filet à la panne silencieuse d'ancrage.
+        sourceHeight: scene?.height ?? null,
       }),
     [
       selectedModelLabel,
@@ -862,6 +865,7 @@ export function StudioPage() {
       geometry.lines.length,
       geometry.zones.length,
       range,
+      scene?.height,
     ],
   );
 
