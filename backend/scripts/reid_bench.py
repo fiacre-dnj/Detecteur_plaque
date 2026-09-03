@@ -31,6 +31,25 @@ changement d'angle, de taille et d'éclairage.
   au même véhicule ? C'est la métrique de la tâche réelle : « retrouve ce véhicule
   parmi les autres ». À 1,0 la recherche est exacte ; à 1/n_vues elle vaut le hasard.
 
+**Deux réductions, et la seconde décrit ce qui tourne vraiment.** Les trois chiffres
+ci-dessus sont calculés **paire à paire**, alors que le service compare **une** vue à
+**toutes** celles d'un véhicule et retient la meilleure (`best_similarity`, puis la
+règle du maximum de `record_embedding` et de `record_rematch`). Le rapport rend donc
+une seconde ligne, `byVehicle`, réduite par véhicule : c'est elle qui dit où poser
+`DEFAULT_MATCH_THRESHOLD` et `DEFAULT_REMATCH_THRESHOLD`, parce que le maximum remonte
+**les deux** distributions — le plancher des mêmes véhicules, qui est le gain cherché,
+mais aussi le plafond des différents. Comparer les deux lignes est la seule façon de
+voir l'effet net.
+
+**Sur un montage doublé, `diff` est contaminé et les écarts sont pessimistes.** Le
+banc sépare les paires sur le `track_id` : deux instances du **même** véhicule dans
+deux copies du même métrage portent deux identifiants, donc leurs comparaisons — qui
+sortent naturellement très haut — tombent dans `diff`. Mesuré sur `Timeline 1.mov`,
+`diffMax` vaut 0,896, très probablement une vraie paire inter-copies mal étiquetée.
+Une comparaison de deux réductions y résiste (mêmes vues, mêmes étiquettes des deux
+côtés) ; une valeur absolue lue seule ferait conclure à une contre-performance de
+l'encodeur alors que c'est le montage qui trompe le banc.
+
 **Ce que ce banc ne mesure pas** : le cas inter-caméra. Toutes ses vues viennent d'une
 même vidéo, donc d'un même point de vue. Une photo importée par l'utilisateur vient
 d'ailleurs, et c'est plus difficile. `rank1` est donc une **borne haute** de ce que la
@@ -177,6 +196,79 @@ def _score(vectors: npt.NDArray[np.float32], views: list[View]) -> dict[str, Any
         "separation": round(float(same.mean() - diff.mean()), 4),
         "rank1": round(float(hits.mean()), 4) if hits.size else None,
         "rank1Answerable": int(answerable.sum()),
+        "byVehicle": _score_by_vehicle(similarity, tracks),
+    }
+
+
+def _score_by_vehicle(
+    similarity: npt.NDArray[np.float32], tracks: npt.NDArray[np.int_]
+) -> dict[str, Any] | None:
+    """Les mêmes distributions, réduites **par véhicule** au lieu de paire à paire.
+
+    C'est la question qu'ADR 0055 a posée et que ce banc ne savait pas trancher : le
+    service ne compare pas deux vues, il compare **une** vue à **toutes** celles d'un
+    véhicule et retient la meilleure (`best_similarity`, puis la règle du maximum de
+    `record_embedding` et de `record_rematch`). Les métriques paire à paire décrivent
+    donc un autre calcul que celui qui tourne en production.
+
+    **Le maximum relève les deux distributions**, et c'est tout l'enjeu de la mesure :
+    il remonte le plancher des mêmes véhicules — le gain qu'on cherche — mais aussi le
+    plafond des véhicules différents. Seule cette réduction dit si l'écart net y gagne,
+    et donc s'il faut redescendre ou remonter `DEFAULT_MATCH_THRESHOLD` et
+    `DEFAULT_REMATCH_THRESHOLD`.
+
+    Rend `None` quand aucune vue n'a de voisin utilisable — deux véhicules vus une
+    seule fois chacun ne répondent à rien.
+    """
+    labels = np.unique(tracks)
+    if labels.size < 2:
+        return None
+
+    # Pour chaque vue, le meilleur score contre chaque véhicule, **soi-même exclu**.
+    # `-inf` sur la diagonale plutôt qu'un masque : une vue est toujours sa plus
+    # proche voisine, et l'oublier ferait rendre 1,0 à n'importe quel encodeur.
+    ranked = similarity.copy()
+    np.fill_diagonal(ranked, -np.inf)
+
+    same: list[float] = []
+    diff: list[float] = []
+    hits = 0
+    answerable = 0
+    for index in range(len(tracks)):
+        best_per_vehicle = {
+            int(label): float(ranked[index][tracks == label].max()) for label in labels
+        }
+        own = best_per_vehicle.pop(int(tracks[index]))
+        others = [score for score in best_per_vehicle.values() if np.isfinite(score)]
+
+        # **`diff` est alimenté même par une piste vue une seule fois**, et l'ordre de
+        # ces deux blocs est ce qui rend la comparaison des deux réductions honnête :
+        # une vue sans voisine chez elle ne peut pas nourrir `same`, mais elle reste
+        # un distracteur parfaitement valide. L'écarter des deux distributions
+        # sous-échantillonnerait `diff` et **gonflerait l'écart** de cette réduction
+        # face à celle de paire à paire, c'est-à-dire fausserait la mesure au profit
+        # de la conclusion qu'on cherche.
+        diff.extend(others)
+
+        if not np.isfinite(own):
+            # La piste n'a que cette vue : rien à quoi se comparer chez elle, donc ni
+            # `same` ni rang-1.
+            continue
+        answerable += 1
+        same.append(own)
+        if others and own > max(others):
+            hits += 1
+
+    if not same or not diff:
+        return None
+    return {
+        "sameMean": round(float(np.mean(same)), 4),
+        "sameMin": round(float(np.min(same)), 4),
+        "diffMean": round(float(np.mean(diff)), 4),
+        "diffMax": round(float(np.max(diff)), 4),
+        "separation": round(float(np.mean(same) - np.mean(diff)), 4),
+        "rank1": round(hits / answerable, 4) if answerable else None,
+        "rank1Answerable": answerable,
     }
 
 
@@ -280,6 +372,21 @@ def _print(title: str, result: dict[str, Any]) -> None:
         f"écart {result['separation']:+.3f}  "
         f"rang-1 {'—' if rank1 is None else f'{rank1:.1%}'}"
     )
+    # La réduction **par véhicule** juste en dessous, et elle est la seule à décrire ce
+    # que le service calcule vraiment : une vue contre toutes celles d'un véhicule,
+    # meilleur score retenu. Le maximum remonte les deux distributions ; c'est l'écart
+    # net de cette ligne — et non celui de la ligne au-dessus — qui dit où poser
+    # `DEFAULT_MATCH_THRESHOLD` et `DEFAULT_REMATCH_THRESHOLD`.
+    by_vehicle = result.get("byVehicle")
+    if by_vehicle is not None:
+        rank1_vehicle = by_vehicle["rank1"]
+        print(
+            f"  {'└ par véhicule':14s} {' ' * 18}  "
+            f"same {by_vehicle['sameMean']:+.3f} (min {by_vehicle['sameMin']:+.3f})  "
+            f"diff {by_vehicle['diffMean']:+.3f} (max {by_vehicle['diffMax']:+.3f})  "
+            f"écart {by_vehicle['separation']:+.3f}  "
+            f"rang-1 {'—' if rank1_vehicle is None else f'{rank1_vehicle:.1%}'}"
+        )
 
 
 def main() -> int:

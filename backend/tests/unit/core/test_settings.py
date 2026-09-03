@@ -241,6 +241,89 @@ def test_un_chemin_de_poids_enracine_traverse_inchange() -> None:
     assert _settings(weights_dir=Path("/opt/poids")).weights_dir == Path("/opt/poids")
 
 
+class TestAncrageDeLUrlSqlite:
+    """`database_url` doit suivre `data_dir`, et ne le suivait pas.
+
+    Les deux réglages décrivent le **même** dépôt de données : la base référence
+    des jobs dont les vidéos vivent sous `data_dir`. `data_dir` était ancré, la
+    base non — donc lancer `uvicorn` depuis la racine du dépôt plutôt que depuis
+    `backend/` ouvrait `<racine>/data/traffic.db` tout en continuant d'écrire les
+    vidéos dans `backend/data/jobs/`.
+
+    Relevé sur ce dépôt : deux bases, 19 jobs et 4 presets d'un côté, 5 jobs et
+    aucun preset de l'autre, plus 663 Mo de vidéos qu'aucune purge ne pouvait voir
+    puisque leur ligne vivait dans l'autre base. Rien ne lève : le service démarre
+    et l'historique est simplement vide.
+    """
+
+    def test_une_base_relative_ne_depend_pas_du_repertoire_de_lancement(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Même verdict que pour les poids : l'égalité entre deux répertoires
+        courants, jamais une valeur écrite en dur."""
+        monkeypatch.chdir(tmp_path)
+        depuis_tmp = _settings(database_url="sqlite+aiosqlite:///./data/traffic.db")
+
+        ailleurs = tmp_path / "sous-repertoire"
+        ailleurs.mkdir()
+        monkeypatch.chdir(ailleurs)
+        depuis_ailleurs = _settings(database_url="sqlite+aiosqlite:///./data/traffic.db")
+
+        assert depuis_tmp.database_url == depuis_ailleurs.database_url
+        assert depuis_tmp.database_url.endswith("/backend/data/traffic.db")
+
+    def test_la_base_et_le_repertoire_de_donnees_atterrissent_au_meme_endroit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """**La propriété qui compte**, et celle qui manquait : les deux réglages
+        décrivent le même dépôt, donc ils doivent désigner le même parent."""
+        monkeypatch.chdir(tmp_path)
+        settings = _settings()
+
+        assert settings.database_url.endswith(f"{settings.data_dir.as_posix()}/traffic.db")
+
+    def test_une_base_enracinee_traverse_inchangee(self) -> None:
+        """La forme d'un déploiement conteneurisé.
+
+        Le piège est dans l'analyse de l'URL : `urlsplit` rend `//opt/data/x.db`
+        pour `sqlite:////opt/data/x.db`, et un `lstrip("/")` donnerait
+        `opt/data/x.db` — un chemin relatif, donc déplacé sous `backend/`. Une
+        seule barre doit être retirée.
+        """
+        for url in (
+            "sqlite+aiosqlite:////opt/data/traffic.db",
+            "sqlite+aiosqlite:///D:/donnees/traffic.db",
+        ):
+            assert _settings(database_url=url).database_url == url
+
+    def test_une_base_en_memoire_et_une_base_non_sqlite_traversent_inchangees(self) -> None:
+        """Ni l'une ni l'autre ne décrit un fichier : les ancrer n'aurait aucun
+        sens, et casserait la configuration de test comme celle de production."""
+        for url in (
+            "sqlite+aiosqlite:///:memory:",
+            "sqlite+aiosqlite://",
+            "postgresql+asyncpg://user:pass@hote/base",
+        ):
+            assert _settings(database_url=url).database_url == url
+
+    def test_sqlalchemy_relit_l_url_ancree(self) -> None:
+        """Le format compte autant que le chemin.
+
+        `urlunsplit` replie `scheme:///chemin` en `scheme:/chemin` quand le netloc
+        est vide, et SQLAlchemy ne relit alors plus un chemin de fichier. Le test
+        interroge donc la bibliothèque qui consommera réellement l'URL, pas notre
+        idée de sa syntaxe.
+        """
+        from sqlalchemy.engine import make_url
+
+        settings = _settings(database_url="sqlite+aiosqlite:///./data/traffic.db")
+        database = make_url(settings.database_url).database
+
+        assert database is not None
+        assert Path(database).is_absolute()
+        assert Path(database).name == "traffic.db"
+
+
 def test_un_chemin_explicite_gagne_sur_le_defaut() -> None:
     settings = _settings(
         weights_dir=Path("/tmp/w"),  # noqa: S108

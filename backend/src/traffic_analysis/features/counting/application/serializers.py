@@ -213,6 +213,13 @@ def serialise_vehicle(record: VehicleRecord) -> dict[str, Any]:
         # se recouvrent (ADR 0048). `null` couvre deux cas distincts : aucune requête,
         # ou véhicule jamais assez grand pour être encodé.
         "matchScore": None if record.match_score is None else _score(record.match_score),
+        # La re-détection : « ce véhicule ressemble au #N déjà passé » (ADR 0055).
+        # **Deux champs et non un**, parce que l'écran doit pouvoir nommer
+        # l'antécédent : « comme #12 — 87 % » se vérifie sur deux captures, « 87 % »
+        # tout seul ne se vérifie sur rien. Score brut ici aussi, pour la raison
+        # exacte de `matchScore` juste au-dessus.
+        "rematchOf": record.rematch_of,
+        "rematchScore": None if record.rematch_score is None else _score(record.rematch_score),
     }
 
 

@@ -51,7 +51,29 @@ export interface AnalysisSummaryInput {
   analysisSpeed: number | null;
   /** Plafond absolu en images par seconde réelle, `null` = aucun. */
   maxAnalysisFps: number | null;
+  /**
+   * Hauteur de la source en pixels, `null` tant qu'aucune vidéo n'est chargée.
+   *
+   * Sert **uniquement** à prévenir sur le plancher de lecture des plaques. La
+   * largeur ne dirait rien de plus : c'est la définition verticale qui décide de
+   * la hauteur d'une plaque dans l'image, et un format large ne rapproche rien.
+   */
+  sourceHeight: number | null;
 }
+
+/**
+ * En dessous, une vue de circulation ne rend quasiment jamais une plaque lisible.
+ *
+ * Ce n'est pas un seuil inventé : le plancher de **tentative** de l'OCR est de
+ * 64 px de large (invariant 12), et ADR 0032 a mesuré des plaques de moins de 48 px
+ * sur une vue de circulation en 1080p. Vérifié à nouveau sur ce dépôt en 720p —
+ * 29 véhicules, **zéro plaque publiée**, toutes les raisons en `too_small` ou
+ * `not_detected` — pendant que l'étage de détection consommait 73 % du budget.
+ *
+ * Le seuil porte sur la source et non sur la scène cadrée, parce que c'est le seul
+ * chiffre connu avant de lancer.
+ */
+const PLATE_READABLE_MIN_SOURCE_HEIGHT = 1080;
 
 export function analysisSummaryRows(input: AnalysisSummaryInput): AnalysisSummaryRow[] {
   return [
@@ -60,7 +82,7 @@ export function analysisSummaryRows(input: AnalysisSummaryInput): AnalysisSummar
     geometrySummary(input.lineCount, input.zoneCount),
     ...surveillance(input.ruledLineCount, input.watchedPlateCount, input.readPlateText),
     { label: "Portion analysée", value: rangeSummary(input.range) },
-    { label: "Plaques", value: plateSummary(input.detectPlates, input.readPlateText) },
+    plateRow(input.detectPlates, input.readPlateText, input.sourceHeight),
     paceRow(input.analysisSpeed, input.maxAnalysisFps),
   ];
 }
@@ -171,6 +193,43 @@ function rangeSummary(range: AnalysisRange): string {
 function plateSummary(detectPlates: boolean, readPlateText: boolean): string {
   if (!detectPlates) return "Désactivées";
   return readPlateText ? "Repérage et lecture du texte" : "Repérage seul";
+}
+
+/**
+ * La ligne « Plaques », plus l'avertissement que la définition de la source impose.
+ *
+ * **Le seul avertissement de cette page qui parle de temps perdu**, et il le mérite :
+ * sur une vue de circulation peu définie, l'ANPR dépense la majorité du budget
+ * d'analyse pour ne rien publier du tout. L'information existait déjà — chaque
+ * véhicule reçoit sa raison de non-lecture (`too_small`) — mais **après** l'analyse,
+ * c'est-à-dire après l'avoir payée.
+ *
+ * Il dit une conséquence et jamais un interdit, comme les autres : un plan resserré
+ * en 720p lit très bien, et `canAnalyse` reste le seul juge du lancement. Les deux
+ * gestes nommés sont ceux d'ADR 0032, et ce sont les seuls qui marchent — aucun
+ * réglage ne rattrape des pixels absents.
+ *
+ * L'avertissement suit `detectPlates` et non `readPlateText` : le repérage seul est
+ * précisément l'étage qui coûte cher, et il ne rend rien d'utile non plus quand les
+ * plaques font trente pixels.
+ */
+function plateRow(
+  detectPlates: boolean,
+  readPlateText: boolean,
+  sourceHeight: number | null,
+): AnalysisSummaryRow {
+  const value = plateSummary(detectPlates, readPlateText);
+  if (!detectPlates || sourceHeight === null || sourceHeight >= PLATE_READABLE_MIN_SOURCE_HEIGHT) {
+    return { label: "Plaques", value };
+  }
+  return {
+    label: "Plaques",
+    value,
+    warning:
+      `Source en ${sourceHeight}p : sur une vue de circulation, les plaques passent ` +
+      "sous le plancher de lecture et l'analyse durera plus longtemps sans en publier " +
+      "aucune. Resserrer le plan ou filmer plus défini sont les deux seuls remèdes.",
+  };
 }
 
 /**

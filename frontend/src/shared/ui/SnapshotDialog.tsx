@@ -15,10 +15,11 @@
  * d'éviter que la table charge une image dont elle n'afficherait qu'un tiers.
  */
 
-import { ChevronLeft, ChevronRight, ImageOff, X } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ChevronLeft, ChevronRight, X } from "lucide-react";
+import { useEffect, useRef, type ReactNode } from "react";
 
 import { Button } from "@/shared/ui/Button";
+import { SnapshotFrame } from "@/shared/ui/SnapshotFrame";
 
 interface SnapshotDialogProps {
   open: boolean;
@@ -114,11 +115,11 @@ export function SnapshotDialog(props: SnapshotDialogProps) {
         {/* Le véhicule d'abord : c'est lui qu'on identifie. Une hauteur **maximale**
             plutôt que fixe — une camionnette et une berline n'ont pas le même format,
             et le même cadre rognerait l'une ou étirerait l'autre. */}
-        <Frame src={props.vehicleSrc} alt={`Photo du véhicule — ${props.title}`} tall />
+        <SnapshotFrame src={props.vehicleSrc} alt={`Photo du véhicule — ${props.title}`} tall />
 
         {/* La plaque en dessous, plus basse et pleine largeur : c'est sa forme. */}
         {props.plateSrc != null ? (
-          <Frame src={props.plateSrc} alt={`Plaque du véhicule — ${props.title}`} />
+          <SnapshotFrame src={props.plateSrc} alt={`Plaque du véhicule — ${props.title}`} />
         ) : (
           <p className="rounded-card bg-surface-2 p-3 text-center text-micro text-ink-dim">
             Aucune vignette de plaque — cette photo a été retenue pour la ressemblance du
@@ -156,41 +157,6 @@ export function SnapshotDialog(props: SnapshotDialogProps) {
         </div>
       </div>
     </dialog>
-  );
-}
-
-/**
- * Une image, ou le repère muet qui la remplace.
- *
- * `onError` plutôt qu'une vérification préalable : la seule façon de savoir qu'une
- * capture a été purgée est de la demander. Un 409 est le cas **normal** après le TTL
- * de la vidéo, et une icône barrée le dit mieux que l'image cassée du navigateur.
- */
-function Frame({ src, alt, tall = false }: { src: string; alt: string; tall?: boolean }) {
-  const [failed, setFailed] = useState(false);
-
-  if (failed) {
-    return (
-      <p
-        className={`grid place-items-center gap-1 rounded-card bg-surface-2 p-3 text-center text-micro text-ink-dim ${
-          tall ? "h-56" : "h-20"
-        }`}
-      >
-        <ImageOff aria-hidden="true" className="size-5" />
-        Capture purgée — elle est effacée en même temps que la vidéo.
-      </p>
-    );
-  }
-
-  return (
-    <img
-      src={src}
-      alt={alt}
-      // `contain` et non `cover` : une capture est une preuve, la rogner pour
-      // remplir un cadre en retirerait justement ce qu'on vient regarder.
-      className={`w-full rounded-card bg-base object-contain ${tall ? "max-h-72" : "max-h-24"}`}
-      onError={() => setFailed(true)}
-    />
   );
 }
 

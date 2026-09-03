@@ -973,6 +973,119 @@ class TestRegleDeCapture:
         assert vehicle.snapshot_score is None
 
 
+class TestRegleDApparence:
+    """`record_embedding` et `record_rematch` — deux règles monotones (ADR 0055).
+
+    Elles ne l'étaient ni l'une ni l'autre, et les deux écrasements se voyaient à
+    l'écran : une re-détection qui désignait le mauvais véhicule, et une règle
+    monotone de ré-encodage qui repartait en arrière.
+    """
+
+    @staticmethod
+    def _session_with_track() -> tuple[AnalysisSession, int]:
+        session = AnalysisSession(_config(), FRAME_WIDTH, FRAME_HEIGHT)
+        session.feed(0, 0.0, (track_path(1, CAR, [(900.0, 300.0)])[0],))
+        outcome = session.feed(1, FRAME_MS, (track_path(1, CAR, [(900.0, 350.0)])[0],))
+        return session, outcome.tracks[0].global_id
+
+    def test_la_largeur_encodee_ne_redescend_jamais(self) -> None:
+        """Sinon la règle monotone rouvre des ré-encodages déjà payés — ADR 0050 à l'envers.
+
+        Depuis ADR 0055 un franchissement force un encodage quelle que soit la
+        largeur de la boîte : sans cette clause, une boîte étroite au moment du
+        passage abaisse la référence.
+        """
+        session, global_id = self._session_with_track()
+        session.record_embedding(global_id, 300.0, None)
+        session.record_embedding(global_id, 100.0, None)
+
+        assert session.should_embed(global_id, 200.0) is False
+        assert session.should_embed(global_id, 320.0) is True
+
+    def test_la_ressemblance_a_la_requete_retient_la_meilleure(self) -> None:
+        """**Le jumeau du défaut de la re-détection**, sur le même étage.
+
+        Ce test affirmait l'inverse — « c'est une mesure sur la vue courante, pas un
+        rang » — et il épinglait un défaut : un véhicule est encodé six à onze fois,
+        donc publier la dernière mesure la rend **arbitraire**. Deux vues du même
+        véhicule ne se ressemblent pas autant qu'on croit (0,387 au plus bas), donc
+        une vue oblique ne réfute pas une vue franche.
+        """
+        session, global_id = self._session_with_track()
+        session.record_embedding(global_id, 300.0, 0.90)
+        session.record_embedding(global_id, 100.0, 0.40)
+
+        assert session.vehicles()[0].match_score == pytest.approx(0.90)
+
+    def test_une_meilleure_ressemblance_remonte(self) -> None:
+        """Le pendant positif : la règle n'est pas « garder la première »."""
+        session, global_id = self._session_with_track()
+        session.record_embedding(global_id, 100.0, 0.40)
+        session.record_embedding(global_id, 300.0, 0.90)
+
+        assert session.vehicles()[0].match_score == pytest.approx(0.90)
+
+    def test_une_mesure_tue_par_le_plancher_n_efface_pas_un_score_acquis(self) -> None:
+        """`None` couvre deux états, et **aucun n'est une rétractation**.
+
+        Le plancher de déploiement décide de ce qu'on publie, jamais de ce qu'on
+        efface. Le cas mordait au défaut : `cosine_similarity` étant bornée à
+        `[-1, 1]`, une similarité négative échoue `score >= 0.0` — donc le plancher
+        par défaut suffisait à faire disparaître un véhicule des résultats qu'il
+        avait mérités, tout en lui laissant la photo qui servait à le vérifier.
+        """
+        session, global_id = self._session_with_track()
+        session.record_embedding(global_id, 300.0, 0.83)
+        session.record_embedding(global_id, 320.0, None)
+
+        vehicle = session.vehicles()[0]
+        assert vehicle.match_score == pytest.approx(0.83)
+        # La largeur, elle, a bien avancé : les deux champs sont monotones et
+        # indépendants.
+        assert session.should_embed(global_id, 310.0) is False
+
+    def test_sans_aucune_mesure_le_score_reste_nul(self) -> None:
+        """Encoder sans image de requête ne fabrique pas de ressemblance."""
+        session, global_id = self._session_with_track()
+        session.record_embedding(global_id, 300.0, None)
+
+        assert session.vehicles()[0].match_score is None
+
+    def test_la_re_detection_retient_la_meilleure_mesure(self) -> None:
+        """**Le défaut mesuré sur une vidéo doublée.**
+
+        Un véhicule franchit plusieurs lignes, donc compare plusieurs vues, et deux
+        vues d'un même véhicule ne se ressemblent pas autant qu'on croit : la
+        dernière mesure est souvent la plus mauvaise et désigne quelqu'un d'autre.
+        """
+        session, global_id = self._session_with_track()
+        session.record_rematch(global_id, 7, 0.98)
+        session.record_rematch(global_id, 9, 0.31)
+
+        vehicle = session.vehicles()[0]
+        assert vehicle.rematch_of == 7
+        assert vehicle.rematch_score == pytest.approx(0.98)
+
+    def test_une_meilleure_mesure_deplace_le_numero_avec_le_score(self) -> None:
+        """Le numéro suit le score : jamais le meilleur score d'un antécédent avec le
+        numéro d'un autre."""
+        session, global_id = self._session_with_track()
+        session.record_rematch(global_id, 7, 0.31)
+        session.record_rematch(global_id, 9, 0.98)
+
+        vehicle = session.vehicles()[0]
+        assert vehicle.rematch_of == 9
+        assert vehicle.rematch_score == pytest.approx(0.98)
+
+    def test_une_identite_inconnue_se_tait(self) -> None:
+        session, _ = self._session_with_track()
+
+        session.record_rematch(0, 7, 0.99)
+        session.record_embedding(0, 300.0, 0.99)
+
+        assert session.vehicles()[0].rematch_of is None
+
+
 class TestZones:
     def test_les_entrees_de_zone_sont_emises_et_le_registre_les_note(self) -> None:
         zone = make_zone(

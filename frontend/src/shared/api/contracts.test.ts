@@ -383,6 +383,13 @@ describe("contrat du registre des véhicules", () => {
       "plateText",
       "plateTextScore",
       "plateUnreadReason",
+      // La re-détection : « ce véhicule ressemble au #N déjà passé » (ADR 0055). À ne
+      // pas confondre avec `matchScore` plus haut — celui-ci compare à une photo
+      // fournie, celui-là aux franchisseurs de la même analyse. **Deux champs et non
+      // un** : « 87 % » tout seul ne se vérifie sur rien, « comme #12 — 87 % » se
+      // vérifie sur deux captures.
+      "rematchOf",
+      "rematchScore",
       // La capture retenue : une cause, un instant, parfois une confiance, **jamais
       // une URL**. Le serveur ne fabrique pas les adresses du client, qui les
       // construit depuis l'identifiant du job et le numéro du véhicule — même

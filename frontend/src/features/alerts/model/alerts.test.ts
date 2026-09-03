@@ -15,10 +15,13 @@ import type { Violation } from "@/shared/lib/lineViolations";
 
 import {
   alertFromPlateHit,
+  alertFromRematch,
   alertScore,
   alertFromVehicleMatch,
   alertFromViolation,
   crossingsBefore,
+  firstCrossingOf,
+  isViolation,
   mergeAlerts,
   sortAlerts,
 } from "./alerts";
@@ -243,5 +246,99 @@ describe("alertScore", () => {
 
     expect(alertScore(alert)).toEqual({ kind: "read", value: 0 });
     expect(alertScore(alertFromPlateHit({ ...HIT, plateTextScore: null }, 1_000))).toBeNull();
+  });
+});
+
+describe("re-détection au franchissement", () => {
+  const RULES = new Map([["l1", RULE]]);
+
+  const vehicle = {
+    globalId: 42,
+    label: "car",
+    firstSeenMs: 1_000,
+    rematchOf: 12,
+    crossedLines: [
+      { lineId: "l1", direction: 1, timestampMs: 5_000 },
+      { lineId: "l1", direction: -1, timestampMs: 2_000 },
+    ],
+  };
+
+  it("retient le PREMIER franchissement, pas le plus récent", () => {
+    // C'est le moment où l'on a reconnu le véhicule, donc celui qu'il faut aller
+    // voir. Les passages suivants sont le même véhicule qui continue sa route.
+    expect(firstCrossingOf(vehicle, RULES).timestampMs).toBe(2_000);
+  });
+
+  it("nomme la ligne sur le tracé courant", () => {
+    // Renommer une ligne après coup doit se voir sans réanalyser, comme partout
+    // ailleurs : le nom vient des règles, jamais du résultat archivé.
+    expect(firstCrossingOf(vehicle, RULES).line).toEqual({
+      id: "l1",
+      name: "Voie nord",
+      color: "#539df5",
+    });
+  });
+
+  it("survit à une ligne retirée du tracé", () => {
+    // L'instant survit, la ligne devient `null`. Taire l'alerte ferait dépendre ce
+    // qu'on remarque d'une géométrie qu'on a le droit de modifier après coup.
+    const found = firstCrossingOf(vehicle, new Map());
+
+    expect(found.line).toBeNull();
+    expect(found.timestampMs).toBe(2_000);
+  });
+
+  it("retombe sur la première apparition sans aucun franchissement", () => {
+    const found = firstCrossingOf({ ...vehicle, crossedLines: [] }, RULES);
+
+    expect(found.timestampMs).toBe(1_000);
+    expect(found.direction).toBeNull();
+  });
+
+  it("date l'alerte du franchissement et non de la première apparition", () => {
+    // La différence avec la recherche par image : là-bas le véhicule est intéressant
+    // du début à la fin, ici c'est le passage sur le trait qui l'est.
+    const alert = alertFromRematch(vehicle, firstCrossingOf(vehicle, RULES), "exact");
+
+    expect(alert.timestampMs).toBe(2_000);
+    expect(alert.line?.name).toBe("Voie nord");
+  });
+
+  it("nomme l'antécédent, sans quoi le pourcentage ne se vérifie sur rien", () => {
+    const alert = alertFromRematch(vehicle, firstCrossingOf(vehicle, RULES), "partial");
+
+    expect(alert.watched).toBe("#12");
+    expect(alert.kind).toBe("vehicle-rematch-partial");
+    expect(alert.severity).toBe("warning");
+  });
+
+  it("ne produit qu'une carte par véhicule", () => {
+    // La clé ne porte ni instant ni score : le même véhicule republié à chaque
+    // aperçu, ou dont la ressemblance s'améliore, ne remplit pas le tiroir.
+    const first = alertFromRematch(vehicle, firstCrossingOf(vehicle, RULES), "partial");
+    const better = alertFromRematch(vehicle, firstCrossingOf(vehicle, RULES), "exact");
+
+    expect(mergeAlerts([first], [better])).toHaveLength(1);
+  });
+
+  it("n'est PAS une infraction, bien qu'elle porte une ligne", () => {
+    // La régression que ce test verrouille : `isViolation` se décidait sur
+    // `alert.line !== null`, exact tant que seules les infractions nommaient une
+    // ligne. Une re-détection aurait été teintée, comptée et filtrée comme une
+    // infraction, sans que rien ne lève.
+    const alert = alertFromRematch(vehicle, firstCrossingOf(vehicle, RULES), "exact");
+
+    expect(alert.line).not.toBeNull();
+    expect(isViolation(alert)).toBe(false);
+    expect(isViolation(alertFromViolation(violation()))).toBe(true);
+  });
+
+  it("chiffre la ressemblance et pas la lecture", () => {
+    const alert = alertFromRematch(vehicle, firstCrossingOf(vehicle, RULES), "exact");
+
+    expect(alertScore(alert, { rematchScore: 0.91 })).toEqual({ kind: "match", value: 0.91 });
+    // Le score vient de la carte vivante, jamais de l'alerte : `mergeAlerts` garde la
+    // première occurrence d'une clé, donc un score porté par l'alerte serait gelé.
+    expect(alertScore(alert)).toBeNull();
   });
 });

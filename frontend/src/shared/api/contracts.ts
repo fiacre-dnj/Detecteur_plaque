@@ -437,6 +437,17 @@ export interface AnalysisRequest {
    * sans lecture, il n'y a aucun texte à comparer.
    */
   plateWatchlist: string[];
+  /**
+   * Signaler les véhicules qui ressemblent à un franchisseur antérieur.
+   *
+   * **Éteint par défaut, et c'est ce qui rend l'étage gratuit** : sans lui, aucune
+   * galerie n'est construite côté serveur et pas un encodage supplémentaire n'est
+   * payé. Un réglage de scène et non de déploiement — « des faux positifs ou rien »
+   * dépend de ce qu'on filme, pas de la machine.
+   *
+   * Sans effet si l'encodeur d'apparence est absent du serveur (`reidAvailable`).
+   */
+  vehicleRematch: boolean;
   lines: CountingLine[];
   zones: Zone[];
 }
@@ -718,6 +729,26 @@ export interface VehicleRecord {
    * ce second cas est le plus courant sur une vue large.
    */
   matchScore?: number | null;
+  /**
+   * Le véhicule **antérieur** auquel celui-ci ressemble, ou `null`.
+   *
+   * La galerie interne au clip : chaque franchisseur est comparé à ceux qui ont
+   * franchi avant lui. À ne pas confondre avec `matchScore` juste au-dessus —
+   * celui-ci compare à une photo que l'utilisateur a fournie, celui-là aux véhicules
+   * déjà passés dans cette même analyse. Les deux peuvent coexister sur un même
+   * véhicule et ne disent pas la même chose.
+   *
+   * **Une hypothèse, jamais une fusion** : les deux numéros existent, les deux
+   * véhicules sont comptés et leurs deux franchissements aussi. C'est ce qui met
+   * cette fonctionnalité hors du champ d'ADR 0016, dont la galerie supprimée
+   * alimentait le compteur.
+   *
+   * `null` couvre trois causes : l'interrupteur est éteint, le véhicule n'a franchi
+   * aucune ligne, ou rien ne lui ressemblait assez.
+   */
+  rematchOf?: number | null;
+  /** Ressemblance au véhicule ci-dessus. `null` ssi `rematchOf` l'est. Brute. */
+  rematchScore?: number | null;
 }
 
 /**

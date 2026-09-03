@@ -99,6 +99,22 @@ export interface AnalysisSettings {
    */
   plateWatchlist: string[];
   /**
+   * Signaler les véhicules qui ressemblent à un franchisseur antérieur (ADR 0055).
+   *
+   * **Indépendant de l'ANPR**, contrairement à `plateWatchlist` juste au-dessus :
+   * on reconnaît un véhicule à son apparence, pas à sa plaque, et les deux étages
+   * n'ont ni les mêmes poids ni les mêmes planchers.
+   *
+   * Faux par défaut, pour la même raison que `readPlateText` : c'est un surcoût —
+   * un encodage par franchissement — et signaler qu'un véhicule est repassé est un
+   * choix, pas un comportement dont on hérite.
+   *
+   * Pas d'incrément de `SETTINGS_SCHEMA_VERSION` : la fusion est champ par champ,
+   * donc un réglage persisté sans cette clé reçoit le défaut. Une migration ne sert
+   * qu'à **défaire** une valeur déjà écrite (ADR 0049).
+   */
+  vehicleRematch: boolean;
+  /**
    * Classes à détecter et à compter, par identifiant COCO.
    *
    * Le **catalogue** vient du serveur (`GET /api/v1/models/classes`) ; seule la
@@ -158,6 +174,7 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   // un cran de confidentialité qui doit être choisi, pas hérité.
   readPlateText: false,
   plateWatchlist: [],
+  vehicleRematch: false,
   // Les quatre véhicules de COCO : voiture, moto, bus, camion. C'est le
   // comportement historique de l'application, donc qui ne touche à rien retrouve
   // exactement ses chiffres d'avant. Les personnes se cochent quand on les veut.
@@ -345,6 +362,11 @@ export function toRequest(
     // afficherait dans « Configuration système » une recherche que rien ne peut
     // satisfaire. Le tiroir Détection avertit séparément si une liste survit à un
     // décochage de l'OCR — c'est la panne silencieuse à éviter, pas le tri fait ici.
+    // **Non subordonné à l'ANPR**, contrairement à la liste de plaques juste
+    // dessous : la re-détection travaille sur l'apparence du véhicule, pas sur son
+    // texte. La conditionner à `detectPlates` la rendrait muette précisément dans
+    // le cas d'usage qui l'a demandée, où personne ne cherche de plaque.
+    vehicleRematch: settings.vehicleRematch,
     plateWatchlist:
       settings.detectPlates && settings.readPlateText
         ? watchlistForRequest(settings.plateWatchlist)

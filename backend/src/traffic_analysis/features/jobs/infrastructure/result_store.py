@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import re
 import shutil
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +41,14 @@ COMPRESS_LEVEL = 6
 #: Un sous-répertoire et non des fichiers à plat : `delete_input` les efface d'un
 #: `rmtree`, sans avoir à deviner un motif de nom au milieu des autres artefacts.
 SNAPSHOT_DIRNAME = "snapshots"
+
+#: Un identifiant de job est un `uuid4().hex` : trente-deux caractères
+#: hexadécimaux minuscules, générés par le service et jamais par le client.
+#:
+#: Sert de **filtre à l'énumération du disque**, pas de validation d'entrée : ce
+#: qui ne ressemble pas à un job n'appartient pas à ce module, et surtout ne doit
+#: pas se retrouver dans une liste dont l'appelant se sert pour effacer.
+_JOB_ID_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 
 class FileResultStore:
@@ -215,6 +224,28 @@ class FileResultStore:
         rejouer sans conséquence, sinon un incident partiel la bloque pour toujours.
         """
         shutil.rmtree(self._root / job_id, ignore_errors=True)
+
+    def list_job_ids(self) -> tuple[str, ...]:
+        """Les jobs tels que le **disque** les connaît.
+
+        Le pendant de la liste tenue en base, et c'est la confrontation des deux qui
+        révèle les répertoires que plus rien ne référence.
+
+        **Seuls les noms en forme d'identifiant sont rendus** : un `uuid4().hex`,
+        soit trente-deux caractères hexadécimaux minuscules. Ce filtre n'est pas de
+        la coquetterie — l'appelant s'en sert pour effacer, et tout ce que le
+        répertoire de données contient d'autre (un dossier posé à la main, une
+        sauvegarde, un artefact d'un outil voisin) doit lui rester invisible.
+        """
+        if not self._root.is_dir():
+            return ()
+        return tuple(
+            sorted(
+                entry.name
+                for entry in self._root.iterdir()
+                if entry.is_dir() and _JOB_ID_PATTERN.fullmatch(entry.name)
+            )
+        )
 
 
 def _snapshot_name(global_id: int, kind: SnapshotFace) -> str:

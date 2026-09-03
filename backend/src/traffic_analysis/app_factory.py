@@ -383,6 +383,24 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     if container.db_engine is not None and not settings.is_production:
         await run_migrations(container.db_engine)
 
+    # **Après les migrations, avant de servir la première requête.** L'ordre n'est
+    # pas confortable, il est nécessaire : la table doit exister, et aucun worker
+    # ne doit avoir démarré — c'est cette fenêtre-là qui rend l'équivalence « non
+    # terminal ⇒ interrompu » vraie.
+    #
+    # Un échec ne doit pas empêcher le service de démarrer : sans réconciliation on
+    # retombe sur l'ancien comportement, c'est-à-dire des jobs fantômes. Refuser de
+    # démarrer serait une panne bien pire que celle qu'on corrige.
+    #
+    # Le balayage des orphelins suit immédiatement, et **dans cet ordre** : la
+    # réconciliation ne crée aucun orphelin, mais elle rend des jobs purgeables, et
+    # confronter le disque à une base déjà soldée évite un second passage.
+    try:
+        await container.job_manager.reconcile_interrupted()
+        await container.job_manager.purge_orphan_directories()
+    except Exception as exc:
+        logger.warning("réconciliation des jobs interrompus en échec", error=str(exc))
+
     # **Avant le préchauffage**, qui est la première inférence du processus : un
     # pool de threads déjà dimensionné se redimensionne mal. `0` ne fait rien, donc
     # aucun coût pour qui n'a pas posé le réglage — l'import de torch lui-même est

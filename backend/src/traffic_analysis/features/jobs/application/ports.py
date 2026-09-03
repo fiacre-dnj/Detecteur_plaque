@@ -93,6 +93,19 @@ class JobRepository(Protocol):
         """Jobs **terminaux** plus vieux que le TTL, candidats à la purge."""
         ...
 
+    async def list_interrupted(self) -> Sequence[JobRecord]:
+        """Jobs **non terminaux**, c'est-à-dire interrompus si le service démarre.
+
+        Le pendant exact de `list_expired` : celle-ci rend ce que la purge peut
+        prendre, celle-là ce qu'elle ne pourra **jamais** prendre tant que
+        personne ne le termine.
+
+        Appelée au seul démarrage, où « non terminal » et « interrompu » sont la
+        même chose : un `queued`, un `running` ou un `paused` trouvé en base à cet
+        instant décrit un worker qui n'existe plus.
+        """
+        ...
+
 
 class ModelPreparer(Protocol):
     """Rend un modèle utilisable **avant** que le job prétende travailler.
@@ -190,6 +203,15 @@ class ResultStore(Protocol):
 
         Rend `True` si un fichier a réellement été supprimé — ce qui permet à la
         boucle de purge de ne journaliser que ce qui a changé.
+        """
+        ...
+
+    def list_job_ids(self) -> tuple[str, ...]:
+        """Les jobs tels que le **disque** les connaît, pour confronter à la base.
+
+        Rend uniquement des noms en forme d'identifiant de job : l'appelant s'en
+        sert pour effacer, et rien d'autre du répertoire de données ne doit y
+        apparaître.
         """
         ...
 

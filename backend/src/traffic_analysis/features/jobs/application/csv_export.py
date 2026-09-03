@@ -1,4 +1,26 @@
-"""Export CSV du registre et des franchissements.
+"""Export CSV du registre et des franchissements — **la version machine**.
+
+Il y a **deux** exports CSV dans ce projet, et ce n'est pas un doublon à
+supprimer : ils n'ont ni la même source, ni les mêmes colonnes, ni le même
+lecteur. Confondre les deux est facile, et la confusion a déjà coûté une
+affirmation fausse dans `CLAUDE.md`.
+
+- **Celui-ci**, `GET /jobs/{id}/export.csv` (imposé par `prompt/05` §266). Il lit
+  les tables **dénormalisées** (`job_vehicles`, `job_crossings`) : il n'ouvre
+  jamais le `result.json.gz`, donc il répond sur une analyse de dix mille
+  véhicules sans rien charger en mémoire. En échange il ne connaît que des
+  **identifiants stables** — `l1`, `A→B` — et il ignore tout des rôles de sens,
+  que le serveur ne lit jamais (ADR 0016, ADR 0021).
+- **Celui du bouton du registre**, `frontend/src/features/vehicle-registry/model/
+  exportCsv.ts`. Il part du résultat déjà chargé et du **tracé courant** : il
+  porte donc les noms de ligne saisis par l'utilisateur, les libellés de rôle, et
+  deux colonnes de re-détection (ADR 0055).
+
+**La différence de colonnes est structurelle, pas un oubli.** `job_vehicles` n'a
+aucune colonne `rematch_*` ni `match_score` — ces valeurs ne vivent que dans le
+fichier de résultat — donc cet export ne peut pas les porter sans une migration.
+`test_job_exports.py` verrouille les deux jeux d'en-têtes pour que l'écart reste
+un choix écrit et non une dérive.
 
 Trois détails rendent un CSV réellement ouvrable par la personne qui le demande,
 et les trois sont français :

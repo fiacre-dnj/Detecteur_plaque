@@ -27,6 +27,9 @@ const BASE: AnalysisSummaryInput = {
   // Le défaut depuis ADR 0049 : un plafond absolu ici ferait porter à `BASE` une
   // contradiction entre les deux bridages, et « tout est réglé » cesserait d'être vrai.
   maxAnalysisFps: null,
+  // 1080p : la définition à partir de laquelle une vue de circulation cesse de
+  // condamner l'ANPR. `BASE` ne doit porter aucun avertissement, donc pas moins.
+  sourceHeight: 1080,
 };
 
 function row(input: Partial<AnalysisSummaryInput>, label: string) {
@@ -117,5 +120,46 @@ describe("analysisSummaryRows", () => {
     // scène, le plafond est le seul juge et ne contredit personne.
     expect(row({ maxAnalysisFps: null }, "Cadence").warning).toBeUndefined();
     expect(row({ analysisSpeed: null, maxAnalysisFps: 30 }, "Cadence").warning).toBeUndefined();
+  });
+});
+
+describe("l'avertissement de définition sur les plaques", () => {
+  const plateRow = (input: AnalysisSummaryInput) =>
+    analysisSummaryRows(input).find((candidate) => candidate.label === "Plaques");
+
+  it("prévient qu'une source peu définie ne publiera aucune plaque", () => {
+    // Mesuré sur ce dépôt en 720p : 29 véhicules, zéro plaque publiée, toutes les
+    // raisons en `too_small` ou `not_detected` — pendant que l'étage de détection
+    // consommait la majorité du budget.
+    const plaques = plateRow({ ...BASE, detectPlates: true, readPlateText: true, sourceHeight: 720 });
+
+    expect(plaques?.warning).toContain("720p");
+    expect(plaques?.warning).toContain("plancher de lecture");
+    // Une conséquence et deux gestes, jamais un interdit : `canAnalyse` reste le
+    // seul juge du lancement, et un plan resserré en 720p lit très bien.
+    expect(plaques?.warning).toContain("Resserrer le plan");
+    expect(plaques?.warning).not.toContain("impossible");
+  });
+
+  it("prévient aussi sans OCR : c'est le repérage qui coûte cher", () => {
+    const plaques = plateRow({ ...BASE, detectPlates: true, readPlateText: false, sourceHeight: 720 });
+
+    expect(plaques?.value).toBe("Repérage seul");
+    expect(plaques?.warning).toBeDefined();
+  });
+
+  it("se tait dès 1080p, et quand les plaques sont désactivées", () => {
+    expect(
+      plateRow({ ...BASE, detectPlates: true, readPlateText: true, sourceHeight: 1080 })?.warning,
+    ).toBeUndefined();
+    expect(plateRow({ ...BASE, detectPlates: false, sourceHeight: 480 })?.warning).toBeUndefined();
+  });
+
+  it("se tait tant qu'aucune vidéo n'est chargée", () => {
+    // `null` n'est pas « petite » : sans source, il n'y a rien à annoncer, et un
+    // avertissement sur une page vide se lirait comme un défaut de l'application.
+    expect(
+      plateRow({ ...BASE, detectPlates: true, readPlateText: true, sourceHeight: null })?.warning,
+    ).toBeUndefined();
   });
 });

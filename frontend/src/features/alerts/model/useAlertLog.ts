@@ -27,8 +27,10 @@ import { matches, matchStrength } from "@/shared/lib/vehicleMatch";
 
 import {
   alertFromPlateHit,
+  alertFromRematch,
   alertFromVehicleMatch,
   alertFromViolation,
+  firstCrossingOf,
   mergeAlerts,
   type Alert,
 } from "./alerts";
@@ -70,6 +72,13 @@ export interface AlertLogInput {
    * dont le score est négatif, donc la totalité du trafic.
    */
   matchThreshold: number | null;
+  /**
+   * Seuil de **re-détection**, ou `null` — l'analyse ne la demande pas.
+   *
+   * Comme `matchThreshold`, il vit côté client sur un score brut : le baisser après
+   * coup fait apparaître les candidats sans réanalyser.
+   */
+  rematchThreshold: number | null;
   /**
    * Ce qui identifie l'analyse en cours. Un changement **vide** le journal.
    *
@@ -145,6 +154,29 @@ export function useAlertLog(input: AlertLogInput): readonly Alert[] {
     // véhicule une fois par seconde.
     setLog((previous) => mergeAlerts(previous, found));
   }, [vehicles, matchThreshold]);
+
+  const { rematchThreshold } = input;
+  useEffect(() => {
+    if (rematchThreshold === null || vehicles === null || vehicles.length === 0) return;
+    const found: Alert[] = [];
+    for (const vehicle of vehicles) {
+      if (vehicle.rematchOf == null) continue;
+      if (!matches(vehicle.rematchScore, rematchThreshold)) continue;
+      found.push(
+        alertFromRematch(
+          vehicle,
+          firstCrossingOf(vehicle, rules),
+          matchStrength(vehicle.rematchScore as number, rematchThreshold),
+        ),
+      );
+    }
+    if (found.length === 0) return;
+    // Même dédoublonnage que la recherche par image : la clé ne porte ni instant ni
+    // score, donc le même véhicule republié à chaque aperçu — ou dont la
+    // ressemblance s'améliore quand une meilleure vue est encodée — ne produit
+    // qu'une carte.
+    setLog((previous) => mergeAlerts(previous, found));
+  }, [vehicles, rematchThreshold, rules]);
 
   return log;
 }

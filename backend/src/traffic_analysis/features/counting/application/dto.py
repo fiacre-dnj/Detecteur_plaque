@@ -268,6 +268,17 @@ class AnalysisJobConfig:
     #: Ni canonisées ni comparées ici : voir `_clean_watchlist` dans le schéma de
     #: requête. Sans effet si `read_plate_text` est faux.
     plate_watchlist: tuple[str, ...] = ()
+    #: Signaler les véhicules qui ressemblent à un franchisseur antérieur (ADR 0055).
+    #:
+    #: **Éteint par défaut, et c'est ce qui rend l'étage gratuit quand on ne s'en
+    #: sert pas** : sans lui, aucune galerie n'est construite et pas un encodage
+    #: supplémentaire n'est payé. Un réglage de l'utilisateur et non du déploiement,
+    #: même doctrine qu'ADR 0036 — « des faux positifs ou rien » est une question de
+    #: scène, pas de machine.
+    #:
+    #: Sans effet si l'encodeur d'apparence est absent : il n'y a alors rien à
+    #: comparer, et le service se tait plutôt que de faire échouer l'analyse.
+    vehicle_rematch: bool = False
 
     def engine_spec(self) -> EngineSpec:
         """Ce que le moteur doit savoir : les seuils **vivants** de la requête."""

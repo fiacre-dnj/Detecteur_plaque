@@ -193,7 +193,7 @@ docker compose up                # http://localhost:8000
 # ── Backend (cd backend)
 uv sync
 uv run uvicorn traffic_analysis.main:app --reload --port 8000
-uv run pytest                                                            # 1700 tests
+uv run pytest                                                            # 1761 tests
 uv run pytest tests/unit/counting/test_line_counter.py -k aller_retour   # un seul
 uv run pytest --cov=src --cov-report=term-missing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src
@@ -208,7 +208,7 @@ uv run python scripts/audit_lignes.py                # « pourquoi cette ligne e
 # ── Frontend (cd frontend)
 bun install
 bun run dev                      # proxy /api → 127.0.0.1:8000, WebSocket compris
-bun run lint && bun run typecheck && bun test && bun run build           # 882 tests
+bun run lint && bun run typecheck && bun test && bun run build           # 938 tests
 bun test src/features/realtime-counting/model/scale.test.ts              # un seul
 
 # ── Dépôt
@@ -1868,11 +1868,226 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
       calculé par différence, tombe à zéro. Ce n'est pas une panne de mesure.
 
     [ADR 0054](docs/adr/0054-le-moteur-et-son-aval-se-recouvrent.md).
+39. **Un véhicule déjà vu est signalé, jamais fusionné.** Une **galerie interne au
+    clip** (`counting/domain/appearance_gallery.py`) : chaque franchisseur y dépose
+    l'apparence de sa meilleure vue et y est comparé aux précédents. Née d'un cas
+    d'usage précis — la même vidéo doublée sur une timeline, dont la seconde moitié
+    doit se reconnaître.
+
+    **Ceci n'abroge pas ADR 0016**, et c'est la seule question qui compte. La galerie
+    supprimée alimentait le **compteur** : elle ré-attachait une identité, donc `#1`
+    réapparaissait au milieu d'une vidéo et le total n'avançait pas. Celle-ci ne
+    touche aucun compteur — les deux numéros existent, les deux véhicules sont
+    comptés, les deux franchissements aussi. Ce n'est pas une nuance de vocabulaire :
+    `TestAucuneRegression` compare `crossings`, `tracked_vehicles`, `by_class`, la
+    ventilation `by_line` **entière** et les **horodatages**, avec et sans galerie.
+    Son échec devrait faire retirer la fonctionnalité, pas la corriger.
+
+    Cinq points qui ne se devinent pas :
+    - **interroger avant de déposer.** `lookup` exclut bien son propre numéro, mais
+      déposer d'abord ferait remonter, au franchissement **suivant du même
+      véhicule**, sa propre vue précédente à un score proche de 1 — un aller-retour
+      se signalerait lui-même ;
+    - **la meilleure mesure gagne, et la galerie est multi-vues** (correctif du
+      2026-09-01). Un véhicule franchit plusieurs lignes, donc interroge la galerie
+      plusieurs fois, **avec une vue différente à chaque fois** — et deux vues d'un
+      même véhicule ne se ressemblent pas autant qu'on croit (0,387 au plus bas,
+      ADR 0048 ; le prétraitement étire la vignette au carré, donc la déformation
+      suit le rapport d'aspect de la boîte). `record_rematch` écrasait sans comparer
+      et la galerie ne gardait qu'une vue : mesuré sur une vidéo doublée bout à bout,
+      où la bonne réponse vaut **1,00 par construction**, trois jumeaux sur sept
+      publiaient 0,42, 0,60 et 0,27, et le dernier désignait **un autre véhicule**.
+      Le numéro suit le score, jamais l'inverse ;
+    - **`record_embedding` est monotone sur ses DEUX champs**, et il ne l'était sur
+      aucun. `appearance_width_px` était rabaissé par un encodage forcé au
+      franchissement, ce qui remettait la règle monotone d'ADR 0050 en arrière ; et
+      `match_score` — la ressemblance à l'**image de requête**, ADR 0048 — souffrait du
+      défaut jumeau de `record_rematch`, en pire. Il retient désormais le maximum lui
+      aussi, et `None` ne retire rien : le plancher de déploiement décide de ce qu'on
+      **publie**, jamais de ce qu'on **efface**. Ce dernier point était un bug franc —
+      `cosine_similarity` étant bornée à `[-1, 1]`, une similarité négative échoue
+      `score >= 0.0` **au défaut**, donc un `None` passait par-dessus un 0,83 légitime
+      et le véhicule disparaissait des résultats en gardant la photo qui servait à le
+      vérifier ;
+    - **la règle du seuil, elle, ne s'est PAS transposée à la recherche par image**, et
+      c'est délibéré : celle-ci a un curseur de 0 à 0,95 dont l'aide dit « descendre
+      trouve plus de candidats », sa cellule n'affirme aucune **identité** — elle montre
+      un nombre — et c'est ce nombre qui permet de comprendre pourquoi un véhicule tombe
+      juste sous le curseur. `hasMatch` continue pour la même raison de ne pas exiger un
+      score au-dessus du seuil : cette colonne **est** la surface de retour du curseur.
+      La symétrie aveugle aurait retiré l'outil de réglage ;
+    - **le cadrage de la requête envoyait autre chose que ce qu'on voyait cadrer.**
+      `pointFor` mesurait le conteneur alors que l'image portait `w-full max-h-64
+      object-contain` : sur une photo plus haute que large — une photo de téléphone —
+      `object-contain` letterboxait horizontalement, les fractions incluaient les bandes
+      vides, et `cropToJpeg` les appliquait à `naturalWidth`. Le rectangle bleu étant
+      dessiné dans le même repère faux, **rien ne le signalait**. Corrigé en supprimant
+      le letterbox (`w-fit` + image intrinsèque, plus de `object-contain`) et non en
+      apprenant à le calculer : la boîte de l'image *est* alors sa boîte de contenu,
+      donc les fractions sont exactes par construction — et une largeur imposée
+      réintroduite un jour **déformerait visiblement** l'aperçu au lieu de décaler le
+      cadrage en silence ;
+    - **la requête replique la marge de 6 %** (`QUERY_MARGIN` dans `crop.ts`). La
+      galerie encode la boîte du détecteur *plus* `VEHICLE_MARGIN` : sans elle, le même
+      véhicule occupe 100 % de la tuile 208² d'un côté et ~89 % de l'autre, donc il y
+      paraît 12 % plus gros. Le nombre vit des deux côtés de la frontière de langage —
+      doublon assumé — et un test **backend** le verrouille en nommant le fichier
+      client, même procédé que `MIN_PLATE_CROP_SIDE_PX` ;
+    - **`snapshotCaption` nomme à quoi sa ressemblance se compare.** Il y a désormais
+      deux ressemblances — à la photo cherchée et à un autre véhicule du clip — et la
+      modale de comparaison affichait les deux sous le même mot : « Ressemblance 100 % »
+      en entête, « ressemblance 34 % » dans les légendes. Erreur d'unité invisible, les
+      deux chiffres étant plausibles ;
+    - **la garde temporelle** : un déposant n'est éligible que s'il avait **disparu**
+      avant que le candidat n'apparaisse. Deux véhicules simultanément visibles ne
+      peuvent pas être le même objet physique, et c'est le faux positif le plus
+      visible en trafic dense. La galerie tient donc sa **propre** fenêtre de
+      présence (`observe` sur toute piste visible) plutôt que de l'interroger sur la
+      session — ce qui lierait un index de consultation au cœur du comptage ;
+    - **le franchissement contourne la marge de largeur et le plafond par image, pas
+      les planchers de l'adaptateur.** La question se pose au moment du passage, et
+      un franchissement n'a pas de seconde chance — c'est un instant, pas un état.
+      Mais un embedding sur 40 px ressemble surtout au flou (ADR 0048) : un score
+      calculé dessus serait plausible et faux. Le coût est donc borné par le nombre
+      de **franchissements**, pas d'images, ce qui évite d'avoir à inventer la marge
+      d'ADR 0050 ;
+    - **deux seuils et pas un** — `reid_rematch_min_similarity` côté serveur,
+      `DEFAULT_REMATCH_THRESHOLD` (0,75) côté client, tous deux distincts de leurs
+      jumeaux d'ADR 0048. Ici personne n'a demandé ce véhicule, donc un faux positif
+      coûte plus cher ; et surtout on compare à **tous** les précédents, donc le
+      meilleur score d'un lot de cent est mécaniquement plus haut que celui d'un lot
+      de deux — un seuil partagé dériverait avec la durée de la vidéo ;
+    - **le registre applique le seuil, comme le tiroir d'alertes le faisait déjà.**
+      Le serveur publie le meilleur voisin de **chaque** franchisseur quel qu'en soit
+      le score : sur une vidéo doublée, les sept véhicules de la première moitié — qui
+      n'ont par construction aucun jumeau — affichaient tous un numéro à 2 ou 31 %, en
+      gris. Le motif d'origine (« voir qu'on est passé à côté de peu ») ne survit pas à
+      l'usage : une identité affirmée à 2 % n'est pas une information nuancée, c'est
+      une affirmation fausse. Le score brut reste dans l'infobulle et dans le CSV **du
+      bouton du registre**, qui est de la donnée et non une vue — précision qui a son
+      importance depuis qu'on a compté les exports : celui de l'API
+      (`GET /jobs/{id}/export.csv`) ne peut pas le porter, `job_vehicles` n'ayant
+      aucune colonne de re-détection. `isRematched` / `hasRematch`
+      (`vehicle-registry/model/rematchPair.ts`) en sont les seuls juges ;
+    - **la colonne « Déjà vu » du registre est cliquable et ouvre les deux véhicules
+      côte à côte.** Sans elle, l'écran affirmait une ressemblance sans donner le
+      moyen de la vérifier : comparer deux captures demandait d'ouvrir la première,
+      la fermer, retrouver la seconde rangée, l'ouvrir — donc de comparer **de
+      mémoire**. `model/rematchPair.ts` en est le seul juge et cherche l'antécédent
+      dans **tous** les véhicules, jamais dans le jeu filtré ; l'ordre est
+      chronologique, jamais « celui qu'on a cliqué » ;
+    - **`isViolation` ne se décide plus sur `alert.line !== null`.** Ce raccourci
+      était exact tant que seules les infractions nommaient une ligne, et il est
+      devenu faux à l'instant où une re-détection en a porté une : elle aurait été
+      teintée, comptée et filtrée comme une infraction, sans que rien ne lève. Une
+      propriété vraie par coïncidence qui cesse de l'être en silence — la famille de
+      panne que ce fichier documente le plus.
+
+    **Les distributions sont mesurées depuis le 2026-09-02**, et le seuil n'en sort
+    pas pour autant : elles se recouvrent de **0,026 à 0,896** (35 pistes,
+    `reid_bench.py`). Aucun seuil global n'est donc à la fois sûr et utile, et 0,75
+    tombe **dans** le recouvrement — il manque de vraies paires et en admet au moins
+    une fausse. C'est ce que l'écran promet déjà, désormais chiffré.
+
+    Trois autres chiffres de cette course ferment des questions qui se reposeront :
+    - **une vidéo doublée n'est PAS identique au pixel près**, et ce fichier l'a
+      affirmé deux fois. Mesuré sur un montage exporté : décalage de 1543 images
+      exactement, mais **0,9/255 d'écart pixel** au décalage. Avec le vrai encodeur,
+      48 régions correspondantes rendent **0,969 à 0,997 (médiane 0,991), zéro à
+      1,0** — quand la même image contre elle-même rend **1,000000**. Le plafond est
+      donc le codec : **95–99 % sur un doublon exporté est un succès, pas un
+      manque**, et 100,0 % demanderait une concaténation sans réencodage ;
+    - **donner plus de vues à la galerie ne rend rien.** Elle ne se remplit qu'aux
+      franchissements — 1 ou 2 vues par véhicule là où `MAX_VIEWS_PER_VEHICLE` en
+      admet 4 — et le levier évident était d'activer la règle monotone en largeur.
+      Mesuré (ligne `byVehicle` du banc, qui simule exactement ce levier) : `sameMean`
+      +0,061, `diffMean` +0,048, écart net **+0,013**, et **rang-1 identique** — aucune
+      décision changée, pour 20 à 40 s de CPU. Rejeté ;
+    - **le banc compte deux instances d'un même véhicule comme deux véhicules** quand
+      le tracker leur a donné deux identifiants. Sur un montage doublé, `diff` est donc
+      contaminé et les écarts sont **pessimistes** ; l'égalité des rang-1 y résiste, les
+      valeurs absolues non.
+
+    [ADR 0055](docs/adr/0055-signaler-un-vehicule-deja-vu.md).
+40. **Au démarrage, un job non terminal est un job interrompu — et une vidéo qu'on
+    ne purge pas est une promesse rompue.** Un `queued`, un `running` ou un `paused`
+    survivait à l'arrêt du service et n'en sortait **jamais**. Relevé sur une base
+    réelle : **quinze jobs sur dix-huit** bloqués, dont un « en cours » depuis six
+    jours, et des vidéos de **dix-sept jours** sous un TTL de vingt-quatre heures.
+    Trois mécanismes refusaient de les prendre, et aucun ne le signalait :
+    - `list_expired` ne rend que des jobs **terminaux**, donc la purge ne voyait ni
+      la ligne ni la vidéo. C'est le point grave : la vidéo porte des plaques et des
+      visages, et `input_ttl_minutes` promet de l'effacer ;
+    - `cancel_or_purge` posait son événement d'annulation dans un dictionnaire **en
+      mémoire**, vide après un redémarrage. Sur un `paused` fantôme elle répondait
+      `200` sans rien changer : le job était **indéboulonnable** depuis une interface
+      qui affichait pourtant un bouton. Mesuré : trois `DELETE`, trois `200`, le job
+      toujours `paused` ;
+    - **reprendre** un tel job réussissait et le repassait en `running` : le SSE
+      émettait une trame puis se taisait, et l'écran annonçait une analyse en cours à
+      39 % pour toujours. Le pire des trois, parce que l'application affirmait qu'un
+      travail avançait.
+
+    `reconcile_interrupted` les termine en `error` — personne n'a renoncé, le service
+    est tombé — avec le code `interrupted_by_restart`, **après les migrations et avant
+    de servir** : c'est cette fenêtre qui rend vraie l'équivalence « non terminal ⇒
+    interrompu », et l'appeler plus tard tuerait des analyses en cours. La garde de
+    `cancel_or_purge` porte désormais sur la **présence de l'événement** et non sur le
+    statut : `_run` le pose à son entrée et le retire dans son `finally`, donc son
+    absence veut dire exactement « aucun worker ». Un `queued` garde son cas propre —
+    il a bien un worker, mais bloqué sur le sémaphore.
+
+    **Trois corollaires, même famille de panne, même fenêtre de démarrage :**
+    - **`purge_orphan_directories`** efface les répertoires que plus **aucune ligne**
+      ne référence — la purge parcourt la base, donc elle ne peut pas les voir.
+      Relevé : 663 Mo, dont un répertoire de 573 Mo qu'aucune des deux bases
+      coexistantes ne connaissait. **Au démarrage seulement, et c'est une condition de
+      sûreté** : le dépôt d'une analyse écrit la vidéo *avant* d'insérer la ligne, donc
+      un balayage périodique effacerait un jour un envoi en cours. Le filtre est la
+      forme d'un `uuid4().hex` — l'appelant efface, donc rien d'autre du répertoire de
+      données ne doit lui apparaître ;
+    - **`database_url` est ancré comme `data_dir`.** La garde existait sur son voisin
+      immédiat et n'avait pas été étendue : lancer `uvicorn` depuis la racine du dépôt
+      ouvrait `<racine>/data/traffic.db` pendant que les vidéos continuaient d'aller
+      dans `backend/data/jobs/`. **Deux bases coexistaient**, chacune ignorant la
+      moitié des fichiers — 19 jobs et 4 presets d'un côté, 5 jobs et aucun preset de
+      l'autre. Rien ne lève : le service démarre, l'historique est simplement vide.
+      Trois formes traversent inchangées — non-SQLite, en mémoire, déjà enracinée.
+      **Une seule barre est retirée du chemin de l'URL, jamais `lstrip("/")`** :
+      `sqlite:////opt/x.db` donne `//opt/x.db`, et tout retirer le rendrait relatif,
+      donc déplacé — exactement le mode de panne que l'ancrage existe pour supprimer.
+      `_ensure_parent_directory` portait le même défaut et le perd aussi ;
+    - **`framesLabel`** : un job `done` n'affiche plus que les images réellement
+      analysées. `totalFrames` est le nombre **annoncé par le conteneur**, souvent
+      approximatif — `Progress.ratio` le documente déjà et borne la fraction à 1 —, et
+      « 6590 / 6660 » sous un job à 100 % se lit comme soixante-dix images perdues.
+      Seul `done` s'effondre : sur une analyse arrêtée, la fraction dit jusqu'où elle
+      est allée.
+
+    **Deux exports CSV coexistent, et l'écart est structurel.** Ce n'est pas un
+    doublon à supprimer : `prompt/05` §266 impose la route, et le bouton du registre
+    ne peut pas s'en servir. L'export de l'API lit les tables dénormalisées — il
+    répond sur dix mille véhicules sans ouvrir le résultat, mais ne connaît que des
+    identifiants stables (`l1`, `A→B`) et ignore les rôles de sens, que le serveur ne
+    lit jamais. Celui du bouton part du résultat chargé et du **tracé courant** : noms
+    de ligne, libellés de rôle, et les deux colonnes de re-détection, dont aucune n'a
+    de colonne en base. `test_job_exports.py` verrouille les deux jeux d'en-têtes pour
+    que l'écart reste écrit et non subi ; la docstring du client citait par ailleurs
+    `/jobs/{id}/vehicles.csv`, une route qui **n'a jamais existé**.
+
+    **Et deux libellés qui mentaient.** Le bouton de l'historique dit « Annuler » sur
+    un job vivant et « Supprimer » sur un job terminal, parce que `DELETE` fait
+    l'un puis l'autre — un libellé unique se lisait comme inopérant au premier clic.
+    Le récapitulatif d'avant-analyse **prévient qu'une source sous 1080p ne publiera
+    quasiment aucune plaque** : l'information existait déjà, véhicule par véhicule
+    (`too_small`), mais seulement *après* avoir payé l'analyse. Mesuré en 720p sur ce
+    dépôt : 29 véhicules, **zéro plaque publiée**. L'avertissement dit une conséquence
+    et deux gestes (ADR 0032), jamais un interdit — `canAnalyse` reste le seul juge.
 
 ## Ce que l'analyse signale — les alertes
 
 Depuis le 2026-08-27, l'écran ne fait plus que compter et ranger : il **signale**.
-Deux familles, une seule feature (`features/alerts`), un seul type d'alerte —
+Trois familles, une seule feature (`features/alerts`), un seul type d'alerte —
 elles partagent tout ce qui compte à l'écran : un véhicule, un instant, une
 gravité, un motif.
 
@@ -1884,7 +2099,14 @@ gravité, un motif.
   **vote** de plaque (invariant 4). Correspondance *exacte* en rouge, *probable* —
   l'une contient l'autre — en orange, parce qu'ADR 0029 documente que l'OCR perd
   régulièrement le premier caractère d'une plaque. Différé seulement : le direct n'a
-  pas d'ANPR.
+  pas d'ANPR ;
+- **les véhicules déjà vus** (2026-09-01, [ADR
+  0055](docs/adr/0055-signaler-un-vehicule-deja-vu.md)) — chaque véhicule qui
+  franchit une ligne, **quel qu'en soit le type**, est comparé aux franchisseurs
+  antérieurs de la même analyse. Case à cocher dans le tiroir Détection, **éteinte
+  par défaut**. À ne pas confondre avec la recherche par image (ADR 0048), qui
+  compare à une photo fournie : ici la vidéo est comparée à elle-même, et les deux
+  peuvent porter un score sur le même véhicule sans dire la même chose.
 
 Cinq points qui ne se devinent pas :
 
@@ -2391,7 +2613,7 @@ le piège 11 de `prompt/13` reste couvert.
 
 | | Backend | Frontend |
 |---|---|---|
-| Nombre | 1700 (1 skip) | 882 |
+| Nombre | 1761 (1 skip) | 938 |
 | Lanceur | pytest, `asyncio_mode = "auto"` | `bun test` (**pas** vitest) |
 | Isolation | base SQLite sous `tmp_path`, moteur factice | — |
 

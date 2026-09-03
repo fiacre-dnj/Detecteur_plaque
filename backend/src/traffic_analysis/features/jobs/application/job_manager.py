@@ -384,12 +384,116 @@ class JobManager:
         paused = self._pauses.get(job_id)
         if paused is not None:
             paused.clear()
-        # Un job encore `queued` n'a pas de worker pour observer l'événement :
-        # on le termine ici, sinon il resterait en attente indéfiniment.
-        if record.status == "queued":
+        # **Personne pour observer l'événement : on termine ici.**
+        #
+        # La condition portait sur `record.status == "queued"`, et le raisonnement
+        # écrit à côté était le bon — « un job en file n'a pas de worker » — mais
+        # appliqué au mauvais critère. Le vrai signal est la **présence de
+        # l'événement** : `_run` le pose à son entrée et le retire dans son
+        # `finally`, donc son absence veut dire, exactement, qu'aucun worker ne
+        # tourne pour ce job.
+        #
+        # L'écart entre les deux critères s'est vu après un redémarrage : les
+        # dictionnaires repartent vides, donc un `paused` ou un `running` hérité de
+        # la base tombait dans le `return record` final. `cancel_or_purge` répondait
+        # alors `200` sans rien changer, et le job était **indéboulonnable** depuis
+        # une interface qui affichait pourtant un bouton « Supprimer ». Mesuré :
+        # trois appels successifs, trois `200`, le job toujours `paused`.
+        #
+        # `reconcile_interrupted` traite déjà ce cas au démarrage ; cette garde est
+        # la défense en profondeur, pour tout worker qui viendrait à disparaître
+        # sans que le processus redémarre.
+        #
+        # Un `queued` garde le bénéfice d'origine : il a bien un worker, mais bloqué
+        # sur le sémaphore, donc qui n'observerait l'annulation qu'à la libération
+        # d'une place — c'est-à-dire beaucoup plus tard.
+        if record.status == "queued" or event is None:
             await self._finish(job_id, "cancelled")
             return await self.get(job_id)
         return record
+
+    async def reconcile_interrupted(self) -> int:
+        """Termine les jobs qu'un arrêt du service a laissés en plan.
+
+        **Appelée une seule fois, au démarrage**, et c'est ce qui rend sa règle
+        sûre : à cet instant, aucun worker ne tourne encore, donc tout job non
+        terminal trouvé en base décrit un processus mort. Appelée plus tard, elle
+        tuerait des analyses en cours.
+
+        Sans elle, un `queued`, un `running` ou un `paused` survit à l'arrêt et
+        n'en sort **jamais**, parce que trois mécanismes distincts refusent de le
+        prendre — et aucun ne le signale :
+
+        - `list_expired` ne rend que des jobs terminaux, donc la purge TTL ne voit
+          ni la ligne ni la vidéo. Ce dernier point est le plus grave : la vidéo
+          déposée porte des plaques et des visages, et `input_ttl_minutes` promet
+          de l'effacer. Relevé sur ce dépôt : des vidéos de dix-sept jours sous un
+          TTL de vingt-quatre heures ;
+        - `cancel_or_purge` pose un événement d'annulation dans un dictionnaire
+          **en mémoire**, vide après un redémarrage. Sur un `paused` ou un
+          `running` fantôme, elle répond donc `200` et ne change rien : le job est
+          **indéboulonnable** depuis l'interface, qui affiche pourtant un bouton ;
+        - reprendre un tel job réussit et le repasse en `running` : le flux SSE
+          émet une trame puis se tait, et l'écran annonce une analyse en cours à
+          39 % pour toujours. C'est le pire des trois, parce que l'application
+          affirme qu'un travail avance.
+
+        On termine en `error` et non en `cancelled` : personne n'a renoncé, le
+        service est tombé. Le code accompagne le message pour que l'interface n'ait
+        pas à reconnaître du texte français.
+
+        Rend le nombre de jobs réconciliés.
+        """
+        stranded = await self._repository.list_interrupted()
+        for record in stranded:
+            await self._finish(
+                record.id,
+                "error",
+                error=(
+                    "Le service a redémarré pendant cette analyse. Elle ne peut pas "
+                    "reprendre là où elle s'était arrêtée : relancez-la."
+                ),
+                error_code="interrupted_by_restart",
+            )
+        if stranded:
+            logger.info(
+                "jobs interrompus réconciliés",
+                count=len(stranded),
+                statuses=sorted({record.status for record in stranded}),
+            )
+        return len(stranded)
+
+    async def purge_orphan_directories(self) -> int:
+        """Efface les répertoires de job que **plus aucune ligne** ne référence.
+
+        Troisième et dernière façon dont une vidéo échappait à son TTL, après le job
+        non terminal et la purge aveugle : un répertoire **sans ligne du tout**. La
+        purge parcourt la base, donc elle ne peut par construction pas le voir.
+        Relevé sur ce dépôt : 663 Mo, dont un répertoire de 573 Mo qu'aucune des deux
+        bases coexistantes ne connaissait.
+
+        **Appelée au seul démarrage, et c'est une condition de sûreté, pas une
+        commodité.** Le dépôt d'une analyse écrit la vidéo *avant* d'insérer la
+        ligne : entre les deux, le répertoire est légitimement orphelin. Un balayage
+        périodique effacerait donc, un jour, un envoi en cours — et le job échouerait
+        sur un fichier disparu. Au démarrage, aucun dépôt n'est en vol.
+
+        Ne s'appuie sur aucune date pour la même raison qu'ADR 0055 ne s'appuie pas
+        sur la ressemblance seule : un répertoire jeune et orphelin est soit un envoi
+        en cours — impossible ici — soit un résidu, et l'ancienneté ne distingue pas
+        les deux.
+
+        Rend le nombre de répertoires effacés.
+        """
+        removed = 0
+        for job_id in self._result_store.list_job_ids():
+            if await self._repository.get(job_id) is not None:
+                continue
+            self._result_store.delete(job_id)
+            removed += 1
+        if removed:
+            logger.info("répertoires de job orphelins effacés", removed=removed)
+        return removed
 
     async def purge_expired(self, older_than_minutes: int) -> int:
         """Supprime les jobs terminaux périmés. Idempotent, journalisé."""

@@ -35,7 +35,7 @@ import { classColor } from "@/shared/config/palettes";
 import { classLabel } from "@/shared/lib/classes";
 // Le juge unique de la ressemblance : le tiroir d'alertes lit le même, donc un
 // véhicule signalé là-bas est teinté ici, et réciproquement.
-import { matches, matchStrength } from "@/shared/lib/vehicleMatch";
+import { DEFAULT_REMATCH_THRESHOLD, matches, matchStrength } from "@/shared/lib/vehicleMatch";
 import {
   crossingDirectionName,
   crossingHeadingDeg,
@@ -49,6 +49,10 @@ import { formatScore } from "@/shared/lib/score";
 import { snapshotCaption } from "@/shared/lib/snapshotCaption";
 import { snapshotHasPlateFace, snapshotReasonLabel } from "@/shared/lib/snapshotKind";
 import { Button } from "@/shared/ui/Button";
+import {
+  SnapshotComparisonDialog,
+  type ComparisonSide,
+} from "@/shared/ui/SnapshotComparisonDialog";
 import { SnapshotDialog } from "@/shared/ui/SnapshotDialog";
 
 import {
@@ -61,6 +65,7 @@ import {
 import { filterByLine } from "../model/filterLine";
 import { filterByPlate } from "../model/filterPlate";
 import { plateBestGuessMessage, plateUnreadLabel, plateUnreadMessage } from "../model/plateUnread";
+import { hasRematch, isRematched, rematchPair } from "../model/rematchPair";
 import { crossingsWithRole, crossingsWithoutRole } from "../model/roleCrossings";
 import {
   capturedVehicles,
@@ -155,6 +160,8 @@ export function VehicleRegistry({
   const [expanded, setExpanded] = useState(false);
   //: Le véhicule dont la capture est ouverte en grand, ou `null`.
   const [openSnapshot, setOpenSnapshot] = useState<number | null>(null);
+  /** Le véhicule dont on compare la re-détection, par son numéro. `null` = fermée. */
+  const [openRematch, setOpenRematch] = useState<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   // L'état de recherche vit **ici**, comme `expanded` et `scrollTop` : c'est un état de
   // vue de ce tableau. Le hisser dans `StudioPage` ferait remonter chaque frappe dans le
@@ -206,6 +213,22 @@ export function VehicleRegistry({
   );
 
   /**
+   * Le registre porte-t-il **au moins une** re-détection crédible (ADR 0055) ?
+   *
+   * Le seuil est dans la condition, et il l'a longtemps manqué : le serveur publie
+   * le meilleur voisin de chaque franchisseur quel qu'en soit le score, donc sans
+   * lui la colonne existait toujours et se remplissait de numéros à 2 %. Elle
+   * n'apparaît désormais que si elle a quelque chose à affirmer.
+   *
+   * Même règle et même raison que `hasMatch` juste au-dessus pour le reste : décidé
+   * sur `vehicles` entier, jamais sur les rangées rendues.
+   */
+  const withRematch = useMemo(
+    () => hasRematch(vehicles, DEFAULT_REMATCH_THRESHOLD),
+    [vehicles],
+  );
+
+  /**
    * Une capture existe-t-elle **quelque part** dans ce registre ?
    *
    * Même règle et même raison que les deux drapeaux ci-dessus : calculé sur
@@ -237,6 +260,11 @@ export function VehicleRegistry({
     shownSnapshot === null ? null : neighbourVehicle(navigable, shownSnapshot.globalId, -1);
   const nextSnapshot =
     shownSnapshot === null ? null : neighbourVehicle(navigable, shownSnapshot.globalId, 1);
+
+  // Sur `vehicles` et **jamais sur `filtered`** : l'antécédent peut être masqué par
+  // le filtre courant, et le taire viderait la comparaison de son sens précisément
+  // quand on en a besoin. `rematchPair` en est le seul juge, et il est testé.
+  const comparison = openRematch === null ? null : rematchPair(vehicles, openRematch);
 
   const virtualised = expanded && shouldVirtualise(filtered.length);
   const shown = expanded ? filtered : filtered.slice(0, INITIAL_ROWS);
@@ -356,6 +384,11 @@ export function VehicleRegistry({
               la capture avant la plaque : le score se vérifie **sur la photo**, et
               les séparer obligerait à recoller deux colonnes du regard. */}
           {hasMatch && <Th className="w-24">Ressemblance</Th>}
+          {/* « Déjà vu » à côté de « Ressemblance » : les deux sont des similarités
+              d'apparence et se lisent ensemble. Elles ne disent pourtant pas la même
+              chose — l'une compare à une photo fournie, l'autre aux véhicules déjà
+              passés — d'où deux colonnes et non une. */}
+          {withRematch && <Th className="w-28">Déjà vu</Th>}
           {/* « Passages » remplace « Ré-id » : la ré-identification n'existe plus
               (ADR 0016), et le nombre de franchissements d'un véhicule est
               l'information qui rend une ligne du registre vérifiable — un 0 dit
@@ -413,6 +446,16 @@ export function VehicleRegistry({
               />
             )}
             {hasMatch && <MatchCell vehicle={vehicle} threshold={matchThreshold} />}
+            {withRematch && (
+              <RematchCell
+                vehicle={vehicle}
+                // Sans job, aucune image n'existe : la cellule reste du texte plutôt
+                // qu'un bouton qui n'ouvrirait qu'une modale de deux repères muets.
+                onCompare={
+                  jobId === null ? undefined : () => setOpenRematch(vehicle.globalId)
+                }
+              />
+            )}
             <Td className="tabular">
               {vehicle.crossedLines.length === 0 ? "—" : vehicle.crossedLines.length}
             </Td>
@@ -648,8 +691,46 @@ export function VehicleRegistry({
           onNext={nextSnapshot === null ? undefined : () => setOpenSnapshot(nextSnapshot.globalId)}
         />
       )}
+
+      {/* La comparaison d'une re-détection. Montée seulement une fois ouverte, comme
+          la modale de capture, et pour la même raison : ses quatre `<img>` ne doivent
+          pas se charger tant que personne ne les regarde. */}
+      {jobId !== null && comparison !== null && (
+        <SnapshotComparisonDialog
+          open
+          onClose={() => setOpenRematch(null)}
+          title="Ce véhicule est-il déjà passé ?"
+          score={
+            comparison.later.rematchScore == null
+              ? undefined
+              : formatScore(comparison.later.rematchScore)
+          }
+          earlier={comparisonSide(jobId, comparison.earlier)}
+          later={comparisonSide(jobId, comparison.later)}
+        />
+      )}
     </section>
   );
+}
+
+/**
+ * Un véhicule vu comme une colonne de la comparaison.
+ *
+ * La vignette de plaque n'est demandée que si elle **existe** — une capture retenue
+ * pour la ressemblance du véhicule n'en a aucune (ADR 0051), et la demander rendrait
+ * 409, donc le repère « Capture purgée » sur un état parfaitement normal. Même garde
+ * qu'à la modale de capture, par le même juge.
+ */
+function comparisonSide(jobId: string, vehicle: VehicleRecord): ComparisonSide {
+  return {
+    title: `${classLabel(vehicle.label)} #${vehicle.globalId}`,
+    subtitle: snapshotCaption(vehicle, formatSceneTimePrecise),
+    vehicleSrc: vehicleSnapshotUrl(jobId, vehicle.globalId, vehicle.snapshotMs),
+    plateSrc: snapshotHasPlateFace(vehicle.snapshotKind)
+      ? platePhotoUrl(jobId, vehicle.globalId, vehicle.snapshotMs)
+      : null,
+    plateText: vehicle.plateText,
+  };
 }
 
 /**
@@ -958,6 +1039,96 @@ function MatchCell({
         {`${Math.round(score * 100)} %`}
       </span>
     </Td>
+  );
+}
+
+/**
+ * « Ce véhicule est déjà passé » — l'antécédent et la ressemblance (ADR 0055).
+ *
+ * **Le numéro et le pourcentage ensemble, jamais l'un sans l'autre.** « 87 % » seul
+ * ne se vérifie sur rien ; « comme #12 » seul cache que ce n'est qu'une hypothèse.
+ * C'est la même raison qui met la capture à côté de la ressemblance.
+ *
+ * Le seuil ne vient **pas** en prop, contrairement à `MatchCell` : la re-détection n'a
+ * aucun curseur — elle est une case à cocher — donc il n'y a rien à recevoir.
+ *
+ * **Et sous le seuil, rien n'est affirmé**, à l'inverse de `MatchCell` juste au-dessus.
+ * L'asymétrie est délibérée : là-bas l'utilisateur a fourni une photo et règle un
+ * curseur, donc le pourcentage sous le seuil est l'outil qui lui dit de le descendre ;
+ * ici personne n'a rien demandé et la cellule affirmerait une **identité** — « c'est
+ * le #12 » — à 2 %. Voir `isRematched`.
+ */
+function RematchCell({
+  vehicle,
+  onCompare,
+}: {
+  vehicle: VehicleRecord;
+  onCompare?: (() => void) | undefined;
+}) {
+  const { rematchOf, rematchScore } = vehicle;
+
+  // **Sous le seuil, aucune identité n'est affirmée.** Le serveur publie le meilleur
+  // voisin de chaque franchisseur quel qu'en soit le score : sans cette porte, un
+  // véhicule qui n'a par construction aucun jumeau — les sept de la première moitié
+  // d'une vidéo doublée — affiche quand même un numéro, à 2 % ou à 31 %, et l'écran
+  // se lit comme « le système se trompe partout ». Une identité à 2 % n'est pas une
+  // information nuancée, c'est une affirmation fausse.
+  //
+  // Le score brut reste dans l'infobulle : il sert à régler le seuil, et rien de ce
+  // qui a été mesuré n'est perdu.
+  if (!isRematched(vehicle, DEFAULT_REMATCH_THRESHOLD)) {
+    return (
+      <Td className="w-28 text-ink-muted">
+        <span
+          title={
+            rematchOf == null || rematchScore == null
+              ? "Aucun véhicule antérieur ne lui ressemble."
+              : `Meilleure ressemblance : #${rematchOf} à ${formatScore(rematchScore)} — sous le seuil de ${formatScore(DEFAULT_REMATCH_THRESHOLD)}.`
+          }
+        >
+          —
+        </span>
+      </Td>
+    );
+  }
+
+  const score = rematchScore as number;
+  const ink =
+    matchStrength(score, DEFAULT_REMATCH_THRESHOLD) === "exact"
+      ? "font-medium text-negative"
+      : "text-warning";
+  const label = `#${rematchOf} — ${formatScore(score)}`;
+  const detail = `Similarité ${score.toFixed(3)} avec le véhicule #${rematchOf}`;
+
+  // **Cliquable, et c'est ce qui rend l'affirmation vérifiable.** Le score dit « ces
+  // deux véhicules se ressemblent » ; seule la comparaison des deux photos permet de
+  // le confirmer ou de le réfuter, et l'écran le promet en toutes lettres. Sans job,
+  // aucune image n'existe : la cellule reste alors du texte, pas un bouton mort.
+  if (onCompare === undefined) {
+    return (
+      <Td className={`w-28 tabular ${ink}`}>
+        <span title={detail}>{label}</span>
+      </Td>
+    );
+  }
+  // Un `<td>` nu et non le `Td` partagé, pour la même raison que la cellule de
+  // capture : `Td` porte `px-3 py-2`, et une surcharge `p-0` ne gagne pas de façon
+  // fiable — l'ordre des utilitaires de rembourrage dans la feuille générée décide,
+  // pas l'ordre des classes. Le rembourrage passe donc sur le bouton, qui doit le
+  // porter de toute façon pour que toute la cellule soit cliquable. Les valeurs sont
+  // identiques à celles de `Td`, sans quoi la rangée changerait de hauteur et la
+  // virtualisation dériverait au-delà de 200 lignes.
+  return (
+    <td className="w-28 text-ink-muted">
+      <button
+        type="button"
+        onClick={onCompare}
+        title={`${detail} — cliquer pour comparer les deux photos`}
+        className={`w-full px-3 py-2 text-start tabular underline decoration-dotted underline-offset-2 transition-colors hover:bg-elevated ${ink}`}
+      >
+        {label}
+      </button>
+    </td>
   );
 }
 

@@ -1273,7 +1273,9 @@
       "snapshotScore": 0.93,
       "snapshotMs": 0.0,
       "snapshotKind": "plate_text",
-      "matchScore": null
+      "matchScore": null,
+      "rematchOf": null,
+      "rematchScore": null
     },
     {
       "globalId": 2,
@@ -1298,7 +1300,9 @@
       "snapshotScore": null,
       "snapshotMs": 0.0,
       "snapshotKind": "plate_box",
-      "matchScore": null
+      "matchScore": null,
+      "rematchOf": null,
+      "rematchScore": null
     },
     {
       "globalId": 3,
@@ -1317,7 +1321,9 @@
       "snapshotScore": 0.93,
       "snapshotMs": 0.0,
       "snapshotKind": "plate_text",
-      "matchScore": null
+      "matchScore": null,
+      "rematchOf": null,
+      "rematchScore": null
     }
   ],
   "stats": {
