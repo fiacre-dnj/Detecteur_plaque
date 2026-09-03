@@ -2265,13 +2265,33 @@ d'exception, pas de journal, et des chiffres qui restent plausibles.
     corriger — le réglage n'existait ni dans la requête ni à l'écran, seulement dans
     `TRAFFIC_INFERENCE_IMGSZ`.
 
-    Table d'aires sur du 1920×1080 : 640 → 640×384 (×1,00) ; 960 → 960×544 (×2,13) ;
-    1280 → 1280×736 (×3,83). **Corollaire contre-intuitif : filmer plus défini n'achète
+    Table d'aires sur du 1920×1080 : 640 → 640×384 ; 960 → 960×544 ; 1280 → 1280×736.
+    **Le coût ne suit PAS l'aire** — mesuré sur la P1000 : 960 coûte ×1,29 et 1280
+    ×2,09, pour des aires de ×2,13 et ×3,83. La carte est à p50 50 % à 640, donc un
+    tenseur plus grand la remplit mieux au lieu de coûter proportionnellement. **Corollaire contre-intuitif : filmer plus défini n'achète
     rien au détecteur** tant qu'`imgsz` ne bouge pas, la taille dans le tenseur valant
     `fraction de l'image × imgsz` — ce qu'ADR 0031 avait mesuré sans en donner la cause.
     Mesuré au banc sur un clip 720p, `yolov8n@640` contre `yolo11x@1280` : rappel `car`
     **0,481**, les **27 manqués tous dans le seau 32-64 px**, les **25 réussites toutes
     au-delà de 128**. Sur des voitures ; les motos sont plus petites.
+
+    **Et le réglage ne vaut RIEN seul** — c'est la correction la plus importante de cette
+    décision, et elle est mesurée au banc sur une vidéo réelle (720p, 62 instances) :
+
+    | imgsz | Confiance | rappel |
+    |---|---|---|
+    | 640 | 0,35 *(défauts)* | 0,484 |
+    | 640 | 0,12 | **0,484** |
+    | 960 ou 1280 | 0,35 | **0,484** |
+    | 960 | 0,20 | **0,790** |
+
+    Aucun des deux réglages ne rend quoi que ce soit **seul**. À 640 l'objet n'est pas
+    détecté du tout (`predict` rend 1 boîte à 640, 2 à 960, 5 à 1280 sur la même image) ;
+    à 960 il l'est mais score sous `new_track_thresh`, donc il **prolonge** une piste sans
+    jamais en **ouvrir** une (ADR 0024) et n'atteint pas le domaine. Les deux étages du
+    banc le montrent directement : à imgsz 1280, `--stage detector` rend 0,806 et
+    `--stage tracked` 0,484 — le détecteur trouve 20 objets de plus, le tracker les jette
+    tous. `fuse_score: false` ne rachète rien sur ce cas.
 
     `inferenceImgsz` voyage donc par requête, `null` suivant le déploiement — convention
     de `confidenceThreshold`. Cinq points :

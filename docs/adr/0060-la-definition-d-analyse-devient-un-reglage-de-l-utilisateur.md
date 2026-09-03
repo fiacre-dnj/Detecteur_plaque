@@ -44,6 +44,45 @@ Confirmé sur du métrage réel avec `recall_bench.py`, 25 images d'un clip 720p
 le seau 32-64 px** et les **25 réussites toutes au-delà de 128 px**. Sur des voitures.
 Les motos et les piétons sont plus petits encore.
 
+## Le réglage ne vaut rien seul, et c'est mesuré
+
+**La correction la plus importante de ce document.** Il a d'abord présenté la définition
+d'analyse comme « le levier décisif ». Mesuré avec `recall_bench.py` sur une vidéo réelle
+(720p, 30 images, 62 instances de vérité, `yolov8n` contre `yolo11x@1280`) :
+
+| imgsz | « Confiance véhicules » | rappel |
+|---|---|---|
+| 640 | 0,35 *(défauts)* | 0,484 |
+| 640 | 0,12 | **0,484** |
+| 960 | 0,35 | **0,484** |
+| 1280 | 0,35 | **0,484** |
+| 960 | 0,20 | **0,790** |
+| 1280 | 0,12 | 0,806 |
+
+**Aucun des deux réglages ne rend quoi que ce soit seul.** Ensemble, le rappel passe de
+0,484 à 0,790 — les manqués du seau 32-64 px tombent de 32 à 13.
+
+La chaîne, vérifiée étage par étage :
+
+- **à 640, l'objet n'est pas détecté du tout.** Baisser le seuil ne peut rien filtrer de
+  moins : il n'y a rien. Le même `predict` sur une image du clip rend **1 boîte à 640, 2 à
+  960, 5 à 1280** ;
+- **à 960, il est détecté mais score entre 0,12 et 0,35.** Le curseur part dans le fichier
+  de suivi sur `new_track_thresh` (ADR 0024) : sous lui, une détection **prolonge** une
+  piste mais n'en **ouvre** jamais. Elle n'atteint donc jamais le domaine ;
+- **l'écart entre les deux étages du banc le montre directement** : à imgsz 1280,
+  `--stage detector` rend 0,806 et `--stage tracked` rend 0,484. Le détecteur trouve
+  20 objets de plus, et le tracker les jette tous.
+
+`fuse_score: false` a été testé sur ce cas et **ne rachète rien** (0,484 à imgsz 1280) :
+le mur d'association de `test_naissance_de_piste.py` est réel mais n'est pas ce qui
+bloque ici. C'est bien la porte de création de piste.
+
+**Réserves à ne pas taire** : 62 instances, sous le seuil de 200 que le banc exige lui-même
+— la direction est nette, la valeur exacte ne l'est pas ; ce sont des **voitures** et non
+des motos, plus petites encore ; et le banc mesure le **rappel**, pas la précision : baisser
+le seuil fait entrer des faux positifs dont le coût n'est pas chiffré ici.
+
 ## La décision
 
 `inferenceImgsz` voyage dans la requête, `null` suivant le défaut du déploiement — la
@@ -59,9 +98,26 @@ Le côté doit être **multiple de 32**, le pas de la grille du réseau. Trois v
 640, 960, 1280, plus « Serveur ». Un curseur continu inviterait à taper 500 — que le
 schéma refuse par un 422, et que `pipeline_bench.py` arrondirait à 512 **en silence**.
 
-`1920` n'est pas proposé bien que le serveur l'accepte : la crête VRAM extrapolée
-(~2,8 Gio depuis les 332 Mio mesurés à 640) ne tient pas confortablement en lot sur les
-4 Gio de cette carte.
+`1920` n'est pas proposé bien que le serveur l'accepte. **La raison est le débit, pas la
+VRAM** — ce paragraphe a d'abord annoncé une crête extrapolée de ~2,8 Gio, et la mesure
+l'a démenti : à lot 1, l'allocation torch vaut 40 Mio à 960, 61 à 1280 et **121 à 1920**.
+Ce qui ne passe pas, c'est le temps.
+
+## Le coût, mesuré, et il n'est pas quadratique
+
+Ce document a d'abord annoncé un coût suivant l'aire du tenseur. Mesuré sur la Quadro
+P1000, carte chaude, `yolov8n` sur une source 1080p, `predict` de bout en bout :
+
+| imgsz | ms/image | img/s | aire | **coût réel** |
+|---|---|---|---|---|
+| 640 | 19,1 | 52,3 | ×1,00 | ×1,00 |
+| 960 | 24,6 | 40,7 | ×2,13 | **×1,29** |
+| 1280 | 40,0 | 25,0 | ×3,83 | **×2,09** |
+| 1920 | 74,9 | 13,4 | ×8,50 | **×3,92** |
+
+Le coût croît en gros comme l'aire **à la puissance 0,65**, pas linéairement : la carte
+est à p50 50 % d'utilisation à 640 (décision 37), donc un tenseur plus grand la remplit
+mieux au lieu de coûter proportionnellement. 960 coûte **+29 %**, pas +113 %.
 
 ### Le réglage est affiché dans le récapitulatif
 

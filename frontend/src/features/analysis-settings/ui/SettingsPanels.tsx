@@ -384,12 +384,23 @@ export function SettingsPanels({
           options={ANALYSIS_IMGSZ_CHOICES}
           value={settings.inferenceImgsz}
           disabled={disabled}
+          // **Deux corrections mesurées.** Le texte d'origine annonçait un coût « en
+          // gros le carré du rapport » : sur cette carte, 960 coûte +29 % et non
+          // +113 %, la carte n'étant pas saturée à 640. Et surtout il laissait croire
+          // que ce réglage suffit — mesuré sur une vraie vidéo, monter la définition
+          // **seule** ne rend rien du tout : les objets retrouvés scorent sous
+          // « Confiance véhicules », donc ils n'ouvrent jamais de piste (ADR 0024).
+          // Les deux réglages ne valent que pris ensemble, et le dire ici est ce qui
+          // évite d'en essayer un, de ne rien voir, et de conclure que c'est inutile.
           hint={
             "Largeur à laquelle l'image entre dans le réseau — en 16:9, 640 donne " +
             "640×384. Ce n'est pas la taille d'un objet dans la vidéo qui décide " +
             "qu'il est détecté, c'est sa taille ici : à 640, une moto de 60 px n'en " +
-            "fait plus que 20. Monter retrouve les petits objets et coûte à peu près " +
-            "le carré du rapport en temps d'analyse. " +
+            "fait plus que 20. À monter avec « Confiance véhicules » : seule, la " +
+            "définition ne rend rien — les objets retrouvés sont trop peu sûrs pour " +
+            "ouvrir une piste. Mesuré ensemble sur une vidéo réelle, 640 à 960 avec " +
+            "la confiance à 0,20 fait passer le rappel de 0,48 à 0,79, pour +29 % de " +
+            "temps d'analyse. " +
             (settings.inferenceImgsz === null
               ? "Suit le réglage du serveur."
               : "Valeur explicite : elle part avec l'analyse.")
