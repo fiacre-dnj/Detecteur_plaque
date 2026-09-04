@@ -7,6 +7,11 @@ Guide pour Claude Code (claude.ai/code) dans ce dépôt.
 > [`prompt/`](prompt/) reste la spécification normative — quand les deux
 > divergent, ce fichier a raison sur l'état du code et `prompt/` sur ce qui était
 > demandé.
+>
+> Pourquoi les motos et les personnes se détectent mal, ce que chaque étage de la
+> chaîne fait réellement, et les huit défauts trouvés :
+> [`DETECTION-PETITS-OBJETS.md`](DETECTION-PETITS-OBJETS.md) — il relie les décisions
+> 41 à 47 et les ADR 0056 à 0062, qu'aucune ne donne d'ensemble.
 
 ## Ce que fait l'application
 
