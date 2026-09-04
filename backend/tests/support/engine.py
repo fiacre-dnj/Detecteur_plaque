@@ -426,11 +426,22 @@ class FakeVehicleEmbedder:
         self,
         *,
         similarity_for: Callable[[int], float] | None = None,
+        similarity_by_box: Callable[[BoundingBox], float] | None = None,
         min_width_px: float = 0.0,
         available: bool = True,
         query_fails: bool = False,
     ) -> None:
         self._similarity_for = similarity_for or (lambda _global_id: 0.9)
+        # `similarity_for` est indexé sur la **position dans le lot**, ce qui suffit
+        # tant que les véhicules à distinguer sont dans la même image. La galerie
+        # d'ADR 0055 teste l'inverse — des véhicules qui passent l'un **après**
+        # l'autre —, où cet index vaut toujours zéro et ne distingue donc rien. La
+        # boîte, elle, reste discriminante d'une image à l'autre.
+        #
+        # Deux véhicules qui reçoivent la même valeur produisent le **même** vecteur,
+        # donc une similarité de 1 entre eux : c'est ainsi qu'on simule « c'est le
+        # même véhicule » sans un seul pixel.
+        self._similarity_by_box = similarity_by_box
         self._min_width_px = min_width_px
         self._available = available
         self._query_fails = query_fails
@@ -472,7 +483,11 @@ class FakeVehicleEmbedder:
                 out.append(None)
                 continue
             self.vectors_produced += 1
-            similarity = self._similarity_for(index)
+            similarity = (
+                self._similarity_for(index)
+                if self._similarity_by_box is None
+                else self._similarity_by_box(box)
+            )
             vector = np.zeros(4, dtype=np.float32)
             vector[0] = similarity
             # Norme 1 par construction, comme le fait le vrai adaptateur : la

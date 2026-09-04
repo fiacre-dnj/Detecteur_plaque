@@ -336,6 +336,24 @@ export interface AnalysisRequest {
    * (ADR 0016).
    */
   maxLostMs: number;
+  /**
+   * Largeur d'entrée du réseau — `null` suit le défaut du déploiement.
+   *
+   * **Ce n'est pas la taille d'un objet dans la vidéo qui décide qu'il est détecté,
+   * c'est sa taille ici.** En 16:9 le letterbox rend 640×384 : une moto de 60 px sur
+   * du 1080p n'en fait plus que 20. Multiple de 32 imposé — le pas de la grille du
+   * réseau — et le serveur refuse le reste par un 422.
+   */
+  inferenceImgsz: number | null;
+  /**
+   * Plancher de confiance des **petits objets** — moto, vélo, personne.
+   *
+   * `null` leur applique `confidenceThreshold` comme aux autres : un no-op strict.
+   * Le **minimum** des deux part au tracker (`newTrackThresh`, ADR 0024) et le filtre
+   * par classe s'applique après le NMS — sans quoi un objet sous le seuil global
+   * n'ouvrirait aucune piste et ce second plancher serait inerte.
+   */
+  smallObjectConfidence: number | null;
   maskOutsideZones: boolean;
   frameStride: number;
   detectPlates: boolean;
@@ -437,6 +455,17 @@ export interface AnalysisRequest {
    * sans lecture, il n'y a aucun texte à comparer.
    */
   plateWatchlist: string[];
+  /**
+   * Signaler les véhicules qui ressemblent à un franchisseur antérieur.
+   *
+   * **Éteint par défaut, et c'est ce qui rend l'étage gratuit** : sans lui, aucune
+   * galerie n'est construite côté serveur et pas un encodage supplémentaire n'est
+   * payé. Un réglage de scène et non de déploiement — « des faux positifs ou rien »
+   * dépend de ce qu'on filme, pas de la machine.
+   *
+   * Sans effet si l'encodeur d'apparence est absent du serveur (`reidAvailable`).
+   */
+  vehicleRematch: boolean;
   lines: CountingLine[];
   zones: Zone[];
 }
@@ -718,6 +747,26 @@ export interface VehicleRecord {
    * ce second cas est le plus courant sur une vue large.
    */
   matchScore?: number | null;
+  /**
+   * Le véhicule **antérieur** auquel celui-ci ressemble, ou `null`.
+   *
+   * La galerie interne au clip : chaque franchisseur est comparé à ceux qui ont
+   * franchi avant lui. À ne pas confondre avec `matchScore` juste au-dessus —
+   * celui-ci compare à une photo que l'utilisateur a fournie, celui-là aux véhicules
+   * déjà passés dans cette même analyse. Les deux peuvent coexister sur un même
+   * véhicule et ne disent pas la même chose.
+   *
+   * **Une hypothèse, jamais une fusion** : les deux numéros existent, les deux
+   * véhicules sont comptés et leurs deux franchissements aussi. C'est ce qui met
+   * cette fonctionnalité hors du champ d'ADR 0016, dont la galerie supprimée
+   * alimentait le compteur.
+   *
+   * `null` couvre trois causes : l'interrupteur est éteint, le véhicule n'a franchi
+   * aucune ligne, ou rien ne lui ressemblait assez.
+   */
+  rematchOf?: number | null;
+  /** Ressemblance au véhicule ci-dessus. `null` ssi `rematchOf` l'est. Brute. */
+  rematchScore?: number | null;
 }
 
 /**
@@ -817,8 +866,36 @@ export interface Diagnostics {
    * compteraient deux fois ; sans ce chiffre, la suppression serait invisible.
    */
   containedOut: number;
+  /**
+   * Pistes vivantes **à la dernière image analysée** ayant atteint « Images avant
+   * comptage ». Un instantané, pas un cumul.
+   */
   confirmedTracks: number;
+  /**
+   * Pistes vivantes à la dernière image qui n'ont **pas** atteint le seuil.
+   *
+   * **Un instantané au milieu de cumuls, et c'est le piège de ce bloc.** Il décrit
+   * les ~2,5 dernières secondes, `_release_lost` ayant purgé le reste : mesuré sur
+   * les résultats archivés de ce dépôt, `confirmedTracks: 16` sous 165 véhicules
+   * comptés. Lire ce chiffre comme « combien d'objets n'ont jamais été confirmés »
+   * est l'erreur qu'il invite — c'est `unconfirmedTracks` qui répond.
+   */
   tentativeTracks: number;
+  /**
+   * Objets numérotés qui n'ont **jamais** atteint « Images avant comptage », sur
+   * toute l'analyse.
+   *
+   * Le cumul que `tentativeTracks` ne peut pas donner, et l'état exact où meurt un
+   * petit objet : une moto qui scintille deux images est numérotée, suivie, puis
+   * abandonnée bien avant qu'on regarde le panneau.
+   *
+   * **Ce ne sont pas des véhicules perdus** : un scintillement d'une image n'est pas
+   * un véhicule. Un chiffre élevé sur une scène chargée est normal ; ce qui était
+   * anormal, c'est qu'il soit invisible.
+   *
+   * Optionnel : absent des résultats archivés avant son ajout.
+   */
+  unconfirmedTracks?: number;
   /**
    * Observations suivies dont le score est **sous** le seuil de l'utilisateur.
    *
@@ -845,6 +922,38 @@ export interface Diagnostics {
    * absence doit se lire « pas mesuré » et non « zéro ».
    */
   nearMisses?: Record<string, number>;
+  /**
+   * **Le même diagnostic, par type d'objet**, indexé par nom COCO.
+   *
+   * Les six chiffres ci-dessus additionnent toutes les classes : ils ne savent pas
+   * distinguer « 3 000 voitures détectées et zéro moto » de « tout va bien ». Or
+   * c'est exactement la question qu'on pose quand une classe manque.
+   *
+   * **Les types cochés à zéro sont présents**, et c'est tout l'objet du champ :
+   * `motorcycle: { highDetections: 0, rescuedByLowScore: 0 }` est la seule façon
+   * d'écrire « on l'a cherchée et jamais trouvée ». Aucun curseur ne rattrapera
+   * cela — le geste est ailleurs. Même raisonnement que `nearMisses`, publié à `0`
+   * par ligne.
+   *
+   * **La liste vient du serveur, jamais des cases de l'écran** : la sélection
+   * courante peut avoir changé depuis l'analyse, et afficher « Moto 0 / 0 » sur un
+   * résultat où la moto n'a jamais été cherchée serait un mensonge.
+   *
+   * Ce sont des **observations suivies**, pas des véhicules : plusieurs milliers
+   * pour quelques dizaines de véhicules. Ne jamais les diviser par un compteur de
+   * véhicules (invariant 3).
+   *
+   * Optionnel : absent des résultats archivés avant son ajout.
+   */
+  byClass?: Record<string, ClassDiagnostic>;
+}
+
+/** Le diagnostic d'**un** type d'objet, cumulé sur toute l'analyse. */
+export interface ClassDiagnostic {
+  /** Observations suivies de ce type au-dessus du seuil de l'utilisateur. */
+  highDetections: number;
+  /** Observations suivies de ce type **sous** le seuil : la bande basse au travail. */
+  rescuedByLowScore: number;
 }
 
 /** Catégorie d'un objet compté. Les totaux ne mélangent jamais les deux. */

@@ -10,6 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
+from urllib.parse import urlsplit
 
 from pydantic import Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -110,6 +111,24 @@ class Settings(BaseSettings):
     #: vidéos, en regardant **débit et comptage** : c'est le seul réglage de cette
     #: section qui peut faire disparaître des véhicules.
     inference_imgsz: int = Field(640, ge=64, le=1920)
+    #: Détections gardées par image, après NMS.
+    #:
+    #: **300 est ce qu'Ultralytics appliquait déjà sans que personne l'écrive** ; le
+    #: rendre explicite ne change aucun chiffre. Le détecteur de plaques nomme les
+    #: siens (`max_det=1`, `max_det=8`) depuis toujours — celui des véhicules subissait
+    #: le défaut sans le dire.
+    #:
+    #: La troncature s'applique **par score décroissant** (`nms.py`, `i = i[:max_det]`),
+    #: donc ce sont les boîtes les plus faibles qui tombent : exactement les petits
+    #: objets qu'on cherche à récupérer. Le seuil qui alimente ce lot est bas —
+    #: `detector_floor(0,35)` vaut 0,10 — donc beaucoup de boîtes faibles y entrent.
+    #:
+    #: **À monter seulement sur une scène qui touche réellement le plafond**, ce qui
+    #: n'arrive pas sur une vue de circulation ordinaire : le coût est payé en aval, où
+    #: chaque boîte supplémentaire alimente l'étage d'apparence de BoT-SORT (ADR 0047).
+    #: Aucun comptage ne peut empirer en le montant — les boîtes ajoutées sont celles
+    #: qui étaient silencieusement jetées.
+    inference_max_det: int = Field(300, ge=10, le=3000)
     #: Images par inférence en **différé**. Sans effet en direct, où les images
     #: arrivent une par une.
     #:
@@ -594,6 +613,20 @@ class Settings(BaseSettings):
     #: Celui-ci ne sert qu'à ne pas transporter des scores dont on sait qu'ils ne
     #: veulent rien dire.
     reid_min_similarity: float = Field(0.0, ge=0.0, le=1.0)
+    #: Même plancher, pour la **re-détection** au franchissement (ADR 0055).
+    #:
+    #: Distinct de `reid_min_similarity` et pas par symétrie : les deux étages ne
+    #: comparent pas la même chose. Celui-là confronte un véhicule à une photo que
+    #: l'utilisateur a choisie, donc à une intention ; celui-ci confronte chaque
+    #: franchisseur à **tous** les précédents, donc le nombre de comparaisons croît
+    #: avec le clip et le meilleur score d'un lot de cent est mécaniquement plus haut
+    #: que celui d'un lot de deux. Les régler ensemble ferait bouger l'un en croyant
+    #: régler l'autre.
+    #:
+    #: `0.0` par défaut, comme son jumeau : le seuil qui compte est celui du client,
+    #: et ce plancher-ci n'existe que pour ne pas transporter des scores dont on sait
+    #: qu'ils ne veulent rien dire.
+    reid_rematch_min_similarity: float = Field(0.0, ge=0.0, le=1.0)
     #: Largeur de véhicule, en pixels, sous laquelle on n'encode pas.
     #:
     #: **Mesuré, pas supposé** (`scripts/reid_bench.py --truth-ladder`) : l'entrée du
@@ -998,6 +1031,55 @@ class Settings(BaseSettings):
         if value.is_absolute() or value.root or value.drive:
             return value
         return (_PACKAGE_ROOT / value).resolve()
+
+    @field_validator("database_url")
+    @classmethod
+    def _anchor_sqlite_url(cls, value: str) -> str:
+        """Même ancrage que `data_dir`, sur le **fichier SQLite**.
+
+        La garde ci-dessus existait ; elle n'avait pas été étendue à son voisin
+        immédiat, et la panne s'est produite : lancer `uvicorn` depuis la racine du
+        dépôt plutôt que depuis `backend/` fait résoudre `./data/traffic.db` en
+        `<racine>/data/traffic.db`, tandis que `data_dir` — ancré, lui — continue
+        d'écrire les vidéos dans `backend/data/jobs/`.
+
+        **Deux bases coexistent alors**, et chacune ignore la moitié des fichiers.
+        Relevé sur ce dépôt : 19 jobs et 4 presets d'un côté, 5 jobs et 0 preset de
+        l'autre, plus 663 Mo de vidéos qu'aucune purge ne pouvait voir puisque leur
+        ligne vivait dans l'autre base. Rien ne lève : le service démarre,
+        l'historique répond, il est simplement vide.
+
+        Trois formes traversent **inchangées**, et c'est ce qui rend la règle sûre :
+        une base non-SQLite (PostgreSQL), une base en mémoire, et un chemin déjà
+        enraciné — la forme d'un déploiement conteneurisé, que réécrire serait une
+        surprise. Le critère d'enracinement est celui de `_anchor_to_package_root`,
+        pour la même raison Windows.
+        """
+        if not value.startswith("sqlite"):
+            return value
+        split = urlsplit(value)
+        # **Une seule barre retirée, jamais `lstrip("/")`** : c'est elle qui sépare
+        # l'URL de son chemin, et les suivantes appartiennent au chemin.
+        # `sqlite+aiosqlite:///./data/x.db` → `./data/x.db` (relatif), mais
+        # `sqlite+aiosqlite:////opt/data/x.db` → `/opt/data/x.db` (enraciné). Un
+        # `lstrip` rendrait `opt/data/x.db` dans le second cas, donc déplacerait un
+        # chemin que l'opérateur avait écrit absolu — exactement le mode de panne
+        # que `_anchor_to_package_root` documente.
+        location = split.path[1:] if split.path.startswith("/") else split.path
+        if not location or location == ":memory:":
+            return value
+        path = Path(location)
+        if path.is_absolute() or path.root or path.drive:
+            return value
+        anchored = (_PACKAGE_ROOT / path).resolve()
+        # Reconstruit à la main : `urlunsplit` replie `scheme:///chemin` en
+        # `scheme:/chemin` quand le netloc est vide, une forme que SQLAlchemy ne
+        # relit pas comme un chemin de fichier. `as_posix()` et non `str()` pour la
+        # même raison — sur Windows, `str()` rendrait des antislashs dans une URL.
+        rebuilt = f"{split.scheme}:///{anchored.as_posix()}"
+        if split.query:
+            rebuilt = f"{rebuilt}?{split.query}"
+        return rebuilt
 
     @field_validator("cors_origins", "trusted_hosts", mode="before")
     @classmethod

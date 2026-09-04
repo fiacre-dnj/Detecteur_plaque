@@ -99,6 +99,22 @@ export interface AnalysisSettings {
    */
   plateWatchlist: string[];
   /**
+   * Signaler les véhicules qui ressemblent à un franchisseur antérieur (ADR 0055).
+   *
+   * **Indépendant de l'ANPR**, contrairement à `plateWatchlist` juste au-dessus :
+   * on reconnaît un véhicule à son apparence, pas à sa plaque, et les deux étages
+   * n'ont ni les mêmes poids ni les mêmes planchers.
+   *
+   * Faux par défaut, pour la même raison que `readPlateText` : c'est un surcoût —
+   * un encodage par franchissement — et signaler qu'un véhicule est repassé est un
+   * choix, pas un comportement dont on hérite.
+   *
+   * Pas d'incrément de `SETTINGS_SCHEMA_VERSION` : la fusion est champ par champ,
+   * donc un réglage persisté sans cette clé reçoit le défaut. Une migration ne sert
+   * qu'à **défaire** une valeur déjà écrite (ADR 0049).
+   */
+  vehicleRematch: boolean;
+  /**
    * Classes à détecter et à compter, par identifiant COCO.
    *
    * Le **catalogue** vient du serveur (`GET /api/v1/models/classes`) ; seule la
@@ -139,6 +155,36 @@ export interface AnalysisSettings {
    * champ, donc un `localStorage` antérieur reprend simplement le défaut.
    */
   maxAnalysisFps: number | null;
+  /**
+   * Largeur à laquelle l'image entre dans le réseau — `null` = le défaut du serveur.
+   *
+   * **Le levier des petits objets, et il n'existait nulle part.** Ce n'est pas la
+   * taille d'un objet dans la vidéo qui décide qu'il est détecté, c'est sa taille
+   * ici : en 16:9 le letterbox rend 640×384, donc une moto de 60 px sur du 1080p
+   * n'en fait plus que 20 — moins de trois cellules de la grille P3. ADR 0037 avait
+   * nommé cette cause sans pouvoir la corriger, le réglage n'existant ni dans la
+   * requête ni à l'écran.
+   *
+   * Un choix et non un curseur continu : le côté doit être **multiple de 32**, le
+   * pas de la grille du réseau, et le serveur refuse le reste.
+   *
+   * Pas d'incrément de `SETTINGS_SCHEMA_VERSION` : la fusion est champ par champ,
+   * donc un `localStorage` antérieur reprend simplement le défaut.
+   */
+  inferenceImgsz: number | null;
+  /**
+   * Plancher de confiance des **petits objets** — moto, vélo, personne. `null` leur
+   * applique « Confiance véhicules » comme aux autres.
+   *
+   * **Le curseur unique force un choix qui n'a pas lieu d'être.** Mesuré sur une vraie
+   * vidéo : descendre la confiance de 0,35 à 0,20 fait passer le rappel des voitures de
+   * 0,484 à 0,790 — et **inventer dix-sept observations de `bus`** sur un clip qui n'en
+   * contient aucun. Les deux effets ne portent pas sur les mêmes classes.
+   *
+   * Pas d'incrément de `SETTINGS_SCHEMA_VERSION` : la fusion est champ par champ, donc
+   * un `localStorage` antérieur reprend simplement le défaut.
+   */
+  smallObjectConfidence: number | null;
   showTrails: boolean;
 }
 
@@ -158,6 +204,7 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   // un cran de confidentialité qui doit être choisi, pas hérité.
   readPlateText: false,
   plateWatchlist: [],
+  vehicleRematch: false,
   // Les quatre véhicules de COCO : voiture, moto, bus, camion. C'est le
   // comportement historique de l'application, donc qui ne touche à rien retrouve
   // exactement ses chiffres d'avant. Les personnes se cochent quand on les veut.
@@ -181,6 +228,15 @@ export const DEFAULT_SETTINGS: AnalysisSettings = {
   // redevient ce qu'ADR 0020 décrivait — un choix explicite pour brider une
   // machine partagée, pas un défaut qui contredit l'autre réglage.
   maxAnalysisFps: null,
+  // `null` et non `640` : le défaut appartient au **déploiement**
+  // (`TRAFFIC_INFERENCE_IMGSZ`), qui peut l'avoir monté pour sa machine. Recopier
+  // 640 ici l'imposerait à chaque requête et défairait ce réglage en silence — même
+  // convention que `confidenceThreshold` et `plateConfidence`.
+  inferenceImgsz: null,
+  // `null` = aucun traitement à part, donc le comportement d'avant ADR 0062 au chiffre
+  // près. Le gain est réel mais son effet de bord — des classes inventées — dépend de
+  // la scène : ce n'est pas un défaut, c'est un choix devant sa vidéo.
+  smallObjectConfidence: null,
   showTrails: true,
 };
 
@@ -208,6 +264,34 @@ export const ANALYSIS_FPS_CAPS: readonly { value: number | null; label: string }
   { value: null, label: "Illimité" },
   { value: 30, label: "30 img/s" },
   { value: 60, label: "60 img/s" },
+];
+
+/**
+ * Les définitions d'analyse proposées.
+ *
+ * Quatre valeurs, toutes **multiples de 32** — le pas de la grille du réseau, que le
+ * serveur impose. Un curseur continu inviterait à taper 500, que le serveur
+ * refuserait, ou pire : `pipeline_bench` l'arrondirait à 512 en silence.
+ *
+ * **Le coût ne suit pas l'aire**, contrairement à ce que cette liste a d'abord
+ * annoncé. Mesuré sur la Quadro P1000, `yolov8n`, source 1080p : 640 → 19,1 ms,
+ * 960 → 24,6 (**×1,29** pour ×2,13 d'aire), 1280 → 40,0 (×2,09 pour ×3,83),
+ * 1920 → 74,9 (×3,92 pour ×8,50). La carte est à moitié inoccupée à 640, donc un
+ * tenseur plus grand la remplit au lieu de coûter proportionnellement.
+ *
+ * **1920 est proposé depuis que la VRAM a été mesurée au lieu d'être extrapolée** :
+ * l'allocation torch vaut 121 Mio à lot 1, pas les ~2,8 Gio qu'un calcul à l'aire
+ * annonçait. Sur une source 1080p, 1920 veut dire « plus aucune réduction » —
+ * l'image entre telle quelle. Au-delà de la définition de la source, le letterbox
+ * **agrandit** (`scaleup` vaut `True` et n'est pas surchargé) : plus de cellules de
+ * grille, mais aucun détail nouveau.
+ */
+export const ANALYSIS_IMGSZ_CHOICES: readonly { value: number | null; label: string }[] = [
+  { value: null, label: "Serveur" },
+  { value: 640, label: "640" },
+  { value: 960, label: "960" },
+  { value: 1280, label: "1280" },
+  { value: 1920, label: "1920" },
 ];
 
 /**
@@ -345,6 +429,11 @@ export function toRequest(
     // afficherait dans « Configuration système » une recherche que rien ne peut
     // satisfaire. Le tiroir Détection avertit séparément si une liste survit à un
     // décochage de l'OCR — c'est la panne silencieuse à éviter, pas le tri fait ici.
+    // **Non subordonné à l'ANPR**, contrairement à la liste de plaques juste
+    // dessous : la re-détection travaille sur l'apparence du véhicule, pas sur son
+    // texte. La conditionner à `detectPlates` la rendrait muette précisément dans
+    // le cas d'usage qui l'a demandée, où personne ne cherche de plaque.
+    vehicleRematch: settings.vehicleRematch,
     plateWatchlist:
       settings.detectPlates && settings.readPlateText
         ? watchlistForRequest(settings.plateWatchlist)
@@ -353,6 +442,19 @@ export function toRequest(
     // les quatre véhicules est le même que celui de `sanitiseClassIds` — l'écran
     // reste utilisable quand l'utilisateur a tout décoché.
     classIds: settings.classIds.length > 0 ? [...settings.classIds] : [...DEFAULT_SETTINGS.classIds],
+    // Borné à ce que le serveur accepte, **multiple de 32 compris** : une valeur
+    // relue d'un `localStorage` bricolé vaudrait un 422 sur un écran qui paraît
+    // normal. Hors bornes ⇒ `null`, c'est-à-dire le défaut du déploiement, jamais un
+    // arrondi silencieux — arrondir choisirait à la place de l'utilisateur.
+    inferenceImgsz: isSupportedImgsz(settings.inferenceImgsz) ? settings.inferenceImgsz : null,
+    // Borné comme le curseur principal — mêmes bornes serveur — et `null` hors
+    // bornes : un plancher relu d'un `localStorage` bricolé vaudrait un 422.
+    smallObjectConfidence:
+      settings.smallObjectConfidence !== null &&
+      settings.smallObjectConfidence >= BOUNDS.confidenceThreshold.min &&
+      settings.smallObjectConfidence <= BOUNDS.confidenceThreshold.max
+        ? settings.smallObjectConfidence
+        : null,
     // Borné aux cadences que le serveur accepte : une valeur hors de [0,25 ; 8] —
     // relue d'un `localStorage` bricolé — vaudrait un 422 sur un écran qui paraît
     // valide. Hors bornes ⇒ aucune borne, qui est le défaut.
@@ -417,6 +519,18 @@ function isSupportedSpeed(value: number | null): boolean {
 function isSupportedFpsCap(value: number | null): boolean {
   if (value === null) return true;
   return Number.isFinite(value) && value >= FPS_CAP_BOUNDS.min && value <= FPS_CAP_BOUNDS.max;
+}
+
+/**
+ * Le côté d'entrée est-il envoyable tel quel ?
+ *
+ * Les trois conditions du serveur, et la troisième est celle qu'on oublie : bornes,
+ * entier, **et multiple de 32**. `pydantic` refuse le reste par un 422, ce qui est
+ * la bonne réponse — mais un écran ne doit pas la provoquer.
+ */
+function isSupportedImgsz(value: number | null): boolean {
+  if (value === null) return true;
+  return Number.isInteger(value) && value >= 64 && value <= 1920 && value % 32 === 0;
 }
 
 /**
@@ -509,6 +623,15 @@ function mergeSettings(source: Record<string, unknown>): AnalysisSettings {
   merged.analysisSpeed = isSupportedSpeed(speed) ? speed : merged.analysisSpeed;
   const fpsCap = nullableNumber(source.maxAnalysisFps, merged.maxAnalysisFps);
   merged.maxAnalysisFps = isSupportedFpsCap(fpsCap) ? fpsCap : merged.maxAnalysisFps;
+  // Écartée plutôt qu'arrondie, pour la même raison que les deux cadences : une
+  // valeur qui n'est multiple de rien ne correspond à aucun choix de l'écran, et
+  // l'arrondir à 512 afficherait une définition que l'utilisateur n'a pas demandée.
+  const imgsz = nullableNumber(source.inferenceImgsz, merged.inferenceImgsz);
+  merged.inferenceImgsz = isSupportedImgsz(imgsz) ? imgsz : merged.inferenceImgsz;
+  merged.smallObjectConfidence = nullableNumber(
+    source.smallObjectConfidence,
+    merged.smallObjectConfidence,
+  );
 
   // Les identifiants non numériques sont écartés un par un plutôt que de faire
   // tomber toute la liste : un `localStorage` bricolé à la main ne doit pas coûter

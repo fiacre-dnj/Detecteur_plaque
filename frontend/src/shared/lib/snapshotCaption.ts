@@ -57,6 +57,15 @@ export function snapshotCaption(
   // n'existe que si une recherche par image a tourné. `null` couvre les deux causes
   // que l'écran n'a pas à distinguer — aucune requête, ou véhicule jamais encodé
   // parce que trop petit ou trop flou.
-  if (vehicle.matchScore != null) parts.push(`ressemblance ${formatScore(vehicle.matchScore)}`);
+  //
+  // **Elle dit à quoi elle ressemble**, et ce n'était pas le cas. Depuis ADR 0055 il
+  // existe une seconde ressemblance — celle de deux véhicules entre eux — et la
+  // modale de comparaison affiche les deux : son entête annonçait « Ressemblance
+  // 100 % » (au jumeau) au-dessus de deux légendes « ressemblance 34 % » (à la photo
+  // cherchée). Deux mesures différentes sous un seul mot, les deux chiffres
+  // plausibles : l'erreur d'unité invisible que ce projet traque partout ailleurs.
+  if (vehicle.matchScore != null) {
+    parts.push(`ressemblance à la photo cherchée ${formatScore(vehicle.matchScore)}`);
+  }
   return parts.join(" · ");
 }

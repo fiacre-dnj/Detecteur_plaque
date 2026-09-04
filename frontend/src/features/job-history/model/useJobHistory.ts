@@ -159,3 +159,26 @@ export function durationSeconds(job: Job): number | null {
   if (Number.isNaN(start) || Number.isNaN(end)) return null;
   return Math.max(0, Math.round((end - start) / 1000));
 }
+
+/**
+ * Le compte d'images d'un job, tel qu'il doit s'afficher.
+ *
+ * **Un job terminé n'affiche pas de total, et ce n'est pas une omission.**
+ * `totalFrames` est le nombre d'images *annoncé par le conteneur*, pas un nombre
+ * mesuré : `Progress.ratio` le documente déjà côté serveur et borne la fraction à
+ * 1 pour cette raison. Sur plusieurs formats il est calculé depuis la durée et la
+ * cadence déclarées, donc approximatif — relevé sur ce dépôt : `6590 / 6660` et
+ * `3280 / 3281` sur des analyses **complètes et justes**.
+ *
+ * Écrit tel quel, il se lit comme soixante-dix images perdues sous un job à 100 %.
+ * Une fois l'analyse finie, le seul nombre exact est celui des images réellement
+ * analysées, et le total n'a plus rien à borner.
+ *
+ * **Seul `done` s'effondre ainsi.** Sur une analyse annulée ou en échec, la
+ * fraction dit jusqu'où elle est allée, et c'est précisément ce qu'on vient y
+ * chercher.
+ */
+export function framesLabel(job: Job): string {
+  if (job.status === "done") return `${job.processedFrames}`;
+  return `${job.processedFrames} / ${job.totalFrames}`;
+}

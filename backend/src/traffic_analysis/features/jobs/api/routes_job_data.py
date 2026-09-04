@@ -111,6 +111,13 @@ async def list_crossings(
         "un Excel français : sans le BOM les accents sont massacrés, sans le "
         "point-virgule tout atterrit dans une seule colonne, et les décimales "
         "sont écrites à la virgule pour qu'Excel les reconnaisse comme des nombres."
+        "\n\n**Ce n'est pas le fichier que produit le bouton du registre**, et la "
+        "différence est voulue. Cet export-ci lit les tables dénormalisées : il "
+        "répond sur une analyse de dix mille véhicules sans ouvrir le résultat, "
+        "mais il ne connaît que des identifiants stables (`l1`, `A→B`) et ignore "
+        "les rôles de sens, que le serveur ne lit jamais. Celui du bouton part du "
+        "résultat chargé et du tracé **courant** : il porte les noms de ligne, les "
+        "libellés de rôle et la re-détection, dont aucune colonne n'existe en base."
     ),
     responses={
         200: {"content": {"text/csv": {}}, "description": "Fichier CSV"},

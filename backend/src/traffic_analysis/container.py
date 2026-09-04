@@ -277,6 +277,7 @@ def build_counting_stack(
         registry,
         gmc_method=settings.tracker_gmc,
         imgsz=settings.inference_imgsz,
+        max_det=settings.inference_max_det,
         batch=settings.inference_batch,
         prefetch_batches=settings.inference_prefetch_batches,
     )
@@ -361,6 +362,11 @@ def build_counting_stack(
         # vit côté client — voir ADR 0048 pour pourquoi il ne peut pas vivre ici.
         resolved_embedder,
         settings.reid_min_similarity,
+        # Le plancher de la **re-détection** (ADR 0055), distinct du précédent : les
+        # deux étages ne comparent pas la même chose, et le meilleur score d'un lot
+        # de cent franchisseurs est mécaniquement plus haut que celui d'un lot de
+        # deux. L'interrupteur, lui, est dans la requête — c'est un choix de scène.
+        settings.reid_rematch_min_similarity,
         settings.reid_appearance_improvement,
         settings.reid_max_per_frame,
         # Les deux causes de capture d'ADR 0051 et leurs bornes. Le service les tient

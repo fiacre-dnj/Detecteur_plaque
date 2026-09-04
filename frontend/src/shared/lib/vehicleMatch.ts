@@ -30,6 +30,28 @@
 export const DEFAULT_MATCH_THRESHOLD = 0.55;
 
 /**
+ * Seuil de **re-détection** — « ce véhicule est-il déjà passé ? ».
+ *
+ * Plus haut que celui de la recherche par image, et pas par prudence décorative : les
+ * deux ne posent pas la même question. Là-bas l'utilisateur a fourni une photo, donc
+ * il **attend** des candidats et un faux positif se balaie d'un coup d'œil ; ici
+ * personne n'a rien demandé, et la carte affirme d'elle-même une identité entre deux
+ * véhicules. Se tromper y coûte plus cher, d'où le côté de la précision plutôt que
+ * celui du rappel.
+ *
+ * L'autre raison est structurelle : la re-détection compare chaque franchisseur à
+ * **tous** les précédents, donc le nombre de comparaisons croît avec le clip. Le
+ * meilleur score d'un lot de cent est mécaniquement plus haut que celui d'un lot de
+ * deux, et un seuil calé sur la recherche par image dériverait avec la durée de la
+ * vidéo.
+ *
+ * **À mesurer sur le métrage réel** (`scripts/reid_bench.py`) : la valeur ci-dessous
+ * est un point de départ raisonné, pas un chiffre mesuré, et l'écran promet de toute
+ * façon des candidats à vérifier sur la capture.
+ */
+export const DEFAULT_REMATCH_THRESHOLD = 0.75;
+
+/**
  * Le score dépasse-t-il le seuil ?
  *
  * `null` et `undefined` ne sont **jamais** des correspondances, et leurs deux causes se

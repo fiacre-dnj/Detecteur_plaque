@@ -56,6 +56,147 @@ class EngineSpec:
     #: en refermant le générateur, ce que la boucle d'analyse fait déjà en sortant.
     start_ms: float = 0.0
 
+    #: Silence au-delà duquel une piste est abandonnée, en **ms de temps de scène**.
+    #:
+    #: Le même réglage que `SessionConfig.max_lost_ms` — une seule source, la requête,
+    #: et deux consommateurs. Le domaine oublie l'identité d'un véhicule au bout de ce
+    #: délai ; le tracker, lui, doit renoncer **au même moment**, sinon l'un rend un
+    #: `track_id` que l'autre ne reconnaît plus et le véhicule reçoit un numéro neuf.
+    #:
+    #: **Il n'atteignait pas le tracker du tout**, et le curseur de l'écran était
+    #: inerte : `track_buffer` est une constante du fichier de suivi versionné, et
+    #: `EngineSpec` ne portait pas ce champ, donc la valeur ne *pouvait pas* descendre
+    #: jusqu'à l'adaptateur. Voir `track_buffer_frames` et ADR 0058.
+    #:
+    #: **Un moteur qui l'ignore reste correct** : c'est la même doctrine que
+    #: `start_ms` — un indice, jamais la règle. Le domaine applique `max_lost_ms` de
+    #: son côté quoi qu'il arrive, donc le `FakeEngine` de la CI produit les mêmes
+    #: chiffres. Le respecter aligne seulement les deux horloges.
+    max_lost_ms: float = 2500.0
+
+    #: Côté d'entrée du réseau demandé, ou `None` pour suivre le déploiement.
+    #:
+    #: **Ce n'est pas la taille d'un objet dans la vidéo qui décide qu'il est détecté,
+    #: c'est sa taille ici.** En 16:9 le letterbox rend 640×384 : une moto de 60 px sur
+    #: du 1080p n'en fait plus que 20, soit moins de trois cellules de la grille P3.
+    #: C'est la cause qu'ADR 0037 a nommée sans pouvoir la corriger, le réglage
+    #: n'existant nulle part dans la requête.
+    #:
+    #: Contrairement à `start_ms` et `max_lost_ms`, ce n'est **pas** un simple indice :
+    #: un moteur qui l'ignore rendra d'autres détections, donc d'autres chiffres. Il n'y
+    #: a pas de règle équivalente ailleurs qui le rattraperait — c'est le seul champ de
+    #: cette classe dans ce cas, et le `FakeEngine` de la CI n'en produit aucune image.
+    imgsz: int | None = None
+
+    #: Plancher de confiance des **petits objets** — moto, vélo, personne.
+    #:
+    #: `None` (le défaut) rend le comportement d'avant ADR 0062 : un seul seuil pour
+    #: toutes les classes. Voir `class_confidence_floors`, seul juge de la dérivation.
+    small_confidence: float | None = None
+
+
+def nms_class_groups(class_ids: Sequence[int]) -> tuple[tuple[int, ...], ...]:
+    """Partitionne les classes demandées en groupes de suppression pour le moteur.
+
+    Le juge unique de la façon dont le moteur découpe sa suppression des doublons,
+    publié ici parce que l'adaptateur vit dans une autre feature et ne peut lire que
+    le contrat (`features/models_registry` → `counting/application`).
+
+    **Pourquoi le moteur en a besoin.** Le NMS d'Ultralytics ne connaît que deux
+    régimes : *class-aware*, qui ne compare jamais deux classes — donc laisse une
+    camionnette survivre comme `car 0.52` **et** `truck 0.41`, le piège 5 — et
+    *agnostique*, qui compare tout — donc supprime la moto sous son pilote dès que
+    leur recouvrement dépasse le seuil IoU. Aucun des deux n'est ce qu'on veut. La
+    bonne règle est « agnostique **dans** un groupe, jamais **entre** deux », et elle
+    s'obtient en découpant l'appel.
+
+    **Le groupe est la CATÉGORIE, et surtout pas `class_group`.** Les deux tables
+    existent, elles se ressemblent, et les confondre est le piège de ce module — un
+    test verrouille l'écart. Elles répondent à deux questions différentes :
+
+    - `class_group` sert à la **containment** (`_drop_contained`, ADR 0056) : « cet
+      objet peut-il être *à l'intérieur* de l'autre en restant un objet distinct ? »
+      Une moto **devant** un camion est contenue à 1,0 dans sa boîte et reste une
+      moto, d'où trois familles ;
+    - ici la question est l'**IoU** : « ces deux boîtes, qui *coïncident*, peuvent-elles
+      décrire le même objet ? » Deux boîtes de classes véhicule qui se recouvrent
+      au-delà de 0,45 ont la même taille et la même place — c'est un objet scoré deux
+      fois, exactement le piège 5. La moto **devant** le camion, elle, n'atteint jamais
+      cette IoU : les tailles sont trop différentes.
+
+    La seule classe dont la boîte coïncide légitimement avec celle d'un **autre** objet
+    est `person` : un pilote occupe la boîte de sa machine. D'où deux groupes, et pas
+    trois.
+
+    Trois propriétés, et la première est celle qui rend le changement livrable :
+
+    - **une seule catégorie ⇒ une seule partie**, donc un seul appel au NMS, donc le
+      comportement d'aujourd'hui au bit près. C'est le cas du jeu de classes par défaut
+      (`car`, `motorcycle`, `bus`, `truck`) : aucune analyse existante ne change de
+      chiffre, et c'est vérifié sur la sortie du NMS lui-même ;
+    - **l'ordre est déterministe** — les catégories par leur nom, les identifiants
+      croissants à l'intérieur. Deux courses identiques doivent soumettre les mêmes
+      lots dans le même ordre, sinon le NMS glouton pourrait départager autrement ;
+    - **une classe hors catalogue est un véhicule**, comme partout ailleurs
+      (`category_of`) : elle continue donc d'être dédupliquée avec eux.
+    """
+    from traffic_analysis.features.counting.domain.models import CATEGORY_OF_ID
+
+    groups: dict[str, list[int]] = {}
+    for class_id in sorted(set(class_ids)):
+        category = CATEGORY_OF_ID.get(class_id, "vehicle")
+        groups.setdefault(category, []).append(class_id)
+    return tuple(tuple(ids) for _, ids in sorted(groups.items()))
+
+
+def class_confidence_floors(
+    class_ids: Sequence[int], confidence: float, small_confidence: float | None
+) -> tuple[tuple[int, float], ...]:
+    """Le plancher de confiance **par classe**, ordonné et déterministe.
+
+    `small_confidence` à `None` rend le même plancher pour tout le monde, c'est-à-dire
+    exactement le comportement d'avant ADR 0062 : un no-op strict.
+
+    **Pourquoi un plancher par classe.** Mesuré sur une vidéo réelle, descendre le
+    curseur global de 0,35 à 0,20 fait passer le rappel des voitures de 0,484 à 0,790 —
+    et fait **inventer dix-sept observations de `bus`** sur un clip qui n'en contient
+    aucun. Le curseur unique force donc à choisir entre « rater les petits objets » et
+    « compter des véhicules fantômes », alors que les deux effets ne portent pas sur les
+    mêmes classes.
+
+    Trois points qui ne se devinent pas :
+
+    - **le minimum de ces planchers va au tracker**, jamais celui de l'utilisateur : le
+      seuil de requête part sur `track_high_thresh` / `new_track_thresh` (ADR 0024), et
+      s'il restait à 0,35 une moto à 0,25 n'ouvrirait aucune piste — le plancher par
+      classe n'aurait alors aucun effet. C'est `minimum_floor` qui le garantit ;
+    - **le filtre par classe vit donc APRÈS le NMS et AVANT le tracker**, dans le
+      `postprocess` du prédicteur. Le tracker ne doit jamais voir une voiture à 0,25 :
+      s'il la voyait, elle ouvrirait une piste que rien en aval ne saurait retirer — le
+      score publié d'une piste vient de sa dernière détection et oscille ;
+    - **jamais dans `_to_observations` ni dans le domaine.** Les deux sont en aval du
+      tracker : filtrer là tuerait une piste en cours de vie au lieu d'empêcher sa
+      naissance, et `counting/domain/models.py` documente déjà qu'une détection non
+      associée n'existe plus à ce stade.
+    """
+    from traffic_analysis.features.counting.domain.models import SMALL_CLASS_IDS
+
+    if small_confidence is None:
+        return tuple((class_id, confidence) for class_id in sorted(set(class_ids)))
+    return tuple(
+        (class_id, small_confidence if class_id in SMALL_CLASS_IDS else confidence)
+        for class_id in sorted(set(class_ids))
+    )
+
+
+def minimum_floor(floors: Sequence[tuple[int, float]], fallback: float) -> float:
+    """Le plus bas des planchers — **ce qui doit partir au tracker**.
+
+    `fallback` sert quand aucune classe n'est demandée, cas que le schéma de requête
+    refuse déjà mais que le port ne peut pas supposer.
+    """
+    return min((floor for _, floor in floors), default=fallback)
+
 
 @dataclass(frozen=True, slots=True)
 class EngineFrame:

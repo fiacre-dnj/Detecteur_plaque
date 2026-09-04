@@ -172,6 +172,77 @@ def category_of(label: str) -> CountCategory:
     return CATEGORY_OF_CLASS.get(label, "vehicle")
 
 
+#: Familles d'objets **physiquement exclusifs entre eux**, et rien d'autre.
+#:
+#: À ne pas confondre avec `CountCategory`, qui range pour l'affichage — « 42
+#: véhicules, 7 personnes ». Ici la question est tout autre, et elle n'a qu'un seul
+#: consommateur légitime : *ces deux boîtes peuvent-elles décrire le même objet
+#: physique ?* Deux boîtes du même groupe qui se recouvrent sont un doublon du
+#: détecteur ; deux boîtes de groupes différents sont deux objets réels.
+#:
+#: Trois groupes et pas deux : `bicycle` et `motorcycle` sont un même objet vu par
+#: deux classes voisines — un scooter sort régulièrement sous l'une ou l'autre — mais
+#: un deux-roues n'est **pas** un doublon de la voiture derrière lui, ni de son
+#: pilote. `CountCategory` les range tous les deux en `vehicle` et ne peut donc pas
+#: répondre.
+type ClassGroup = Literal["person", "two_wheeler", "motor_vehicle"]
+
+#: `coco_name` → groupe. Écrit à la main plutôt que dérivé de `DETECTABLE_CLASSES` :
+#: la catégorie qu'il porte est celle de l'affichage, et faire dériver l'une de
+#: l'autre lierait deux questions qui n'ont pas de raison d'évoluer ensemble.
+CLASS_GROUP_OF: dict[str, ClassGroup] = {
+    "person": "person",
+    "bicycle": "two_wheeler",
+    "motorcycle": "two_wheeler",
+    "car": "motor_vehicle",
+    "bus": "motor_vehicle",
+    "truck": "motor_vehicle",
+    "train": "motor_vehicle",
+}
+
+
+#: Identifiant COCO → `coco_name`, pour nommer une classe cochée que l'analyse n'a
+#: jamais rencontrée : sans elle, une classe à zéro n'aurait pas de clé.
+LABEL_OF_CLASS_ID: dict[int, str] = {entry.id: entry.coco_name for entry in DETECTABLE_CLASSES}
+
+#: Les classes que la définition d'analyse punit — les plus petits gabarits de COCO.
+#:
+#: Leur boîte fait couramment 60 px de large sur une vue de circulation, donc une
+#: vingtaine dans une entrée de réseau à 640 (ADR 0037). Une voiture au même endroit en
+#: fait trois fois plus, et c'est toute la différence.
+#:
+#: **Le miroir exact de `SMALL_CLASSES` côté client** (`shared/lib/classes.ts`), qui
+#: nomme les mêmes classes pour l'avertissement d'avant-analyse. Doublon assumé de part
+#: et d'autre de la frontière de langage, comme `QUERY_MARGIN` d'ADR 0055, et un test
+#: le verrouille en nommant le fichier client.
+SMALL_CLASS_IDS: frozenset[int] = frozenset({0, 1, 3})
+
+#: Identifiant COCO → catégorie, pour les appelants qui n'ont que l'identifiant.
+#:
+#: Le pendant de `CATEGORY_OF_CLASS`, indexé autrement. Le repli est celui de
+#: `category_of`, et pour la même raison.
+CATEGORY_OF_ID: dict[int, CountCategory] = {
+    entry.id: entry.category for entry in DETECTABLE_CLASSES
+}
+
+
+def class_group(label: str) -> ClassGroup:
+    """Famille d'objets physiquement exclusifs d'un label. Inconnu ⇒ `motor_vehicle`.
+
+    **Le repli est le choix conservateur, et il mérite son mot.** Un label inconnu ne
+    peut venir que d'un modèle entraîné sur autre chose que COCO — une voiture nommée
+    autrement, typiquement. Le ranger avec les véhicules à moteur garde pour lui le
+    comportement d'avant l'existence des groupes, c'est-à-dire la déduplication du
+    piège 6 ; lui donner un groupe à part la lui retirerait en silence, et
+    sous-compter est l'erreur la plus difficile à remarquer.
+
+    Deux boîtes portant le **même** label tombent dans le même groupe quel que soit le
+    repli : le cas cible — la cabine et le semi, tous deux `truck` — est donc protégé
+    par construction, jamais par la table.
+    """
+    return CLASS_GROUP_OF.get(label, "motor_vehicle")
+
+
 @dataclass(frozen=True, slots=True)
 class BoundingBox:
     """Boîte en pixels source, coin supérieur gauche + dimensions."""
@@ -566,6 +637,31 @@ class DirectionTally:
         self.first_ms = timestamp_ms if self.first_ms is None else min(self.first_ms, timestamp_ms)
         self.last_ms = timestamp_ms if self.last_ms is None else max(self.last_ms, timestamp_ms)
 
+    def relabel(self, previous: str, new: str) -> None:
+        """Déplace **une** voix d'un type à l'autre, sans toucher au total.
+
+        Le pendant de `TrackNumbering._retally` pour les tallies de ligne. Le vote de
+        classe continue d'évoluer après un franchissement — un deux-roues lu `person`
+        de loin devient `motorcycle` en approchant — et sans ce transfert la
+        ventilation par type d'une ligne resterait figée sur ce que le véhicule
+        *paraissait* à l'instant du passage, pendant que le registre affiche sa classe
+        finale. Le même objet, deux classes, sur le même écran.
+
+        **Le total ne bouge pas**, et c'est ce qui rend l'opération sûre : un
+        franchissement reste un franchissement, seule son étiquette change. L'invariant
+        3 — `total == Σ by_class` — est donc préservé par construction.
+
+        Silencieuse si l'ancien type n'est pas là : la piste a pu franchir avant d'être
+        confirmée, auquel cas rien n'a été compté sous son nom, et retirer une voix
+        ferait descendre un compteur sous zéro.
+        """
+        if previous == new or self.by_class.get(previous, 0) <= 0:
+            return
+        self.by_class[previous] -= 1
+        if self.by_class[previous] <= 0:
+            del self.by_class[previous]
+        self.by_class[new] = self.by_class.get(new, 0) + 1
+
 
 @dataclass(slots=True)
 class LineTally:
@@ -728,6 +824,42 @@ class VehicleRecord:
     #: same/diff se recouvrent — aucun seuil global n'est à la fois sûr et utile
     #: (ADR 0048).
     match_score: float | None = None
+    #: Numéro du franchisseur **antérieur** auquel ce véhicule ressemble, ou `None`.
+    #:
+    #: La galerie interne au clip (ADR 0055), à ne pas confondre avec `match_score`
+    #: juste au-dessus : celui-ci compare à une photo que l'utilisateur a fournie,
+    #: celui-là aux véhicules déjà passés dans cette même analyse. Les deux peuvent
+    #: être renseignés en même temps et ne disent pas la même chose.
+    #:
+    #: **Une hypothèse, jamais une fusion** : les deux numéros continuent d'exister
+    #: et les deux véhicules restent comptés. `None` couvre trois cas — la galerie
+    #: est éteinte, le véhicule n'a franchi aucune ligne, ou rien ne lui ressemblait
+    #: assez.
+    rematch_of: int | None = None
+    #: Ressemblance au véhicule ci-dessus. `None` ssi `rematch_of` l'est.
+    #:
+    #: Brute et non seuillée, même doctrine que `match_score` : le curseur vit côté
+    #: client et se déplace sans réanalyser.
+    rematch_score: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ClassDiagnostic:
+    """Le diagnostic d'**un** type d'objet, cumulé sur toute l'analyse.
+
+    Les six chiffres globaux de `Diagnostics` ne savent pas distinguer « 3 000
+    voitures détectées et zéro moto » de « tout va bien » : ils additionnent tout.
+    Or c'est exactement la question qu'on pose quand une classe manque.
+
+    **Un type coché à `0` et `0` n'a jamais été détecté**, et c'est la seule façon
+    d'écrire cette phrase. Aucun curseur ne le rattrapera — le geste est ailleurs :
+    un modèle plus gros, une définition d'analyse plus haute, un plan plus serré.
+    """
+
+    #: Observations suivies de ce type dont le score atteint le seuil de l'utilisateur.
+    high_detections: int = 0
+    #: Observations suivies de ce type **sous** le seuil : la bande basse au travail.
+    rescued_by_low_score: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -751,8 +883,34 @@ class Diagnostics:
     #: peut pas bouger se lit comme une absence de détections faibles.
     high_detections: int = 0
     masked_out: int = 0
+    #: Pistes vivantes **à la dernière image analysée** qui ont atteint `min_hits`.
+    #:
+    #: **Un instantané au milieu de cumuls, et c'est le piège de ce bloc.** Les quatre
+    #: autres nombres s'accumulent sur toute l'analyse ; ces deux-là décrivent les
+    #: ~2,5 dernières secondes, `_release_lost` ayant purgé le reste. Mesuré sur trois
+    #: résultats archivés : `confirmedTracks: 16` sous 165 véhicules comptés.
     confirmed_tracks: int = 0
+    #: Pistes vivantes à la dernière image qui n'ont **pas** atteint `min_hits`.
+    #:
+    #: Lire ce chiffre comme « combien d'objets n'ont jamais été confirmés » est
+    #: l'erreur qu'il invite, et c'est précisément l'état où meurt un petit objet :
+    #: une moto qui scintille deux images est numérotée, suivie, puis abandonnée bien
+    #: avant qu'on regarde le panneau. Mesuré : 300 images avec **douze motos
+    #: scintillantes** rendent `tentative_tracks = 0`. Le chiffre qui répond est
+    #: `unconfirmed_tracks`.
     tentative_tracks: int = 0
+    #: Objets numérotés qui n'ont **jamais** atteint `min_hits`, sur toute l'analyse.
+    #:
+    #: Le cumul que `tentative_tracks` ne peut pas donner. Dérivé d'un état déjà tenu
+    #: (`TrackNumbering.issued - size`) et **jamais accumulé en parallèle** :
+    #: `unconfirmed_tracks + tracked_vehicles == issued` par construction, ce qu'un
+    #: test verrouille. Un second compteur finirait par diverger du premier
+    #: (invariant 3).
+    #:
+    #: **Ce ne sont pas des véhicules perdus.** Un scintillement d'une image n'est pas
+    #: un véhicule, et `min_hits` existe pour cela : un chiffre élevé sur une scène
+    #: chargée est normal. Ce qui était anormal, c'est qu'il soit invisible.
+    unconfirmed_tracks: int = 0
     #: Observations suivies dont le score est **sous** le seuil de l'utilisateur.
     #:
     #: C'est la bande basse de BoT-SORT en train de faire son travail : une détection
@@ -780,6 +938,20 @@ class Diagnostics:
     #: un véhicule peut être passé, avoir fait demi-tour ou s'être garé. Le chiffre
     #: dit que le tracé et le suivi se sont manqués de peu, rien de plus.
     near_misses: dict[str, int] = field(default_factory=dict)
+    #: **Le même diagnostic, par type d'objet.** Clé = `coco_name`.
+    #:
+    #: `field(default_factory=dict)`, sur le patron de `near_misses` : un résultat
+    #: archivé sans la clé se relit sans rien casser.
+    #:
+    #: **Les types cochés à zéro sont présents**, et c'est tout l'objet du champ :
+    #: l'absence de clé se lirait « pas d'information » alors que « motorcycle 0 / 0 »
+    #: est l'information — la classe a été cherchée et jamais trouvée. Même
+    #: raisonnement que `near_misses`, publié à `0` par ligne.
+    #:
+    #: La somme des `high_detections` par classe égale `high_detections`, et de même
+    #: pour la bande basse : c'est cette égalité, et non les valeurs, qui empêche le
+    #: détail de diverger du total.
+    by_class: dict[str, ClassDiagnostic] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

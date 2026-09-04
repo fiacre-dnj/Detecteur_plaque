@@ -257,19 +257,36 @@ function CropEditor({
           Cette image n'a pas pu être affichée.
         </p>
       ) : (
+        // **`w-fit` et une image en dimensionnement intrinsèque, jamais `w-full` +
+        // `object-contain`.** `pointFor` mesure le conteneur ; il faut donc que le
+        // conteneur soit **exactement** l'image. Avec `w-full max-h-64
+        // object-contain`, la boîte de l'`<img>` devenait plus large que son contenu
+        // dès que la photo était plus haute que large — une photo de téléphone — et
+        // `object-contain` la letterboxait horizontalement. Les fractions glissées
+        // incluaient alors les bandes vides, mais `cropToJpeg` les appliquait à
+        // `naturalWidth` : **le serveur recevait une région décalée de celle que
+        // l'utilisateur voyait encadrer**, le rectangle bleu étant positionné dans le
+        // même repère faux. Panne muette, sans le moindre signal.
+        //
+        // `object-contain` est **retiré** et non conservé : sans lui, la boîte de
+        // l'image *est* sa boîte de contenu, donc les fractions sont exactes par
+        // construction et il n'y a aucune arithmétique de letterbox à écrire. Et si
+        // quelqu'un remet un jour une largeur imposée, le `object-fit: fill` par
+        // défaut **déformera visiblement** l'aperçu au lieu de décaler le cadrage en
+        // silence — on échange une panne muette contre une panne criante.
         <div
           ref={frameRef}
           onPointerDown={handleDown}
           onPointerMove={handleMove}
           onPointerUp={() => setDrag(null)}
           onPointerCancel={() => setDrag(null)}
-          className="relative touch-none select-none overflow-hidden rounded-lg border border-line"
+          className="relative mx-auto w-fit touch-none select-none overflow-hidden rounded-lg border border-line"
         >
           <img
             src={previewUrl}
             alt="Véhicule recherché"
             onError={() => setBroken(true)}
-            className="block max-h-64 w-full object-contain"
+            className="block max-h-64 max-w-full"
             draggable={false}
           />
           {!full && (

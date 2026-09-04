@@ -383,6 +383,13 @@ describe("contrat du registre des véhicules", () => {
       "plateText",
       "plateTextScore",
       "plateUnreadReason",
+      // La re-détection : « ce véhicule ressemble au #N déjà passé » (ADR 0055). À ne
+      // pas confondre avec `matchScore` plus haut — celui-ci compare à une photo
+      // fournie, celui-là aux franchisseurs de la même analyse. **Deux champs et non
+      // un** : « 87 % » tout seul ne se vérifie sur rien, « comme #12 — 87 % » se
+      // vérifie sur deux captures.
+      "rematchOf",
+      "rematchScore",
       // La capture retenue : une cause, un instant, parfois une confiance, **jamais
       // une URL**. Le serveur ne fabrique pas les adresses du client, qui les
       // construit depuis l'identifiant du job et le numéro du véhicule — même
@@ -444,7 +451,7 @@ describe("contrat du registre des véhicules", () => {
 });
 
 describe("contrat du diagnostic", () => {
-  it("expose les sept mesures qui rendent un comptage explicable", () => {
+  it("expose les neuf mesures qui rendent un comptage explicable", () => {
     // Ce bloc n'est pas décoratif : « le compte est faux » n'est diagnosticable
     // que si l'on voit si un véhicule manquant n'a jamais été détecté, l'a été
     // faiblement, n'était pas confirmé, ou a été masqué par une zone — et, dans
@@ -455,6 +462,7 @@ describe("contrat du diagnostic", () => {
     // jamais su observer — `rescuedByLowScore` porte désormais le même rôle,
     // mesurable celui-là.
     expect(Object.keys(result.stats.diagnostics).sort()).toEqual([
+      "byClass",
       "confirmedTracks",
       "containedOut",
       "highDetections",
@@ -462,7 +470,34 @@ describe("contrat du diagnostic", () => {
       "nearMisses",
       "rescuedByLowScore",
       "tentativeTracks",
+      "unconfirmedTracks",
     ]);
+  });
+
+  it("ventile le diagnostic par type, en gardant les types cherchés et jamais trouvés", () => {
+    // **C'est l'absence qui est l'information.** Les six chiffres globaux
+    // additionnent toutes les classes : ils ne distinguent pas « 3 000 voitures
+    // détectées et zéro moto » de « tout va bien ». Une classe cochée et jamais
+    // rencontrée doit donc porter une entrée à `0 / 0` — omettre la clé se lirait
+    // « pas d'information », ce qui envoie chercher ailleurs.
+    const byClass = result.stats.diagnostics.byClass ?? {};
+    expect(Object.keys(byClass).length).toBeGreaterThan(0);
+
+    const silent = Object.entries(byClass).filter(
+      ([, row]) => row.highDetections === 0 && row.rescuedByLowScore === 0,
+    );
+    expect(silent.length).toBeGreaterThan(0);
+  });
+
+  it("le détail par type somme exactement aux deux totaux", () => {
+    // L'égalité, et pas les valeurs : c'est elle qui empêche le détail de diverger
+    // du total et d'afficher deux vérités sur le même écran (invariant 3).
+    const rows = Object.values(result.stats.diagnostics.byClass ?? {});
+    const high = rows.reduce((sum, row) => sum + row.highDetections, 0);
+    const rescued = rows.reduce((sum, row) => sum + row.rescuedByLowScore, 0);
+
+    expect(high).toBe(result.stats.diagnostics.highDetections);
+    expect(rescued).toBe(result.stats.diagnostics.rescuedByLowScore);
   });
 
   it("indexe les quasi-franchissements par ligne, une entrée par ligne tracée", () => {

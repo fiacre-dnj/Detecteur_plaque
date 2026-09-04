@@ -27,6 +27,11 @@ from traffic_analysis.features.counting.application.dto import (
     TrackObservation,
     VideoInfo,
 )
+from traffic_analysis.features.counting.application.ports import (
+    class_confidence_floors,
+    minimum_floor,
+    nms_class_groups,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -47,6 +52,11 @@ DEFAULT_FPS = 30.0
 #: appliquait quand personne ne le passait : le rendre explicite ne change aucun
 #: chiffre, il rend seulement réglable ce qui était subi.
 DEFAULT_IMGSZ = 640
+
+#: Détections gardées par image après NMS. **Exactement le défaut d'Ultralytics** :
+#: le nommer ne change aucun chiffre, il rend seulement visible une troncature qui
+#: s'applique par score décroissant, donc sur les petits objets d'abord.
+DEFAULT_MAX_DET = 300
 
 #: Largeur attendue de `boxes.data` en suivi : `[x1, y1, x2, y2, id, conf, cls]`.
 TRACKED_BOX_COLUMNS = 7
@@ -160,6 +170,209 @@ def detector_floor(confidence: float) -> float:
     return min(base_low, confidence * band_ratio)
 
 
+def track_buffer_frames(max_lost_ms: float, fps: float, stride: int) -> int:
+    """« Survie d'une piste perdue » (ms de scène) → `track_buffer` (images analysées).
+
+    **Le seul juge de cette conversion, et il doit le rester.** Écrite deux fois elle
+    divergerait, et la panne serait un tampon deux fois trop court sans qu'aucun
+    message ne le dise — la piste repart alors sous un numéro neuf et le véhicule est
+    compté deux fois.
+
+    **Deux horloges qui ne se parlaient pas.** Le domaine abandonne une piste après
+    `max_lost_ms` de temps de **scène** (`_release_lost`) ; le tracker après
+    `track_buffer` images **analysées** (`byte_tracker.py`,
+    `self.max_frames_lost = args.track_buffer`, sans aucune mise à l'échelle). Le
+    fichier versionné annonçait un « miroir exact » qui n'était vrai qu'à 30 img/s et
+    au pas 1 :
+
+    - **à pas 3**, le domaine oublie à 2,5 s pendant que le tracker tient 7,5 s : il
+      rend un `track_id` que le domaine ne reconnaît plus, `_advance_tracks` crée une
+      piste neuve et `_number_tracks` émet un `global_id` neuf. Un véhicule compté
+      deux fois, en silence ;
+    - **à 60 img/s**, l'inverse : le tracker renonce à 1,25 s sous un curseur qui
+      annonce 2,5.
+
+    Le défaut retombe **exactement** sur la valeur du fichier de base — 2 500 ms à
+    30 img/s au pas 1 donnent 75 — donc `resolved_tracker_config` n'écrit aucun
+    fichier dérivé et rien ne change pour qui ne touche pas au curseur.
+
+    Un plancher à 1 : un tampon nul ferait abandonner une piste à l'image même où elle
+    disparaît, ce qui retirerait au tracker toute la tolérance qui justifie son
+    existence. Une cadence inconnue rend `0`, que l'appelant lit comme « ne rien
+    imposer », faute de pouvoir convertir.
+    """
+    if fps <= 0.0 or max_lost_ms <= 0.0:
+        return 0
+    return max(1, round(max_lost_ms / 1000.0 * fps / max(1, stride)))
+
+
+@lru_cache(maxsize=1)
+def _group_aware_predictor() -> type:
+    """Le prédicteur qui découpe le NMS par famille de classes.
+
+    Construit à l'appel et mis en cache : `ultralytics` n'est jamais importé au
+    chargement de ce module, et la classe doit pourtant hériter du sien.
+
+    **Ce qu'il change, et rien d'autre.** `postprocess` appelle
+    `non_max_suppression` **une fois par famille** (`nms_class_groups`) au lieu
+    d'une fois pour tout, en gardant le régime agnostique **à l'intérieur** de
+    chaque appel. La suppression reste donc inter-classes là où deux classes
+    décrivent le même objet physique — le piège 5 est intégralement préservé — et
+    devient impossible entre un piéton et la moto qu'il conduit.
+
+    Quatre points qui ne se devinent pas :
+
+    - **une seule famille ⇒ on délègue au parent**, donc zéro différence, pas même
+      un `clone`. C'est le cas du jeu de classes par défaut, et c'est ce qui rend le
+      changement livrable sans réanalyser quoi que ce soit ;
+    - **le tenseur brut DOIT être cloné à chaque appel.** `non_max_suppression` fait
+      `prediction = prediction.transpose(-1, -2)` — une **vue** — puis
+      `prediction[..., :4] = xywh2xyxy(...)`, donc elle convertit les boîtes **en
+      place** dans le tenseur de l'appelant. Un second appel sur le même tenseur
+      reconvertirait des xyxy en xyxy : des boîtes plausibles et fausses, sans la
+      moindre erreur ;
+    - **les résultats fusionnés sont retriés par score décroissant.** Concaténer
+      trois familles rend un ordre par blocs, là où `torchvision.ops.nms` rend
+      toujours un ordre décroissant. Le tracker n'a pas à connaître la différence, et
+      c'est aussi ce qui rend la troncature à `max_det` honnête : elle doit couper
+      les scores les plus bas, pas la dernière famille de la liste ;
+    - **`end2end` et l'extraction de caractéristiques délèguent au parent.** Une tête
+      `end2end` ne passe pas par le NMS du tout (`nms.py` sort en tête de fonction),
+      donc il n'y a rien à découper ; `_feats` fait rendre des indices que la fusion
+      ne saurait pas recoller.
+    """
+    from ultralytics.models.yolo.detect import DetectionPredictor
+    from ultralytics.utils import nms
+
+    class GroupAwareDetectionPredictor(DetectionPredictor):
+        """NMS agnostique **dans** une famille de classes, jamais **entre** deux."""
+
+        def postprocess(
+            self,
+            preds: Any,  # noqa: ANN401 — la signature du parent n'est pas typée
+            img: Any,  # noqa: ANN401
+            orig_imgs: Any,  # noqa: ANN401
+            **kwargs: Any,  # noqa: ANN401
+        ) -> Any:  # noqa: ANN401
+            groups = nms_class_groups(self.args.classes or ())
+            # **Le chemin propre couvre deux besoins**, et il faut le prendre dès que
+            # l'un des deux est actif : découper le NMS par famille (ADR 0057) et
+            # appliquer un plancher par classe (ADR 0062). Sans planchers et avec une
+            # seule famille, on délègue — et la sortie est identique au bit près, ce
+            # qu'un test vérifie.
+            if (
+                (len(groups) < 2 and not getattr(self, "_class_floors", ()))
+                or getattr(self, "_feats", None) is not None
+                or getattr(self.model, "end2end", False)
+            ):
+                return super().postprocess(preds, img, orig_imgs, **kwargs)
+
+            import torch
+
+            # `pop` et non `get` : le parent le retire aussi, et `construct_results`
+            # reçoit ensuite le reste des arguments.
+            iou = kwargs.pop("iou", self.args.iou)
+            raw = preds[0] if isinstance(preds, (list, tuple)) else preds
+            per_group = [
+                nms.non_max_suppression(
+                    raw.clone(),
+                    self.args.conf,
+                    iou,
+                    list(group),
+                    self.args.agnostic_nms,
+                    max_det=self.args.max_det,
+                    nc=0 if self.args.task == "detect" else len(getattr(self.model, "names", ())),
+                    end2end=False,
+                    rotated=self.args.task == "obb",
+                )
+                for group in groups
+            ]
+
+            merged = []
+            for index in range(len(per_group[0])):
+                rows = torch.cat([group[index] for group in per_group], dim=0)
+                order = rows[:, 4].argsort(descending=True)[: self.args.max_det]
+                merged.append(_apply_class_floors(rows[order], self))
+
+            if not isinstance(orig_imgs, list):
+                from ultralytics.utils import ops
+
+                orig_imgs = ops.convert_torch2numpy_batch(orig_imgs)[..., ::-1]
+            return self.construct_results(merged, img, orig_imgs, **kwargs)
+
+    return GroupAwareDetectionPredictor
+
+
+def _apply_class_floors(rows: Any, predictor: Any) -> Any:  # noqa: ANN401
+    """Jette les boîtes dont le score tombe sous le plancher **de leur classe**.
+
+    **Après le NMS et avant le tracker**, et c'est le seul endroit possible. Plus tôt,
+    le NMS travaillerait sur un jeu déjà amputé — une voiture faible pourrait cesser de
+    supprimer son propre doublon. Plus tard, le tracker aurait déjà ouvert une piste que
+    rien ne saurait retirer : le score publié d'une piste vient de sa dernière détection
+    et oscille, donc filtrer en aval couperait une piste vivante au hasard des images.
+
+    Sans plancher, le tenseur est rendu **tel quel** — pas une copie, pas un masque
+    trivial : c'est ce qui garantit que le chemin par défaut ne change pas d'un bit.
+    """
+    floors = getattr(predictor, "_class_floors", ())
+    if not floors or rows.shape[0] == 0:
+        return rows
+
+    import torch
+
+    keep = torch.ones(rows.shape[0], dtype=torch.bool, device=rows.device)
+    for class_id, floor in floors:
+        keep &= ~((rows[:, 5] == float(class_id)) & (rows[:, 4] < floor))
+    return rows[keep]
+
+
+def install_group_aware_nms(
+    model: Any,  # noqa: ANN401 — YOLO n'est pas typé
+    class_floors: tuple[tuple[int, float], ...] = (),
+) -> None:
+    """Fait porter le NMS par famille au prédicteur **déjà construit** du modèle.
+
+    **Sans cela, le correctif serait entièrement inerte, en silence.** `predict()`
+    ne construit son prédicteur qu'une fois par instance de modèle
+    (`engine/model.py`, `if not self.predictor or …`), et `ModelRegistry` garde ses
+    instances chargées d'un job à l'autre. Or le **préchauffage** appelle
+    `model.predict()` au démarrage : le prédicteur par défaut est donc en place
+    avant le premier `track()`, et l'argument `predictor=` de `predict()` est ignoré
+    pour toute la vie du processus. C'est le mode de panne exact d'ADR 0035, et il
+    est ici pire — la première analyse après un démarrage n'obéirait pas non plus.
+
+    On échange donc la **classe de l'instance**, ce qui est légal entre deux classes
+    de même disposition et n'ajoute aucun attribut : la famille se relit à chaque
+    image sur `self.args.classes`.
+
+    **Ne pas « simplifier » en posant `model.predictor = None`.** `track()` ferait
+    `hasattr(self.predictor, "trackers")` → faux → `register_tracker` une seconde
+    fois, et `model.callbacks` **empile** : un `on_predict_postprocess_end` en double
+    appelle `tracker.update()` deux fois par image, soit des chiffres plausibles et
+    complètement faux. Même raison que la note de `reset_trackers`.
+
+    Le test de type est **exact** (`type(...) is`) : un prédicteur de segmentation ou
+    de pose n'a rien à faire ici, et un prédicteur déjà échangé n'a rien à refaire.
+    """
+    from ultralytics.models.yolo.detect import DetectionPredictor
+
+    predictor = getattr(model, "predictor", None)
+    if predictor is None:
+        return
+    if type(predictor) is DetectionPredictor:
+        predictor.__class__ = _group_aware_predictor()
+    # **Reposé à chaque course**, comme les clés de requête du tracker : les planchers
+    # viennent de la requête, et une instance résidente les garderait d'un job à
+    # l'autre. Jamais posé sur un prédicteur étranger — il ne saurait pas les lire, et
+    # l'attribut resterait là à ne rien faire.
+    if type(predictor) is _group_aware_predictor():
+        # `setattr` et non l'affectation directe : la classe est construite
+        # paresseusement, donc `mypy` ne connaît que `object` ici. Le contournement est
+        # préférable à un `type: ignore`, qui masquerait aussi une vraie faute de nom.
+        setattr(predictor, "_class_floors", class_floors)  # noqa: B010
+
+
 #: Les clés de requête qui portent le seuil **de l'utilisateur**, tel quel.
 REQUEST_HIGH_KEYS = frozenset({"track_high_thresh", "new_track_thresh"})
 
@@ -198,6 +411,20 @@ LIVE_TRACKER_KEYS = frozenset(
     }
 )
 
+#: Clés du fichier **gravées à la construction**, et l'attribut d'instance qu'elles
+#: alimentent. Une catégorie à part, et la première de son genre.
+#:
+#: `LIVE_TRACKER_KEYS` ne peut pas les couvrir : `reset()` ne les relit pas (vérifié à
+#: l'exécution — `args.track_buffer = 450` puis `reset()` laisse `max_frames_lost` à
+#: 75). Écrire la valeur dans le fichier dérivé ne suffit donc pas non plus, puisque
+#: le fichier n'est relu à aucun moment une fois les trackers en place.
+#:
+#: Elles rompent la garantie que `REQUEST_TRACKER_KEYS ⊆ LIVE_TRACKER_KEYS` rendait
+#: suffisante, et c'est pourquoi elles sont nommées ici plutôt que traitées au vol :
+#: la prochaine lecture de ce module doit voir qu'il existe **deux** façons de
+#: reposer un réglage, pas une.
+ENGRAVED_TRACKER_ATTRS: dict[str, str] = {"track_buffer": "max_frames_lost"}
+
 
 def head_is_end2end(model: Any) -> bool:  # noqa: ANN401
     """La tête de détection de ce modèle se passe-t-elle de NMS (`end2end`) ?
@@ -226,7 +453,7 @@ def head_is_end2end(model: Any) -> bool:  # noqa: ANN401
 
 @lru_cache(maxsize=32)
 def resolved_tracker_config(
-    gmc_method: str, high_thresh: float, appearance_reid: bool = True
+    gmc_method: str, high_thresh: float, appearance_reid: bool = True, track_buffer: int = 0
 ) -> Path:
     """Chemin du tracker à utiliser, mouvement et seuil de piste imposés.
 
@@ -283,6 +510,11 @@ def resolved_tracker_config(
     # supérieur à son `track_high_thresh` et la bande basse serait vide. Voir
     # `detector_floor`, qui est le seul juge de cette valeur.
     overrides["track_low_thresh"] = detector_floor(high_thresh)
+    # `0` veut dire « ne rien imposer » : le direct, qui n'a pas de cadence connue, et
+    # tout appelant qui ne peut pas convertir. Le fichier de base garde alors sa valeur,
+    # c'est-à-dire le comportement d'avant ADR 0058.
+    if track_buffer > 0:
+        overrides["track_buffer"] = track_buffer
     if not appearance_reid:
         # **Seul `with_reid` est posé, et pas `model`.** `build_encoder` sort sur le
         # premier argument : à `False`, la valeur de `model` n'est jamais lue, donc
@@ -295,7 +527,13 @@ def resolved_tracker_config(
     # L'apparence entre dans le nom : deux courses du même processus qui ne diffèrent
     # que par elle — un job `yolov8n` puis un job `yolo26n` — écriraient sinon dans le
     # même fichier, et la seconde emporterait la première pendant qu'elle tourne.
-    slug = f"botsort-gmc-{gmc_method}-hi-{high_thresh:.2f}-reid-{int(appearance_reid)}.yaml"
+    # Le tampon entre dans le nom pour la même raison que l'apparence : deux courses
+    # du même processus qui ne diffèrent que par lui écriraient sinon dans le même
+    # fichier, et la seconde emporterait la première pendant qu'elle tourne.
+    slug = (
+        f"botsort-gmc-{gmc_method}-hi-{high_thresh:.2f}"
+        f"-reid-{int(appearance_reid)}-buf-{track_buffer}.yaml"
+    )
     target = Path(tempfile.gettempdir()) / "traffic-analysis" / slug
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.with_name(f"{target.name}.{os.getpid()}.tmp")
@@ -329,7 +567,7 @@ def _first_analysed_index(start_ms: float, fps: float, stride: int) -> int:
 class UltralyticsEngine:
     """Détection et suivi par Ultralytics, derrière le port du domaine."""
 
-    __slots__ = ("_batch", "_gmc", "_imgsz", "_prefetch", "_registry")
+    __slots__ = ("_batch", "_gmc", "_imgsz", "_max_det", "_prefetch", "_registry")
 
     def __init__(
         self,
@@ -337,6 +575,7 @@ class UltralyticsEngine:
         *,
         gmc_method: str | None = None,
         imgsz: int = DEFAULT_IMGSZ,
+        max_det: int = DEFAULT_MAX_DET,
         batch: int = 1,
         prefetch_batches: int = DEFAULT_INFERENCE_PREFETCH,
     ) -> None:
@@ -356,6 +595,7 @@ class UltralyticsEngine:
         """
         self._registry = registry
         self._imgsz = imgsz
+        self._max_det = max(1, max_det)
         self._batch = max(1, batch)
         self._prefetch = max(0, prefetch_batches)
         # Le mouvement seul est un réglage de déploiement ; le fichier de suivi, lui,
@@ -377,16 +617,34 @@ class UltralyticsEngine:
             prefetch_batches=self._prefetch,
         )
 
-    def _tracker_for(self, spec: EngineSpec, model: Any) -> Path:  # noqa: ANN401
-        """Le fichier de suivi de cette course : mouvement, seuil de requête, apparence.
+    def _tracker_for(
+        self,
+        spec: EngineSpec,
+        model: Any,  # noqa: ANN401
+        track_buffer: int = 0,
+    ) -> Path:
+        """Le fichier de suivi de cette course : mouvement, seuil, apparence, tampon.
 
         **Le modèle est un argument parce que la réponse en dépend**, et il ne peut
         donc plus être résolu avant d'avoir pris le bail : c'est la tête du réseau
         chargé qui dit si la ré-identification d'apparence est gratuite ou si elle
         coûte une inférence par véhicule (`head_is_end2end`, ADR 0047).
+
+        `track_buffer` vaut `0` par défaut — « ne rien imposer » — parce que le
+        **direct** appelle ce résolveur sans pouvoir le calculer : un flux caméra n'a
+        pas de cadence déclarée, et la conversion ms → images en demande une.
         """
         appearance_reid = not head_is_end2end(model)
-        tracker_config = resolved_tracker_config(self._gmc, spec.confidence, appearance_reid)
+        # **Le MINIMUM des planchers, jamais le seuil nominal.** Il part sur
+        # `track_high_thresh` / `new_track_thresh` (ADR 0024) : le laisser a 0,35
+        # empecherait une moto a 0,25 d'ouvrir une piste, et le plancher par classe
+        # n'aurait aucun effet. Sans plancher par classe, `minimum_floor` rend
+        # exactement `spec.confidence` — le chemin par defaut ne bouge pas.
+        floor = minimum_floor(
+            class_confidence_floors(spec.class_ids, spec.confidence, spec.small_confidence),
+            spec.confidence,
+        )
+        tracker_config = resolved_tracker_config(self._gmc, floor, appearance_reid, track_buffer)
         # Journalisé **par course** parce que ces valeurs sont exactement ce qu'on
         # vient regarder quand un seuil semble sans effet ou qu'une cadence s'écroule :
         # le curseur, ce que le détecteur laisse passer, l'apparence, et le fichier
@@ -494,7 +752,13 @@ class UltralyticsEngine:
         with self._registry.lease(spec.model_id) as model:
             # **Résolu à l'intérieur du bail**, et pas avant : le fichier de suivi
             # dépend de la forme de la tête du modèle chargé (`head_is_end2end`).
-            tracker_config = self._tracker_for(spec, model)
+            #
+            # Le tampon se calcule ici parce que c'est ici que la cadence est connue :
+            # `max_lost_ms` est du temps de scène, `track_buffer` un nombre d'images
+            # analysées, et seul cet endroit tient les deux bouts (ADR 0058).
+            tracker_config = self._tracker_for(
+                spec, model, track_buffer_frames(spec.max_lost_ms, info.fps, stride)
+            )
             # Le fichier **et** le nettoyage : Ultralytics ne relit pas le premier
             # une fois ses trackers en place, donc le seuil de cette requête-ci
             # n'arriverait jamais jusqu'au tracker. Voir `reset_trackers`.
@@ -553,6 +817,12 @@ class UltralyticsEngine:
         fps: float,
     ) -> Iterator[EngineFrame]:
         """Le suivi proprement dit, sans la fermeture du décodage."""
+        # Le préchauffage a déjà construit le prédicteur par défaut sur cette
+        # instance résidente : `predictor=` ci-dessous serait donc ignoré, et le
+        # découpage du NMS par famille n'aurait jamais lieu. Voir
+        # `install_group_aware_nms`.
+        floors = class_confidence_floors(spec.class_ids, spec.confidence, spec.small_confidence)
+        install_group_aware_nms(model, floors)
         for chunk in batches:
             results = model.track(
                 source=[image for _, image in chunk],
@@ -563,20 +833,41 @@ class UltralyticsEngine:
                 # mais les détections faibles atteignent enfin la seconde
                 # association, qui prolonge une piste dont la confiance plonge.
                 # Voir `detector_floor` pour la panne que cela corrige.
-                conf=detector_floor(spec.confidence),
+                conf=detector_floor(minimum_floor(floors, spec.confidence)),
                 iou=spec.iou,
                 classes=list(spec.class_ids),
                 # **NMS inter-classes**, et c'est le piège 5 de prompt/13. Le NMS
                 # par défaut d'Ultralytics est *class-aware* : il ne compare que
                 # des boîtes de même classe. Une camionnette scorée `car 0.52`
                 # **et** `truck 0.41` survit donc en double, devient deux pistes,
-                # deux identités, et compte deux fois. Nos quatre classes sont
-                # mutuellement exclusives sur un objet physique, donc la
-                # suppression doit ignorer la classe.
+                # deux identités, et compte deux fois.
+                #
+                # **Mais il ne doit ignorer la classe qu'À L'INTÉRIEUR d'une famille
+                # d'objets physiquement exclusifs**, et c'est ADR 0057. La prémisse
+                # écrite ici — « nos quatre classes sont mutuellement exclusives sur
+                # un objet physique » — a cessé d'être vraie le jour où `person` et
+                # `bicycle` sont devenues cochables : un pilote et sa moto sont deux
+                # objets réels, et l'agnostique effaçait le moins sûr des deux.
+                # `predictor` découpe donc l'appel par famille (`nms_class_groups`),
+                # et ce drapeau garde son sens **dans** chaque famille.
                 agnostic_nms=True,
+                # Le cas « aucun prédicteur encore construit » — préchauffage
+                # désactivé. Quand il en existe déjà un, `predict()` ignore cet
+                # argument et c'est `install_group_aware_nms` qui a fait le travail.
+                # Les deux sont nécessaires ; aucun ne suffit.
+                predictor=_group_aware_predictor(),
                 device=self._registry.device(),
                 half=self._registry.half(),
-                imgsz=self._imgsz,
+                # **La requête d'abord, le déploiement en repli.** C'est le seul
+                # réglage de `EngineSpec` qui ne soit pas un simple indice : ce n'est
+                # pas la taille d'un objet dans la vidéo qui décide qu'il est détecté,
+                # c'est sa taille ici (ADR 0060).
+                imgsz=spec.imgsz or self._imgsz,
+                # Explicite, et c'est tout ce que cela change : 300 est le défaut
+                # d'Ultralytics. La troncature se fait par score décroissant, donc
+                # elle jette les petits objets en premier — la nommer permet au moins
+                # de la voir avant de la subir.
+                max_det=self._max_det,
                 persist=True,
                 verbose=False,
             )
@@ -604,13 +895,24 @@ class UltralyticsEngine:
         # que ce mode vend — la latence — contre du débit dont il n'a que faire.
         # Le *résolveur* et non le fichier : le flux doit prendre son bail avant de
         # pouvoir demander au modèle la forme de sa tête. Voir `_tracker_for`.
-        return UltralyticsStream(self._registry, spec, self._tracker_for, self._imgsz)
+        return UltralyticsStream(
+            self._registry, spec, self._tracker_for, self._imgsz, self._max_det
+        )
 
 
 class UltralyticsStream:
     """Suivi image par image, avec état persistant entre les appels."""
 
-    __slots__ = ("_imgsz", "_lease", "_model", "_registry", "_spec", "_tracker_config")
+    __slots__ = (
+        "_floors",
+        "_imgsz",
+        "_lease",
+        "_max_det",
+        "_model",
+        "_registry",
+        "_spec",
+        "_tracker_config",
+    )
 
     def __init__(
         self,
@@ -618,10 +920,12 @@ class UltralyticsStream:
         spec: EngineSpec,
         resolve_tracker: Callable[[EngineSpec, Any], Path],
         imgsz: int = DEFAULT_IMGSZ,
+        max_det: int = DEFAULT_MAX_DET,
     ) -> None:
         self._registry = registry
         self._spec = spec
         self._imgsz = imgsz
+        self._max_det = max_det
         # Le gestionnaire de contexte est conservé et fermé à la main : le bail
         # doit survivre à l'appel qui l'ouvre, contrairement à `iter_video`.
         self._lease = registry.lease(spec.model_id)
@@ -638,6 +942,12 @@ class UltralyticsStream:
         # argument, elle hériterait aussi de son **seuil** — le direct partage
         # l'instance résidente avec le différé. Voir `reset_trackers`.
         reset_trackers(self._model, self._tracker_config)
+        # Le direct partage l'instance résidente avec le différé : sans cet appel,
+        # il compterait un motard pour un seul objet là où le différé en compte deux.
+        self._floors = class_confidence_floors(
+            spec.class_ids, spec.confidence, spec.small_confidence
+        )
+        install_group_aware_nms(self._model, self._floors)
 
     def track(
         self,
@@ -654,19 +964,26 @@ class UltralyticsStream:
             # Le même plancher qu'en différé, et pour la même raison : les deux
             # modes doivent suivre à l'identique, sinon un même tracé ne donne pas
             # les mêmes chiffres selon qu'on rejoue un fichier ou qu'on filme.
-            conf=detector_floor(self._spec.confidence),
+            conf=detector_floor(minimum_floor(self._floors, self._spec.confidence)),
             iou=self._spec.iou,
             classes=list(self._spec.class_ids),
-            # Voir le mode différé : NMS inter-classes, sinon une camionnette
-            # survit en `car` **et** en `truck` et compte deux fois.
+            # Voir le mode différé : NMS inter-classes **dans une famille**, sinon
+            # une camionnette survit en `car` et en `truck` et compte deux fois —
+            # mais un pilote et sa moto ne se suppriment jamais (ADR 0057).
             agnostic_nms=True,
+            predictor=_group_aware_predictor(),
             device=self._registry.device(),
             half=self._registry.half(),
             # La même taille d'entrée qu'en différé, et c'est un invariant du
             # projet : les deux modes partagent le code de comptage pour qu'un même
             # tracé donne les mêmes chiffres. Les faire détecter à deux résolutions
             # différentes romprait cette promesse là où personne ne la vérifie.
-            imgsz=self._imgsz,
+            #
+            # « La même » veut donc dire celle de **la requête** depuis ADR 0060, avec
+            # le déploiement en repli — et non la constante du moteur, qui ferait
+            # justement détecter les deux modes à deux résolutions différentes.
+            imgsz=self._spec.imgsz or self._imgsz,
+            max_det=self._max_det,
             verbose=False,
         )
         return _to_observations(results[0]) if results else ()
@@ -991,6 +1308,7 @@ def reset_trackers(model: Any, tracker_config: Path | None = None) -> None:  # n
         tracker.reset()
     if tracker_config is not None:
         _reapply_request_keys(trackers, tracker_config)
+        _reapply_engraved_keys(trackers, tracker_config)
 
 
 def _reapply_request_keys(trackers: Any, tracker_config: Path) -> None:  # noqa: ANN401
@@ -1016,6 +1334,43 @@ def _reapply_request_keys(trackers: Any, tracker_config: Path) -> None:  # noqa:
             continue
         for key, value in wanted.items():
             setattr(args, key, value)
+
+
+def _reapply_engraved_keys(trackers: Any, tracker_config: Path) -> None:  # noqa: ANN401
+    """Repose les clés **gravées à la construction**, sur l'attribut qu'elles ont
+    alimenté.
+
+    Une catégorie distincte de `_reapply_request_keys`, et il faut la garder distincte :
+    celle-là écrit sur `tracker.args`, que le tracker relit à chaque image ; celle-ci
+    écrit sur l'**instance**, parce que `args.track_buffer` n'est plus jamais lu après
+    `__init__` — vérifié à l'exécution, `args.track_buffer = 450` puis `reset()` laisse
+    `max_frames_lost` à 75.
+
+    Sans elle, `track_buffer` serait correctement écrit dans le fichier dérivé,
+    correctement journalisé, et sans le moindre effet à partir de la **deuxième**
+    analyse d'un processus : le patron exact d'ADR 0035, sur le réglage que ce
+    correctif existe pour brancher.
+
+    Silencieuse sur une valeur absente du fichier — le cas normal du direct, qui
+    n'impose aucun tampon — et journalisée sur un tracker sans l'attribut attendu,
+    parce qu'un réglage qui redevient inerte ne doit pas le redevenir en silence.
+    """
+    if not trackers:
+        return
+    content = _tracker_file(tracker_config)
+    for key, attribute in ENGRAVED_TRACKER_ATTRS.items():
+        value = content.get(key)
+        if value is None:
+            continue
+        for tracker in trackers:
+            if not hasattr(tracker, attribute):
+                logger.warning(
+                    "tracker sans l'attribut attendu : réglage gravé non reposé",
+                    key=key,
+                    attribute=attribute,
+                )
+                continue
+            setattr(tracker, attribute, value)
 
 
 @lru_cache(maxsize=32)

@@ -644,3 +644,34 @@ describe("les plaques recherchées", () => {
     expect(toRequest(settings, [], []).plateWatchlist).toEqual(["AB-123-CD"]);
   });
 });
+
+describe("la re-détection des véhicules", () => {
+  it("est éteinte par défaut", () => {
+    // Un encodage par franchissement est un surcoût, et signaler qu'un véhicule est
+    // repassé est un choix — pas un comportement dont on hérite en mettant à jour.
+    expect(DEFAULT_SETTINGS.vehicleRematch).toBe(false);
+    expect(toRequest(DEFAULT_SETTINGS, [], []).vehicleRematch).toBe(false);
+  });
+
+  it("ne dépend PAS de la lecture des plaques", () => {
+    // La différence avec les plaques recherchées juste au-dessus, et elle compte : on
+    // reconnaît un véhicule à son apparence, pas à son texte. La subordonner à l'ANPR
+    // la rendrait muette dans le cas d'usage même qui l'a demandée.
+    const settings = { ...DEFAULT_SETTINGS, vehicleRematch: true };
+
+    expect(toRequest(settings, [], []).vehicleRematch).toBe(true);
+    expect(toRequest(settings, [], []).detectPlates).toBe(false);
+  });
+
+  it("survit à un réglage persisté qui ne la connaît pas", () => {
+    // Pas d'incrément de `SETTINGS_SCHEMA_VERSION` : la fusion est champ par champ,
+    // donc un stockage écrit avant ADR 0055 reçoit simplement le défaut. Une
+    // migration ne sert qu'à **défaire** une valeur déjà écrite.
+    const stored = JSON.stringify({
+      version: SETTINGS_SCHEMA_VERSION,
+      settings: { modelId: "yolo11m" },
+    });
+
+    expect(loadSettings(fakeStorage(stored)).vehicleRematch).toBe(false);
+  });
+});

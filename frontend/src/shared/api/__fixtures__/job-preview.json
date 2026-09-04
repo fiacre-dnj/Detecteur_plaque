@@ -170,6 +170,25 @@
       "confirmedTracks": 3,
       "tentativeTracks": 0,
       "rescuedByLowScore": 0,
+      "unconfirmedTracks": 0,
+      "byClass": {
+        "bus": {
+          "highDetections": 0,
+          "rescuedByLowScore": 0
+        },
+        "car": {
+          "highDetections": 24,
+          "rescuedByLowScore": 0
+        },
+        "motorcycle": {
+          "highDetections": 0,
+          "rescuedByLowScore": 0
+        },
+        "truck": {
+          "highDetections": 12,
+          "rescuedByLowScore": 0
+        }
+      },
       "nearMisses": {
         "l1": 0
       }
@@ -199,7 +218,9 @@
       "snapshotScore": 0.93,
       "snapshotMs": 0.0,
       "snapshotKind": "plate_text",
-      "matchScore": null
+      "matchScore": null,
+      "rematchOf": null,
+      "rematchScore": null
     },
     {
       "globalId": 2,
@@ -224,7 +245,9 @@
       "snapshotScore": null,
       "snapshotMs": 0.0,
       "snapshotKind": "plate_box",
-      "matchScore": null
+      "matchScore": null,
+      "rematchOf": null,
+      "rematchScore": null
     }
   ]
 }

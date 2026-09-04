@@ -39,6 +39,20 @@ l'application, ou une contrainte d'environnement qui a fait perdre du temps.
    et comptait deux fois. Côté serveur, `classes=[2,3,5,7]` passé à
    `model.track()` et le NMS d'Ultralytics traitent le cas ; si tu ajoutes un
    post-traitement, il doit être **class-agnostique**.
+   *Amendé le 2026-09-03 : **class-agnostique DANS un groupe, jamais entre deux.**
+   La liste ci-dessus est celle des quatre véhicules ; `person` est devenue
+   cochable six jours après que ce piège a été écrit, et un pilote occupe la boîte
+   de sa machine. Mesuré sur la vraie fonction : deux boîtes à IoU 0,667,
+   `person 0.55` et `motorcycle 0.48` — la moto disparaît ; et l'inverse quand le
+   véhicule score le plus haut. `nms_class_groups` partitionne donc par
+   **catégorie** (`vehicle` / `person`) et le NMS est appelé une fois par partie.
+   Le jeu de classes par défaut est entièrement `vehicle`, donc **une seule partie,
+   donc le chemin d'avant au bit près** — ce piège-ci reste intégralement traité.
+   Ne PAS confondre avec `class_group` d'ADR 0056, qui sépare en trois : la
+   containment demande « l'un peut-il être dans l'autre » (une moto **devant** un
+   camion, oui), le NMS demande « ces deux boîtes qui coïncident sont-elles le même
+   objet » (oui). Un test verrouille l'écart
+   ([ADR 0057](../docs/adr/0057-le-nms-agnostique-supprimait-la-moto-sous-son-pilote.md)).*
 6. **Boîte englobante vs boîte partielle.** Sur un bus ou un semi-remorque, le
    détecteur émet parfois une boîte sur la cabine **et** une sur le véhicule
    entier ; leur IoU est ~0,3, sous n'importe quel seuil raisonnable. Le critère
@@ -47,6 +61,17 @@ l'application, ou une contrainte d'environnement qui a fait perdre du temps.
    roulant devant un camion peut être à 0,8 dans sa boîte et ne doit **pas** être
    supprimée (supprimer un vrai véhicule sous-compte, l'erreur la plus difficile à
    remarquer).
+   *Amendé le 2026-09-03 : **le seuil ne suffit pas, parce qu'il a été calibré sur
+   la seule classe qui y échappe.** L'argument ci-dessus vaut pour une voiture, à
+   0,8 ; la mesure divisant par la plus petite aire, un objet nettement plus petit
+   atteint 1,0 sans effort. Mesuré : pilote dans la boîte de sa moto, piéton devant
+   un bus, moto devant un camion — **1,000 les trois**, et c'est toujours le plus
+   petit qui part. La suppression est donc bornée aux objets physiquement exclusifs
+   entre eux (`class_group` : `{person}` · `{bicycle, motorcycle}` ·
+   `{car, bus, truck, train}`). La garde porte sur le **groupe** et jamais sur
+   l'égalité de label, sinon une cabine détectée `car` dans un semi `truck` rouvre
+   ce piège-ci
+   ([ADR 0056](../docs/adr/0056-la-suppression-des-boites-incluses-effacait-les-petits-objets.md)).*
 
 ## B. Comptage — un véhicule manqué
 

@@ -1,11 +1,25 @@
 /**
  * Exports CSV et JSON, produits **côté client** depuis le résultat déjà chargé.
  *
- * Le serveur sait aussi exporter (`/jobs/{id}/vehicles.csv`), et c'est ce qu'il faut
- * utiliser pour un job de l'historique. Mais pendant une session de travail, le
- * résultat est déjà en mémoire : un aller-retour réseau pour reformater des données
- * qu'on possède serait du gaspillage, et il échouerait sur un job purgé alors que
- * l'utilisateur a le résultat sous les yeux.
+ * **Le serveur exporte aussi, et le fichier n'est pas le même.** La route est
+ * `GET /jobs/{id}/export.csv?dataset=vehicles|crossings` — cette docstring a cité
+ * `/jobs/{id}/vehicles.csv`, qui n'a jamais existé et rend 404.
+ *
+ * L'écart de colonnes est **structurel**, pas un oubli à rattraper :
+ *
+ * - le serveur lit les tables dénormalisées, donc il répond sur une analyse de dix
+ *   mille véhicules sans ouvrir le résultat — mais il ne connaît que des
+ *   identifiants stables (`l1`, `A→B`) et ignore les rôles de sens, que le backend
+ *   ne lit jamais (ADR 0016, ADR 0021) ;
+ * - ce fichier-ci part du résultat déjà chargé et du **tracé courant**, donc il
+ *   porte les noms de ligne saisis, les libellés de rôle, et les deux colonnes de
+ *   re-détection — dont aucune n'a de colonne en base.
+ *
+ * D'où le choix de rester côté client pendant une session de travail : le résultat
+ * est déjà en mémoire, un aller-retour réseau pour reformater ce qu'on possède
+ * serait du gaspillage, et il échouerait sur un job purgé alors que l'utilisateur a
+ * le résultat sous les yeux. `exportCsv.test.ts` verrouille les en-têtes des deux
+ * côtés pour que la différence reste écrite et non subie.
  *
  * **Le point délicat du CSV, et il n'est pas cosmétique : le séparateur.** Excel en
  * configuration française attend le point-virgule et interprète les virgules comme
@@ -80,6 +94,12 @@ export function vehiclesCsv(result: AnalysisResult, lines: readonly CountingLine
       "Plaque",
       "Confiance lecture",
       "Score plaque",
+      // La re-détection, en **deux colonnes** : un tableur trie et filtre sur des
+      // valeurs, donc « #12 — 87 % » dans une seule case obligerait à la découper à
+      // la main avant tout classement. Vides quand rien n'a été re-détecté, jamais
+      // un zéro — qui se lirait comme une ressemblance mesurée et nulle.
+      "Déjà vu (véhicule)",
+      "Déjà vu (similarité)",
     ],
     result.vehicles.map((vehicle: VehicleRecord) => [
       vehicle.globalId,
@@ -103,6 +123,8 @@ export function vehiclesCsv(result: AnalysisResult, lines: readonly CountingLine
       vehicle.plateText,
       vehicle.plateTextScore,
       vehicle.bestPlateScore,
+      vehicle.rematchOf ?? null,
+      vehicle.rematchScore ?? null,
     ]),
   );
 }

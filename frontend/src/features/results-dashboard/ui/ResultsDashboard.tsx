@@ -56,7 +56,7 @@
 import { Ban } from "lucide-react";
 
 import type { AnalysisStats, CountingLine, VehicleRecord } from "@/shared/api/contracts";
-import { classLabel } from "@/shared/lib/classes";
+import { PERSON_CLASS, classLabel } from "@/shared/lib/classes";
 import type { LineRule } from "@/shared/lib/lineRules";
 import { violationCounts } from "@/shared/lib/violationTally";
 import { MetricCard } from "@/shared/ui/MetricCard";
@@ -133,6 +133,11 @@ export function ResultsDashboard({
   // vérifient l'un l'autre, ce qui était impossible tant que le chiffre de tête
   // comptait des passages.
   const crossed = crossingVehicles(vehicles);
+  // Compté sur la **même liste** que le chiffre de tête, donc dans la même unité :
+  // des objets distincts, jamais des passages. Le lire dans `stats.byCategory` —
+  // qui compte des franchissements — mélangerait deux unités dans une seule phrase
+  // (invariant 3), et un aller-retour suffirait à rendre la nuance fausse.
+  const crossedPeople = crossed.filter((record) => record.label === PERSON_CLASS).length;
   const entries = crossedByClass(crossed);
   const classes = visibleClasses(selectedClasses, entries);
   const violations = violationCounts(stats, lines, rules);
@@ -182,10 +187,19 @@ export function ResultsDashboard({
           // unité de passages. L'aide est donc la seule chose qui empêche de lire
           // ce chiffre comme la somme des cartes de ligne, qui, elles, comptent
           // bien des passages.
+          // **L'aide nomme les personnes dès qu'il y en a.** Le libellé dit
+          // « véhicule » et le chiffre compte tout ce qui a franchi, piétons
+          // compris — il le doit, puisque les cartes par type en sont la somme
+          // exacte. Le tiroir promettait par ailleurs qu'elles étaient comptées
+          // « à part », ce qui se lisait « pas dans ce total ». Le dire ici est ce
+          // qui empêche de chercher l'écart entre le total et la somme des cartes.
           hint={
             lines.length === 0
               ? "Ajoutez une ligne dans Géométrie pour obtenir ce chiffre"
-              : "Véhicules distincts ayant franchi au moins une ligne"
+              : crossedPeople === 0
+                ? "Véhicules distincts ayant franchi au moins une ligne"
+                : `Objets distincts ayant franchi au moins une ligne, dont ${crossedPeople} ` +
+                  `${crossedPeople > 1 ? "personnes" : "personne"}`
           }
         />
       </div>

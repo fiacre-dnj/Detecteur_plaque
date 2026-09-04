@@ -61,6 +61,13 @@ export function violationOf(
   // La classe est celle **votée** sur la vie du véhicule (invariant 4), portée par
   // `label` : c'est la même clé que les `byClass` du serveur, donc le KPI et cette
   // liste comptent exactement la même population.
+  //
+  // **Cette propriété a été fausse jusqu'à ADR 0061**, et elle ne se voyait pas :
+  // le libellé d'un franchissement était gelé au vote de l'instant du passage, alors
+  // que le vote continue d'évoluer. Un deux-roues lu `person` de loin et corrigé en
+  // approchant franchissait donc sous « person » — et une voie réservée aux motos
+  // signalait en rouge un véhicule parfaitement autorisé. Le serveur réaligne
+  // désormais les libellés sur le registre final avant de publier le résultat.
   if (rule.allowedClasses !== null && !rule.allowedClasses.has(crossing.label)) {
     return { kind: "reserved-lane", crossing, rule };
   }

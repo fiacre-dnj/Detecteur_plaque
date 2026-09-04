@@ -24,6 +24,7 @@ import {
   Ban,
   Car,
   CarFront,
+  History,
   ScanSearch,
   ShieldAlert,
   TriangleAlert,
@@ -82,6 +83,22 @@ export const ALERT_LOOK: Readonly<Record<AlertKind, AlertLook>> = {
     // cause connue (l'OCR perd le premier caractère, ADR 0029) ; une ressemblance
     // faible n'a que le recouvrement des distributions, qui est bien plus large.
     describe: () => "Ressemble à l'image recherchée — vérification nécessaire.",
+  },
+  "vehicle-rematch-exact": {
+    title: "Véhicule déjà vu",
+    Icon: History,
+    describe: ({ watched }) =>
+      `Ressemble fortement au véhicule ${watched ?? "déjà passé"} — à vérifier sur les deux captures.`,
+  },
+  "vehicle-rematch-partial": {
+    title: "Véhicule peut-être déjà vu",
+    Icon: History,
+    // Le mot du doute est dans le titre **et** dans la phrase, comme pour les plaques
+    // partielles. C'est ici que ça compte le plus : personne n'a demandé ce véhicule,
+    // donc la carte affirme d'elle-même une identité entre deux passages, et les
+    // distributions de ressemblance se recouvrent largement (ADR 0048).
+    describe: ({ watched }) =>
+      `Ressemble au véhicule ${watched ?? "déjà passé"} — vérification nécessaire.`,
   },
 };
 

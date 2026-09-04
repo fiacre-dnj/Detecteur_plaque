@@ -55,10 +55,13 @@ const ZONE: Zone = {
 const REQUEST: AnalysisRequest = {
   modelId: "yolo11m",
   plateWatchlist: [],
+  vehicleRematch: false,
   confidenceThreshold: 0.35,
   iouThreshold: 0.45,
   minHits: 3,
   maxLostMs: 2500,
+  inferenceImgsz: null,
+  smallObjectConfidence: null,
   maskOutsideZones: true,
   frameStride: 1,
   classIds: [2, 3, 5, 7],

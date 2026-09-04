@@ -12,8 +12,22 @@ véhicule — est bien pire : sous-compter est la panne la plus difficile à rem
 
 from __future__ import annotations
 
-from tests.support.builders import CAR, TRUCK, make_line, track_path
-from traffic_analysis.features.counting.domain.models import BoundingBox, TrackObservation
+from tests.support.builders import (
+    BICYCLE,
+    BUS,
+    CAR,
+    CLASS_LABELS,
+    MOTORCYCLE,
+    PERSON,
+    TRUCK,
+    make_line,
+    track_path,
+)
+from traffic_analysis.features.counting.domain.models import (
+    BoundingBox,
+    TrackObservation,
+    class_group,
+)
 from traffic_analysis.features.counting.domain.tracking_session import (
     CONTAINMENT_THRESHOLD,
     AnalysisSession,
@@ -86,10 +100,15 @@ def _session(**overrides: object) -> AnalysisSession:
 
 
 def _observation(track_id: int, box: BoundingBox, class_id: int = TRUCK) -> TrackObservation:
+    # Le label vient de la table partagée et non d'un ternaire : depuis ADR 0056 le
+    # domaine lit `label` pour décider d'un groupe, donc une observation étiquetée
+    # « car » avec un identifiant de moto ferait passer un test pour la mauvaise
+    # raison — et le ternaire d'avant faisait exactement cela de toute classe
+    # autre que `truck`.
     return TrackObservation(
         track_id=track_id,
         class_id=class_id,
-        label="truck" if class_id == TRUCK else "car",
+        label=CLASS_LABELS[class_id],
         score=0.9,
         box=box,
     )
@@ -185,3 +204,144 @@ class TestSuppressionDansLaSession:
         session.feed(0, 0.0, [_observation(1, BoundingBox(0.0, 0.0, 80.0, 60.0))])
 
         assert session.stats().diagnostics.contained_out == 0
+
+
+class TestGroupesDeClasses:
+    """La famille d'objets physiquement exclusifs — ADR 0056.
+
+    Le seuil de 0,9 a été calibré sur une *voiture* devant un camion, à 0,8. La
+    mesure divisant par la plus petite aire, un objet nettement plus petit atteint
+    1,000 sans effort : c'est structurel, pas accidentel, et cela frappe exactement
+    les deux classes qu'on peine à détecter.
+    """
+
+    def test_les_trois_cas_qui_atteignent_un(self) -> None:
+        """La prémisse du correctif, vérifiée avant tout le reste.
+
+        Si l'une de ces containments cessait d'être au-dessus du seuil, les tests
+        suivants passeraient pour la mauvaise raison — ils vérifieraient une garde
+        qui n'a rien à garder.
+        """
+        moto = BoundingBox(880.0, 470.0, 60.0, 95.0)
+        camion = BoundingBox(800.0, 400.0, 250.0, 240.0)
+        pieton = BoundingBox(900.0, 540.0, 30.0, 80.0)
+        bus = BoundingBox(850.0, 480.0, 200.0, 160.0)
+        pilote = BoundingBox(512.0, 545.0, 36.0, 110.0)
+        machine = BoundingBox(500.0, 545.0, 60.0, 145.0)
+
+        assert camion.containment(moto) >= CONTAINMENT_THRESHOLD
+        assert bus.containment(pieton) >= CONTAINMENT_THRESHOLD
+        assert machine.containment(pilote) >= CONTAINMENT_THRESHOLD
+
+    def test_une_moto_dans_la_boite_d_un_camion_survit(self) -> None:
+        """Elle ne laissait aucune trace : ni piste, ni observation, ni diagnostic."""
+        session = _session()
+        camion = _observation(1, BoundingBox(800.0, 400.0, 250.0, 240.0), class_id=TRUCK)
+        moto = _observation(2, BoundingBox(880.0, 470.0, 60.0, 95.0), class_id=MOTORCYCLE)
+
+        outcome = session.feed(0, 0.0, [camion, moto])
+
+        assert {track.track_id for track in outcome.tracks} == {1, 2}
+        assert session.stats().diagnostics.contained_out == 0
+
+    def test_un_pieton_devant_un_bus_survit(self) -> None:
+        session = _session()
+        bus = _observation(1, BoundingBox(850.0, 480.0, 200.0, 160.0), class_id=BUS)
+        pieton = _observation(2, BoundingBox(900.0, 540.0, 30.0, 80.0), class_id=PERSON)
+
+        outcome = session.feed(0, 0.0, [bus, pieton])
+
+        assert {track.track_id for track in outcome.tracks} == {1, 2}
+
+    def test_un_pilote_dans_la_boite_de_sa_moto_survit(self) -> None:
+        """Le cas qui rend le correctif du NMS insuffisant à lui seul.
+
+        Un pilote qui survit à `agnostic_nms` — leur IoU réaliste vaut 0,407, sous le
+        seuil de 0,45 — était réeffacé ici, à containment 1,000. Corriger le NMS sans
+        corriger la containment n'aurait rien rendu.
+        """
+        session = _session()
+        machine = _observation(1, BoundingBox(500.0, 545.0, 60.0, 145.0), class_id=MOTORCYCLE)
+        pilote = _observation(2, BoundingBox(512.0, 545.0, 36.0, 110.0), class_id=PERSON)
+
+        outcome = session.feed(0, 0.0, [machine, pilote])
+
+        assert {track.track_id for track in outcome.tracks} == {1, 2}
+
+    def test_le_franchissement_d_une_moto_englobee_est_compte(self) -> None:
+        """La conséquence qui compte : le **total**, comme pour le piège 6.
+
+        Sans la garde, la moto ne franchit rien — elle n'existe à aucune image — et
+        le carrefour affiche un camion là où deux véhicules sont passés.
+        """
+        session = _session()
+        camion = track_path(1, TRUCK, [(900.0, 500.0), (1020.0, 500.0)], box_size=(250.0, 240.0))
+        moto = track_path(2, MOTORCYCLE, [(900.0, 520.0), (1020.0, 520.0)], box_size=(60.0, 95.0))
+
+        for index, (gros, petit) in enumerate(zip(camion, moto, strict=True)):
+            session.feed(index, index * FRAME_MS, [gros, petit])
+
+        stats = session.stats()
+        assert stats.crossings == 2
+        assert stats.by_class == {"truck": 1, "motorcycle": 1}
+
+    def test_un_velo_et_une_moto_restent_dedupliques(self) -> None:
+        """Trois groupes et pas deux : un scooter sort sous l'une ou l'autre classe.
+
+        `bicycle` et `motorcycle` sont un même objet vu par deux classes voisines.
+        Les séparer redonnerait sur les deux-roues le doublon que le piège 6 décrit
+        sur les véhicules à moteur.
+        """
+        session = _session()
+        moto = _observation(1, BoundingBox(500.0, 545.0, 60.0, 145.0), class_id=MOTORCYCLE)
+        velo = _observation(2, BoundingBox(505.0, 560.0, 50.0, 120.0), class_id=BICYCLE)
+        assert moto.box.containment(velo.box) >= CONTAINMENT_THRESHOLD
+
+        outcome = session.feed(0, 0.0, [moto, velo])
+
+        assert len(outcome.tracks) == 1
+
+    def test_la_cabine_car_dans_un_semi_truck_reste_dedupliquee(self) -> None:
+        """**La non-régression du piège 6**, et la raison du groupe plutôt que du label.
+
+        Le détecteur ne nomme pas toujours la cabine comme le semi. Une garde écrite
+        `first.label != second.label` rouvrirait exactement la panne que ce correctif
+        est censé préserver : deux pistes, deux véhicules, deux franchissements.
+        """
+        session = _session()
+        semi = _observation(1, BoundingBox(300.0, 400.0, 400.0, 200.0), class_id=TRUCK)
+        cabine = _observation(2, BoundingBox(320.0, 420.0, 120.0, 160.0), class_id=CAR)
+        assert semi.label != cabine.label
+
+        outcome = session.feed(0, 0.0, [semi, cabine])
+
+        assert [track.track_id for track in outcome.tracks] == [1]
+        assert session.stats().diagnostics.contained_out == 1
+
+
+class TestClassGroup:
+    """La fonction pure, seule juge — et son repli."""
+
+    def test_les_deux_roues_sont_un_groupe_a_part(self) -> None:
+        assert class_group("motorcycle") == class_group("bicycle")
+        assert class_group("motorcycle") != class_group("car")
+        assert class_group("motorcycle") != class_group("person")
+
+    def test_les_vehicules_a_moteur_partagent_leur_groupe(self) -> None:
+        assert (
+            class_group("car") == class_group("bus") == class_group("truck") == class_group("train")
+        )
+
+    def test_un_label_inconnu_rejoint_les_vehicules_a_moteur(self) -> None:
+        """Le repli conservateur : il garde le comportement d'avant les groupes.
+
+        Un label inconnu vient d'un modèle entraîné hors COCO — une voiture nommée
+        autrement, typiquement. Lui donner un groupe à part lui retirerait la
+        déduplication du piège 6 en silence.
+        """
+        assert class_group("voiture") == class_group("car")
+
+    def test_deux_boites_de_meme_label_sont_toujours_du_meme_groupe(self) -> None:
+        """La propriété qui protège le cas cible **par construction**, pas par la table."""
+        for label in ("truck", "car", "motorcycle", "person", "inconnu"):
+            assert class_group(label) == class_group(label)

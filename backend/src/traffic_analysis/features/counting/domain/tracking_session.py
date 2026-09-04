@@ -24,8 +24,11 @@ from typing import TYPE_CHECKING
 
 from traffic_analysis.features.counting.domain.line_counter import LineCrossingCounter
 from traffic_analysis.features.counting.domain.models import (
+    LABEL_OF_CLASS_ID,
     SNAPSHOT_CAUSE_PRIORITY,
+    VEHICLE_CLASS_IDS,
     AnalysisStats,
+    ClassDiagnostic,
     CountingLineDef,
     CrossingEvent,
     Diagnostics,
@@ -40,6 +43,7 @@ from traffic_analysis.features.counting.domain.models import (
     VehicleRecord,
     ZoneDef,
     ZoneTally,
+    class_group,
 )
 from traffic_analysis.features.counting.domain.plate_geometry import unread_reason
 from traffic_analysis.features.counting.domain.plate_text import normalise_plate_reading
@@ -96,6 +100,18 @@ class SessionConfig:
     #: distinction que le panneau de diagnostic affiche, et qui était impossible à
     #: établir sans cette valeur. Le défaut est celui du schéma de requête.
     confidence_threshold: float = 0.35
+    #: Les classes que l'utilisateur a réellement cochées. **Diagnostic seul.**
+    #:
+    #: Le comptage ne les lit pas : le filtrage a lieu bien en amont, au détecteur
+    #: (`classes=` d'Ultralytics). Elles servent à publier une rangée de diagnostic
+    #: **par classe cherchée, y compris à zéro** — « motorcycle 0 / 0 » est la seule
+    #: façon d'écrire « on l'a cherchée et jamais trouvée ».
+    #:
+    #: **Elles doivent venir du serveur et non des cases de l'écran.** Le client
+    #: connaît sa sélection *courante*, qui peut avoir changé depuis l'analyse :
+    #: afficher « Moto 0 / 0 » sur un résultat où la moto n'a jamais été cherchée
+    #: serait exactement le mensonge que ce champ existe pour éviter.
+    class_ids: tuple[int, ...] = VEHICLE_CLASS_IDS
     #: La lecture du texte de plaque tourne-t-elle réellement ?
     #:
     #: Ce que le service a **résolu**, et non ce que la requête a demandé : le
@@ -208,6 +224,19 @@ class _VehicleAggregate:
     #: c'est ce qui met cette fonctionnalité hors du champ d'ADR 0016 : un véhicule
     #: ressemblant n'est pas un véhicule compté deux fois.
     match_score: float | None = None
+    #: Numéro du véhicule **antérieur** auquel celui-ci ressemble, ou `None`.
+    #:
+    #: Le résultat de la galerie interne au clip (ADR 0055). Se lit « on a déjà vu
+    #: ce véhicule, c'était le #N » — une **hypothèse à vérifier sur la capture**,
+    #: jamais une fusion : les deux numéros continuent d'exister, les deux véhicules
+    #: restent comptés, et les deux franchissements aussi.
+    #:
+    #: **Aucun compteur ne le lit**, même clause que `match_score` juste au-dessus,
+    #: et pour la même raison — c'est elle qui met la galerie hors du champ
+    #: d'ADR 0016, dont la galerie supprimée alimentait le comptage.
+    rematch_of: int | None = None
+    #: Ressemblance au véhicule ci-dessus, dans [-1, 1]. `None` ssi `rematch_of` l'est.
+    rematch_score: float | None = None
 
 
 class AnalysisSession:
@@ -226,6 +255,7 @@ class AnalysisSession:
         "_masked_out",
         "_numbering",
         "_rescued_by_low_score",
+        "_scores_by_class",
         "_tracks",
         "_zones",
     )
@@ -241,7 +271,7 @@ class AnalysisSession:
         self._config = config
         self._counter = LineCrossingCounter(config.lines, config.zones, config.min_hits)
         self._zones = ZonePresenceCounter(config.zones, config.min_hits)
-        self._numbering = TrackNumbering()
+        self._numbering = TrackNumbering(on_relabel=self._relabel_crossings)
         # Toutes les pistes connues, pas seulement les actives : `_release_lost`
         # doit pouvoir abandonner une piste qui a cessé d'être rapportée.
         self._tracks: dict[int, SessionTrack] = {}
@@ -269,6 +299,7 @@ class AnalysisSession:
         # plongent ? », qui se mesure sur des observations.
         self._high_detections = 0
         self._rescued_by_low_score = 0
+        self._scores_by_class: dict[str, tuple[int, int]] = {}
 
     def feed(
         self,
@@ -346,10 +377,55 @@ class AnalysisSession:
         seraient coupées en deux sans la bande basse.
         """
         for observation in observations:
+            # La ventilation par type est rangée dans le **même** parcours que le
+            # total : deux boucles séparées finiraient par ne plus compter la même
+            # population, et le détail contredirait le total sur le même écran.
+            high, rescued = self._scores_by_class.get(observation.label, (0, 0))
             if observation.score >= self._config.confidence_threshold:
                 self._high_detections += 1
+                self._scores_by_class[observation.label] = (high + 1, rescued)
             else:
                 self._rescued_by_low_score += 1
+                self._scores_by_class[observation.label] = (high, rescued + 1)
+
+    def _relabel_crossings(self, vehicle_id: int, previous: str, new: str) -> None:
+        """Le vote a basculé : ses franchissements déjà comptés changent d'étiquette.
+
+        **La session est le seul endroit d'où l'on peut faire ce lien.** Le numérotage
+        connaît le vote et ignore les lignes ; le compteur connaît les lignes et ignore
+        le vote. Seul l'agrégat sait *quels* franchissements ce véhicule a faits —
+        `_VehicleAggregate.crossings` les tenait déjà, pour le registre.
+
+        Aucun total ne bouge, ni par ligne ni globalement : un franchissement reste un
+        franchissement, seule sa classe change. C'est ce qui rend l'opération sûre
+        vis-à-vis de l'invariant 3.
+        """
+        aggregate = self._aggregates.get(vehicle_id)
+        if aggregate is None:
+            return
+        for crossing in aggregate.crossings:
+            self._counter.relabel(crossing.line_id, crossing.direction, previous, new)
+
+    def _class_diagnostics(self) -> dict[str, ClassDiagnostic]:
+        """Le diagnostic par type, **classes cherchées comprises quand elles sont à zéro**.
+
+        C'est l'absence qui est l'information : « motorcycle 0 / 0 » veut dire « on l'a
+        cherchée et jamais trouvée », et aucun curseur ne rattrapera cela. Omettre la
+        clé se lirait « pas d'information », ce qui envoie chercher ailleurs.
+
+        Une classe **détectée sans avoir été cochée** ne peut pas exister — le
+        filtrage a lieu au détecteur — mais si elle apparaissait, elle serait rendue
+        quand même : taire une observation réellement comptée pour respecter une liste
+        serait le pire des deux mondes.
+        """
+        rows = {
+            LABEL_OF_CLASS_ID[class_id]: ClassDiagnostic()
+            for class_id in self._config.class_ids
+            if class_id in LABEL_OF_CLASS_ID
+        }
+        for label, (high, rescued) in self._scores_by_class.items():
+            rows[label] = ClassDiagnostic(high_detections=high, rescued_by_low_score=rescued)
+        return dict(sorted(rows.items()))
 
     def _mask(self, observations: Sequence[TrackObservation]) -> tuple[TrackObservation, ...]:
         """Filtre les détections hors zone quand le masque est actif.
@@ -387,6 +463,34 @@ class AnalysisSession:
         du camion : la supprimer effacerait un vrai véhicule. Sous-compter est
         l'erreur la plus difficile à remarquer, donc en cas de doute on garde.
 
+        **Et le seuil ne suffit pas : il a été calibré sur la seule classe qui y
+        échappe.** L'argument ci-dessus vaut pour une *voiture* devant un camion, à
+        0,8. La mesure est `intersection / min(aire)`, donc elle est structurellement
+        asymétrique : un camion ne peut jamais être contenu dans une moto, une moto
+        l'est trivialement dans un camion. Mesuré sur ce code, un pilote dans la
+        boîte de sa propre moto, un piéton devant un bus et une moto devant un camion
+        rendent tous **1,000** — les trois passent le seuil, et c'est toujours le plus
+        petit objet qui part, c'est-à-dire exactement les deux classes qu'on peine à
+        détecter. Conséquences mesurées en bout de chaîne : une moto suivie cinq
+        images devant un camion ne laisse **aucune** trace nulle part, et une moto
+        englobée trois secondes ressort en **deux** véhicules — le même mécanisme
+        sous-compte et double-compte.
+
+        La suppression est donc bornée aux objets **physiquement exclusifs entre
+        eux** (`class_group`). Le cas cible reste traité : la cabine et le semi sont
+        tous deux `truck`, donc du même groupe — et deux boîtes de même label le sont
+        quelle que soit la table. La garde porte sur le **groupe** et jamais sur
+        l'égalité de label, sinon une cabine détectée `car` dans un semi `truck`
+        redeviendrait deux pistes, deux véhicules, deux franchissements : le piège 6
+        rouvert par le correctif censé le préserver.
+
+        Ce que la garde **ne** protège pas, et il faut le savoir : deux objets de la
+        même famille. Un enfant marchant contre un adulte est à 1,0, une voiture
+        entièrement dans la boîte d'un bus aussi. Ce dernier cas existait déjà avant
+        ce correctif ; le traiter demanderait un critère de plausibilité — la cabine
+        partage un bord de la boîte du semi, la moto au milieu du camion non — à
+        mesurer, jamais à adopter en défaut. Voir ADR 0056.
+
         **La plus petite part**, jamais la plus grande : la cabine est un morceau du
         véhicule, et c'est la boîte du véhicule entier qui décrit l'objet physique.
 
@@ -403,6 +507,11 @@ class AnalysisSession:
                 continue
             for j, second in enumerate(observations[i + 1 :], start=i + 1):
                 if j in dropped:
+                    continue
+                # **Avant la géométrie** : que deux objets puissent être le même
+                # objet physique ne dépend pas de l'endroit où ils se trouvent. Un
+                # pilote et sa moto se recouvrent à 1,0 et restent deux objets.
+                if class_group(first.label) != class_group(second.label):
                     continue
                 if first.box.containment(second.box) < CONTAINMENT_THRESHOLD:
                     continue
@@ -760,11 +869,16 @@ class AnalysisSession:
         **Le mode de panne d'ADR 0029 ne se rejoue pas ici**, et la raison est
         structurelle : le consommateur de l'OCR est *statistique* — `PlateTextVote`
         exige plusieurs lectures concordantes, donc raréfier les lectures empêche un
-        texte d'exister. Celui de la ReID est un *remplacement* : `record_embedding`
-        écrase `match_score` au lieu de l'accumuler. Il n'y a aucun vote à affamer,
-        et la première vue reste inconditionnelle (`appearance_width_px is None`),
-        donc **aucun véhicule candidat ne perd son score** — la marge ne peut
-        refuser qu'une amélioration.
+        texte d'exister. Celui de la ReID est un *maximum* : `record_embedding` retient
+        la meilleure des mesures, chacune indépendante des autres. Raréfier les vues
+        ne peut donc que priver d'une chance de mieux faire, jamais empêcher un score
+        d'exister — et la première vue reste inconditionnelle
+        (`appearance_width_px is None`), donc **aucun véhicule candidat ne perd son
+        score** : la marge ne peut refuser qu'une amélioration.
+
+        Cette docstring a annoncé un *remplacement* et non un maximum, et c'était la
+        description d'un défaut : le score publié était celui de la dernière vue
+        acceptée, donc arbitraire. Voir `record_embedding`.
 
         `1.0` reproduit l'ancien comportement au bit près (`w > best * 1.0` ≡
         `w > best`), ce qui rend le réglage strictement additif.
@@ -797,15 +911,83 @@ class AnalysisSession:
         Ne revérifie pas `should_embed` : le service a déjà posé la question, et la
         reposer ici ferait exister deux endroits qui décident de la même chose.
 
-        `match_score` à `None` est un état **normal** : il n'y a pas d'image de
-        requête. L'apparence est alors encodée pour rien — c'est pourquoi le service
-        n'appelle cet étage qu'en présence d'une requête.
+        **Les deux champs sont monotones**, et aucun des deux ne l'était.
+
+        **La largeur ne redescend jamais.** Depuis ADR 0055, un franchissement force
+        un encodage quelle que soit la largeur de la boîte : écrire cette largeur
+        telle quelle rabaissait la référence de la règle monotone, qui rouvrait alors
+        des ré-encodages déjà payés — ADR 0050 à l'envers. `appearance_width_px`
+        décrit « la meilleure vue déjà encodée », pas « la dernière ».
+
+        **La ressemblance non plus.** Cette docstring a longtemps affirmé le
+        contraire — « c'est une mesure sur la vue courante, pas un rang » — et
+        l'argument était faux. Un véhicule est encodé six à onze fois ; publier la
+        **dernière** mesure ne rend pas la chose plus honnête, cela la rend
+        **arbitraire**. La question posée est « ce véhicule ressemble-t-il à la photo
+        cherchée ? », et la réponse est le meilleur de ce qu'on a mesuré : deux vues
+        du même véhicule ne se ressemblent pas autant qu'on croit (0,387 au plus bas,
+        ADR 0048), donc une vue oblique ne réfute pas une vue franche. C'est le même
+        défaut que `record_rematch` a payé, et sur le même étage.
+
+        Depuis ADR 0055 il était même devenu pire : un franchissement forcé contourne
+        la marge de largeur, donc une vue étroite prise au passage du trait pouvait
+        écraser le score d'une vue trois fois plus large.
+
+        **`None` ne retire rien.** Il couvre deux états qui ne sont pas des
+        rétractations : aucune image de requête, ou une mesure sous
+        `reid_min_similarity`. Ce plancher décide de ce qu'on **publie**, jamais de ce
+        qu'on **efface** — et il mordait au défaut, `cosine_similarity` étant bornée à
+        `[-1, 1]` : une similarité négative échouait `score >= 0.0`, donc un `None`
+        passait par-dessus un 0,83 légitime et le véhicule disparaissait des résultats
+        qu'il avait mérités, tout en gardant la photo qui servait à le vérifier.
         """
         aggregate = self._aggregates.get(global_id)
         if aggregate is None:
             return
-        aggregate.appearance_width_px = width_px
-        aggregate.match_score = match_score
+        best = aggregate.appearance_width_px
+        aggregate.appearance_width_px = width_px if best is None else max(best, width_px)
+        if match_score is None:
+            return
+        current = aggregate.match_score
+        if current is None or match_score > current:
+            aggregate.match_score = match_score
+
+    def record_rematch(self, global_id: int, other_id: int, score: float) -> None:
+        """Retient la **meilleure** ressemblance mesurée à un franchisseur antérieur.
+
+        Ne revérifie pas le plancher de déploiement : le service l'a déjà appliqué.
+        Reposer cette question-là ferait exister deux endroits qui décident de la
+        même chose.
+
+        **Le maximum, et non la dernière mesure.** Cette méthode a écrasé sans
+        comparer, et c'était le défaut qui rendait la fonctionnalité inutilisable.
+        Un véhicule franchit plusieurs lignes, donc interroge la galerie plusieurs
+        fois, et chaque interrogation compare une vue *différente* à la galerie —
+        deux vues d'un même véhicule ne se ressemblant pas autant qu'on croit
+        (0,387 mesuré au plus bas, ADR 0048), la dernière mesure est souvent la plus
+        mauvaise.
+
+        Mesuré sur une vidéo doublée bout à bout, où la bonne réponse vaut 1,00 par
+        construction : trois jumeaux sur sept publiaient 0,42, 0,60 et 0,27, et le
+        dernier désignait **un autre véhicule** — parce que sa seconde mesure, prise
+        sous un angle qui ne correspondait pas, trouvait mieux ailleurs. Le maximum
+        publie la mesure la plus favorable, qui est aussi la seule qui ait comparé
+        deux vues comparables.
+
+        **Le numéro suit le score**, jamais l'inverse : on ne garde pas le meilleur
+        score d'un antécédent et le numéro d'un autre.
+
+        **N'écrit rien qu'un compteur puisse lire.** C'est la clause qui tient
+        ADR 0016 à distance, et elle est vérifiable : `test_redetection.py` compare
+        comptages, ventilations et horodatages avec et sans galerie.
+        """
+        aggregate = self._aggregates.get(global_id)
+        if aggregate is None:
+            return
+        if aggregate.rematch_score is not None and score <= aggregate.rematch_score:
+            return
+        aggregate.rematch_of = other_id
+        aggregate.rematch_score = score
 
     # ── Sorties ──────────────────────────────────────────────────────────────
 
@@ -892,6 +1074,13 @@ class AnalysisSession:
                 contained_out=self._contained_out,
                 confirmed_tracks=confirmed,
                 tentative_tracks=len(self._tracks) - confirmed,
+                # **Dérivé, jamais accumulé en parallèle.** `issued` compte les numéros
+                # émis et `size` ceux qui ont atteint `min_hits` : l'écart est le
+                # cumul que `tentative_tracks` ne peut pas donner, puisque celui-ci ne
+                # voit que les pistes encore vivantes. Un second compteur finirait par
+                # diverger du premier (invariant 3).
+                unconfirmed_tracks=self._numbering.issued - self._numbering.size,
+                by_class=self._class_diagnostics(),
                 # Les pistes **encore vivantes** sont exclues : une piste qui
                 # approche de la ligne à l'instant où l'on publie n'a rien manqué,
                 # elle n'a pas fini. C'est `self._tracks` qui fait foi — une piste
@@ -974,6 +1163,8 @@ class AnalysisSession:
                     snapshot_ms=aggregate.snapshot_ms,
                     snapshot_kind=aggregate.snapshot_cause,
                     match_score=aggregate.match_score,
+                    rematch_of=aggregate.rematch_of,
+                    rematch_score=aggregate.rematch_score,
                 )
             )
         return tuple(records)

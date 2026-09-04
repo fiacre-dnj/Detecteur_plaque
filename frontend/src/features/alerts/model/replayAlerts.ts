@@ -22,9 +22,11 @@ import { violations } from "@/shared/lib/lineViolations";
 
 import {
   alertFromPlateHit,
+  alertFromRematch,
   alertFromVehicleMatch,
   alertFromViolation,
   crossingsBefore,
+  firstCrossingOf,
   sortAlerts,
   type Alert,
 } from "./alerts";
@@ -58,6 +60,14 @@ export interface ReplayAlertInput {
    * de la totalité du trafic.
    */
   matchThreshold: number | null;
+  /**
+   * Seuil de **re-détection**, ou `null` — l'analyse n'a pas été lancée avec.
+   *
+   * Distinct de `matchThreshold` et pas par symétrie : les deux ne posent pas la
+   * même question, et la re-détection compare à un lot qui grandit avec le clip.
+   * Voir `DEFAULT_REMATCH_THRESHOLD`.
+   */
+  rematchThreshold: number | null;
 }
 
 /** Les alertes du résultat, la plus récente en tête. */
@@ -85,6 +95,26 @@ export function alertsFromResult(input: ReplayAlertInput): Alert[] {
       if (!matches(vehicle.matchScore, threshold)) continue;
       found.push(
         alertFromVehicleMatch(vehicle, matchStrength(vehicle.matchScore as number, threshold)),
+      );
+    }
+  }
+
+  // La re-détection. Bornée sur l'instant du **franchissement** et non sur la
+  // première apparition : c'est celui que la carte affiche et celui où le clic
+  // amènera la vidéo, donc c'est lui qui doit être atteint.
+  const rematchThreshold = input.rematchThreshold;
+  if (rematchThreshold !== null) {
+    for (const vehicle of input.vehicles) {
+      if (vehicle.rematchOf == null) continue;
+      if (!matches(vehicle.rematchScore, rematchThreshold)) continue;
+      const crossing = firstCrossingOf(vehicle, input.rules);
+      if (crossing.timestampMs > input.timeMs) continue;
+      found.push(
+        alertFromRematch(
+          vehicle,
+          crossing,
+          matchStrength(vehicle.rematchScore as number, rematchThreshold),
+        ),
       );
     }
   }

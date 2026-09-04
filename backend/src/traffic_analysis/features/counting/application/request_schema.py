@@ -169,6 +169,35 @@ class AnalysisRequestSchema(CamelModel):
     iou_threshold: float = Field(0.45, ge=0.05, le=0.95)
     min_hits: int = Field(2, ge=1, le=10)
     max_lost_ms: float = Field(2500, ge=200, le=15000)
+    small_object_confidence: float | None = Field(
+        None,
+        ge=0.01,
+        le=0.99,
+        description=(
+            "Plancher de confiance des **petits objets** — moto, vélo, personne. `null` "
+            "(le défaut) leur applique `confidenceThreshold` comme aux autres, donc "
+            "aucun changement. Mesuré : descendre le curseur unique de 0,35 à 0,20 fait "
+            "passer le rappel des voitures de 0,484 à 0,790 **et inventer dix-sept "
+            "observations de `bus`** sur un clip qui n'en contient aucun. Les deux effets "
+            "ne portent pas sur les mêmes classes, d'où deux planchers."
+        ),
+    )
+    inference_imgsz: int | None = Field(
+        None,
+        ge=64,
+        le=1920,
+        multiple_of=32,
+        description=(
+            "Largeur à laquelle l'image entre dans le réseau. **Ce n'est pas la "
+            "taille d'un objet dans la vidéo qui décide qu'il est détecté, c'est sa "
+            "taille ici** : en 16:9 le letterbox rend 640×384, donc une moto de 60 px "
+            "sur du 1080p n'en fait plus que 20. Monter retrouve les petits objets et "
+            "coûte à peu près le carré du rapport en temps d'analyse. Multiple de 32 "
+            "imposé — c'est le pas de la grille du réseau. `null` suit le défaut du "
+            "déploiement (`TRAFFIC_INFERENCE_IMGSZ`), même convention que "
+            "`plateConfidence`."
+        ),
+    )
     mask_outside_zones: bool = False
     frame_stride: int = Field(1, ge=1, le=10)
     detect_plates: bool = False
@@ -266,6 +295,17 @@ class AnalysisRequestSchema(CamelModel):
             "`readPlateText` est faux — il n'y a alors aucun texte à comparer."
         ),
         examples=[["AB-123-CD"]],
+    )
+    vehicle_rematch: bool = Field(
+        default=False,
+        description=(
+            "Signaler les véhicules déjà vus. Chaque véhicule qui franchit une ligne "
+            "est comparé à ceux qui ont franchi avant lui, et une ressemblance forte "
+            "est **signalée** — jamais fusionnée : les deux véhicules restent comptés "
+            "séparément et les deux franchissements aussi, donc aucun total ne change. "
+            "Le score est publié brut, le seuil d'affichage vivant côté client. Sans "
+            "effet si l'encodeur d'apparence est absent du serveur."
+        ),
     )
     lines: list[LineSchema] = Field(default_factory=list)
     zones: list[ZoneSchema] = Field(default_factory=list)
@@ -426,6 +466,8 @@ class AnalysisRequestSchema(CamelModel):
             plate_text_confidence=self.plate_text_confidence,
             read_plate_text=self.read_plate_text,
             max_lost_ms=self.max_lost_ms,
+            inference_imgsz=self.inference_imgsz,
+            small_object_confidence=self.small_object_confidence,
             lines=tuple(line.to_domain() for line in self.lines),
             zones=tuple(zone.to_domain() for zone in self.zones),
             class_ids=tuple(self.class_ids),
@@ -434,4 +476,5 @@ class AnalysisRequestSchema(CamelModel):
             start_ms=self.start_ms,
             end_ms=self.end_ms,
             plate_watchlist=tuple(self.plate_watchlist),
+            vehicle_rematch=self.vehicle_rematch,
         )

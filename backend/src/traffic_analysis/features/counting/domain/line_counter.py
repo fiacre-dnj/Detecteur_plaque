@@ -260,6 +260,27 @@ class LineCrossingCounter:
                 self._observe_line(track, line, confirmed, timestamp_ms, frame_index, events)
         return tuple(events)
 
+    def relabel(self, line_id: str, direction: int, previous: str, new: str) -> None:
+        """Déplace la voix d'un franchissement déjà compté vers un autre type.
+
+        Appelée quand le vote de classe d'un véhicule **confirmé** bascule après qu'il
+        a franchi. Sans elle, la ventilation par type d'une ligne resterait celle de
+        l'instant du passage pendant que `tracked_by_class` et le registre affichent la
+        classe finale — le même objet sous deux classes, sur le même écran.
+
+        Ce cas frappe précisément moto, vélo et personne, les trois classes que le
+        détecteur confond, et dont la lecture **s'améliore en approchant** : un
+        deux-roues lu `person` de loin bascule après le franchissement si la ligne est
+        dans la moitié éloignée du champ.
+
+        **Aucun total ne bouge** — ni celui de la ligne, ni `crossings`. Un
+        franchissement reste un franchissement ; seule son étiquette change.
+        Silencieuse sur une ligne inconnue : elle a pu être retirée du tracé.
+        """
+        tally = self.by_line.get(line_id)
+        if tally is not None:
+            tally.side(direction).relabel(previous, new)
+
     def counted_identities(self) -> set[int]:
         """Numéros de véhicule ayant réellement fait bouger un compteur.
 

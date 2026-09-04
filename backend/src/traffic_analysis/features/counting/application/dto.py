@@ -153,6 +153,24 @@ class AnalysisJobConfig:
     min_hits: int = 2
     mask_outside_zones: bool = False
     frame_stride: int = 1
+    #: Côté d'entrée du réseau pour **cette** course. `None` garde celui du déploiement.
+    #:
+    #: Le seul réglage de cette liste qui décrive une **ressource** plutôt qu'une règle
+    #: de comptage, et il est passé côté requête pour la même raison que
+    #: `plate_confidence` : « des petits objets ou de la cadence » est un arbitrage de
+    #: **scène**, pas de machine. Un plan large sur un carrefour lointain a besoin de
+    #: 960 là où une caméra à trois mètres n'y gagne rien.
+    #:
+    #: Deux jobs voisins cessent d'être comparables sans le lire : il apparaît donc dans
+    #: le récapitulatif d'avant-analyse et dans le `config_json` du job.
+    inference_imgsz: int | None = None
+    #: Plancher de confiance des **petits objets** — moto, vélo, personne.
+    #:
+    #: `None` leur applique `confidence_threshold` comme aux autres : un no-op strict.
+    #: Mesuré, c'est ce qui rend ce second plancher nécessaire — descendre le curseur
+    #: unique achète des voitures **au prix de bus inventés**, et les deux effets ne
+    #: portent pas sur les mêmes classes. Voir `class_confidence_floors` (ADR 0062).
+    small_object_confidence: float | None = None
     detect_plates: bool = False
     #: Seuil du détecteur de plaques pour **cette** course. `None` garde celui du
     #: déploiement.
@@ -268,6 +286,17 @@ class AnalysisJobConfig:
     #: Ni canonisées ni comparées ici : voir `_clean_watchlist` dans le schéma de
     #: requête. Sans effet si `read_plate_text` est faux.
     plate_watchlist: tuple[str, ...] = ()
+    #: Signaler les véhicules qui ressemblent à un franchisseur antérieur (ADR 0055).
+    #:
+    #: **Éteint par défaut, et c'est ce qui rend l'étage gratuit quand on ne s'en
+    #: sert pas** : sans lui, aucune galerie n'est construite et pas un encodage
+    #: supplémentaire n'est payé. Un réglage de l'utilisateur et non du déploiement,
+    #: même doctrine qu'ADR 0036 — « des faux positifs ou rien » est une question de
+    #: scène, pas de machine.
+    #:
+    #: Sans effet si l'encodeur d'apparence est absent : il n'y a alors rien à
+    #: comparer, et le service se tait plutôt que de faire échouer l'analyse.
+    vehicle_rematch: bool = False
 
     def engine_spec(self) -> EngineSpec:
         """Ce que le moteur doit savoir : les seuils **vivants** de la requête."""
@@ -284,6 +313,15 @@ class AnalysisJobConfig:
             # besoin de personne : refermer le générateur suffit à arrêter le
             # décodage.
             start_ms=self.start_ms,
+            # Le **même** champ que celui du domaine, et c'est le but : les deux
+            # horloges doivent renoncer au même moment. Le domaine compte en temps de
+            # scène, le tracker en images analysées ; c'est l'adaptateur qui convertit,
+            # parce que lui seul connaît la cadence et le pas. Voir ADR 0058.
+            max_lost_ms=self.max_lost_ms,
+            # Le seul champ de cette spec qui ne soit PAS un simple indice : un moteur
+            # qui l'ignore rend d'autres detections, donc d'autres chiffres.
+            imgsz=self.inference_imgsz,
+            small_confidence=self.small_object_confidence,
         )
 
     def session_config(self) -> SessionConfig:
@@ -299,6 +337,10 @@ class AnalysisJobConfig:
             # d'une observation suivie si elle tenait le seuil ou si elle a été
             # rattrapée par la bande basse (ADR 0024).
             confidence_threshold=self.confidence_threshold,
+            # Même statut : le comptage ne les lit pas, le filtrage ayant lieu au
+            # détecteur. Elles servent à publier une rangée de diagnostic par classe
+            # **cherchée**, y compris celles restées à zéro.
+            class_ids=self.class_ids,
         )
 
 

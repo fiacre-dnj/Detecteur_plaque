@@ -47,3 +47,30 @@ def cosine_similarity(left: npt.NDArray[np.float32], right: npt.NDArray[np.float
     verdict côté serveur.
     """
     return float(np.clip(np.dot(left, right), -1.0, 1.0))
+
+
+def best_similarity(vector: npt.NDArray[np.float32], views: npt.NDArray[np.float32]) -> float:
+    """La **meilleure** ressemblance entre un vecteur et un jeu de vues empilées.
+
+    `views` est une matrice `(k, d)` de vecteurs eux aussi normalisés L2 : le produit
+    matrice-vecteur rend les `k` similarités d'un coup, et on garde la plus haute.
+
+    **Pourquoi comparer plusieurs vues plutôt qu'une.** Deux vues d'un même véhicule
+    prises à des instants différents ne se ressemblent pas autant qu'on croit —
+    mesuré, elles descendent à 0,387 (ADR 0048), parce que le prétraitement étire la
+    vignette au carré et que la déformation suit le rapport d'aspect de la boîte, qui
+    change avec la distance et l'angle. Comparer une vue à **une seule** vue de
+    référence, c'est donc jouer sur la chance que les deux se correspondent. Comparer
+    à toutes celles qu'on a retenues, c'est laisser la bonne paire se déclarer.
+
+    Ici et non dans la galerie, pour la raison qui a mis `cosine_similarity` dans ce
+    module : **un seul juge**. Un `views @ vector` écrit ailleurs finirait par
+    différer sur la normalisation ou sur les bornes, et l'écart serait invisible.
+
+    Rend `-1.0` sur un jeu vide — la borne basse de l'échelle, jamais `0.0`, qui se
+    lirait comme « mesuré, et sans ressemblance ». L'appelant, lui, distingue déjà le
+    cas « aucun déposant » en amont.
+    """
+    if views.size == 0:
+        return -1.0
+    return float(np.clip(np.max(views @ vector), -1.0, 1.0))

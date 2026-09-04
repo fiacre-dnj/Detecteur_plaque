@@ -32,6 +32,7 @@ from traffic_analysis.features.counting.application.dto import (
     select_within_budget,
 )
 from traffic_analysis.features.counting.domain.appearance import cosine_similarity
+from traffic_analysis.features.counting.domain.appearance_gallery import AppearanceGallery
 from traffic_analysis.features.counting.domain.models import PlateDetection, VideoInfo
 from traffic_analysis.features.counting.domain.pacing import ScenePacer
 from traffic_analysis.features.counting.domain.plate_anchor import PlateAnchor, anchor_from
@@ -152,6 +153,37 @@ type CancellationCheck = Callable[[], bool]
 type PauseGate = Callable[[], float]
 
 
+def _align_crossing_labels(result: AnalysisResultData) -> None:
+    """Réaligne le libellé des franchissements sur le vote **final** du véhicule.
+
+    L'invariant 4 promet qu'on compte sous `identity_label`, le vote majoritaire sur
+    **la vie du véhicule**. C'était vrai du registre et de `tracked_by_class`, relus à
+    la fin ; c'était faux des franchissements, écrits une fois pour toutes avec le vote
+    tel qu'il était à l'instant du passage.
+
+    Le cas frappe précisément moto, vélo et personne — les trois classes que le
+    détecteur confond — et dont la lecture **s'améliore en approchant** : un deux-roues
+    lu `person` de loin bascule après le franchissement si la ligne est dans la moitié
+    éloignée du champ. Deux conséquences distinctes, et la seconde est la plus
+    dommageable : le même objet était classé différemment par deux surfaces de la même
+    page, et la règle de **voie réservée** — évaluée côté client sur ce libellé —
+    pouvait signaler en rouge une moto parfaitement autorisée.
+
+    `result.vehicles` vient d'être rempli par `session.vehicles()` : on lit le vote
+    final là, plutôt que de le reconstruire, pour qu'il n'existe qu'une source.
+
+    **Aucun total ne change** : ni `crossings`, ni les tallies — que le domaine a déjà
+    déplacés au fil de l'eau. Seule l'étiquette d'un événement bouge.
+    """
+    voted = {record.global_id: record.label for record in result.vehicles}
+    result.crossings[:] = [
+        event
+        if voted.get(event.global_id, event.label) == event.label
+        else replace(event, label=voted[event.global_id])
+        for event in result.crossings
+    ]
+
+
 def _crossing_order(event: CrossingEvent) -> tuple[float, int, str, int]:
     """Ordre de publication d'un franchissement : **son instant d'abord**.
 
@@ -184,6 +216,7 @@ class AnalysisService:
         "_reid_appearance_improvement",
         "_reid_max_per_frame",
         "_reid_min_similarity",
+        "_reid_rematch_min_similarity",
         "_snapshot_encoder",
         "_snapshot_on_appearance",
         "_snapshot_on_plate_box",
@@ -201,6 +234,7 @@ class AnalysisService:
         snapshot_encoder: VehicleSnapshotEncoder | None = None,
         vehicle_embedder: VehicleEmbedder | None = None,
         reid_min_similarity: float = 0.0,
+        reid_rematch_min_similarity: float = 0.0,
         reid_appearance_improvement: float = 1.0,
         reid_max_per_frame: int = 0,
         snapshot_on_plate_box: bool = False,
@@ -217,6 +251,12 @@ class AnalysisService:
         # `snapshot_encoder` juste en dessous.
         self._vehicle_embedder = vehicle_embedder
         self._reid_min_similarity = reid_min_similarity
+        # Le même plancher pour la re-détection au franchissement (ADR 0055), et
+        # **distinct** parce que les deux étages ne comparent pas la même chose : l'un
+        # confronte à une photo choisie, l'autre à tous les franchisseurs précédents,
+        # dont le nombre croît avec le clip. Le meilleur score d'un lot de cent est
+        # mécaniquement plus haut que celui d'un lot de deux.
+        self._reid_rematch_min_similarity = reid_rematch_min_similarity
         # Marge de largeur exigée pour **réencoder** une piste déjà encodée. Un
         # plancher de déploiement, comme `reid_min_similarity` juste au-dessus : il
         # décrit ce que la machine accepte de payer, pas ce que l'utilisateur
@@ -404,6 +444,21 @@ class AnalysisService:
         # plaques.
         query = self._resolve_query(query_image)
 
+        # La galerie interne au clip (ADR 0055). **`None` est le cas nominal** : sans
+        # l'interrupteur, ou sans encodeur, aucun objet n'est construit, aucun
+        # encodage supplémentaire n'est payé, et le chemin est celui d'avant au bit
+        # près. C'est ce qui rend la fonctionnalité strictement additive.
+        gallery = (
+            AppearanceGallery()
+            if config.vehicle_rematch and self._vehicle_embedder is not None
+            else None
+        )
+        if config.vehicle_rematch and self._vehicle_embedder is None:
+            # Ni fatal ni silencieux : l'analyse est juste, mais l'utilisateur a coché
+            # une case qui ne rendra rien. Même doctrine que les trois refus de
+            # `_resolve_query`.
+            logger.info("rematch_unavailable", reason="no_embedder")
+
         # La session est construite **après** la résolution de l'OCR, et pas avant :
         # elle a besoin de savoir si la lecture tourne *réellement* — modèle présent
         # compris — pour distinguer « rien n'a été tenté » des quatre autres raisons
@@ -525,14 +580,30 @@ class AnalysisService:
                     text_confidence=config.plate_text_confidence,
                 )
 
+            # La galerie voit **toute piste visible**, encodée ou non, et c'est ce qui
+            # rend sa garde temporelle exacte : deux véhicules simultanément à l'écran
+            # ne peuvent pas être le même objet physique, mais encore faut-il savoir
+            # qu'ils s'y sont trouvés ensemble. Réduire l'observation aux
+            # franchissements donnerait des fenêtres ponctuelles qui ne se croisent
+            # jamais. `global_id == 0` est une piste non confirmée : elle n'a pas
+            # encore de numéro, donc rien à observer sous.
+            if gallery is not None:
+                for track in outcome.tracks:
+                    if track.global_id:
+                        gallery.observe(track.global_id, frame.timestamp_ms)
+
             # **Hors de la garde `detector is not None` ci-dessus, et c'est délibéré** :
             # la recherche par image ne doit pas hériter de la dépendance à l'ANPR.
             # Un utilisateur qui cherche une voiture n'a aucune raison d'activer la
             # lecture de plaques, et l'inverse est vrai aussi.
-            if query is not None and outcome.tracks:
+            if (query is not None or gallery is not None) and outcome.tracks:
                 self._match_appearances(
                     session=session,
                     query=query,
+                    gallery=gallery,
+                    # Les franchisseurs de **cette** image. Un `frozenset` plutôt
+                    # qu'une liste : l'appartenance est testée une fois par piste.
+                    crossed=frozenset(crossing.global_id for crossing in outcome.crossings),
                     snapshots=result.snapshots,
                     on_snapshot=on_snapshot,
                     image=frame.image,
@@ -638,6 +709,16 @@ class AnalysisService:
         # Trier ici et non dans le domaine : le compteur émet au fil de l'eau et n'a
         # aucune raison de connaître l'ordre final. C'est l'orchestration qui range,
         # et `crossingsUpTo` côté client suppose cet ordre pour rejouer un résultat.
+        # **Le libellé d'un franchissement était gelé au vote de l'instant du passage.**
+        # Les tallies de ligne suivent désormais le vote au fil de l'eau (ADR 0061),
+        # mais un `CrossingEvent` déjà émis, lui, ne peut pas se corriger tout seul :
+        # c'est un objet immuable parti depuis longtemps. On le réaligne ici, sur le
+        # registre final, qui porte le vote de toute la vie du véhicule (invariant 4).
+        #
+        # **À l'assemblage et non au vote** : les aperçus SSE portent donc encore
+        # l'étiquette du moment, et c'est sans conséquence — le client remplace son
+        # journal vivant par celui du résultat dès la fin de l'analyse.
+        _align_crossing_labels(result)
         result.crossings.sort(key=_crossing_order)
 
         if on_progress is not None:
@@ -827,7 +908,9 @@ class AnalysisService:
         self,
         *,
         session: AnalysisSession,
-        query: VehicleAppearance,
+        query: VehicleAppearance | None,
+        gallery: AppearanceGallery | None,
+        crossed: frozenset[int],
         snapshots: dict[int, VehicleSnapshot],
         on_snapshot: SnapshotCallback | None,
         image: npt.NDArray[np.uint8],
@@ -847,6 +930,14 @@ class AnalysisService:
         planchers de largeur et de netteté. L'inverse paierait un recadrage et une
         mesure de netteté pour des véhicules dont on sait déjà qu'on ne les gardera
         pas.
+
+        **Deux consommateurs, une seule passe** depuis ADR 0055 : la recherche par
+        image, qui compare à une photo fournie, et la galerie interne au clip, qui
+        compare aux franchisseurs précédents. Ils choisissent leurs candidats
+        différemment — la règle monotone pour l'une, le franchissement pour l'autre —
+        mais partagent l'encodage, qui est la seule dépense. Les séparer en deux
+        passes ferait payer deux fois la même vignette sur un véhicule qui franchit
+        au moment où il est aussi le plus large.
         """
         embedder = self._vehicle_embedder
         if embedder is None:
@@ -859,16 +950,42 @@ class AnalysisService:
         # était alors exclu définitivement, et une vue meilleure ne pouvait jamais
         # remplacer la première. Le test `test_une_meilleure_vue_remplace_la_precedente`
         # verrouille le cas.
-        candidates = [
-            track
-            for track in tracks
-            if session.should_embed(
-                track.global_id,
-                track.box.width,
-                self._reid_appearance_improvement,
-            )
-        ]
-        if not candidates:
+        #
+        # **Rien quand il n'y a pas de requête** : la règle monotone ne sert que la
+        # recherche par image. Encoder les plus larges sans photo à comparer serait
+        # une dépense sans consommateur — la galerie, elle, ne veut que les
+        # franchisseurs.
+        optional = (
+            [
+                track
+                for track in tracks
+                if session.should_embed(
+                    track.global_id,
+                    track.box.width,
+                    self._reid_appearance_improvement,
+                )
+            ]
+            if query is not None
+            else []
+        )
+
+        # **Les franchisseurs passent quoi qu'il arrive**, et c'est tout l'objet
+        # d'ADR 0055 : la question « ce véhicule est-il déjà passé ? » se pose au
+        # moment du passage, pas quand la boîte atteint sa plus grande largeur. Ils
+        # contournent donc la marge **et** le plafond par image — mais jamais les
+        # planchers de l'adaptateur, qui refusera une vignette trop petite ou trop
+        # floue. Un embedding sur 40 px ressemble surtout au flou (ADR 0048), et un
+        # score calculé dessus serait plausible et faux.
+        #
+        # Ils sont bornés par le nombre de franchissements, pas par celui d'images :
+        # c'est ce qui rend l'étage abordable malgré ses 21,8 ms par vignette.
+        forced = (
+            [track for track in tracks if track.global_id in crossed and track.global_id]
+            if gallery is not None
+            else []
+        )
+
+        if not optional and not forced:
             return
 
         # **Le plafond par image**, quand il est posé. Le jumeau exact de celui des
@@ -881,8 +998,14 @@ class AnalysisService:
         #
         # Ce qui n'est pas servi n'est pas perdu : rien n'étant enregistré, la piste
         # garde son `appearance_width_px` et repasse candidate à l'image suivante.
+        #
+        # **Il ne s'applique qu'aux candidats de la règle monotone**, jamais aux
+        # franchisseurs : ceux-là n'auront pas de seconde chance. Un franchissement
+        # est un instant, pas un état — reporter son encodage à l'image suivante
+        # encoderait un véhicule qui a déjà quitté le trait, et la question posée
+        # n'est plus la même.
         budget = self._reid_max_per_frame
-        if budget > 0 and len(candidates) > budget:
+        if budget > 0 and len(optional) > budget:
             keep = select_within_budget(
                 [
                     InferenceCandidate(
@@ -890,11 +1013,18 @@ class AnalysisService:
                         width=track.box.width,
                         never_served=not session.has_appearance(track.global_id),
                     )
-                    for track in candidates
+                    for track in optional
                 ],
                 budget,
             )
-            candidates = [track for track in candidates if track.global_id in keep]
+            optional = [track for track in optional if track.global_id in keep]
+
+        # L'union, sans doublon et sans jamais soumettre deux fois la même vignette :
+        # un véhicule peut très bien franchir au moment précis où sa boîte est la plus
+        # large, et le lot est indexé par position — un doublon décalerait
+        # l'appariement des réponses.
+        seen = {track.global_id for track in forced}
+        candidates = [*forced, *(track for track in optional if track.global_id not in seen)]
 
         # Une seule passe pour tout le lot : le graphe est dynamique et toutes les
         # vignettes sont ramenées au même carré, donc grouper est gratuit — l'inverse
@@ -908,12 +1038,31 @@ class AnalysisService:
                 # réessayée quand elle s'élargira. C'est une suspension, pas un
                 # abandon, exactement comme la porte d'ADR 0039.
                 continue
-            score = cosine_similarity(query.vector, appearance.vector)
+            # `None` quand il n'y a pas de requête, et c'est un état **normal** : la
+            # vue a bien été encodée, pour la galerie, mais il n'y a rien à quoi la
+            # comparer. `record_embedding` documente déjà ce cas.
+            score = None if query is None else cosine_similarity(query.vector, appearance.vector)
             session.record_embedding(
                 track.global_id,
                 track.box.width,
-                score if score >= self._reid_min_similarity else None,
+                score if score is not None and score >= self._reid_min_similarity else None,
             )
+
+            # **La galerie : interroger AVANT de déposer.** L'ordre est la seule chose
+            # qui empêche un véhicule de se reconnaître lui-même — `lookup` exclut bien
+            # son propre numéro, mais déposer d'abord ferait aussi remonter, au
+            # franchissement suivant du **même** véhicule, sa propre vue précédente
+            # avec un score proche de 1.
+            #
+            # Ne concerne que les franchisseurs : c'est ce que la fonctionnalité
+            # promet, et déposer les autres remplirait la galerie de véhicules qui
+            # n'ont jamais traversé, donc allongerait chaque comparaison sans rien
+            # rendre.
+            if gallery is not None and track.global_id in crossed:
+                hit = gallery.lookup(track.global_id, appearance.vector)
+                if hit is not None and hit.score >= self._reid_rematch_min_similarity:
+                    session.record_rematch(track.global_id, hit.global_id, hit.score)
+                gallery.remember(track.global_id, appearance.vector, track.box.width)
             # **Une photo pour ce que la recherche par image va proposer** (ADR 0051).
             # L'écran promet « à vérifier sur la capture » : sans cela, il n'y en avait
             # aucune, l'ANPR étant la seule cause de capture. Trois points :

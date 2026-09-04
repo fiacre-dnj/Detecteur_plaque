@@ -9,7 +9,65 @@ plus deux fois dans le même sens » si.
 
 ## [Non publié]
 
+### Corrigé
+
+- **La recherche par image retenait la mauvaise mesure, et pouvait perdre un
+  véhicule.** Un véhicule est comparé à votre photo six à onze fois, sous des angles
+  différents — et c'est la **dernière** comparaison qui était publiée, même quand une
+  vue bien meilleure avait été mesurée juste avant. Pire : quand la dernière mesure
+  tombait sous le plancher du serveur, elle **effaçait** le bon score et le véhicule
+  disparaissait des résultats qu'il avait mérités, tout en gardant la photo qui
+  servait à le vérifier. C'est désormais la meilleure mesure qui est publiée, et une
+  mesure refusée n'efface plus rien.
+- **Le cadrage de la photo cherchée n'était pas celui que vous encadriez.** Sur une
+  photo plus haute que large — une photo de téléphone — la zone envoyée au serveur
+  était décalée et redimensionnée par rapport au rectangle bleu que vous voyiez, sans
+  le moindre message. L'aperçu s'ajuste maintenant à l'image, et ce que vous cadrez
+  est ce qui part. Le cadrage reprend aussi la petite marge que le serveur ajoute
+  autour des véhicules de la vidéo, pour que les deux images se comparent dans les
+  mêmes conditions.
+- **Les deux « ressemblances » ne se confondent plus.** Ressembler à la photo
+  cherchée et ressembler à un autre véhicule de la vidéo sont deux mesures
+  différentes, et la fenêtre de comparaison les affichait sous le même mot. La
+  légende dit désormais laquelle elle montre.
+- **La re-détection retenait la mauvaise mesure.** Un véhicule qui franchit deux
+  lignes est comparé deux fois, sous deux angles différents — et c'est la **dernière**
+  comparaison qui était publiée, même quand elle était bien moins bonne, même quand
+  elle désignait un autre véhicule. Mesuré sur une vidéo doublée bout à bout, où la
+  réponse juste est forcément 100 % : trois véhicules sur sept annonçaient 42 %, 60 %
+  et 27 %, et le dernier montrait la mauvaise voiture. C'est désormais la **meilleure**
+  comparaison qui est retenue, et chaque véhicule dépose plusieurs vues au lieu d'une
+  seule — de sorte qu'il y ait toujours une vue comparable en face.
+- **Le registre n'affirme plus une identité à laquelle il ne croit pas.** La colonne
+  « Déjà vu » affichait en gris le véhicule le plus ressemblant même à 2 %, y compris
+  pour des véhicules qui n'ont par construction aucun antécédent — on lisait une page
+  de correspondances fausses. Sous le seuil, la case affiche « — » ; le pourcentage
+  exact reste dans l'infobulle et dans l'export CSV. La colonne elle-même n'apparaît
+  plus que si au moins un véhicule a réellement été reconnu.
+- **Les alertes de véhicule affichent enfin leur pourcentage.** « Véhicule recherché »
+  et « Véhicule déjà vu » annonçaient une ressemblance sans jamais dire à quel point :
+  le chiffre était calculé, testé, et n'atteignait pas l'écran.
+
 ### Ajouté
+
+- **L'analyse dit quand un véhicule est déjà passé.** Une case « Signaler les
+  véhicules déjà vus » dans le tiroir Détection : chaque véhicule qui franchit une
+  ligne — de n'importe quel type — est comparé à ceux qui ont franchi avant lui, et
+  une ressemblance forte déclenche une alerte, avec son pourcentage, la ligne
+  franchie et la photo des deux véhicules à comparer. Le registre gagne une colonne
+  « Déjà vu » qui nomme le véhicule d'origine, et l'export CSV deux colonnes.
+  **Un clic sur cette colonne ouvre les deux véhicules côte à côte**, avec leur
+  plaque quand elle a été lue : c'est là que vous tranchez. Sans cet écran, comparer
+  deux photos demandait d'ouvrir la première, la fermer, retrouver la seconde rangée
+  et l'ouvrir — donc de les comparer de mémoire.
+  **Aucun chiffre ne change** : un véhicule reconnu reste un véhicule de plus et son
+  passage reste compté. L'écran signale, il ne fusionne pas — deux passages du même
+  véhicule sont deux passages, et c'est à vous de dire si c'est bien la même
+  voiture, sur les captures.
+  Éteinte par défaut, et gratuite tant qu'elle l'est. Deux choses à savoir avant de
+  s'y fier : deux véhicules visibles en même temps ne sont jamais rapprochés, si
+  ressemblants soient-ils ; et un véhicule trop petit ou trop flou à l'écran reste
+  sans réponse plutôt que d'en recevoir une inventée.
 
 - **Les alertes disent à quel point elles sont sûres.** Une plaque recherchée affiche
   sa **confiance de lecture**, un véhicule trouvé par recherche par image sa

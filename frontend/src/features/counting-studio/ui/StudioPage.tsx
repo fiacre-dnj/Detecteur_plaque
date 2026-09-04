@@ -135,12 +135,13 @@ import { PlaybackFpsBadge, TransportBar } from "@/features/video-transport";
 import type { CrossingEvent, Point, Preset, TrackSnapshot } from "@/shared/api/contracts";
 import { isTerminal } from "@/shared/api/contracts";
 import { platePhotoUrl, vehicleSnapshotUrl } from "@/shared/api/jobUrls";
-import { VEHICLE_CLASSES, classLabel } from "@/shared/lib/classes";
+import { SMALL_CLASSES, VEHICLE_CLASSES, classLabel } from "@/shared/lib/classes";
 import { lineRules } from "@/shared/lib/lineRules";
 import { hasAnyRule } from "@/shared/lib/lineViolations";
 import { violationCounts } from "@/shared/lib/violationTally";
 import { formatSceneTimePrecise } from "@/shared/lib/sceneTime";
 import { useMediaQuery } from "@/shared/lib/useMediaQuery";
+import { DEFAULT_REMATCH_THRESHOLD } from "@/shared/lib/vehicleMatch";
 import { Activity, ScanSearch, Waypoints } from "lucide-react";
 import { Button } from "@/shared/ui/Button";
 import { SnapshotDialog } from "@/shared/ui/SnapshotDialog";
@@ -835,6 +836,16 @@ export function StudioPage() {
         classLabels: (detectableClasses ?? [])
           .filter((entry) => settings.classIds.includes(entry.id))
           .map((entry) => entry.label),
+        // **Le tri se fait sur le nom COCO, jamais sur le libellé français** : le
+        // récapitulatif ne connaît pas le catalogue, et deviner « ce nom ressemble à
+        // une moto » depuis une chaîne traduite cesserait d'être vrai au premier
+        // renommage. `SMALL_CLASSES` est le seul juge.
+        smallClassLabels: (detectableClasses ?? [])
+          .filter(
+            (entry) => settings.classIds.includes(entry.id) && SMALL_CLASSES.has(entry.cocoName),
+          )
+          .map((entry) => entry.label),
+        inferenceImgsz: settings.inferenceImgsz,
         lineCount: geometry.lines.length,
         zoneCount: geometry.zones.length,
         // Compté sur les règles **résolues** et non sur les champs bruts : une voie
@@ -847,6 +858,9 @@ export function StudioPage() {
         watchedPlateCount: settings.plateWatchlist.length,
         analysisSpeed: settings.analysisSpeed,
         maxAnalysisFps: settings.maxAnalysisFps,
+        // Les dimensions **réellement décodées**, pas celles de la balise : c'est
+        // le même `scene` qui sert de filet à la panne silencieuse d'ancrage.
+        sourceHeight: scene?.height ?? null,
       }),
     [
       selectedModelLabel,
@@ -857,10 +871,12 @@ export function StudioPage() {
       settings.plateWatchlist.length,
       settings.analysisSpeed,
       settings.maxAnalysisFps,
+      settings.inferenceImgsz,
       alertRules,
       geometry.lines.length,
       geometry.zones.length,
       range,
+      scene?.height,
     ],
   );
 
@@ -1073,6 +1089,9 @@ export function StudioPage() {
     // pistes d'une image ne le portant pas. `null` quand rien n'est cherché.
     vehicles: session.preview?.vehicles ?? null,
     matchThreshold: queryIsArmed(query) ? query.threshold : null,
+    // `null` dès que la case est décochée : sans elle le serveur ne publie aucun
+    // `rematchOf`, et armer le seuil ne ferait qu'un parcours de liste pour rien.
+    rematchThreshold: settings.vehicleRematch ? DEFAULT_REMATCH_THRESHOLD : null,
     // Le job identifie la course ; `"live"` couvre la caméra, qui n'a pas de job.
     // Un changement vide le journal, sinon les alertes de l'analyse précédente
     // s'afficheraient au-dessus des nouvelles avec des horodatages qui ne désignent
@@ -1101,13 +1120,61 @@ export function StudioPage() {
       // `null` quand aucune recherche n'est armée, et **pas** `0` : le second
       // signalerait tout véhicule encodé, donc la totalité du trafic.
       matchThreshold: queryIsArmed(query) ? query.threshold : null,
+      rematchThreshold: settings.vehicleRematch ? DEFAULT_REMATCH_THRESHOLD : null,
     });
     // `query` entier et non ses deux champs : `queryIsArmed` lit `file` et le seuil
     // vient de `threshold`, mais l'objet est remplacé à chaque `patchQuery`, donc le
     // décomposer ne gagnerait aucun rendu et ferait mentir la liste de dépendances.
-  }, [session.result, replay.timeMs, alertRules, settings.plateWatchlist, query]);
+  }, [
+    session.result,
+    replay.timeMs,
+    alertRules,
+    settings.plateWatchlist,
+    settings.vehicleRematch,
+    query,
+  ]);
 
   const alerts = replayAlerts ?? liveAlerts;
+
+  /**
+   * Les scores **vivants** de chaque véhicule, pour que les cartes d'alerte les portent.
+   *
+   * **Cette carte n'était jamais construite**, et `AlertsPanel` recevait donc
+   * `undefined` : `alertScore` retombait sur le score gelé de l'alerte, que seules
+   * les plaques possèdent. Les cartes « Véhicule recherché » et « Véhicule déjà vu »
+   * n'affichaient **aucun** pourcentage, alors que la fonctionnalité tout entière
+   * existe pour qu'une hypothèse porte son chiffre.
+   *
+   * Une carte plutôt qu'un champ de l'`Alert`, et c'est structurel : `mergeAlerts`
+   * garde la **première** occurrence d'une clé, donc un score porté par l'alerte
+   * serait gelé à sa première publication — alors que ressemblance et confiance de
+   * lecture montent toutes deux en cours d'analyse (ADR 0050, invariant 4). Une carte
+   * figée à « 57 % » sous un registre qui affiche « 84 % » pour le même véhicule se
+   * lirait comme un désaccord entre deux écrans.
+   *
+   * **Tous** les véhicules et non les seuls franchisseurs : une plaque recherchée
+   * peut appartenir à un véhicule à l'arrêt, exactement comme pour `alertsFromResult`.
+   */
+  const alertScores = useMemo(() => {
+    const source =
+      session.result !== null
+        ? vehiclesAt(session.result, replay.timeMs)
+        : (session.preview?.vehicles ?? []);
+    return new Map(
+      source.map((vehicle) => [
+        vehicle.globalId,
+        // `?? null` et non le champ brut : les trois sont **optionnels** au contrat
+        // — un résultat archivé n'a pas de `rematchScore` —, et `undefined` n'est pas
+        // une valeur admise sous `exactOptionalPropertyTypes`. `null` dit la même
+        // chose au lecteur : rien à chiffrer.
+        {
+          matchScore: vehicle.matchScore ?? null,
+          rematchScore: vehicle.rematchScore ?? null,
+          plateTextScore: vehicle.plateTextScore,
+        },
+      ]),
+    );
+  }, [session.result, session.preview?.vehicles, replay.timeMs]);
 
   /**
    * Y a-t-il quelque chose à signaler ?
@@ -1300,6 +1367,8 @@ export function StudioPage() {
         // qui n'est pas un échec et ne doit rien désactiver.
         plateLoadable={health?.plateLoadable ?? null}
         plateOcrAvailable={catalogue?.plateOcrAvailable ?? false}
+        reidAvailable={reidAvailable}
+        reidLoadable={health?.reidLoadable ?? null}
         hasZones={geometry.zones.length > 0}
         // Pour nommer les lignes des quasi-franchissements dans le diagnostic : le
         // serveur les publie par identifiant, et un identifiant ne dit rien à l'œil.
@@ -1414,6 +1483,9 @@ export function StudioPage() {
                       // mêmes chiffres passeraient encore, deux *définitions* du
                       // total non.
                       violations={alertViolations}
+                      // Le pourcentage de chaque carte. Sans lui, une ressemblance
+                      // s'annonce sans jamais dire à quel point.
+                      scores={alertScores}
                       live={analysing || live.active}
                       // Le job **en cours ou terminé** : les captures sont écrites
                       // au fil de l'eau depuis ADR 0046, donc une vignette demandée

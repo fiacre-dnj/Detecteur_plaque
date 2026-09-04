@@ -224,6 +224,24 @@ class SqlAlchemyJobRepository:
             )
             return [_to_record(row) for row in rows]
 
+    async def list_interrupted(self) -> Sequence[JobRecord]:
+        """Jobs **non terminaux** — ceux qu'aucune purge ne peut prendre.
+
+        Le complément exact de `list_expired`, et c'est ce qui rend les deux
+        lisibles ensemble : l'une rend ce qui est fini depuis assez longtemps,
+        l'autre ce qui n'est pas fini du tout.
+
+        Aucun filtre de date : au démarrage, l'ancienneté ne dit rien. Un job
+        `running` écrit il y a trois secondes appartient au processus qui vient de
+        mourir exactement comme celui d'il y a trois semaines — le seul processus
+        capable de le faire avancer n'existe plus dans les deux cas.
+        """
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(JobModel).where(JobModel.status.not_in(tuple(TERMINAL_STATUSES)))
+            )
+            return [_to_record(row) for row in rows]
+
     # ── Lectures paginées des agrégats ───────────────────────────────────────
 
     async def list_vehicles(

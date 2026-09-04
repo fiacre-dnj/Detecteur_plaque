@@ -213,6 +213,13 @@ def serialise_vehicle(record: VehicleRecord) -> dict[str, Any]:
         # se recouvrent (ADR 0048). `null` couvre deux cas distincts : aucune requête,
         # ou véhicule jamais assez grand pour être encodé.
         "matchScore": None if record.match_score is None else _score(record.match_score),
+        # La re-détection : « ce véhicule ressemble au #N déjà passé » (ADR 0055).
+        # **Deux champs et non un**, parce que l'écran doit pouvoir nommer
+        # l'antécédent : « comme #12 — 87 % » se vérifie sur deux captures, « 87 % »
+        # tout seul ne se vérifie sur rien. Score brut ici aussi, pour la raison
+        # exacte de `matchScore` juste au-dessus.
+        "rematchOf": record.rematch_of,
+        "rematchScore": None if record.rematch_score is None else _score(record.rematch_score),
     }
 
 
@@ -296,6 +303,20 @@ def serialise_stats(stats: AnalysisStats) -> dict[str, Any]:
             "confirmedTracks": stats.diagnostics.confirmed_tracks,
             "tentativeTracks": stats.diagnostics.tentative_tracks,
             "rescuedByLowScore": stats.diagnostics.rescued_by_low_score,
+            # Le **cumul** que `tentativeTracks` ne peut pas donner : celui-ci ne
+            # compte que les pistes encore vivantes à la dernière image, donc il vaut
+            # zéro alors même que douze motos viennent d'être abandonnées.
+            "unconfirmedTracks": stats.diagnostics.unconfirmed_tracks,
+            # Par type, et les types cochés à **zéro sont présents** : c'est l'absence
+            # qui est l'information — « motorcycle 0 / 0 » veut dire « cherchée, jamais
+            # trouvée ». Même raisonnement que `nearMisses`.
+            "byClass": {
+                label: {
+                    "highDetections": row.high_detections,
+                    "rescuedByLowScore": row.rescued_by_low_score,
+                }
+                for label, row in stats.diagnostics.by_class.items()
+            },
             # Par ligne, et non un total : un total ne dirait pas **laquelle** est
             # mal placée, ce qui est la seule chose qu'on veut en savoir. Une ligne
             # sans quasi-franchissement est présente à `0` — l'absence de clé se
